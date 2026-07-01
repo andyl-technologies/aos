@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
-use crate::heap::MemoryAdviceKind;
+use crate::heap::{HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 #[test]
@@ -353,9 +353,34 @@ fn heap_budget_and_cheap_advice_options_report_cold_aware_plan() {
     assert_eq!(plan_report.unused_tails().kind(), MemoryAdviceKind::Dead);
     assert_eq!(
         plan_report.cold_hash_consed().kind(),
-        MemoryAdviceKind::Cold
+        MemoryAdviceKind::Evict
     );
     assert_eq!(plan_report.cold_hash_consed().min_idle_epochs(), 0);
+}
+
+#[test]
+fn heap_budget_and_cheap_advice_options_fall_back_to_cold_advice_under_soft_limit() {
+    let budget = HeapMemoryBudget::new(usize::MAX).expect("budget is non-zero");
+    let ir = lower("\"under-budget\"");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_cheap_memory_advice_min_idle_epochs(0);
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("string evaluates");
+
+    let plan = outcome
+        .cheap_memory_budget_plan()
+        .expect("combined options record a cold-aware budget plan");
+    assert!(matches!(
+        plan.decision().response(),
+        HeapMemoryBudgetResponse::ContinueTierA { .. }
+    ));
+    assert_eq!(plan.cheap_advice_report(), None);
+    let report = outcome
+        .cheap_memory_advice_report()
+        .expect("under-budget combined options still record plain advice telemetry");
+    assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
 }
 
 #[test]

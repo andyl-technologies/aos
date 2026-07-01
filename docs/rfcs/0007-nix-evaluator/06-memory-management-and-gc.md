@@ -1238,10 +1238,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalHeap` also records access epochs for typed heap records and exposes
       cold hash-consed logical-byte estimates for opt-in budget classification.
       `EvalHeap::plan_memory_budget_with_cheap_memory_advice` now combines
-      those cold estimates with supported unused-tail capacity and runs the
-      cheap advice hooks for telemetry when reclaim is planned, while the
-      automatic allocation-safepoint response and `memory_budget_action()`
-      still stay conservative and credit zero cold reclaim until CA-store
+      those cold estimates with supported unused-tail capacity and, when the
+      classifier asks for reclaim, records dead-tail advice plus
+      `MADV_PAGEOUT` hash-consed advice as telemetry, while the automatic
+      allocation-safepoint response and `memory_budget_action()` still stay
+      conservative and credit zero cold reclaim until CA-store
       spill/rematerialization exists.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
@@ -1256,8 +1257,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       logical-size estimate into the existing budget classifier for future spill
       planning, and the opt-in
       `plan_memory_budget_with_cheap_memory_advice` helper applies the current
-      non-destructive cold advice hook alongside unused-tail advice as planning
-      telemetry when that classifier asks for reclaim. This is still not
+      non-destructive pageout advice hook alongside unused-tail advice as
+      planning telemetry when that classifier asks for reclaim. This is still not
       CA-store spill and not proof of resident-byte reclaim: no handle is
       installed, no value is evicted or rematerialized, and automatic budget
       actions still do not credit cold hash-cons reclaim.
@@ -1306,10 +1307,13 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current tree-walk opt-in cheap-advice policy precursor:
       `TreeWalkOptions` can configure a post-evaluation idle-epoch threshold for
       cheap heap advice, and `EvalOutcome` carries the resulting
-      `EvalHeapCheapMemoryAdviceReport`. The hook runs only after the tree-walk
-      result, derivation snapshot, and stats snapshot are produced. It does not
-      change allocation-time budget polling, cache semantics, output values,
-      `.drv` materialization, cold-reclaim accounting, automatic `MADV_PAGEOUT`,
+      `EvalHeapCheapMemoryAdviceReport`. Without a heap budget the hook reports
+      cold hash-consed `MADV_COLD` advice; with both a heap budget and the idle
+      threshold configured, the cold-aware budget plan reports hash-consed
+      `MADV_PAGEOUT` advice when the classifier asks for reclaim. The hook runs
+      only after the tree-walk result, derivation snapshot, and stats snapshot
+      are produced. It does not change allocation-time budget polling, cache
+      semantics, output values, `.drv` materialization, cold-reclaim accounting,
       or CA-store spill/rematerialization.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 - [x] Current arena region-pop primitive precursor:

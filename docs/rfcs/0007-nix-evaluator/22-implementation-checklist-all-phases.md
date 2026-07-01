@@ -5568,14 +5568,15 @@ and helps the oracle directly.
       unsupported or unreadable platforms; tests pin the Linux parser, the
       Darwin live-source path, the fallback mode, the resident-source metadata
       carried by budget decisions, and outcome-level budget-action reporting.
-      Daemon policy, live RSS backends beyond Linux/Darwin, CA-store spill, cold
-      automatic hash-consed pageout policy, and collector installation remain
-      open under the full memory-management rows. `EvalHeap` also tracks
-      per-record access epochs and exposes cold hash-consed logical-byte
-      estimates for opt-in budget classification.
+      Daemon policy, live RSS backends beyond Linux/Darwin, CA-store spill,
+      allocation-time automatic hash-consed pageout policy, and collector
+      installation remain open under the full memory-management rows. `EvalHeap`
+      also tracks per-record access epochs and exposes cold hash-consed
+      logical-byte estimates for opt-in budget classification.
       `plan_memory_budget_with_cheap_memory_advice` now combines those cold
-      estimates with supported unused-tail capacity and runs the cheap advice
-      hooks for telemetry when reclaim is planned, while the automatic
+      estimates with supported unused-tail capacity and, when the classifier
+      asks for reclaim, records dead-tail advice plus hash-consed
+      `MADV_PAGEOUT` advice for telemetry, while the automatic
       allocation-safepoint budget action and `memory_budget_action()` still
       credit zero cold reclaim until CA-store spill/rematerialization exists.
 - [x] Current cold hash-cons candidate precursor:
@@ -5584,7 +5585,7 @@ and helps the oracle directly.
       hits, and estimates cold permanent-shared hash-consed bytes by idle epoch
       threshold. The opt-in budget classifier can carry that estimate as
       `cold_hash_consed_bytes` for future spill planning, and the opt-in
-      cold-aware plan applies the current non-destructive cold advice hook
+      cold-aware plan applies the current non-destructive pageout advice hook
       alongside unused-tail advice as telemetry when that classifier asks for
       reclaim. This is still not CA-store spill and not proof of resident-byte
       reclaim: it installs no CA-store handle, evicts or rematerializes no
@@ -5641,13 +5642,16 @@ and helps the oracle directly.
 - [x] Current tree-walk opt-in cheap-advice policy precursor:
       `TreeWalkOptions` now carries an optional post-evaluation idle-epoch
       threshold for cheap heap advice. When configured, root and attr-path
-      `EvalOutcome`s carry the `EvalHeapCheapMemoryAdviceReport` produced by
-      `EvalHeap::advise_cheap_memory_ranges` after the evaluator has produced
-      the value, derivation snapshot, and stats snapshot. This is opt-in outcome
+      `EvalOutcome`s carry post-result advice telemetry after the evaluator has
+      produced the value, derivation snapshot, and stats snapshot. Without a
+      heap budget, or when the combined budget/advice plan stays below the soft
+      limit, the outcome reports `EvalHeap::advise_cheap_memory_ranges` and its
+      `MADV_COLD` hash-consed hint. With both a heap budget and the idle
+      threshold configured, the cold-aware budget plan reports hash-consed
+      `MADV_PAGEOUT` advice when reclaim is planned. This is opt-in outcome
       telemetry only: allocation-time budget polling, force-cache identity,
-      output values, `.drv` materialization, cold-reclaim accounting,
-      automatic `MADV_PAGEOUT`, and CA-store spill/rematerialization remain
-      unchanged.
+      output values, `.drv` materialization, cold-reclaim accounting, and
+      CA-store spill/rematerialization remain unchanged.
 - [x] Current arena region-pop primitive precursor:
       `ratchet-value::heap::arena` now exposes `ArenaRegionMark` and
       `BumpArena::pop_region_to_mark` for proof-gated lexical subregion

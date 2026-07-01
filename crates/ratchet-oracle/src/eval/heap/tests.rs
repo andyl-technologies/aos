@@ -1264,12 +1264,62 @@ fn cheap_memory_budget_plan_credits_cold_hash_consed_estimate_as_planning_metada
         }
     );
     assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
-    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Evict);
     assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
     assert_eq!(report.cold_hash_consed().records(), 1);
     assert_eq!(
         report.cold_hash_consed().requested_bytes(),
         cold_hash_consed_bytes
+    );
+}
+
+#[test]
+fn cheap_memory_budget_plan_uses_pageout_advice_before_tier_b_request() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"tier-b-pageout".to_vec()))
+        .expect("permanent string allocates");
+    let cold_hash_consed_bytes = record_layout_size(&heap, string);
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    let supported_tail_advice_bytes = heap.supported_unused_tail_advice_bytes();
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+
+    let plan = heap.plan_memory_budget_with_cheap_memory_advice(budget, 0);
+
+    let decision = plan.decision();
+    let report = plan
+        .cheap_advice_report()
+        .expect("tier-b budget planning records advice telemetry");
+    let desired_reclaim_bytes = resident_bytes - budget.soft_limit_bytes();
+    let available_reclaim_bytes = supported_tail_advice_bytes + cold_hash_consed_bytes;
+    let projected_resident_bytes = resident_bytes - available_reclaim_bytes;
+    assert_eq!(
+        decision.response(),
+        HeapMemoryBudgetResponse::InstallTierB {
+            desired_reclaim_bytes,
+            available_reclaim_bytes,
+            projected_resident_bytes,
+            over_budget_bytes: projected_resident_bytes - budget.max_resident_bytes(),
+        }
+    );
+    assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Evict);
+    assert_eq!(report.cold_hash_consed().records(), 1);
+    assert_eq!(
+        report.cold_hash_consed().requested_bytes(),
+        cold_hash_consed_bytes
+    );
+    assert_eq!(
+        heap.cold_hash_consed_bytes(0),
+        cold_hash_consed_bytes,
+        "pageout advice preserves typed heap records"
     );
 }
 

@@ -373,9 +373,9 @@ impl EvalHeapMemoryBudgetAction {
 /// This is planning metadata for the future spill path. Its decision can credit
 /// logical cold hash-consed bytes as future CA-store spill capacity, while the
 /// optional advice report records only the cheap operating-system hints the
-/// oracle can issue today. Cold hash-consed advice is non-destructive; it does
-/// not prove that resident bytes were reclaimed, install CA-store spill handles,
-/// or rematerialize values.
+/// oracle can issue today. Hash-consed cold/pageout advice preserves typed heap
+/// values; it does not prove that resident bytes were reclaimed, install
+/// CA-store spill handles, or rematerialize values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalHeapCheapMemoryBudgetPlan {
     decision: EvalHeapMemoryBudgetDecision,
@@ -873,7 +873,7 @@ impl EvalHeap {
     /// resident-memory mode, and classifies the whole heap with both reclaim
     /// estimates. When the classifier asks for reclaim, it records the cheap
     /// hints available today by applying destructive dead-page advice to unused
-    /// tails and non-destructive cold advice to selected hash-consed records.
+    /// tails and non-destructive pageout advice to selected hash-consed records.
     /// The returned decision can model future CA-store spill capacity, but the
     /// advice report is not proof that cold hash-consed resident bytes were
     /// reclaimed. Automatic allocation-safepoint polling keeps using
@@ -902,7 +902,10 @@ impl EvalHeap {
             HeapMemoryBudgetResponse::ContinueTierA { .. } => None,
             HeapMemoryBudgetResponse::SpillCold { .. }
             | HeapMemoryBudgetResponse::InstallTierB { .. } => {
-                Some(self.advise_cheap_memory_ranges(min_idle_epochs))
+                Some(EvalHeapCheapMemoryAdviceReport::new(
+                    self.advise_unused_tails(MemoryAdviceKind::Dead),
+                    self.advise_evict_hash_consed_values(min_idle_epochs),
+                ))
             }
         };
         EvalHeapCheapMemoryBudgetPlan::new(decision, cheap_advice_report)
