@@ -176,7 +176,16 @@ pub async fn install_system(
 
     // Handle image download mode.
     if let Some(fmt) = image_format {
-        return download_image(config, toplevel_meta, fmt, image_output, dry_run, printer).await;
+        return download_image(
+            config,
+            &closure.registry_name,
+            toplevel_meta,
+            fmt,
+            image_output,
+            dry_run,
+            printer,
+        )
+        .await;
     }
 
     // Check if already provided by current sysroot.
@@ -766,6 +775,7 @@ pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
 /// `<name>-<version>.<format>` in the current directory).
 async fn download_image(
     config: &ApmConfig,
+    registry_name: &str,
     meta: &PackageMeta,
     format: &str,
     output: Option<&str>,
@@ -828,7 +838,7 @@ async fn download_image(
 
     // Use the existing download pipeline — the image store path is just another
     // store path in the cache.
-    let chain = resolve_image_mirror(config, meta);
+    let chain = registry_mirror_chain(config, registry_name);
     let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let request = DownloadRequest {
         store_path: img.store_path.clone(),
@@ -959,13 +969,15 @@ async fn download_sysroot_uki_images(
     }
 
     let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
-    let mirror_url = resolve_registry_mirror(config, registry_name);
+    let chain = registry_mirror_chain(config, registry_name);
+    let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let requests: Vec<DownloadRequest> = uki_images
         .iter()
         .filter(|image| missing_set.contains(image.store_path.as_str()))
         .map(|image| DownloadRequest {
             store_path: image.store_path.clone(),
             mirror_url: mirror_url.clone(),
+            fallback_mirrors: fallback_mirrors.clone(),
         })
         .collect();
 
@@ -1015,15 +1027,16 @@ async fn download_sysroot_uki_images(
     Ok(())
 }
 
-fn resolve_registry_mirror(config: &ApmConfig, registry_name: &str) -> String {
-    if let Some((registry, _)) = config
+/// Resolve the ordered mirror chain (primary cache plus miss-fallthrough
+/// fallbacks) for the registry named `registry_name`, defaulting to the public
+/// per-registry cache when no such registry is configured.
+fn registry_mirror_chain(config: &ApmConfig, registry_name: &str) -> Vec<String> {
+    config
         .registries
         .iter()
         .find(|(registry, _)| registry.name == registry_name)
-    {
-        return resolve_mirror(&config.scope.registries_path(), registry);
-    }
-    format!("https://registry.aos.dev/{registry_name}")
+        .map(|(registry, _)| resolve_mirror_chain(&config.scope.registries_path(), registry))
+        .unwrap_or_else(|| vec![format!("https://registry.aos.dev/{registry_name}")])
 }
 
 fn warn_missing_uki_image(printer: &Printer, package: &str, version: &str, generation: u32) {
@@ -2180,17 +2193,6 @@ fn reverify_uki(uki: &Path, db_cert: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Pick the mirror chain used for image downloads: the first configured
-/// registry's mirror chain (primary + fallbacks for miss-fallthrough),
-/// falling back to the default public cache.
-fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> Vec<String> {
-    // Use the first configured registry's mirror chain.
-    if let Some((cfg, _)) = config.registries.first() {
-        return resolve_mirror_chain(&config.scope.registries_path(), cfg);
-    }
-    vec!["https://cache.aos.dev".to_string()]
-}
-
 /// Build a [`DownloadRequest`] per missing store path, mapping each path back
 /// to the mirror URL of the registry that resolved it.
 fn build_download_requests(
@@ -2198,20 +2200,10 @@ fn build_download_requests(
     to_download: &[&PackageMeta],
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
-    let registries_base = config.scope.registries_path();
     let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
         .iter()
         .map(|c| {
-            let reg_config = config
-                .registries
-                .iter()
-                .find(|(cfg, _)| cfg.name == c.registry_name)
-                .map(|(cfg, _)| cfg);
-            let chain = if let Some(cfg) = reg_config {
-                resolve_mirror_chain(&registries_base, cfg)
-            } else {
-                vec![format!("https://registry.aos.dev/{}", c.registry_name)]
-            };
+            let chain = registry_mirror_chain(config, &c.registry_name);
             (c.registry_name.clone(), chain)
         })
         .collect();
