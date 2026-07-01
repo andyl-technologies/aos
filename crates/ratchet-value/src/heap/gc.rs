@@ -1128,6 +1128,52 @@ impl MinorGcObjectCopy {
     }
 }
 
+/// Caller-owned byte buffers for one planned minor-GC object copy.
+#[derive(Debug)]
+pub struct MinorGcObjectByteCopyBuffer<'a> {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    source_bytes: &'a [u8],
+    destination_bytes: &'a mut [u8],
+}
+
+impl<'a> MinorGcObjectByteCopyBuffer<'a> {
+    /// Creates byte-buffer metadata for one planned object copy.
+    pub fn new(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        source_bytes: &'a [u8],
+        destination_bytes: &'a mut [u8],
+    ) -> Self {
+        Self {
+            source,
+            destination,
+            source_bytes,
+            destination_bytes,
+        }
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object address.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the source bytes to copy.
+    pub const fn source_bytes(&self) -> &[u8] {
+        self.source_bytes
+    }
+
+    /// Returns the current destination bytes.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &*self.destination_bytes
+    }
+}
+
 /// Object-copy metadata for a planned minor collection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinorGcObjectCopyPlan {
@@ -1176,6 +1222,33 @@ impl MinorGcObjectCopyPlan {
         }
 
         Ok(Self { copies })
+    }
+
+    /// Copies object bytes into caller-owned destination buffers.
+    ///
+    /// The supplied buffers must match the plan's copy count and copy order.
+    /// Each buffer must name the expected source and destination address, and
+    /// both source and destination byte slices must have exactly the planned
+    /// object size. The method validates every buffer before copying any bytes,
+    /// so validation failures leave all destination buffers unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if the buffer count differs from the
+    /// plan, if a buffer names a different source or destination object, or if
+    /// either source or destination byte length differs from the planned object
+    /// size.
+    pub fn copy_into_buffers(
+        &self,
+        buffers: &mut [MinorGcObjectByteCopyBuffer<'_>],
+    ) -> Result<(), GenerationalGcError> {
+        validate_object_byte_copy_buffers_match_plan(self, buffers)?;
+        for buffer in buffers {
+            buffer
+                .destination_bytes
+                .copy_from_slice(buffer.source_bytes);
+        }
+        Ok(())
     }
 
     /// Returns copy metadata in relocation order.
@@ -2086,6 +2159,61 @@ fn validate_relocation_destination_alignment(
     Ok(())
 }
 
+fn validate_object_byte_copy_buffers_match_plan(
+    plan: &MinorGcObjectCopyPlan,
+    buffers: &[MinorGcObjectByteCopyBuffer<'_>],
+) -> Result<(), GenerationalGcError> {
+    if plan.len() != buffers.len() {
+        return Err(
+            GenerationalGcError::MinorGcObjectByteCopyBufferLengthMismatch {
+                copies: plan.len(),
+                buffers: buffers.len(),
+            },
+        );
+    }
+
+    for (index, (copy, buffer)) in plan.copies().iter().zip(buffers).enumerate() {
+        if copy.source() != buffer.source() {
+            return Err(GenerationalGcError::MinorGcObjectByteCopySourceMismatch {
+                index,
+                expected: copy.source(),
+                actual: buffer.source(),
+            });
+        }
+        if copy.destination() != buffer.destination() {
+            return Err(
+                GenerationalGcError::MinorGcObjectByteCopyDestinationMismatch {
+                    index,
+                    expected: copy.destination(),
+                    actual: buffer.destination(),
+                },
+            );
+        }
+        if copy.size_bytes() != buffer.source_bytes().len() {
+            return Err(
+                GenerationalGcError::MinorGcObjectByteCopySourceLengthMismatch {
+                    index,
+                    address: copy.source(),
+                    expected: copy.size_bytes(),
+                    actual: buffer.source_bytes().len(),
+                },
+            );
+        }
+        if copy.size_bytes() != buffer.destination_bytes().len() {
+            return Err(
+                GenerationalGcError::MinorGcObjectByteCopyDestinationLengthMismatch {
+                    index,
+                    address: copy.destination(),
+                    expected: copy.size_bytes(),
+                    actual: buffer.destination_bytes().len(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_forwarding_slots_match_plan(
     plan: &MinorGcForwardingPointerPlan,
     slots: &[MinorGcForwardingSlot],
@@ -2711,6 +2839,73 @@ pub enum GenerationalGcError {
     MinorGcObjectCopyAllocationFailed {
         /// The requested object-copy-plan capacity.
         copies: usize,
+    },
+    /// An object-copy plan received the wrong number of caller-owned byte
+    /// buffers.
+    #[error("minor-GC object byte-copy buffer count {buffers} does not match copy count {copies}")]
+    MinorGcObjectByteCopyBufferLengthMismatch {
+        /// The planned object-copy count.
+        copies: usize,
+        /// The supplied byte-buffer count.
+        buffers: usize,
+    },
+    /// An object-copy byte buffer belonged to a different source object.
+    #[error(
+        "minor-GC object byte-copy source mismatch at index {index}: expected 0x{expected:x}, got 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcObjectByteCopySourceMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The source object expected by the object-copy plan.
+        expected: GcHeapAddress,
+        /// The source object found in the caller-owned buffer.
+        actual: GcHeapAddress,
+    },
+    /// An object-copy byte buffer belonged to a different destination object.
+    #[error(
+        "minor-GC object byte-copy destination mismatch at index {index}: expected 0x{expected:x}, got 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcObjectByteCopyDestinationMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The destination object expected by the object-copy plan.
+        expected: GcHeapAddress,
+        /// The destination object found in the caller-owned buffer.
+        actual: GcHeapAddress,
+    },
+    /// An object-copy source byte slice had the wrong length.
+    #[error(
+        "minor-GC object byte-copy source length {actual} for 0x{address:x} at index {index} does not match planned size {expected}",
+        address = address.address_bits()
+    )]
+    MinorGcObjectByteCopySourceLengthMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The source object whose bytes were supplied.
+        address: GcHeapAddress,
+        /// The planned object size.
+        expected: usize,
+        /// The supplied source byte length.
+        actual: usize,
+    },
+    /// An object-copy destination byte slice had the wrong length.
+    #[error(
+        "minor-GC object byte-copy destination length {actual} for 0x{address:x} at index {index} does not match planned size {expected}",
+        address = address.address_bits()
+    )]
+    MinorGcObjectByteCopyDestinationLengthMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The destination object whose buffer was supplied.
+        address: GcHeapAddress,
+        /// The planned object size.
+        expected: usize,
+        /// The supplied destination byte length.
+        actual: usize,
     },
     /// The minor-GC forwarding-pointer plan length overflowed.
     #[error("minor-GC forwarding-pointer length overflow")]
@@ -4275,6 +4470,263 @@ mod tests {
         );
         assert_eq!(copy_plan.copies()[1].size_bytes(), 40);
         assert_eq!(copy_plan.copies()[1].align(), 16);
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_copies_bytes_into_destination_buffers() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 4, 4),
+                NurseryObjectLayout::new(promote, 6, 2),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let copy_source = [1, 2, 3, 4];
+        let promote_source = [5, 6, 7, 8, 9, 10];
+        let mut copy_destination_bytes = [0; 4];
+        let mut promote_destination_bytes = [0; 6];
+        let mut buffers = [
+            MinorGcObjectByteCopyBuffer::new(
+                copy,
+                copy_destination,
+                &copy_source,
+                &mut copy_destination_bytes,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                promote,
+                promote_destination,
+                &promote_source,
+                &mut promote_destination_bytes,
+            ),
+        ];
+
+        copy_plan
+            .copy_into_buffers(&mut buffers)
+            .expect("object bytes copy");
+
+        assert_eq!(buffers[0].source(), copy);
+        assert_eq!(buffers[0].destination(), copy_destination);
+        assert_eq!(buffers[0].source_bytes(), copy_source);
+        assert_eq!(buffers[0].destination_bytes(), copy_source);
+        assert_eq!(buffers[1].source(), promote);
+        assert_eq!(buffers[1].destination(), promote_destination);
+        assert_eq!(buffers[1].source_bytes(), promote_source);
+        assert_eq!(buffers[1].destination_bytes(), promote_source);
+
+        let mut empty_buffers = [];
+        MinorGcObjectCopyPlan::default()
+            .copy_into_buffers(&mut empty_buffers)
+            .expect("empty object-copy plan accepts empty buffers");
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_rejects_stale_byte_copy_buffers() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let other = address(0x3000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0xa000);
+        let other_destination = address(0xb000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(first, 4, 4),
+                NurseryObjectLayout::new(second, 4, 4),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let first_source = [1, 2, 3, 4];
+        let second_source = [5, 6, 7, 8];
+
+        let mut short_destination = [0; 4];
+        let mut short_buffers = [MinorGcObjectByteCopyBuffer::new(
+            first,
+            first_destination,
+            &first_source,
+            &mut short_destination,
+        )];
+        assert_eq!(
+            copy_plan.copy_into_buffers(&mut short_buffers),
+            Err(
+                GenerationalGcError::MinorGcObjectByteCopyBufferLengthMismatch {
+                    copies: 2,
+                    buffers: 1,
+                }
+            )
+        );
+        assert_eq!(short_buffers[0].destination_bytes(), [0; 4]);
+
+        let mut mismatched_first_destination = [0; 4];
+        let mut mismatched_second_destination = [0; 4];
+        let mut mismatched_source_buffers = [
+            MinorGcObjectByteCopyBuffer::new(
+                other,
+                first_destination,
+                &first_source,
+                &mut mismatched_first_destination,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                second,
+                second_destination,
+                &second_source,
+                &mut mismatched_second_destination,
+            ),
+        ];
+        assert_eq!(
+            copy_plan.copy_into_buffers(&mut mismatched_source_buffers),
+            Err(GenerationalGcError::MinorGcObjectByteCopySourceMismatch {
+                index: 0,
+                expected: first,
+                actual: other,
+            })
+        );
+        assert_eq!(mismatched_source_buffers[0].destination_bytes(), [0; 4]);
+        assert_eq!(mismatched_source_buffers[1].destination_bytes(), [0; 4]);
+
+        let mut mismatched_first_destination = [0; 4];
+        let mut mismatched_second_destination = [0; 4];
+        let mut mismatched_destination_buffers = [
+            MinorGcObjectByteCopyBuffer::new(
+                first,
+                first_destination,
+                &first_source,
+                &mut mismatched_first_destination,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                second,
+                other_destination,
+                &second_source,
+                &mut mismatched_second_destination,
+            ),
+        ];
+        assert_eq!(
+            copy_plan.copy_into_buffers(&mut mismatched_destination_buffers),
+            Err(
+                GenerationalGcError::MinorGcObjectByteCopyDestinationMismatch {
+                    index: 1,
+                    expected: second_destination,
+                    actual: other_destination,
+                }
+            )
+        );
+        assert_eq!(
+            mismatched_destination_buffers[0].destination_bytes(),
+            [0; 4]
+        );
+        assert_eq!(
+            mismatched_destination_buffers[1].destination_bytes(),
+            [0; 4]
+        );
+
+        let short_source = [1, 2, 3];
+        let mut source_length_first_destination = [0; 4];
+        let mut source_length_second_destination = [0; 4];
+        let mut source_length_buffers = [
+            MinorGcObjectByteCopyBuffer::new(
+                first,
+                first_destination,
+                &short_source,
+                &mut source_length_first_destination,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                second,
+                second_destination,
+                &second_source,
+                &mut source_length_second_destination,
+            ),
+        ];
+        assert_eq!(
+            copy_plan.copy_into_buffers(&mut source_length_buffers),
+            Err(
+                GenerationalGcError::MinorGcObjectByteCopySourceLengthMismatch {
+                    index: 0,
+                    address: first,
+                    expected: 4,
+                    actual: 3,
+                }
+            )
+        );
+        assert_eq!(source_length_buffers[0].destination_bytes(), [0; 4]);
+        assert_eq!(source_length_buffers[1].destination_bytes(), [0; 4]);
+
+        let mut destination_length_first_destination = [0; 4];
+        let mut destination_length_second_destination = [0; 3];
+        let mut destination_length_buffers = [
+            MinorGcObjectByteCopyBuffer::new(
+                first,
+                first_destination,
+                &first_source,
+                &mut destination_length_first_destination,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                second,
+                second_destination,
+                &second_source,
+                &mut destination_length_second_destination,
+            ),
+        ];
+        assert_eq!(
+            copy_plan.copy_into_buffers(&mut destination_length_buffers),
+            Err(
+                GenerationalGcError::MinorGcObjectByteCopyDestinationLengthMismatch {
+                    index: 1,
+                    address: second_destination,
+                    expected: 4,
+                    actual: 3,
+                }
+            )
+        );
+        assert_eq!(destination_length_buffers[0].destination_bytes(), [0; 4]);
+        assert_eq!(destination_length_buffers[1].destination_bytes(), [0; 3]);
     }
 
     #[test]

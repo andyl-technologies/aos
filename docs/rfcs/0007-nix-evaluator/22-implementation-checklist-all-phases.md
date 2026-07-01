@@ -5050,9 +5050,23 @@ and helps the oracle directly.
       alignment even when callers build relocation maps directly. Unit tests
       cover copy/promote scheduling, relocation-order preservation, relocated
       value generation, layout-validation failure modes, and direct-relocation
-      destination-alignment rejection. This remains scheduling metadata only;
-      reading or writing object bytes, reserving semispace pages, forwarding
-      pointers, root/field writeback, and remembered-set mutation remain open.
+      destination-alignment rejection. This constructor remains scheduling
+      metadata only; reading or writing real heap object bytes, reserving
+      semispace pages, forwarding pointers, root/field writeback, and
+      remembered-set mutation remain open.
+- [x] Current minor-GC object-byte copy-buffer precursor:
+      `MinorGcObjectByteCopyBuffer` and
+      `MinorGcObjectCopyPlan::copy_into_buffers` apply an object-copy schedule
+      to caller-owned byte slices after checking buffer count, source and
+      destination address order, and exact source/destination byte lengths. The
+      helper validates the full buffer list before copying any bytes, so count,
+      address, or length failures leave all destinations unchanged. Unit tests
+      cover copied-young and promoted-old byte copies plus count, source,
+      destination, source-length, destination-length, and no-partial-write
+      failures. This remains a byte-slice application surface only; destination
+      object allocation, real heap storage reads, semispace page reservation,
+      forwarding pointers, root/field writeback, and remembered-set mutation
+      remain open.
 - [x] Current minor-GC forwarding-pointer planning precursor:
       `ratchet-value::heap::gc::MinorGcForwardingPointerPlan::from_object_copy_plan`
       turns the object-copy schedule into deterministic forwarding-pointer

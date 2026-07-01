@@ -1047,9 +1047,23 @@ GC must be observationally invisible (§8): every item is gated by the different
       alignment even when callers build relocation maps directly. Tests cover
       copy/promote scheduling, relocation-order preservation, relocated value
       generation, layout-validation failure modes, and direct-relocation
-      destination-alignment rejection. This is still scheduling metadata only:
-      it does not read or write object bytes, reserve semispace pages, install
-      forwarding pointers, rewrite roots/fields, or mutate remembered sets.
+      destination-alignment rejection. This constructor is still scheduling
+      metadata only: it does not read or write heap object bytes, reserve
+      semispace pages, install forwarding pointers, rewrite roots/fields, or
+      mutate remembered sets.
+- [x] Current minor-GC object-byte copy-buffer precursor:
+      `MinorGcObjectByteCopyBuffer` and
+      `MinorGcObjectCopyPlan::copy_into_buffers` apply an object-copy schedule
+      to caller-owned byte slices after checking buffer count, source and
+      destination address order, and exact source/destination byte lengths. The
+      helper validates the full buffer list before copying any bytes, so count,
+      address, or length failures leave all destinations unchanged. Tests cover
+      copied-young and promoted-old byte copies plus count, source, destination,
+      source-length, destination-length, and no-partial-write failures. This is
+      a byte-slice application surface only: it does not allocate destination
+      objects, read from real heap object storage, reserve semispace pages,
+      install forwarding pointers, rewrite roots/fields, or mutate remembered
+      sets.
 - [x] Current minor-GC forwarding-pointer planning precursor:
       `ratchet-value::heap::gc::MinorGcForwardingPointerPlan::from_object_copy_plan`
       turns the object-copy schedule into deterministic forwarding-pointer
