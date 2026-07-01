@@ -1,10 +1,10 @@
 //! Generational-GC policy surfaces for runtime heap objects.
 //!
 //! The active runtime does not yet include the daemon collector. This module
-//! defines two precise policy surfaces for the future Tier-B daemon heap: the
+//! defines precise policy surfaces for the future Tier-B daemon heap: the
 //! write-barrier decision table for the one mutating Nix heap transition
-//! (`Blackhole -> Forced(value)`) and the initial minor-GC frontier planner that
-//! combines young roots with the remembered old/permanent-to-young edge set. The
+//! (`Blackhole -> Forced(value)`) and minor-GC planning metadata for survivor
+//! discovery, relocation, reference rewriting, and remembered-set refresh. The
 //! barrier table is deliberately narrow so later collector code records
 //! old-to-young edges in one place instead of spreading field-store barriers
 //! across immutable value constructors.
@@ -728,6 +728,126 @@ impl MinorGcReferenceRewritePlan {
     }
 }
 
+/// The post-minor-GC disposition for one remembered edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MinorGcRememberedSetRefreshAction {
+    /// Retain the edge, rewritten to the copied young-generation destination.
+    RetainCopiedYoung {
+        /// The old/permanent-to-young edge to keep for the next minor epoch.
+        refreshed: RememberedEdge,
+    },
+    /// Drop the edge because its young target was promoted into old generation.
+    DropPromoted {
+        /// The promoted old-generation destination.
+        destination: GcHeapAddress,
+    },
+    /// Drop the edge because the young target has no relocation.
+    DropDead,
+}
+
+/// One remembered-set edge refresh decision after a minor collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcRememberedSetRefresh {
+    original: RememberedEdge,
+    action: MinorGcRememberedSetRefreshAction,
+}
+
+impl MinorGcRememberedSetRefresh {
+    /// Returns the remembered edge from the source epoch.
+    pub const fn original(self) -> RememberedEdge {
+        self.original
+    }
+
+    /// Returns the refresh action for the edge.
+    pub const fn action(self) -> MinorGcRememberedSetRefreshAction {
+        self.action
+    }
+
+    /// Returns the retained edge when this refresh keeps a copied-young target.
+    pub const fn retained_edge(self) -> Option<RememberedEdge> {
+        match self.action {
+            MinorGcRememberedSetRefreshAction::RetainCopiedYoung { refreshed } => Some(refreshed),
+            MinorGcRememberedSetRefreshAction::DropPromoted { .. }
+            | MinorGcRememberedSetRefreshAction::DropDead => None,
+        }
+    }
+}
+
+/// A remembered-set refresh plan for the next minor-GC epoch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcRememberedSetRefreshPlan {
+    source_epoch: RememberedSetEpoch,
+    refreshes: Vec<MinorGcRememberedSetRefresh>,
+}
+
+impl MinorGcRememberedSetRefreshPlan {
+    /// Builds remembered-set refresh metadata from a snapshot and relocations.
+    ///
+    /// Refreshes are emitted in remembered-edge snapshot order. Edges whose
+    /// targets were copied to the next nursery are retained with the same source
+    /// and rewritten young destination. Edges whose targets promoted to old
+    /// generation are dropped, and edges whose targets have no relocation are
+    /// treated as stale/dead remembered-set entries and also dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if refresh storage cannot be reserved or
+    /// if the refresh length overflows.
+    pub fn from_snapshot(
+        snapshot: RememberedSetSnapshot<'_>,
+        relocation_plan: &MinorGcRelocationPlan,
+    ) -> Result<Self, GenerationalGcError> {
+        let mut refreshes = Vec::new();
+        for edge in snapshot.edges() {
+            let refreshes_len = refreshes
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcRememberedSetRefreshLengthOverflow)?;
+            refreshes.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcRememberedSetRefreshAllocationFailed {
+                    refreshes: refreshes_len,
+                }
+            })?;
+            refreshes.push(MinorGcRememberedSetRefresh {
+                original: *edge,
+                action: remembered_set_refresh_action(*edge, relocation_plan),
+            });
+        }
+
+        Ok(Self {
+            source_epoch: snapshot.epoch(),
+            refreshes,
+        })
+    }
+
+    /// Returns the remembered-set epoch consumed by this refresh plan.
+    pub const fn source_epoch(&self) -> RememberedSetEpoch {
+        self.source_epoch
+    }
+
+    /// Returns refresh decisions in remembered-edge snapshot order.
+    pub fn refreshes(&self) -> &[MinorGcRememberedSetRefresh] {
+        &self.refreshes
+    }
+
+    /// Returns retained old/permanent-to-young edges for the next minor epoch.
+    pub fn retained_edges(&self) -> impl Iterator<Item = RememberedEdge> + '_ {
+        self.refreshes
+            .iter()
+            .filter_map(|refresh| refresh.retained_edge())
+    }
+
+    /// Returns the number of remembered edges examined.
+    pub fn len(&self) -> usize {
+        self.refreshes.len()
+    }
+
+    /// Returns whether the source remembered-set snapshot was empty.
+    pub fn is_empty(&self) -> bool {
+        self.refreshes.is_empty()
+    }
+}
+
 /// A minor-collection frontier plan for the young generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinorGcPlan {
@@ -992,12 +1112,36 @@ fn relocation_for(
     relocation_plan: &MinorGcRelocationPlan,
     address: GcHeapAddress,
 ) -> Result<MinorGcRelocation, GenerationalGcError> {
+    optional_relocation_for(relocation_plan, address)
+        .ok_or(GenerationalGcError::MissingMinorGcReferenceRelocation { address })
+}
+
+fn optional_relocation_for(
+    relocation_plan: &MinorGcRelocationPlan,
+    address: GcHeapAddress,
+) -> Option<MinorGcRelocation> {
     relocation_plan
         .relocations()
         .iter()
         .copied()
         .find(|relocation| relocation.source() == address)
-        .ok_or(GenerationalGcError::MissingMinorGcReferenceRelocation { address })
+}
+
+fn remembered_set_refresh_action(
+    edge: RememberedEdge,
+    relocation_plan: &MinorGcRelocationPlan,
+) -> MinorGcRememberedSetRefreshAction {
+    match optional_relocation_for(relocation_plan, edge.target()) {
+        Some(relocation) if relocation.action() == MinorGcSurvivorAction::CopyToNursery => {
+            MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                refreshed: RememberedEdge::new(edge.source(), relocation.destination()),
+            }
+        }
+        Some(relocation) => MinorGcRememberedSetRefreshAction::DropPromoted {
+            destination: relocation.destination(),
+        },
+        None => MinorGcRememberedSetRefreshAction::DropDead,
+    }
 }
 
 fn nursery_fields_for<'a>(
@@ -1149,6 +1293,15 @@ pub enum GenerationalGcError {
     /// The caller-supplied reference slot index overflowed.
     #[error("minor-GC reference slot index overflow")]
     MinorGcReferenceSlotIndexOverflow,
+    /// The minor-GC remembered-set refresh plan length overflowed.
+    #[error("minor-GC remembered-set refresh length overflow")]
+    MinorGcRememberedSetRefreshLengthOverflow,
+    /// The minor-GC remembered-set refresh plan could not reserve storage.
+    #[error("failed to reserve {refreshes} minor-GC remembered-set refreshes")]
+    MinorGcRememberedSetRefreshAllocationFailed {
+        /// The requested remembered-set refresh capacity.
+        refreshes: usize,
+    },
     /// A young frontier object had no age metadata.
     #[error("missing nursery age metadata for 0x{address:x}", address = address.address_bits())]
     MissingNurseryObjectAge {
@@ -1899,6 +2052,120 @@ mod tests {
             .rewrites(),
             &[]
         );
+    }
+
+    #[test]
+    fn minor_gc_remembered_set_refresh_rewrites_copied_edges_and_drops_old_targets() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let dead = address(0x3000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let first_source = address(0x4000);
+        let promote_source = address(0x5000);
+        let dead_source = address(0x6000);
+        let second_source = address(0x7000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let mut remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(13));
+        remembered_set
+            .record(RememberedEdge::new(first_source, copy))
+            .expect("copy edge records");
+        remembered_set
+            .record(RememberedEdge::new(promote_source, promote))
+            .expect("promote edge records");
+        remembered_set
+            .record(RememberedEdge::new(dead_source, dead))
+            .expect("dead edge records");
+        remembered_set
+            .record(RememberedEdge::new(second_source, copy))
+            .expect("second copy edge records");
+
+        let refresh_plan = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("refresh plan builds");
+
+        assert_eq!(refresh_plan.source_epoch(), RememberedSetEpoch::new(13));
+        assert_eq!(refresh_plan.len(), 4);
+        assert!(!refresh_plan.is_empty());
+        assert_eq!(
+            refresh_plan.refreshes()[0].original(),
+            RememberedEdge::new(first_source, copy)
+        );
+        assert_eq!(
+            refresh_plan.refreshes()[0].action(),
+            MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                refreshed: RememberedEdge::new(first_source, copy_destination),
+            }
+        );
+        assert_eq!(
+            refresh_plan.refreshes()[0].retained_edge(),
+            Some(RememberedEdge::new(first_source, copy_destination))
+        );
+        assert_eq!(
+            refresh_plan.refreshes()[1].action(),
+            MinorGcRememberedSetRefreshAction::DropPromoted {
+                destination: promote_destination,
+            }
+        );
+        assert_eq!(refresh_plan.refreshes()[1].retained_edge(), None);
+        assert_eq!(
+            refresh_plan.refreshes()[2].action(),
+            MinorGcRememberedSetRefreshAction::DropDead
+        );
+        assert_eq!(refresh_plan.refreshes()[2].retained_edge(), None);
+        assert_eq!(
+            refresh_plan.refreshes()[3].action(),
+            MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                refreshed: RememberedEdge::new(second_source, copy_destination),
+            }
+        );
+        assert_eq!(
+            refresh_plan.retained_edges().collect::<Vec<_>>(),
+            [
+                RememberedEdge::new(first_source, copy_destination),
+                RememberedEdge::new(second_source, copy_destination),
+            ]
+        );
+    }
+
+    #[test]
+    fn minor_gc_remembered_set_refresh_accepts_empty_snapshots() {
+        let relocation_plan = MinorGcRelocationPlan::default();
+        let remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(21));
+
+        let refresh_plan = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("empty refresh plan builds");
+
+        assert_eq!(refresh_plan.source_epoch(), RememberedSetEpoch::new(21));
+        assert!(refresh_plan.is_empty());
+        assert_eq!(refresh_plan.refreshes(), &[]);
+        assert_eq!(refresh_plan.retained_edges().collect::<Vec<_>>(), []);
     }
 
     #[test]

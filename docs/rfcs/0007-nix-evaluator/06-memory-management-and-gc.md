@@ -1004,6 +1004,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       mapping, duplicate-slot preservation, non-young filtering, and missing
       relocation rejection. This is metadata only: no root slot, object field,
       forwarding pointer, remembered set, or semispace is mutated.
+- [x] Current minor-GC remembered-set refresh precursor:
+      `ratchet-value::heap::gc::MinorGcRememberedSetRefreshPlan` classifies a
+      remembered-set snapshot against a validated relocation map for the next
+      minor epoch. It keeps copied-young targets as rewritten
+      old/permanent-to-young edges, drops promoted targets because they are no
+      longer young, and drops stale/dead targets with no relocation. Tests cover
+      snapshot-order decisions, retained copied edges from distinct sources,
+      promoted-target drops, stale/dead drops, retained-edge iteration, and
+      empty snapshots. This is refresh metadata only: it does not mutate the
+      remembered set, advance epochs, rescan old fields, copy objects, or manage
+      semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

@@ -5005,6 +5005,17 @@ and helps the oracle directly.
       mapping, duplicate-slot preservation, non-young filtering, and missing
       relocation rejection. This remains metadata only; mutating roots, fields,
       forwarding pointers, remembered sets, and semispaces remains open.
+- [x] Current minor-GC remembered-set refresh precursor:
+      `ratchet-value::heap::gc::MinorGcRememberedSetRefreshPlan` classifies a
+      remembered-set snapshot against a validated relocation map. It retains
+      copied nursery survivors as rewritten old/permanent-to-young edges, drops
+      promoted targets because they are no longer young, and drops stale/dead
+      targets that have no relocation. Unit tests cover snapshot-order
+      decisions, retained copied edges from distinct sources, promoted-target
+      drops, stale/dead drops, retained-edge iteration, and empty snapshots.
+      This remains metadata only; mutating the remembered set, advancing epochs,
+      rescanning old fields, copying objects, and semispace management remain
+      open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
