@@ -5301,18 +5301,20 @@ and helps the oracle directly.
       remains external to `EvalHeap`;
       `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` exposes
       those root-backed rewrites as metadata with the same slot-to-rewrite source
-      validation. Unit tests cover successful empty-remembered-set application,
-      retained copied-young remembered-edge publication, heap-field
-      reference-buffer derivation, root writeback derivation, heap-field
-      writeback derivation for copied and promoted nursery owners, root-slot
-      rejection/empty root-only heap-field writebacks, stale field-label
-      rejection, stale same-label field-value rejection, incomplete or mismatched
-      reference-buffer rejection before lower-level mutation, and lower-level
-      stale-buffer error mapping without partial mutation. This remains a
-      caller-buffer/writeback-metadata surface only; destination storage
-      allocation, binding byte buffers to live heap objects or object headers,
-      tree-walk root/object-field mutation, remembered-source field mutation, and
-      semispace management remain open.
+      validation, and `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
+      returns the root and heap-field writeback partitions together. Unit tests
+      cover successful empty-remembered-set application, retained copied-young
+      remembered-edge publication, heap-field reference-buffer derivation, root
+      writeback derivation, combined mixed root/heap writeback partitioning,
+      heap-field writeback derivation for copied and promoted nursery owners,
+      root-slot rejection/empty root-only heap-field writebacks, stale
+      field-label rejection, stale same-label field-value rejection, incomplete
+      or mismatched reference-buffer rejection before lower-level mutation, and
+      lower-level stale-buffer error mapping without partial mutation. This
+      remains a caller-buffer/writeback-metadata surface only; destination
+      storage allocation, binding byte buffers to live heap objects or object
+      headers, tree-walk root/object-field mutation, remembered-source field
+      mutation, and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5443,7 +5445,9 @@ and helps the oracle directly.
       lower-level rewrites to heap-field-backed slots, revalidates their current
       labels/values plus slot-to-rewrite source binding, and returns the
       writeback object plus replacement value that a future mutating field writer
-      would store. This connects the roots bridge to commit-buffer
+      would store. `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
+      returns both partitions together for callers that need complete reference
+      writeback metadata. This connects the roots bridge to commit-buffer
       preflight/application tests, but still does not provide live tree-walk root
       writeback, object-field mutation, old/permanent field mutation, or JIT
       stack-map writeback slots.

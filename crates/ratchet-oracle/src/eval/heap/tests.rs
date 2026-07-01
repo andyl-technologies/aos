@@ -2466,6 +2466,25 @@ fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites()
             generation: HeapGeneration::Young,
         }
     );
+
+    let reference_writeback_plan = heap
+        .collector_poll_minor_gc_reference_writeback_plan(&commit)
+        .expect("combined reference writeback plan derives");
+    assert_eq!(reference_writeback_plan.len(), 2);
+    assert!(!reference_writeback_plan.is_empty());
+    assert_eq!(reference_writeback_plan.root_writebacks().len(), 1);
+    assert_eq!(
+        reference_writeback_plan.root_writebacks().writebacks()[0].slot(),
+        0
+    );
+    assert_eq!(reference_writeback_plan.heap_field_writebacks().len(), 1);
+    assert_eq!(
+        reference_writeback_plan
+            .heap_field_writebacks()
+            .writebacks()[0]
+            .slot(),
+        1
+    );
 }
 
 #[test]

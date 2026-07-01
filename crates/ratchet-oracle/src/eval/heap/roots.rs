@@ -1372,6 +1372,45 @@ impl AllocationCollectorPollRootWritebackPlan {
     }
 }
 
+/// Complete root and heap-field reference writebacks for one minor-GC commit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollReferenceWritebackPlan {
+    root_writebacks: AllocationCollectorPollRootWritebackPlan,
+    heap_field_writebacks: AllocationCollectorPollHeapFieldWritebackPlan,
+}
+
+impl AllocationCollectorPollReferenceWritebackPlan {
+    fn new(
+        root_writebacks: AllocationCollectorPollRootWritebackPlan,
+        heap_field_writebacks: AllocationCollectorPollHeapFieldWritebackPlan,
+    ) -> Self {
+        Self {
+            root_writebacks,
+            heap_field_writebacks,
+        }
+    }
+
+    /// Returns writebacks for externally owned root slots.
+    pub const fn root_writebacks(&self) -> &AllocationCollectorPollRootWritebackPlan {
+        &self.root_writebacks
+    }
+
+    /// Returns writebacks for evaluator-owned heap fields.
+    pub const fn heap_field_writebacks(&self) -> &AllocationCollectorPollHeapFieldWritebackPlan {
+        &self.heap_field_writebacks
+    }
+
+    /// Returns the total number of planned reference writebacks.
+    pub fn len(&self) -> usize {
+        self.root_writebacks.len() + self.heap_field_writebacks.len()
+    }
+
+    /// Returns whether there are no reference writebacks.
+    pub fn is_empty(&self) -> bool {
+        self.root_writebacks.is_empty() && self.heap_field_writebacks.is_empty()
+    }
+}
+
 /// One heap-field-backed reference that must be rewritten after minor GC.
 ///
 /// Remembered-source fields are validated and rewritten in the same
@@ -1819,6 +1858,31 @@ impl EvalHeap {
 
         Ok(AllocationCollectorPollHeapFieldWritebackPlan::new(
             writebacks,
+        ))
+    }
+
+    /// Derives all root-backed and heap-field-backed reference writebacks.
+    ///
+    /// This composes [`AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan`]
+    /// with [`Self::collector_poll_minor_gc_heap_field_writeback_plan`]. Root
+    /// writebacks remain metadata for externally owned tree-walk/JIT slots, while
+    /// heap-field writebacks are revalidated against current typed heap fields.
+    /// The helper still does not mutate live roots or heap objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if root writeback metadata cannot be built or if
+    /// heap-field writeback validation fails.
+    pub fn collector_poll_minor_gc_reference_writeback_plan(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+    ) -> Result<AllocationCollectorPollReferenceWritebackPlan, EvalHeapError> {
+        let root_writebacks = commit_plan.root_writeback_plan()?;
+        let heap_field_writebacks =
+            self.collector_poll_minor_gc_heap_field_writeback_plan(commit_plan)?;
+        Ok(AllocationCollectorPollReferenceWritebackPlan::new(
+            root_writebacks,
+            heap_field_writebacks,
         ))
     }
 
