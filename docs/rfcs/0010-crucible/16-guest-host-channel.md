@@ -253,6 +253,14 @@ nondeterminism the injection contract bans ([DET-13]). The doorbell has no such
 race because servicing is synchronous with the guest instruction; there is nothing
 to drain.
 
+Implementation caveat: on Linux x86_64, architectural port I/O is privileged.
+The userspace `crucible-guest` emitter therefore requests permission for the
+single reserved port with `ioperm(2)` before executing `out dx,eax`, and fails
+loudly if the guest image has not granted the required I/O capability. This keeps
+the emitter free of `/dev` nodes and kernel modules, but it makes the x86_64
+userspace privilege requirement explicit instead of relying on an unexplained
+guest fault.
+
 ## 16.4 The doorbell instruction, per architecture
 
 The doorbell is defined per supported architecture from day one, because the
@@ -830,10 +838,21 @@ the transport layer by construction.
   projections, and backend fingerprints remain identical when marker content or
   interleaving changes, while causal decision and backend input changes still
   move the corresponding run-material witness.
-- [ ] **T-GHC-10** Build `crucible-guest`, a minimal static guest emitter (CLI +
+- [x] **T-GHC-10** Build `crucible-guest`, a minimal static guest emitter (CLI +
   thin library) mirroring the marker vocabulary, hermetically from source for each
   guest arch from the single-source ABI. — satisfies [GHC-26], [GHC-27], [GHC-29];
   spec §16.6.
+  Completed by `checks.crucible.phase4.guestHostEmitter`: `crucible-guest::GuestCommand`
+  now constructs every §16.5.1 marker family through the shared
+  `crucible-protocol` marker codec, the `crucible-guest` CLI mirrors the
+  always/sometimes/reachable/unreachable/lifecycle/event/coverage/get-random
+  vocabulary, `InstructionDoorbellTransport` rings the Linux x86_64 and aarch64
+  trap instructions from `WHITEBOX_DOORBELL_ABIS` (with x86_64 `ioperm(2)`
+  requested before `out dx,eax`), and the dedicated AOS `pkgs.crucible-guest`
+  package builds the current-system `crucible-guest` binary from source with
+  target-specific `target-feature=+crt-static` flags plus an ELF interpreter
+  absence check while recording the shared x86_64/aarch64 instruction ABI
+  coverage separately from the current packaged guest system.
 - [ ] **T-GHC-11** Prove the emitter's absence changes nothing: full determinism,
   faults, coverage, observable-I/O properties with no in-guest content. —
   satisfies [GHC-2], [GHC-28]; spec §16.6, §16.1.
