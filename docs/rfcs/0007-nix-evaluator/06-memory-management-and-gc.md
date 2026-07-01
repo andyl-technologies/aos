@@ -910,6 +910,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       slot metadata only: it does not hold mutable evaluator roots, update
       object fields, identify the concrete remembered source field, rewrite
       remembered source fields, or apply the rewrite plan to live runtime state.
+- [x] Current allocation-poll commit-plan bridge precursor:
+      `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
+      snapshot consumed by the poll plan and composes the existing lower-level
+      object-copy, forwarding-pointer, reference-rewrite, and remembered-set
+      refresh subplans into a `MinorGcCommitPlan` from caller-supplied relocation
+      destinations and nursery-layout metadata, rebuilding the relocation map
+      against the poll plan's own survivor frontier. The bridge keeps the poll
+      plan's labeled reference slots beside the validated commit plan so tests
+      can relate low-level rewrites back to copied roots, remembered edges, and
+      nursery fields. Tests cover empty remembered-set commits plus copied-young
+      remembered-edge retention. This is still metadata only: it does not
+      allocate destination storage, bind byte buffers to real objects, install
+      forwarding values, mutate live roots or fields, identify remembered source
+      fields, publish remembered sets, or manage semispaces.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

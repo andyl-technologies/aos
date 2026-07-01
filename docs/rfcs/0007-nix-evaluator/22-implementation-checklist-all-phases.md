@@ -5244,6 +5244,21 @@ and helps the oracle directly.
       only; mutable evaluator roots, object-field writeback, concrete
       remembered-source field identity, remembered-source field mutation, and
       live runtime-state application remain open.
+- [x] Current allocation-poll commit-plan bridge precursor:
+      `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
+      snapshot used by the poll plan and composes the existing lower-level
+      object-copy, forwarding-pointer, reference-rewrite, and remembered-set
+      refresh subplans into a `MinorGcCommitPlan` from caller-supplied relocation
+      destinations and nursery-layout metadata, rebuilding the relocation map
+      against the poll plan's own survivor frontier. The bridge preserves the
+      poll plan's labeled reference slots beside the commit metadata, so tests
+      can connect lower-level rewrites back to copied roots, remembered edges,
+      and survivor fields. Unit tests cover empty remembered-set commit metadata
+      and retained copied-young remembered edges. This remains metadata only;
+      destination storage allocation, binding byte buffers to real objects,
+      forwarding-slot installation, live root/object-field mutation, concrete
+      remembered-source field identity, remembered-set publication, and semispace
+      management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5335,6 +5350,15 @@ and helps the oracle directly.
       storage. Real relocation slots for tree-walk roots, copied object fields,
       remembered old/permanent fields, and later JIT stack-map entries remain
       open.
+- [x] Current `heap/roots.rs` commit-plan bridge precursor:
+      `AllocationCollectorPollMinorGcPlan::commit_plan` stores the remembered-set
+      snapshot captured during allocation-poll planning and composes it with a
+      caller-supplied relocation-destination table and nursery layouts to produce
+      `MinorGcCommitPlan` metadata. The wrapper keeps the copied
+      `AllocationCollectorPollReferenceSlot` labels next to the lower-level
+      commit plan, but still does not provide mutable tree-walk roots, copied
+      object-field slots, old/permanent field slots, or stack-map writeback
+      slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

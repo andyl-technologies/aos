@@ -19,9 +19,12 @@ use std::ptr::NonNull;
 use super::*;
 use crate::eval::thunk::ThunkState;
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcReferenceRewritePlan, MinorGcRelocationPlan, NurseryObjectAge, NurseryObjectFields,
-    RememberedEdge, RememberedSetEpoch, RememberedSetSnapshot, ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitPlan,
+    MinorGcForwardingPointerPlan, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcReferenceRewritePlan, MinorGcRelocationDestination, MinorGcRelocationPlan,
+    MinorGcRememberedSetRefreshPlan, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
+    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    ResolvedValueGeneration,
 };
 use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
@@ -866,6 +869,7 @@ impl AllocationCollectorPollReferenceSlot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollMinorGcPlan {
     poll: AllocationCollectorPoll,
+    remembered_set: RememberedSet,
     roots: Vec<ResolvedValueGeneration>,
     nursery_objects: Vec<NurseryObjectAge>,
     nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
@@ -876,6 +880,7 @@ pub struct AllocationCollectorPollMinorGcPlan {
 impl AllocationCollectorPollMinorGcPlan {
     fn new(
         poll: AllocationCollectorPoll,
+        remembered_set: RememberedSet,
         roots: Vec<ResolvedValueGeneration>,
         nursery_objects: Vec<NurseryObjectAge>,
         nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
@@ -884,6 +889,7 @@ impl AllocationCollectorPollMinorGcPlan {
     ) -> Self {
         Self {
             poll,
+            remembered_set,
             roots,
             nursery_objects,
             nursery_fields,
@@ -895,6 +901,11 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns the allocation safepoint collector-poll request.
     pub const fn poll(&self) -> AllocationCollectorPoll {
         self.poll
+    }
+
+    /// Returns the remembered-set snapshot consumed by this minor-GC plan.
+    pub const fn remembered_set(&self) -> &RememberedSet {
+        &self.remembered_set
     }
 
     /// Returns the root values supplied to the minor-GC planner.
@@ -936,9 +947,69 @@ impl AllocationCollectorPollMinorGcPlan {
         MinorGcReferenceRewritePlan::from_references(relocation_plan, self.reference_values())
     }
 
+    /// Builds ordered minor-GC commit metadata for this poll plan.
+    ///
+    /// The returned value keeps this plan's copied reference-slot labels next to
+    /// the validated lower-level commit plan. It still does not own mutable
+    /// evaluator roots, object fields, object bytes, forwarding slots, or
+    /// remembered-set storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if relocation destinations or nursery
+    /// layouts do not match this poll plan, if any subplan cannot reserve
+    /// storage or detects byte-size overflow, if the remembered-set refresh
+    /// cannot be built, or if the subplans are not mutually consistent.
+    pub fn commit_plan(
+        &self,
+        relocation_destinations: &[MinorGcRelocationDestination],
+        nursery_layouts: &[NurseryObjectLayout],
+    ) -> Result<AllocationCollectorPollMinorGcCommitPlan<'_>, GenerationalGcError> {
+        let relocation_plan =
+            MinorGcRelocationPlan::from_minor_gc_plan(&self.plan, relocation_destinations)?;
+        let object_copies =
+            MinorGcObjectCopyPlan::from_relocation_plan(&relocation_plan, nursery_layouts)?;
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)?;
+        let reference_rewrites = self.reference_rewrite_plan(&relocation_plan)?;
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            self.remembered_set.snapshot(),
+            &relocation_plan,
+        )?;
+        let commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+        )?;
+        Ok(AllocationCollectorPollMinorGcCommitPlan {
+            reference_slots: &self.reference_slots,
+            commit_plan,
+        })
+    }
+
     /// Returns the planned young-generation survivor frontier.
     pub const fn plan(&self) -> &MinorGcPlan {
         &self.plan
+    }
+}
+
+/// Commit metadata for an allocation-poll minor-GC plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollMinorGcCommitPlan<'a> {
+    reference_slots: &'a [AllocationCollectorPollReferenceSlot],
+    commit_plan: MinorGcCommitPlan,
+}
+
+impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
+    /// Returns the copied reference-slot labels used by the rewrite plan.
+    pub const fn reference_slots(&self) -> &'a [AllocationCollectorPollReferenceSlot] {
+        self.reference_slots
+    }
+
+    /// Returns the ordered lower-level minor-GC commit plan.
+    pub const fn commit_plan(&self) -> &MinorGcCommitPlan {
+        &self.commit_plan
     }
 }
 
@@ -1072,8 +1143,9 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if the poll scan is stale, if a remembered-set
     /// edge references an unknown object or is not permanent-to-young, if a
-    /// visible permanent-to-young edge is missing from the remembered set, or if
-    /// the minor-GC planner rejects the generated roots, age metadata, or field
+    /// visible permanent-to-young edge is missing from the remembered set, if
+    /// copying the remembered-set snapshot cannot reserve storage, or if the
+    /// minor-GC planner rejects the generated roots, age metadata, or field
     /// metadata.
     pub fn plan_collector_poll_minor_gc(
         &self,
@@ -1108,6 +1180,7 @@ impl EvalHeap {
 
         Ok(AllocationCollectorPollMinorGcPlan::new(
             poll_scan.poll(),
+            remembered_set_from_snapshot(remembered_set)?,
             roots,
             nursery_objects,
             nursery_fields,
@@ -1492,6 +1565,16 @@ fn nursery_fields_for_survivor(
         .ok_or(EvalHeapError::GenerationalGc(
             GenerationalGcError::MissingNurseryObjectFields { address },
         ))
+}
+
+fn remembered_set_from_snapshot(
+    snapshot: RememberedSetSnapshot<'_>,
+) -> Result<RememberedSet, GenerationalGcError> {
+    let mut remembered_set = RememberedSet::with_epoch(snapshot.epoch());
+    for edge in snapshot.edges() {
+        remembered_set.record(*edge)?;
+    }
+    Ok(remembered_set)
 }
 
 fn push_reference_slot(

@@ -5,8 +5,9 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, HeapGeneration, MinorGcPromotionPolicy, MinorGcRelocationDestination,
-    MinorGcRelocationPlan, RememberedEdge, RememberedSet, ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcPromotionPolicy,
+    MinorGcRelocationDestination, MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge,
+    RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -1527,15 +1528,14 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     let lambda_destination = static_gc_address(0x1000_0000);
     let child_destination = static_gc_address(0x1000_1000);
     let sibling_destination = static_gc_address(0x1000_2000);
-    let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
-        planned.plan(),
-        &[
-            MinorGcRelocationDestination::new(gc_address(lambda), lambda_destination),
-            MinorGcRelocationDestination::new(gc_address(child), child_destination),
-            MinorGcRelocationDestination::new(gc_address(sibling), sibling_destination),
-        ],
-    )
-    .expect("relocation plan builds");
+    let relocation_destinations = [
+        MinorGcRelocationDestination::new(gc_address(lambda), lambda_destination),
+        MinorGcRelocationDestination::new(gc_address(child), child_destination),
+        MinorGcRelocationDestination::new(gc_address(sibling), sibling_destination),
+    ];
+    let relocation_plan =
+        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), &relocation_destinations)
+            .expect("relocation plan builds");
     let rewrite_plan = planned
         .reference_rewrite_plan(&relocation_plan)
         .expect("reference rewrite plan builds");
@@ -1551,6 +1551,103 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert_eq!(
         rewrite_plan.rewrites()[2].destination(),
         sibling_destination
+    );
+
+    let nursery_layouts = [
+        NurseryObjectLayout::new(gc_address(lambda), 16, 8),
+        NurseryObjectLayout::new(gc_address(child), 16, 8),
+        NurseryObjectLayout::new(gc_address(sibling), 16, 8),
+    ];
+    let commit = planned
+        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .expect("commit plan builds");
+    assert_eq!(commit.reference_slots(), planned.reference_slots());
+    assert_eq!(commit.commit_plan().object_copies().copies().len(), 3);
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[0].source(),
+        gc_address(lambda)
+    );
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[0].destination(),
+        lambda_destination
+    );
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[1].source(),
+        gc_address(child)
+    );
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[1].destination(),
+        child_destination
+    );
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[2].source(),
+        gc_address(sibling)
+    );
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[2].destination(),
+        sibling_destination
+    );
+    assert_eq!(
+        commit.commit_plan().forwarding_pointers().pointers().len(),
+        3
+    );
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites(),
+        rewrite_plan.rewrites()
+    );
+    assert!(commit.commit_plan().remembered_set_refresh().is_empty());
+    assert_eq!(
+        commit.commit_plan().next_remembered_set().epoch(),
+        remembered_set
+            .epoch()
+            .checked_next()
+            .expect("epoch advances")
+    );
+    assert!(commit.commit_plan().next_remembered_set().is_empty());
+}
+
+#[test]
+fn collector_poll_minor_gc_commit_plan_rejects_stale_relocation_destinations() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+
+    let stale_source = static_gc_address(0x2000_0000);
+    let relocation_destinations = [MinorGcRelocationDestination::new(
+        stale_source,
+        static_gc_address(0x3000_0000),
+    )];
+    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
+
+    assert_eq!(
+        planned
+            .commit_plan(&relocation_destinations, &nursery_layouts)
+            .expect_err("stale relocation source is rejected"),
+        GenerationalGcError::StaleMinorGcRelocationSource {
+            address: stale_source,
+        }
     );
 }
 
@@ -1668,14 +1765,13 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     );
 
     let child_destination = static_gc_address(0x1000_2000);
-    let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
-        planned.plan(),
-        &[MinorGcRelocationDestination::new(
-            gc_address(child),
-            child_destination,
-        )],
-    )
-    .expect("relocation plan builds");
+    let relocation_destinations = [MinorGcRelocationDestination::new(
+        gc_address(child),
+        child_destination,
+    )];
+    let relocation_plan =
+        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), &relocation_destinations)
+            .expect("relocation plan builds");
     let rewrite_plan = planned
         .reference_rewrite_plan(&relocation_plan)
         .expect("reference rewrite plan builds");
@@ -1683,6 +1779,21 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     assert_eq!(rewrite_plan.rewrites()[0].slot(), 1);
     assert_eq!(rewrite_plan.rewrites()[0].source(), gc_address(child));
     assert_eq!(rewrite_plan.rewrites()[0].destination(), child_destination);
+
+    assert_eq!(planned.remembered_set(), &remembered_set);
+    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
+    let commit = planned
+        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .expect("commit plan builds");
+    assert_eq!(commit.reference_slots(), planned.reference_slots());
+    assert_eq!(
+        commit.commit_plan().remembered_set_refresh().refreshes()[0].retained_edge(),
+        Some(RememberedEdge::new(gc_address(root), child_destination))
+    );
+    assert_eq!(
+        commit.commit_plan().next_remembered_set().edges(),
+        &[RememberedEdge::new(gc_address(root), child_destination)]
+    );
 }
 
 #[test]
