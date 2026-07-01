@@ -5569,15 +5569,15 @@ and helps the oracle directly.
       Darwin live-source path, the fallback mode, the resident-source metadata
       carried by budget decisions, and outcome-level budget-action reporting.
       Daemon policy, live RSS backends beyond Linux/Darwin, CA-store spill, cold
-      hash-consed page eviction, and collector installation remain open under
-      the full memory-management rows. `EvalHeap` also tracks per-record access
-      epochs and exposes cold hash-consed logical-byte estimates for opt-in
-      budget classification. `plan_memory_budget_with_cheap_memory_advice` now
-      combines those cold estimates with supported unused-tail capacity and runs
-      the cheap advice hooks for telemetry when reclaim is planned, while the
-      automatic allocation-safepoint budget action and `memory_budget_action()`
-      still credit zero cold reclaim until CA-store spill/rematerialization
-      exists.
+      automatic hash-consed pageout policy, and collector installation remain
+      open under the full memory-management rows. `EvalHeap` also tracks
+      per-record access epochs and exposes cold hash-consed logical-byte
+      estimates for opt-in budget classification.
+      `plan_memory_budget_with_cheap_memory_advice` now combines those cold
+      estimates with supported unused-tail capacity and runs the cheap advice
+      hooks for telemetry when reclaim is planned, while the automatic
+      allocation-safepoint budget action and `memory_budget_action()` still
+      credit zero cold reclaim until CA-store spill/rematerialization exists.
 - [x] Current cold hash-cons candidate precursor:
       `EvalHeap` stamps typed heap records with a monotonic access epoch at
       allocation time, refreshes successful reusable-value reads and hash-cons
@@ -5610,22 +5610,25 @@ and helps the oracle directly.
       unused-tail pages, unchanged accounting, post-advice allocation reuse,
       runtime allocator forwarding, and whole-heap worker/permanent
       aggregation. Integrating the shim with
-      live resident-set sampling, CA-store spill, region-pop/dead-page
-      selection, full budget-triggered dispatch, and collector-installation
-      policy remains open under the full memory-management rows.
+      CA-store spill, region-pop/dead-page selection, full budget-triggered
+      dispatch, and collector-installation policy remains open under the full
+      memory-management rows.
 - [x] Current cold hash-consed page-advice precursor:
-      `ratchet-value::heap::advise_cold_heap_object_allocation` provides a safe,
-      non-destructive typed heap-object wrapper for `MemoryAdviceKind::Cold`,
-      keeping raw destructive range construction inside the heap crate's unsafe
-      boundary. `EvalHeap::advise_cold_hash_consed_values(min_idle_epochs)`
-      applies that hint to permanent-shared structurally hash-consed records
-      selected by the idle-epoch coldness predicate and reports record counts,
-      requested logical bytes, and advisory outcomes through
+      `ratchet-value::heap::advise_cold_heap_object_allocation` and
+      `advise_evict_heap_object_allocation` provide safe, non-destructive typed
+      heap-object wrappers for `MemoryAdviceKind::Cold` and
+      `MemoryAdviceKind::Evict`, keeping raw destructive range construction
+      inside the heap crate's unsafe boundary.
+      `EvalHeap::advise_cold_hash_consed_values(min_idle_epochs)` and
+      `EvalHeap::advise_evict_hash_consed_values(min_idle_epochs)` apply those
+      hints to permanent-shared structurally hash-consed records selected by
+      the idle-epoch coldness predicate and report record counts, requested
+      logical bytes, and advisory outcomes through
       `EvalHeapColdHashConsedAdviceReport`. Tests pin cold-record selection,
-      advisory outcome accounting, non-destructive coldness preservation, and
-      hot-record exclusion after a value read. This is not budget-triggered,
-      does not issue `MADV_PAGEOUT`, installs no CA-store handle, and
-      rematerializes no value.
+      cold and evict advisory outcome accounting, non-destructive coldness
+      preservation, and hot-record exclusion after a value read. This is not
+      budget-triggered, installs no CA-store handle, and rematerializes no
+      value.
 - [x] Current cheap-advice aggregation precursor:
       `EvalHeap::advise_cheap_memory_ranges(min_idle_epochs)` runs the two
       implemented page-advice passes together: dead advice for unused worker and
@@ -5633,8 +5636,8 @@ and helps the oracle directly.
       records. `EvalHeapCheapMemoryAdviceReport` returns both underlying
       reports without turning cold hints into reclaim accounting. This is an
       integration hook only; automatic budget dispatch still credits zero cold
-      reclaim, does not issue `MADV_PAGEOUT`, does not request Tier B from this
-      helper, and does not spill or rematerialize CA-store values.
+      reclaim, does not issue automatic `MADV_PAGEOUT`, does not request Tier B
+      from this helper, and does not spill or rematerialize CA-store values.
 - [x] Current tree-walk opt-in cheap-advice policy precursor:
       `TreeWalkOptions` now carries an optional post-evaluation idle-epoch
       threshold for cheap heap advice. When configured, root and attr-path
@@ -5643,7 +5646,8 @@ and helps the oracle directly.
       the value, derivation snapshot, and stats snapshot. This is opt-in outcome
       telemetry only: allocation-time budget polling, force-cache identity,
       output values, `.drv` materialization, cold-reclaim accounting,
-      `MADV_PAGEOUT`, and CA-store spill/rematerialization remain unchanged.
+      automatic `MADV_PAGEOUT`, and CA-store spill/rematerialization remain
+      unchanged.
 - [x] Current arena region-pop primitive precursor:
       `ratchet-value::heap::arena` now exposes `ArenaRegionMark` and
       `BumpArena::pop_region_to_mark` for proof-gated lexical subregion

@@ -9,6 +9,7 @@ use crate::heap::{
     ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
     MemoryAdviceKind, MemoryAdviceOutcome, ProcessResidentMemorySample,
     ProcessResidentMemorySource, advise_cold_heap_object_allocation,
+    advise_evict_heap_object_allocation,
 };
 
 use super::*;
@@ -736,7 +737,38 @@ impl EvalHeap {
         &self,
         min_idle_epochs: u64,
     ) -> EvalHeapColdHashConsedAdviceReport {
-        let kind = MemoryAdviceKind::Cold;
+        self.advise_hash_consed_values(
+            MemoryAdviceKind::Cold,
+            min_idle_epochs,
+            advise_cold_heap_object_allocation,
+        )
+    }
+
+    /// Advises cold permanent hash-consed record pages for OS eviction.
+    ///
+    /// This uses non-destructive [`MemoryAdviceKind::Evict`] hints over record
+    /// byte ranges selected by the same idle-epoch policy as
+    /// [`Self::cold_hash_consed_bytes`]. On Linux this lowers to
+    /// `MADV_PAGEOUT` after full-page trimming. This does not evict values from
+    /// the typed heap, install CA-store handles, or rematerialize values on
+    /// demand.
+    pub fn advise_evict_hash_consed_values(
+        &self,
+        min_idle_epochs: u64,
+    ) -> EvalHeapColdHashConsedAdviceReport {
+        self.advise_hash_consed_values(
+            MemoryAdviceKind::Evict,
+            min_idle_epochs,
+            advise_evict_heap_object_allocation,
+        )
+    }
+
+    fn advise_hash_consed_values(
+        &self,
+        kind: MemoryAdviceKind,
+        min_idle_epochs: u64,
+        mut advise: impl FnMut(NonNull<HeapObject>, usize) -> MemoryAdviceOutcome,
+    ) -> EvalHeapColdHashConsedAdviceReport {
         let current_epoch = self.access_epoch();
         let mut report = EvalHeapColdHashConsedAdviceReport::new(kind, min_idle_epochs);
         for record in &self.records {
@@ -745,7 +777,7 @@ impl EvalHeap {
             }
             report.record(
                 record.layout.size_bytes,
-                advise_cold_heap_object_allocation(record.ptr, record.layout.size_bytes),
+                advise(record.ptr, record.layout.size_bytes),
             );
         }
         report

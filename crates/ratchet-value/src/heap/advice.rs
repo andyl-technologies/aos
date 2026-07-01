@@ -8,6 +8,8 @@
 
 use std::ptr::NonNull;
 
+#[cfg(test)]
+use super::{ArenaAllocation, BumpArena};
 use crate::value::HeapObject;
 
 /// A non-null byte range eligible for operating-system memory advice.
@@ -151,9 +153,9 @@ pub fn advise_cold(range: MemoryAdviceRange) -> MemoryAdviceOutcome {
 /// Advises that a typed heap-object allocation is cold.
 ///
 /// This is the safe heap-object wrapper for non-destructive cold advice. The
-/// caller supplies the exact allocation pointer and allocation byte length; the
-/// advice shim still trims the range to complete contained pages before making a
-/// platform call.
+/// caller supplies a heap-object allocation pointer and the logical object byte
+/// length; the advice shim still trims the range to complete contained pages
+/// before making a platform call.
 pub fn advise_cold_heap_object_allocation(
     ptr: NonNull<HeapObject>,
     len: usize,
@@ -173,6 +175,28 @@ pub fn advise_cold_heap_object_allocation(
 /// Advises that a range is a good candidate for OS eviction or pageout.
 pub fn advise_evict(range: MemoryAdviceRange) -> MemoryAdviceOutcome {
     advise_range(MemoryAdviceKind::Evict, range)
+}
+
+/// Advises that a typed heap-object allocation is eligible for OS eviction.
+///
+/// This is the safe heap-object wrapper for non-destructive eviction advice.
+/// The caller supplies a heap-object allocation pointer and the logical object
+/// byte length; the advice shim still trims the range to complete contained
+/// pages before making a platform call.
+pub fn advise_evict_heap_object_allocation(
+    ptr: NonNull<HeapObject>,
+    len: usize,
+) -> MemoryAdviceOutcome {
+    if len == 0 {
+        return MemoryAdviceOutcome::EmptyRange {
+            kind: MemoryAdviceKind::Evict,
+        };
+    }
+    // SAFETY: the caller provides a typed heap-object allocation pointer and
+    // its allocation length. `Evict` advice asks the platform to reclaim or
+    // page out while preserving contents.
+    let range = unsafe { MemoryAdviceRange::from_raw_parts(ptr.cast(), len) };
+    advise_evict(range)
 }
 
 /// Advises that a range is a candidate for transparent huge pages.
@@ -288,6 +312,14 @@ fn system_page_size() -> Option<usize> {
 mod tests {
     use super::*;
 
+    fn arena_heap_object_allocation() -> (BumpArena, ArenaAllocation) {
+        let mut arena = BumpArena::with_initial_chunk_bytes(4096).expect("arena creates");
+        let allocation = arena
+            .aos_alloc_string(128)
+            .expect("string object allocates");
+        (arena, allocation)
+    }
+
     #[test]
     fn range_reports_pointer_length_and_empty_state() {
         let mut bytes = vec![0_u8; 4096];
@@ -391,10 +423,8 @@ mod tests {
 
     #[test]
     fn cold_heap_object_allocation_helper_uses_cold_kind_for_non_empty_ranges() {
-        let mut bytes = vec![0_u8; 4096];
-        let ptr = NonNull::new(bytes.as_mut_ptr().cast::<HeapObject>())
-            .expect("non-null heap-object pointer");
-        let outcome = advise_cold_heap_object_allocation(ptr, bytes.len());
+        let (_arena, allocation) = arena_heap_object_allocation();
+        let outcome = advise_cold_heap_object_allocation(allocation.ptr, allocation.requested_size);
 
         let kind = match outcome {
             MemoryAdviceOutcome::Applied { kind }
@@ -403,6 +433,21 @@ mod tests {
             | MemoryAdviceOutcome::Rejected { kind, .. } => kind,
         };
         assert_eq!(kind, MemoryAdviceKind::Cold);
+    }
+
+    #[test]
+    fn evict_heap_object_allocation_helper_uses_evict_kind_for_non_empty_ranges() {
+        let (_arena, allocation) = arena_heap_object_allocation();
+        let outcome =
+            advise_evict_heap_object_allocation(allocation.ptr, allocation.requested_size);
+
+        let kind = match outcome {
+            MemoryAdviceOutcome::Applied { kind }
+            | MemoryAdviceOutcome::Unsupported { kind }
+            | MemoryAdviceOutcome::EmptyRange { kind }
+            | MemoryAdviceOutcome::Rejected { kind, .. } => kind,
+        };
+        assert_eq!(kind, MemoryAdviceKind::Evict);
     }
 
     #[cfg(not(target_os = "linux"))]

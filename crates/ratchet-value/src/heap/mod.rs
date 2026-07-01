@@ -15,8 +15,8 @@ pub mod resident;
 
 pub use advice::{
     MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
-    advise_cold_heap_object_allocation, advise_dead, advise_evict, advise_free, advise_huge,
-    advise_range,
+    advise_cold_heap_object_allocation, advise_dead, advise_evict,
+    advise_evict_heap_object_allocation, advise_free, advise_huge, advise_range,
 };
 pub use arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,

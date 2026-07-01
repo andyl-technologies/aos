@@ -902,6 +902,43 @@ fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
 }
 
 #[test]
+fn evict_hash_consed_advice_reports_selected_records_without_removing_values() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"advise-evict".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    let report = heap.advise_evict_hash_consed_values(1);
+
+    assert_eq!(report.kind(), MemoryAdviceKind::Evict);
+    assert_eq!(report.min_idle_epochs(), 1);
+    assert_eq!(report.records(), 1);
+    assert_eq!(report.requested_bytes(), string_size);
+    assert_eq!(
+        report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+        report.records()
+    );
+    assert_eq!(
+        heap.cold_hash_consed_bytes(1),
+        string_size,
+        "eviction advice is non-destructive and does not refresh coldness"
+    );
+
+    heap.get_string(string)
+        .expect("string read refreshes touch");
+
+    let hot_report = heap.advise_evict_hash_consed_values(1);
+    assert_eq!(hot_report.kind(), MemoryAdviceKind::Evict);
+    assert_eq!(hot_report.min_idle_epochs(), 1);
+    assert_eq!(hot_report.records(), 0);
+    assert_eq!(hot_report.requested_bytes(), 0);
+}
+
+#[test]
 fn cheap_memory_range_advice_combines_tails_and_cold_hash_consed_hints() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
     let string = heap
