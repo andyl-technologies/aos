@@ -705,6 +705,14 @@ with no white-box dependency.
   configuration path MUST always suffice ([G-3], [TRIG-3]). *Gate:* `gate:any-guest`.
   *Spec:* §B.2, §B.4.
 
+Implementation note (T-WL-2): the workload entropy-boundary proof composes the
+closed `GuestWorkloadBinary` selector with the QEMU deterministic launch profile.
+The `checks.crucible.phase4.workloadEntropyBoundary` gate asserts that guest
+RNG-backed workload bytes reproduce from the scenario-derived `fw_cfg` seed and
+seeded `virtio-rng` device, consumes the phase-1 booted guest's selected
+`crucible-httpget-workload` `WORKLOAD_RNG_HEX` transcript, and verifies that a
+host entropy source fails loudly before QEMU spawn.
+
 ### B.3 Expressing load patterns with Crucible primitives
 
 The four classic load shapes a distributed test wants — **steady**, **spike**,
@@ -934,11 +942,16 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   Completed by `checks.crucible.phase4.workloadModel`: the engine has a closed
   `GuestWorkloadBinary` vocabulary, encodes selection as hashed guest cmdline
   scenario config, and rejects host-side application-traffic injector API shapes.
-- [ ] **T-WL-2** Verify in-guest workload determinism over the seeded firmware
+- [x] **T-WL-2** Verify in-guest workload determinism over the seeded firmware
   entropy boundary: a guest workload that draws on guest RNG reproduces
   bit-identically across runs with zero guest modification, and a workload that
   opens a new entropy source fails the determinism gate loudly. — satisfies
   [WL-4], [WL-5]; spec §B.2; cross-ref 04, 26.
+  Completed by `checks.crucible.phase4.workloadEntropyBoundary`: the workload
+  entropy test proves same-seed selected `crucible-httpget-workload`
+  `WORKLOAD_RNG_HEX` transcripts are byte-identical, changed scenario seeds
+  change the guest RNG stream, the phase-1 booted guest entropy gate remains
+  wired in, and host/unseeded entropy mutations fail loudly.
 - [ ] **T-WL-3** Implement explicit-workload-seed delivery via plain content-
   addressed config (cmdline/file) and, optionally, the white-box channel; assert
   the black-box config path always suffices and the white-box path is never

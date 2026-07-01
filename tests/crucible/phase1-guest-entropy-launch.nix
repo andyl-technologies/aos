@@ -521,8 +521,6 @@
               return 1;
             }
             print_hex("URANDOM_HEX", urandom, sizeof(urandom));
-            puts("TEST_RESULT:PASS");
-            reboot(RB_POWER_OFF);
             return 0;
           }
           PROBE_C
@@ -530,6 +528,141 @@
           cc -std=c11 -O2 -Wall -Wextra -Werror \
             guest-entropy-probe.c \
             -o "$out/bin/guest-entropy-probe"
+
+          cat > crucible-httpget-workload.c <<'WORKLOAD_C'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <unistd.h>
+
+          enum { WORKLOAD_SAMPLE_BYTES = 32 };
+
+          static int cmdline_value_is_exactly_once(
+              const char *cmdline,
+              const char *key,
+              const char *expected) {
+            size_t key_len = strlen(key);
+            size_t expected_len = strlen(expected);
+            int matches = 0;
+            int bad_value = 0;
+            const char *cursor = cmdline;
+
+            while (*cursor != '\0') {
+              while (*cursor == ' ' || *cursor == '\n' || *cursor == '\t') {
+                cursor++;
+              }
+
+              const char *start = cursor;
+              while (*cursor != '\0' && *cursor != ' ' && *cursor != '\n' && *cursor != '\t') {
+                cursor++;
+              }
+              size_t len = (size_t)(cursor - start);
+
+              if (len == key_len && memcmp(start, key, key_len) == 0) {
+                matches++;
+                bad_value = 1;
+              } else if (
+                  len > key_len &&
+                  memcmp(start, key, key_len) == 0 &&
+                  start[key_len] == '=') {
+                const char *value = start + key_len + 1;
+                size_t value_len = len - key_len - 1;
+
+                matches++;
+                if (value_len != expected_len || memcmp(value, expected, expected_len) != 0) {
+                  bad_value = 1;
+                }
+              }
+            }
+
+            return matches == 1 && bad_value == 0 ? 0 : -1;
+          }
+
+          static int read_text(const char *path, char *buf, size_t len) {
+            int fd = open(path, O_RDONLY);
+            ssize_t n;
+
+            if (fd < 0) {
+              perror(path);
+              return -1;
+            }
+            n = read(fd, buf, len - 1);
+            if (n < 0) {
+              perror(path);
+              close(fd);
+              return -1;
+            }
+            buf[n] = '\0';
+            close(fd);
+            return 0;
+          }
+
+          static int read_file(const char *path, unsigned char *buf, size_t len) {
+            int fd = open(path, O_RDONLY);
+            size_t offset = 0;
+
+            if (fd < 0) {
+              perror(path);
+              return -1;
+            }
+            while (offset < len) {
+              ssize_t n = read(fd, buf + offset, len - offset);
+              if (n < 0) {
+                perror(path);
+                close(fd);
+                return -1;
+              }
+              if (n == 0) {
+                fprintf(stderr, "%s ended after %zu bytes\n", path, offset);
+                close(fd);
+                return -1;
+              }
+              offset += (size_t)n;
+            }
+            close(fd);
+            return 0;
+          }
+
+          static void print_hex(const char *key, const unsigned char *buf, size_t len) {
+            static const char digits[] = "0123456789abcdef";
+
+            fputs(key, stdout);
+            putchar('=');
+            for (size_t i = 0; i < len; i++) {
+              putchar(digits[buf[i] >> 4]);
+              putchar(digits[buf[i] & 0x0f]);
+            }
+            putchar('\n');
+          }
+
+          int main(void) {
+            unsigned char transcript[WORKLOAD_SAMPLE_BYTES];
+            char cmdline[4096];
+
+            if (read_text("/proc/cmdline", cmdline, sizeof(cmdline)) != 0) {
+              return 1;
+            }
+            if (cmdline_value_is_exactly_once(cmdline, "crucible.workload", "httpget") != 0) {
+              fputs("kernel cmdline does not select crucible.workload=httpget exactly once\n", stderr);
+              return 1;
+            }
+            if (read_file("/dev/urandom", transcript, sizeof(transcript)) != 0) {
+              return 1;
+            }
+
+            puts("WORKLOAD_BINARY=crucible-httpget-workload");
+            puts("WORKLOAD=crucible.workload=httpget");
+            print_hex("WORKLOAD_RNG_HEX", transcript, sizeof(transcript));
+            puts("WORKLOAD_RESULT:PASS");
+            return 0;
+          }
+          WORKLOAD_C
+
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            crucible-httpget-workload.c \
+            -o "$out/bin/crucible-httpget-workload"
         '';
       }
     ];
@@ -634,8 +767,8 @@
             export HOME=/tmp
 
             echo "CRUCIBLE_GUEST_ENTROPY_READY"
-            if guest-entropy-probe; then
-              :
+            if guest-entropy-probe && crucible-httpget-workload; then
+              echo 'TEST_RESULT:PASS'
             else
               echo 'TEST_RESULT:FAIL'
             fi
@@ -807,7 +940,7 @@ in
                   -device virtio-rng-pci,rng=crucible-rng0 \
                   -kernel "$vmlinuz" \
                   -initrd "$INITRAMFS" \
-                  -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet random.trust_cpu=off random.trust_bootloader=off net.ifnames=0 crucible_seed=$scenario_seed" \
+                  -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet random.trust_cpu=off random.trust_bootloader=off net.ifnames=0 crucible_seed=$scenario_seed crucible.workload=httpget" \
                   -chardev file,id=serial0,path=serial.log \
                   -serial chardev:serial0 \
                   -no-reboot
@@ -823,6 +956,10 @@ in
                   cat "$run_dir/serial.log" >&2
                   fail "guest $label did not report TEST_RESULT:PASS"
                 }
+              if grep -q 'TEST_RESULT:FAIL' "$run_dir/serial.log"; then
+                cat "$run_dir/serial.log" >&2
+                fail "guest $label reported TEST_RESULT:FAIL"
+              fi
               grep -q 'FW_CFG_SEED_MATCH=true' "$run_dir/serial.log" \
                 || {
                   cat "$run_dir/serial.log" >&2
@@ -832,6 +969,21 @@ in
                 || {
                   cat "$run_dir/serial.log" >&2
                   fail "guest $label did not confirm random trust settings"
+                }
+              grep -q 'WORKLOAD=crucible.workload=httpget' "$run_dir/serial.log" \
+                || {
+                  cat "$run_dir/serial.log" >&2
+                  fail "guest $label did not confirm workload selection"
+                }
+              grep -q 'WORKLOAD_BINARY=crucible-httpget-workload' "$run_dir/serial.log" \
+                || {
+                  cat "$run_dir/serial.log" >&2
+                  fail "guest $label did not run the selected workload binary"
+                }
+              grep -q 'WORKLOAD_RESULT:PASS' "$run_dir/serial.log" \
+                || {
+                  cat "$run_dir/serial.log" >&2
+                  fail "guest $label workload did not report WORKLOAD_RESULT:PASS"
                 }
               grep -q 'CPU_ENTROPY_FEATURES=rdrand-disabled,rdseed-disabled' "$run_dir/serial.log" \
                 || {
@@ -863,6 +1015,9 @@ in
             urandom_a=$(get_kv same-a URANDOM_HEX)
             urandom_b=$(get_kv same-b URANDOM_HEX)
             urandom_c=$(get_kv different URANDOM_HEX)
+            workload_rng_a=$(get_kv same-a WORKLOAD_RNG_HEX)
+            workload_rng_b=$(get_kv same-b WORKLOAD_RNG_HEX)
+            workload_rng_c=$(get_kv different WORKLOAD_RNG_HEX)
 
             [ "$fw_a" = "$expected_a" ] || fail "fw_cfg seed was not the raw derived seed"
             [ "$fw_a" = "$fw_b" ] || fail "same seed changed fw_cfg seed"
@@ -871,6 +1026,8 @@ in
             [ "$hwrng_a" != "$hwrng_c" ] || fail "different seed did not change virtio hwrng output"
             [ "$urandom_a" = "$urandom_b" ] || fail "same seed changed guest CSPRNG output"
             [ "$urandom_a" != "$urandom_c" ] || fail "different seed did not change guest CSPRNG output"
+            [ "$workload_rng_a" = "$workload_rng_b" ] || fail "same seed changed workload RNG transcript"
+            [ "$workload_rng_a" != "$workload_rng_c" ] || fail "different seed did not change workload RNG transcript"
 
             mkdir -p "$out"
             cat > "$out/result" <<RESULT
@@ -886,6 +1043,10 @@ in
             firmware_seed_hex=$fw_a
             deterministic_rng_object=rng-builtin,id=crucible-rng0
             deterministic_rng_device=virtio-rng-pci,rng=crucible-rng0
+            workload=crucible.workload=httpget
+            workload_binary=crucible-httpget-workload
+            workload_rng_same_seed_reproducible=true
+            workload_rng_different_seed_changes=true
             hwrng_same_seed_reproducible=true
             hwrng_different_seed_changes=true
             guest_csprng_same_seed_reproducible=true
