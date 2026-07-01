@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_package::render_package_config;
+use aos_package::config_artifact::render_package_config;
 use aos_package::types::{ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy};
 
 /// Path to the committed golden, relative to the crate root.

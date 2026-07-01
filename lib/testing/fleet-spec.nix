@@ -19,20 +19,6 @@
 }: let
   inherit (lib) types mkOption;
 
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-
-  # Image-boot machines run ignition's disks stage for real — their
-  # instanceMetadata legitimately carries storage.disks /
-  # storage.filesystems (that's the install). Kernel-boot machines keep
-  # the restrictive profile.
-  ignitionFullFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = true;
-  };
-
   # `types.unspecified` (nixpkgs name): a no-op type that accepts any
   # value with `lastValue` merge. AOS's lib doesn't ship one, so we
   # synthesise it via `mkOptionType`'s defaults (check defaults to
@@ -80,21 +66,43 @@
         '';
       };
 
+      provisioning = mkOption {
+        type = types.enum ["newpath"];
+        default = "newpath";
+        description = ''
+          First-boot provisioning path (RFC-0011). `newpath` bakes per-VM
+          identity (hostname, /etc/hosts, the eth0 .network, the guest-agent
+          unit) straight into the image's /etc via `extendModules` and
+          provisions the substrate with systemd-repart. This is the only path
+          (Ignition has been removed); the field is retained as an explicit
+          marker on machines.
+        '';
+      };
+
+      extraModules = mkOption {
+        type = types.listOf unspecifiedType;
+        default = [];
+        description = ''
+          Extra NixOS-style module fragments overlaid onto this machine's
+          system via `extendModules` (new path only). The mechanism the fleet
+          harness uses to bake per-VM configuration into the image `/etc` in
+          place of Ignition `storage.files` — e.g. a k3s node's
+          `/etc/rancher/k3s/config.yaml` and token env. Ignored on the
+          `ignition` path (which delivers such files over the metadata channel).
+        '';
+      };
+
       bootMode = mkOption {
         type = types.enum ["kernel" "image"];
         default = "kernel";
         description = ''
-          How this machine boots. `kernel` (default) is the original
-          fleet path: direct kernel boot (`-kernel`/`-initrd`) with the
-          ignition config on a metadata ISO. `image` boots the
-          machine's `system.build.image.raw` under OVMF — UEFI →
-          sd-boot → UKI → ignition — with the ignition config delivered
-          over `-fw_cfg name=opt/com.coreos/config` (no metadata ISO; the
-          ISO would force PLATFORM_ID=file). Image machines accept the
-          FULL ignition profile in `instanceMetadata.config`, including
-          `storage.disks`/`storage.filesystems` — exercising the
-          first-boot install path is the point
-          (tests/fleet/install-from-image.nix, RFC-0003).
+          How this machine boots. `kernel` (default) is direct kernel boot
+          (`-kernel`/`-initrd`); /var is a baked test disk, so no on-boot
+          disk carving is needed. `image` boots the machine's
+          `system.build.image.raw` under OVMF — UEFI → sd-boot → UKI →
+          systemd initrd — where systemd-repart carves swap/var from the
+          trailing free space on first boot (tests/fleet/install-from-image.nix,
+          RFC-0003/RFC-0011).
         '';
       };
 
@@ -104,10 +112,9 @@
         description = ''
           Image-boot machines only: size in MiB the per-run copy of the
           raw image is grown to before boot (sparse truncate +
-          `sgdisk -e` backup-header relocation). Must be large enough
-          for the partitions the machine's ignition `storage.disks`
-          config declares; the docs' A/B layout (16 GiB root-a/root-b +
-          4 GiB swap + var) needs the default 40 GiB.
+          `sgdisk -e` backup-header relocation). Must be large enough for
+          the partitions systemd-repart carves in the trailing free space
+          (swap + var); the default 40 GiB has ample headroom.
         '';
       };
 
@@ -160,56 +167,26 @@
           under /var, e.g. a registry peer generating a static binary
           cache of a full system closure (tests/fleet/
           apm-registry-upgrade.nix). With `varProvisioning = "baked"`
-          (the default) this sizes the partition baked into the shared
-          disk image; with `varProvisioning = "ignition"` it is the size
-          ignition grows the per-run disk by and formats /var to at first
-          boot — the disk image itself carries no /var partition, so the
-          size no longer forks the (deduplicated) base image.
+          (the default) this sizes the partition baked into the disk image;
+          with `varProvisioning = "repart"` it is the size the driver grows
+          the per-run disk by, into which systemd-repart carves /var at first
+          boot.
         '';
       };
 
       varProvisioning = mkOption {
-        type = types.enum ["baked" "ignition"];
+        type = types.enum ["baked" "repart"];
         default = "baked";
         description = ''
           How this machine's /var comes to exist (kernel-boot machines
           only). `baked` (default) ships /var as a pre-formatted, seeded
-          partition inside the disk image. `ignition` ships no /var
-          partition at all: ignition creates and formats it on first boot
-          at `varSizeMiB` (mirroring production), so every machine shares
-          one base disk image regardless of its /var size. With no baked
-          /var seed the guest agent arrives via the `aos-test-agent` package's
-          ignition fragment instead — the harness adds that package automatically
-          (lib/testing/fleet.nix), so tests need not list it.
-        '';
-      };
-
-      instanceMetadata = mkOption {
-        type = types.nullOr (types.submodule {
-          options = {
-            format = mkOption {
-              type = types.enum ["ignition"];
-              default = "ignition";
-            };
-            config = mkOption {
-              # Image-boot machines opt into the full profile (storage
-              # hardware allowed); evaluated lazily, by which time
-              # `config.bootMode` has merged.
-              type =
-                (
-                  if config.bootMode == "image"
-                  then ignitionFullFormat
-                  else ignitionFormat
-                )
-                .type;
-              default = {};
-            };
-          };
-        });
-        default = null;
-        description = ''
-          Raw ignition config delivered to this machine via the
-          `aos-metadata` ISO.
+          partition inside the disk image. `repart` ships no /var partition:
+          the driver grows the per-run copy by `varSizeMiB`, and
+          systemd-repart carves /var (and swap) in the trailing free space at
+          first boot. With no baked /var seed the guest agent arrives via a
+          baked `systemd.services.aos-test-agent` unit — the harness adds that
+          package automatically (lib/testing/fleet.nix), so tests need not
+          list it.
         '';
       };
     };

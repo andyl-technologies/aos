@@ -5,9 +5,9 @@
 #   controlplane: pkgs.k3s-control-plane (k3s server --disable-agent)
 #   worker:       pkgs.k3s-worker        (k3s agent)
 #
-# Both receive `K3S_TOKEN` via instanceMetadata.config.storage.files.
-# The worker additionally receives `K3S_URL` pointing at the control
-# plane's harness-assigned IP.
+# Both receive `K3S_TOKEN` baked into the image /etc via extendModules
+# (extraModules). The worker additionally receives `K3S_URL` pointing at
+# the control plane's harness-assigned IP.
 #
 # Test cadence:
 #   1. Wait for k3s-preflight + k3s on each machine.
@@ -31,56 +31,49 @@
   # `tests/fleet/k3s-combined-worker.nix`.
   testToken = "aoscontrolplanefleet1";
 
-  # Shape an env-file as a `storage.files` entry. `mode = 384` is
-  # 0600 — the file holds K3S_TOKEN and shouldn't be world-readable
-  # even on a test VM.
+  # Per-node k3s config, baked into the image /etc via extendModules (the
+  # new-path replacement for Ignition storage.files). Two files:
   #
-  envFile = body: {
-    path = "/etc/rancher/k3s/k3s.env";
-    mode = 384;
-    overwrite = true;
-    contents.source = dataUrl body;
-  };
-
-  # /etc/rancher/k3s/config.yaml is k3s's default config-file
-  # location. Both `k3s server` and `k3s agent` read it
-  # automatically; the loader (`pkg/configfilearg`) merges its keys
-  # in as if they were CLI flags. We use it to pin `node-ip` and
-  # `flannel-iface` per machine without having to bake them into
-  # the role's ExecStart (the role is image-shared and doesn't
-  # know the IP or interface name).
+  #   /etc/rancher/k3s/k3s.env    — K3S_TOKEN (+ K3S_URL for the worker),
+  #                                 mode 0600 (holds the join token).
+  #   /etc/rancher/k3s/config.yaml — k3s's default config-file location. Both
+  #                                 `k3s server` and `k3s agent` read it
+  #                                 automatically (`pkg/configfilearg` merges
+  #                                 its keys as CLI flags). Pins node-ip +
+  #                                 flannel-iface per machine.
   #
-  # Why we have to pin node-ip in tests: k3s would otherwise call
+  # Why we pin node-ip: k3s would otherwise call
   # `apimachinery/pkg/util/net.ChooseHostInterface()`, which reads
-  # `/proc/net/route` to find the default-route interface and
-  # picks its address. The fleet harness in lib/testing/fleet.nix
-  # only writes `[Network] Address=` on eth0 — no gateway, no
-  # default route — so that lookup fatals with "no default routes
-  # found". Real-world hosts always have a default route via
-  # DHCP / a real gateway; pinning node-ip here is test-only glue.
+  # `/proc/net/route` for the default-route interface. The fleet harness only
+  # writes `[Network] Address=` on eth0 — no gateway, no default route — so the
+  # lookup fatals with "no default routes found". Pinning node-ip is test glue.
   #
-  # Why we have to pin flannel-iface: k3s's embedded flannel
-  # daemon walks the same routing table to discover its external
-  # interface (`pkg/agent/flannel.LookupExtIface` →
-  # `ip.GetDefaultGatewayInterface`). With no default route the
-  # lookup returns `unable to find default route` and flannel
-  # `os.Exit(1)`s the whole agent — `Restart=always` then traps
-  # the unit in `activating`/`failed` forever, never reaching the
-  # `READY=1` notify. Pinning the iface skips the gateway probe.
-  # `eth0` is deterministic here because the kernel cmdline carries
-  # `net.ifnames=0` and the fleet harness only attaches a single
-  # mcast NIC to each sandbox VM. (The interactive harness adds
-  # eth1 with DHCP and a default route, so the gateway probe would
-  # succeed there — but pinning is harmless and keeps the two
-  # codepaths symmetrical.)
-  configFile = ip: {
-    path = "/etc/rancher/k3s/config.yaml";
-    mode = 420; # 0644
-    overwrite = true;
-    contents.source = dataUrl ''
-      node-ip: ${ip}
-      flannel-iface: eth0
-    '';
+  # Why we pin flannel-iface: k3s's embedded flannel walks the same routing
+  # table (`pkg/agent/flannel.LookupExtIface`). With no default route it
+  # `os.Exit(1)`s the agent, trapping the unit in `activating`/`failed`. Pinning
+  # the iface skips the gateway probe. eth0 is deterministic (net.ifnames=0 in
+  # the cmdline; a single mcast NIC per sandbox VM).
+  k3sEtcModule = {
+    token,
+    ip,
+    url ? null,
+  }: {
+    environment.etc = {
+      "rancher/k3s/k3s.env" = {
+        mode = "0600";
+        text =
+          "K3S_TOKEN=${token}\n"
+          + (
+            if url == null
+            then ""
+            else "K3S_URL=${url}\n"
+          );
+      };
+      "rancher/k3s/config.yaml".text = ''
+        node-ip: ${ip}
+        flannel-iface: eth0
+      '';
+    };
   };
 
   controlPlaneSystem = mkSystem [
@@ -122,29 +115,27 @@ in {
   machines = {
     controlplane = {
       system = controlPlaneSystem;
+      provisioning = "newpath";
       packages = ["k3s-control-plane"];
-      instanceMetadata.config.storage = {
-        files = [
-          (envFile ''
-            K3S_TOKEN=${testToken}
-          '')
-          (configFile "192.168.50.10")
-        ];
-      };
+      extraModules = [
+        (k3sEtcModule {
+          token = testToken;
+          ip = "192.168.50.10";
+        })
+      ];
     };
 
     worker = {
       system = workerSystem;
+      provisioning = "newpath";
       packages = ["k3s-worker"];
-      instanceMetadata.config.storage = {
-        files = [
-          (envFile ''
-            K3S_TOKEN=${testToken}
-            K3S_URL=https://192.168.50.10:6443
-          '')
-          (configFile "192.168.50.11")
-        ];
-      };
+      extraModules = [
+        (k3sEtcModule {
+          token = testToken;
+          ip = "192.168.50.11";
+          url = "https://192.168.50.10:6443";
+        })
+      ];
     };
   };
 
@@ -188,11 +179,11 @@ in {
 
     # ── Pre-flight on each machine ─────────────────────────────────
     # k3s-preflight is a oneshot — `is-active` returns "active"
-    # only after exit-0. A failure here means either ignition
-    # didn't land the env file (ConditionPathExists short-circuits
-    # the unit to "skipped", which is-active reports as
-    # "inactive"), or systemd's EnvironmentFile= parser rejected
-    # the file's contents, or one of the required vars is empty.
+    # only after exit-0. A failure here means either the baked env
+    # file is missing (ConditionPathExists short-circuits the unit
+    # to "skipped", which is-active reports as "inactive"), or
+    # systemd's EnvironmentFile= parser rejected the file's
+    # contents, or one of the required vars is empty.
     controlplane.wait_until_succeeds(
         "systemctl is-active k3s-preflight.service", timeout=60
     )

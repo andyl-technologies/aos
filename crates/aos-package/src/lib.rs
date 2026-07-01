@@ -42,11 +42,12 @@
 pub mod attestation;
 pub mod clean;
 pub mod config;
-pub(crate) mod config_artifact;
-// Re-exported for the `golden_config_artifact` integration test (RFC-0011 T0
-// flat-merge parity oracle), which lives in a separate crate and can only reach
-// `pub` items. The function itself is `#[doc(hidden)]`; this widens visibility
-// without changing behavior.
+// `pub` (not `pub(crate)`) so the `golden_config_artifact` integration test —
+// which lives in a separate crate and can only reach `pub` items — can import
+// `render_package_config` through it. The module is otherwise internal
+// (`#[doc(hidden)]`); this widens visibility without changing behavior.
+#[doc(hidden)]
+pub mod config_artifact;
 #[doc(hidden)]
 pub use config_artifact::render_package_config;
 pub(crate) mod credential;

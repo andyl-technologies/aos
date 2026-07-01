@@ -46,39 +46,6 @@
     };
   };
 
-  # Fully-typed Ignition v3.6 schema. `allowStorageHardware = false`
-  # omits `storage.{disks,filesystems,raid,luks}` so test-harness
-  # configs that try to manage partitioning fail at eval with a
-  # readable "option not declared" error — those paths belong to the
-  # AOS image, not to first-boot metadata. Production / standalone
-  # callers that want the full schema can import
-  # `lib/formats/ignition.nix` directly with `allowStorageHardware = true`.
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-  ignitionConfigType = ignitionFormat.type;
-
-  instanceMetadataType = lib.types.submodule {
-    options = {
-      format = lib.mkOption {
-        type = lib.types.enum ["ignition"];
-        default = "ignition";
-        description = "Provisioner that will consume the metadata.";
-      };
-      config = lib.mkOption {
-        type = ignitionConfigType;
-        description = ''
-          The ignition config as a Nix attrset. The test harness
-          serialises it to JSON, packs it into an ISO9660 image
-          (volume label `aos-metadata`), and attaches it to the VM;
-          `aos-platform-detect.service` mounts it and points ignition
-          at the file via `IGNITION_CONFIG_FILE`.
-        '';
-      };
-    };
-  };
-
   checkSpecType = lib.types.submodule ({name, ...}: {
     options = {
       description = lib.mkOption {
@@ -89,16 +56,6 @@
       checks = lib.mkOption {
         type = lib.types.listOf checkType;
         description = "Flat list of checks run inside one VM.";
-      };
-      instanceMetadata = lib.mkOption {
-        type = lib.types.nullOr instanceMetadataType;
-        default = null;
-        description = ''
-          Optional first-boot provisioning payload. When set, the
-          test harness attaches a second virtio-blk device carrying
-          this JSON. Ignition runs on every test boot (metadata or
-          not), but only consumes a config when this option is set.
-        '';
       };
     };
   });

@@ -85,7 +85,7 @@ in {
       after = [
         "network-online.target"
         "nix-overlay-setup.service"
-        "ignition-files.service"
+        "aos-config-seed.service"
         "aos-seed-profiles.service"
       ];
       before = [

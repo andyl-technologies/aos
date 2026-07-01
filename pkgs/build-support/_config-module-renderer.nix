@@ -64,7 +64,11 @@
       configModule.src
       or (throw "configModule for package '${packageName}' must set 'src' (the directory containing module.nix)");
 
-    abiCompat = configModule.moduleAbiCompat or {min = 1; max = 1;};
+    abiCompat =
+      configModule.moduleAbiCompat or {
+        min = 1;
+        max = 1;
+      };
     abiMin = abiCompat.min or 1;
     abiMax = abiCompat.max or 1;
 
@@ -82,17 +86,15 @@
         max = abiMax;
       };
       declares = configModule.declares or [];
-      owns_roots =
-        builtins.map (r: {
-          root = r.root;
-          interface_abi = r.interfaceAbi or abiMin;
-          contributable = r.contributable or [];
-        }) (configModule.ownsRoots or []);
-      contributes =
-        builtins.map (c: {
-          root = c.root;
-          paths = c.paths or [];
-        }) (configModule.contributes or []);
+      owns_roots = builtins.map (r: {
+        root = r.root;
+        interface_abi = r.interfaceAbi or abiMin;
+        contributable = r.contributable or [];
+      }) (configModule.ownsRoots or []);
+      contributes = builtins.map (c: {
+        root = c.root;
+        paths = c.paths or [];
+      }) (configModule.contributes or []);
       provides_capabilities = configModule.providesCapabilities or [];
     };
   in
@@ -103,21 +105,21 @@
       (abiMin <= abiMax)
       "configModule for package '${packageName}' has an inverted moduleAbiCompat band: min ${toString abiMin} > max ${toString abiMax}"
       (pkgs.runCommand "config-module-${packageName}" {
-        inherit metaJson;
-        passAsFile = ["metaJson"];
-        # Pure-data output: must not pull a derivation into its closure.
-        preferLocalBuild = true;
-        allowSubstitutes = false;
-      } ''
-        set -eu
-        mkdir -p "$out"
-        if [ ! -e "${src}/module.nix" ]; then
-          echo "config module for '${packageName}' has no module.nix at ${src}" >&2
-          exit 1
-        fi
-        cp -a "${src}/." "$out/"
-        cp "$metaJsonPath" "$out/config-meta.json"
-      ''));
+          inherit metaJson;
+          passAsFile = ["metaJson"];
+          # Pure-data output: must not pull a derivation into its closure.
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        } ''
+          set -eu
+          mkdir -p "$out"
+          if [ ! -e "${src}/module.nix" ]; then
+            echo "config module for '${packageName}' has no module.nix at ${src}" >&2
+            exit 1
+          fi
+          cp -a "${src}/." "$out/"
+          cp "$metaJsonPath" "$out/config-meta.json"
+        ''));
 in {
   inherit render;
 }

@@ -11,6 +11,7 @@
   machines = {
     target = {
       system = systems.server;
+      provisioning = "newpath";
       tpm = true;
     };
   };
