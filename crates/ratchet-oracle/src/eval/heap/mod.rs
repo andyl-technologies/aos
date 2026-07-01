@@ -43,6 +43,7 @@ pub use roots::{
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
+    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollRootReferenceValue,
     AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
@@ -478,6 +479,23 @@ pub enum EvalHeapError {
     UnknownCollectorPollReferenceSlotAddress {
         /// The unrecognized reference-slot object address.
         address: GcHeapAddress,
+    },
+    /// A planned object byte-copy source no longer has the copied layout.
+    #[error(
+        "collector-poll minor-GC object byte-copy layout mismatch for 0x{address:x}: expected {expected_size} bytes/{expected_align}-byte alignment, found {actual_size} bytes/{actual_align}-byte alignment",
+        address = address.address_bits()
+    )]
+    CollectorPollObjectByteCopyLayoutMismatch {
+        /// The copied source object address.
+        address: GcHeapAddress,
+        /// The planned copy size in bytes.
+        expected_size: usize,
+        /// The current source-record size in bytes.
+        actual_size: usize,
+        /// The planned copy alignment in bytes.
+        expected_align: usize,
+        /// The current source-record alignment in bytes.
+        actual_align: usize,
     },
     /// The generational minor-GC planner rejected the oracle snapshot.
     #[error("collector-poll minor-GC planning error: {0}")]

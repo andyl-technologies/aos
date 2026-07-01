@@ -5303,25 +5303,33 @@ and helps the oracle directly.
       those root-backed rewrites as metadata with the same slot-to-rewrite source
       validation, and `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
       returns the root and heap-field writeback partitions together.
+      The allocation-poll commit wrapper now carries the heap record and
+      allocation-safepoint snapshot used by heap-backed buffer derivation.
+      `EvalHeap::collector_poll_minor_gc_object_byte_copy_plan` rejects stale
+      commit snapshots, validates planned copy sources against current young
+      worker-domain heap records, and returns source/destination/size/alignment/action
+      requests for a future storage owner.
       `AllocationCollectorPollMinorGcCommitPlan::forwarding_slot_buffer` derives
       empty caller-owned forwarding slots in lower-level forwarding-pointer order.
       `EvalHeap::collector_poll_minor_gc_reference_buffer` merges caller-supplied
       current root values with live heap-field reads into one full
       reference-slot-order buffer for later caller-owned commit application. Unit
       tests cover successful empty-remembered-set application, retained
-      copied-young remembered-edge publication, heap-field and full
+      copied-young remembered-edge publication, object-byte-copy request
+      derivation for copied and promoted survivors, post-commit allocation
+      rejection, stale source-layout rejection, heap-field and full
       reference-buffer derivation, root writeback derivation, combined mixed
       root/heap writeback partitioning, forwarding-slot buffer derivation for
       copied and promoted survivors, heap-field writeback derivation for copied
-      and promoted nursery owners, root-slot rejection/empty root-only
-      heap-field writebacks, stale field-label rejection, stale same-label
-      field-value rejection, root-value count/source/value rejection, incomplete
-      or mismatched reference-buffer rejection before lower-level mutation, and
-      lower-level stale-buffer error mapping without partial mutation. This
-      remains a caller-buffer/writeback-metadata surface only; destination
-      storage allocation, binding byte buffers to live heap objects or object
-      headers, tree-walk root/object-field mutation, remembered-source field
-      mutation, and semispace management remain open.
+      and promoted nursery owners, root-slot rejection/empty root-only heap-field
+      writebacks, stale field-label rejection, stale same-label field-value
+      rejection, root-value count/source/value rejection, incomplete or mismatched
+      reference-buffer rejection before lower-level mutation, and lower-level
+      stale-buffer error mapping without partial mutation. This remains a
+      caller-buffer/writeback-metadata surface only;
+      destination storage allocation, binding raw byte slices to live heap objects
+      or object headers, tree-walk root/object-field mutation, remembered-source
+      field mutation, and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5441,6 +5449,13 @@ and helps the oracle directly.
       `AllocationCollectorPollReferenceSlot` label values, then applies the
       validated lower-level commit plan to caller-owned byte-copy buffers,
       forwarding slots, reference values, and remembered-set state.
+      The commit wrapper carries the heap record and allocation-safepoint
+      snapshot from the poll plan, and
+      `EvalHeap::collector_poll_minor_gc_object_byte_copy_plan` rejects stale
+      snapshots before binding the lower-level object-copy schedule back to
+      current young worker-domain heap records, revalidating their recorded
+      size/alignment, and returning copy requests for the future
+      semispace/storage owner rather than raw byte slices.
       `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
       remembered-source and nursery-field slots back to current side-table fields
       for the reference buffer while rejecting copied root slots, and
@@ -5458,8 +5473,9 @@ and helps the oracle directly.
       `EvalHeap::collector_poll_minor_gc_reference_buffer` merges external root
       values with live heap-field reads into one caller-owned reference buffer.
       This connects the roots bridge to commit-buffer preflight/application tests,
-      but still does not provide live tree-walk root writeback, object-field
-      mutation, old/permanent field mutation, or JIT stack-map writeback slots.
+      but still does not provide live object-byte slices, destination storage,
+      tree-walk root writeback, object-field mutation, old/permanent field
+      mutation, or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

@@ -22,10 +22,11 @@ use crate::heap::{
     GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan,
     MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
     MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite,
-    MinorGcReferenceRewritePlan, MinorGcRelocationDestination, MinorGcRelocationDestinationPlan,
-    MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan, NurseryObjectAge, NurseryObjectFields,
-    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocationDestination,
+    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
+    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
+    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationCollectorPoll, AllocationSafepointState};
@@ -42,6 +43,7 @@ const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
+const MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE: &str = "minor-GC object byte-copy requests";
 const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot buffer";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
@@ -1027,7 +1029,8 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Builds ordered minor-GC commit metadata for this poll plan.
     ///
     /// The returned value keeps this plan's copied reference-slot labels next to
-    /// the validated lower-level commit plan. It still does not own mutable
+    /// the validated lower-level commit plan and the allocation-state snapshot
+    /// used by later heap-backed buffer derivation. It still does not own mutable
     /// evaluator roots, object fields, object bytes, forwarding slots, or
     /// remembered-set storage. The destination wrapper must preserve this poll
     /// plan's survivor count, source order, and copy/promote actions.
@@ -1068,6 +1071,9 @@ impl AllocationCollectorPollMinorGcPlan {
         )?;
         Ok(AllocationCollectorPollMinorGcCommitPlan {
             reference_slots: &self.reference_slots,
+            heap_records: self.heap_records,
+            allocation_safepoints: self.allocation_safepoints,
+            permanent_allocation_safepoints: self.permanent_allocation_safepoints,
             commit_plan,
         })
     }
@@ -1166,10 +1172,29 @@ fn object_copy_plan_from_destination_placements(
     MinorGcObjectCopyPlan::from_relocation_plan(relocation_plan, &nursery_layouts)
 }
 
+fn validate_object_byte_copy_record_layout(
+    copy: MinorGcObjectCopy,
+    record: &HeapRecord,
+) -> Result<(), EvalHeapError> {
+    if record.layout.size_bytes != copy.size_bytes() || record.layout.align != copy.align() {
+        return Err(EvalHeapError::CollectorPollObjectByteCopyLayoutMismatch {
+            address: copy.source(),
+            expected_size: copy.size_bytes(),
+            actual_size: record.layout.size_bytes,
+            expected_align: copy.align(),
+            actual_align: record.layout.align,
+        });
+    }
+    Ok(())
+}
+
 /// Commit metadata for an allocation-poll minor-GC plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollMinorGcCommitPlan<'a> {
     reference_slots: &'a [AllocationCollectorPollReferenceSlot],
+    heap_records: usize,
+    allocation_safepoints: AllocationSafepointState,
+    permanent_allocation_safepoints: AllocationSafepointState,
     commit_plan: MinorGcCommitPlan,
 }
 
@@ -1182,6 +1207,21 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     /// Returns the ordered lower-level minor-GC commit plan.
     pub const fn commit_plan(&self) -> &MinorGcCommitPlan {
         &self.commit_plan
+    }
+
+    /// Returns the typed heap record count captured when this commit was planned.
+    pub const fn heap_records(&self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns the worker allocation-safepoint state captured by this commit.
+    pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
+        self.allocation_safepoints
+    }
+
+    /// Returns the permanent allocation-safepoint state captured by this commit.
+    pub const fn permanent_allocation_safepoints(&self) -> AllocationSafepointState {
+        self.permanent_allocation_safepoints
     }
 
     /// Derives empty forwarding slots for caller-owned commit application.
@@ -1330,6 +1370,87 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
             );
         };
         Ok(slot)
+    }
+}
+
+/// One object byte-copy request derived from an allocation-poll commit plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectByteCopyRequest {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    action: MinorGcSurvivorAction,
+    destination_generation: HeapGeneration,
+    size_bytes: usize,
+    align: usize,
+}
+
+impl AllocationCollectorPollObjectByteCopyRequest {
+    const fn from_copy(copy: MinorGcObjectCopy) -> Self {
+        Self {
+            source: copy.source(),
+            destination: copy.destination(),
+            action: copy.action(),
+            destination_generation: copy.destination_generation(),
+            size_bytes: copy.size_bytes(),
+            align: copy.align(),
+        }
+    }
+
+    /// Returns the current young-generation source object address.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination address that should receive copied bytes.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns whether this copy keeps the object young or promotes it.
+    pub const fn action(&self) -> MinorGcSurvivorAction {
+        self.action
+    }
+
+    /// Returns the generation that will own the destination object.
+    pub const fn destination_generation(&self) -> HeapGeneration {
+        self.destination_generation
+    }
+
+    /// Returns the byte length callers must bind for source and destination.
+    pub const fn size_bytes(&self) -> usize {
+        self.size_bytes
+    }
+
+    /// Returns the required destination alignment in bytes.
+    pub const fn align(&self) -> usize {
+        self.align
+    }
+}
+
+/// Object byte-copy requests in lower-level commit order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectByteCopyPlan {
+    requests: Vec<AllocationCollectorPollObjectByteCopyRequest>,
+}
+
+impl AllocationCollectorPollObjectByteCopyPlan {
+    fn new(requests: Vec<AllocationCollectorPollObjectByteCopyRequest>) -> Self {
+        Self { requests }
+    }
+
+    /// Returns object byte-copy requests in commit order.
+    pub fn requests(&self) -> &[AllocationCollectorPollObjectByteCopyRequest] {
+        &self.requests
+    }
+
+    /// Returns the number of object byte-copy requests.
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Returns whether no object bytes need copying.
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
     }
 }
 
@@ -1803,6 +1924,45 @@ impl EvalHeap {
         Ok(plan.relocation_destination_plan(&nursery_layouts, bases)?)
     }
 
+    /// Derives object byte-copy requests for caller-owned copy buffers.
+    ///
+    /// Each request is validated against the current heap side table before it is
+    /// returned: the source object must still belong to the young worker domain
+    /// and must still have the size and alignment captured by the lower-level
+    /// object-copy plan. The returned plan does not expose raw heap bytes or
+    /// allocate destination storage; it only describes the source/destination,
+    /// length, and alignment that a future storage owner must bind to
+    /// [`MinorGcObjectByteCopyBuffer`] values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after commit planning, if request storage cannot be reserved,
+    /// if a planned source object no longer belongs to the young worker domain, or
+    /// if the current source-record layout no longer matches the commit plan.
+    pub fn collector_poll_minor_gc_object_byte_copy_plan(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+    ) -> Result<AllocationCollectorPollObjectByteCopyPlan, EvalHeapError> {
+        self.validate_collector_poll_commit_allocation_state(commit_plan)?;
+        let copies = commit_plan.commit_plan().object_copies().copies();
+        let mut requests = Vec::new();
+        requests.try_reserve_exact(copies.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE,
+                entries: copies.len(),
+            }
+        })?;
+        for copy in copies {
+            let record = self.record_for_minor_gc_survivor(copy.source())?;
+            validate_object_byte_copy_record_layout(*copy, record)?;
+            requests.push(AllocationCollectorPollObjectByteCopyRequest::from_copy(
+                *copy,
+            ));
+        }
+        Ok(AllocationCollectorPollObjectByteCopyPlan::new(requests))
+    }
+
     /// Derives a reference buffer for heap-field-backed commit slots.
     ///
     /// This is a live side-table binding precursor for remembered-source fields
@@ -1813,14 +1973,16 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if any reference slot is root-backed, if a saved
-    /// field object no longer belongs to the heap, if a saved field index or label
-    /// is stale, if current field scanning fails, or if the reference buffer cannot
-    /// reserve storage.
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after commit planning, if any reference slot is root-backed,
+    /// if a saved field object no longer belongs to the heap, if a saved field
+    /// index or label is stale, if current field scanning fails, or if the
+    /// reference buffer cannot reserve storage.
     pub fn collector_poll_minor_gc_heap_field_reference_buffer(
         &self,
         commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
     ) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+        self.validate_collector_poll_commit_allocation_state(commit_plan)?;
         let reference_slots = commit_plan.reference_slots();
         let mut references = Vec::new();
         references
@@ -1847,15 +2009,17 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if the caller supplies too few or too many root
-    /// values, if a supplied root source or value no longer matches the copied
-    /// reference slot, if a heap-field slot is stale, or if the reference buffer
-    /// cannot reserve storage.
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after commit planning, if the caller supplies too few or too
+    /// many root values, if a supplied root source or value no longer matches the
+    /// copied reference slot, if a heap-field slot is stale, or if the reference
+    /// buffer cannot reserve storage.
     pub fn collector_poll_minor_gc_reference_buffer(
         &self,
         commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
         root_values: &[AllocationCollectorPollRootReferenceValue],
     ) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+        self.validate_collector_poll_commit_allocation_state(commit_plan)?;
         let reference_slots = commit_plan.reference_slots();
         let expected_roots = reference_slots.iter().filter(|slot| slot.is_root()).count();
         if root_values.len() != expected_roots {
@@ -1929,14 +2093,17 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if writeback storage cannot be reserved, if a
-    /// saved field object no longer belongs to the heap, if a saved field index or
-    /// label is stale, if a copied slot no longer matches its lower-level rewrite,
-    /// or if the current field value no longer matches the copied poll slot value.
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after commit planning, if writeback storage cannot be
+    /// reserved, if a saved field object no longer belongs to the heap, if a saved
+    /// field index or label is stale, if a copied slot no longer matches its
+    /// lower-level rewrite, or if the current field value no longer matches the
+    /// copied poll slot value.
     pub fn collector_poll_minor_gc_heap_field_writeback_plan(
         &self,
         commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
     ) -> Result<AllocationCollectorPollHeapFieldWritebackPlan, EvalHeapError> {
+        self.validate_collector_poll_commit_allocation_state(commit_plan)?;
         let rewrites = commit_plan.commit_plan().reference_rewrites().rewrites();
         let reference_slots = commit_plan.reference_slots();
         let mut writebacks = Vec::new();
@@ -2011,12 +2178,14 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if root writeback metadata cannot be built or if
-    /// heap-field writeback validation fails.
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after commit planning, if root writeback metadata cannot be
+    /// built, or if heap-field writeback validation fails.
     pub fn collector_poll_minor_gc_reference_writeback_plan(
         &self,
         commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
     ) -> Result<AllocationCollectorPollReferenceWritebackPlan, EvalHeapError> {
+        self.validate_collector_poll_commit_allocation_state(commit_plan)?;
         let root_writebacks = commit_plan.root_writeback_plan()?;
         let heap_field_writebacks =
             self.collector_poll_minor_gc_heap_field_writeback_plan(commit_plan)?;
@@ -2538,6 +2707,34 @@ impl EvalHeap {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "permanent allocation safepoints changed since minor-GC planning",
                 expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_collector_poll_commit_allocation_state(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+    ) -> Result<(), EvalHeapError> {
+        if commit_plan.heap_records() != self.records.len() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "heap record count changed since minor-GC commit planning",
+                expected_records: commit_plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if commit_plan.allocation_safepoints() != self.allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker allocation safepoints changed since minor-GC commit planning",
+                expected_records: commit_plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if commit_plan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "permanent allocation safepoints changed since minor-GC commit planning",
+                expected_records: commit_plan.heap_records(),
                 actual_records: self.records.len(),
             });
         }
