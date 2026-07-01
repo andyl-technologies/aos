@@ -1,7 +1,5 @@
 //! Region-placement adapters for the tree-walk evaluator.
 
-#![allow(dead_code)]
-
 use super::*;
 
 impl TreeWalk {

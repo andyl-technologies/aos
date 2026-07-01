@@ -118,6 +118,15 @@ fn eval_outcome_reports_mirrored_stats() {
     assert_eq!(stats.force_cache_materialization_materializes(), 0);
     assert_eq!(stats.force_cache_materialization_keeps_in_memory(), 0);
     assert_eq!(stats.force_cache_materialization_decisions(), 0);
+    assert!(stats.source_thunk_region_plan_decisions() > 0);
+    assert_eq!(
+        stats.source_thunk_region_plan_lexical_subregion_decisions(),
+        0
+    );
+    assert_eq!(
+        stats.source_thunk_region_plan_conservative_fallbacks(),
+        stats.source_thunk_region_plan_decisions()
+    );
     assert_eq!(stats.early_cutoffs(), 0);
     assert_eq!(stats.derivation_aterm_path_reuses(), 0);
     assert_eq!(stats.static_derivation_output_path_reuses(), 0);
@@ -156,6 +165,9 @@ fn eval_stats_are_emitted_through_tracing() {
     assert!(stats_event.contains("force_cache_materialization_materializes="));
     assert!(stats_event.contains("force_cache_materialization_keeps_in_memory="));
     assert!(stats_event.contains("force_cache_materialization_decisions="));
+    assert!(stats_event.contains("source_thunk_region_plan_decisions="));
+    assert!(stats_event.contains("source_thunk_region_plan_lexical_subregion_decisions="));
+    assert!(stats_event.contains("source_thunk_region_plan_conservative_fallbacks="));
     assert!(stats_event.contains("cache_hits="));
     assert!(stats_event.contains("early_cutoffs=0"));
     assert!(stats_event.contains("derivation_aterm_path_reuses=0"));

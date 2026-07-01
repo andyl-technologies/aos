@@ -1712,8 +1712,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       fail closed to conservative placement. Non-thunk nodes require `Strict +
       NoEscape + speculable` facts to become lexical-subregion candidates, while
       thunk allocations remain conservative until a distinct no-latent-force
-      proof exists. This is classification telemetry for future placement; it
-      does not allocate into subregions, pop automatically, or strengthen the
+      proof exists. Successful source `ThunkAlloc` allocations now sample that
+      plan into `EvalStats` source-thunk region-plan counters, so real source
+      thunk allocation paths expose conservative fallback telemetry without
+      changing placement. This is classification telemetry for future placement;
+      it does not allocate into subregions, pop automatically, or strengthen the
       current escape pass.
 - [x] Current arena region-pop primitive precursor: `BumpArena` can capture
       `ArenaRegionMark`s and, behind an explicit caller proof, pop back to a
@@ -1737,8 +1740,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `RegionPlan` markers without reclaiming records and routes lexical
       no-escape plans through the same validation. This connects the allocator
       primitive and region policy to the tree-walk heap's typed safety boundary,
-      but still does not connect region-placement policy to IR allocation sites
-      or automatic escape-analysis proofs.
+      while source thunk allocation sites now record the conservative
+      `RegionPlan` decision as telemetry. It still does not allocate according
+      to region-placement policy or automatic escape-analysis proofs.
 - [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
 
 ### Concurrent, low-pause collection (§6)

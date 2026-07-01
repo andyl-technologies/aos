@@ -84,8 +84,9 @@ use crate::compile::{
 use crate::heap::{
     AllocationRegionFacts, GenerationalGcError, GenerationalGcTier, HeapMemoryBudget,
     MinorGcCommitReport, MinorGcDestinationBases, MinorGcForwardingSlot,
-    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, RegionEffect, RegionLifetime, RegionPlan,
-    RegionRuntimeTier, RegionSharing, RememberedSet, ResolvedValueGeneration,
+    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, RegionEffect, RegionLifetime,
+    RegionPlacement, RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing,
+    RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};

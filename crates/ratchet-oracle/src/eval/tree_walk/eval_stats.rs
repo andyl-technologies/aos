@@ -27,6 +27,13 @@ impl TreeWalk {
             force_cache_materialization_keeps_in_memory: self
                 .stats
                 .force_cache_materialization_keeps_in_memory,
+            source_thunk_region_plan_decisions: self.stats.source_thunk_region_plan_decisions,
+            source_thunk_region_plan_lexical_subregion_decisions: self
+                .stats
+                .source_thunk_region_plan_lexical_subregion_decisions,
+            source_thunk_region_plan_conservative_fallbacks: self
+                .stats
+                .source_thunk_region_plan_conservative_fallbacks,
             cache_hits: self
                 .stats
                 .force_cache_hits
@@ -74,6 +81,11 @@ impl TreeWalk {
                 .force_cache_materialization_keeps_in_memory(),
             force_cache_materialization_decisions = stats
                 .force_cache_materialization_decisions(),
+            source_thunk_region_plan_decisions = stats.source_thunk_region_plan_decisions(),
+            source_thunk_region_plan_lexical_subregion_decisions = stats
+                .source_thunk_region_plan_lexical_subregion_decisions(),
+            source_thunk_region_plan_conservative_fallbacks = stats
+                .source_thunk_region_plan_conservative_fallbacks(),
             cache_hits = stats.cache_hits(),
             cache_misses = stats.cache_misses(),
             early_cutoffs = stats.early_cutoffs(),
@@ -222,6 +234,26 @@ impl TreeWalk {
                     .force_cache_materialization_keeps_in_memory
                     .saturating_add(1);
             }
+        }
+    }
+
+    pub(super) fn record_source_thunk_region_plan_decision(&mut self, plan: RegionPlan) {
+        self.stats.source_thunk_region_plan_decisions = self
+            .stats
+            .source_thunk_region_plan_decisions
+            .saturating_add(1);
+        if matches!(plan.placement, RegionPlacement::LexicalSubregion) {
+            self.stats
+                .source_thunk_region_plan_lexical_subregion_decisions = self
+                .stats
+                .source_thunk_region_plan_lexical_subregion_decisions
+                .saturating_add(1);
+        }
+        if matches!(plan.reason, RegionPlacementReason::ConservativeFallback) {
+            self.stats.source_thunk_region_plan_conservative_fallbacks = self
+                .stats
+                .source_thunk_region_plan_conservative_fallbacks
+                .saturating_add(1);
         }
     }
 

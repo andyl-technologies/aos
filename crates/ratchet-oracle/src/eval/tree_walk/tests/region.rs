@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::compile::Cardinality;
-use crate::heap::{RegionPlacement, RegionPlacementReason};
+use crate::heap::{AllocationRegionFacts, RegionPlacement, RegionPlacementReason, RegionPlan};
 
 #[test]
 fn region_plan_for_allocation_fails_closed_for_conservative_facts() {
@@ -125,4 +125,89 @@ fn region_plan_for_allocation_requires_speculable_effects() {
     assert_eq!(facts.escapes_frame, false);
     assert_eq!(plan.placement, RegionPlacement::RootArena);
     assert_eq!(plan.reason, RegionPlacementReason::ConservativeFallback);
+}
+
+#[test]
+fn region_plan_decision_telemetry_counts_policy_outcomes() {
+    let mut evaluator = TreeWalk::new(&lower("null"));
+
+    evaluator.record_source_thunk_region_plan_decision(RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    ));
+    evaluator.record_source_thunk_region_plan_decision(RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::conservative(),
+    ));
+
+    let stats = evaluator.stats();
+    assert_eq!(stats.source_thunk_region_plan_decisions(), 2);
+    assert_eq!(
+        stats.source_thunk_region_plan_lexical_subregion_decisions(),
+        1
+    );
+    assert_eq!(stats.source_thunk_region_plan_conservative_fallbacks(), 1);
+}
+
+#[test]
+fn allocated_thunks_record_conservative_region_plan_telemetry() {
+    let outcome = eval_whnf_owned(&lower("[ (1 + 6) ]")).expect("thunked list evaluates");
+
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().source_thunk_region_plan_decisions(), 1);
+    assert_eq!(
+        outcome
+            .stats()
+            .source_thunk_region_plan_lexical_subregion_decisions(),
+        0
+    );
+    assert_eq!(
+        outcome
+            .stats()
+            .source_thunk_region_plan_conservative_fallbacks(),
+        1
+    );
+}
+
+#[test]
+fn synthetic_thunk_helpers_do_not_record_source_thunk_region_telemetry() {
+    let ir = lower("1 + 2");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+
+    let value = evaluator
+        .alloc_thunk_for_node(ir.root, ir.root, span)
+        .expect("synthetic thunk allocates");
+
+    assert_eq!(value.tag(), ValueTag::Thunk);
+    let stats = evaluator.stats();
+    assert_eq!(stats.thunks_allocated(), 1);
+    assert_eq!(stats.source_thunk_region_plan_decisions(), 0);
+    assert_eq!(
+        stats.source_thunk_region_plan_lexical_subregion_decisions(),
+        0
+    );
+    assert_eq!(stats.source_thunk_region_plan_conservative_fallbacks(), 0);
+}
+
+#[test]
+fn empty_foldl_synthetic_initial_thunk_does_not_record_source_thunk_region_telemetry() {
+    let outcome = eval_whnf_owned(&lower("builtins.foldl' (acc: x: acc) (1 + 2) []"))
+        .expect("empty foldl' evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().source_thunk_region_plan_decisions(), 0);
+    assert_eq!(
+        outcome
+            .stats()
+            .source_thunk_region_plan_lexical_subregion_decisions(),
+        0
+    );
+    assert_eq!(
+        outcome
+            .stats()
+            .source_thunk_region_plan_conservative_fallbacks(),
+        0
+    );
 }

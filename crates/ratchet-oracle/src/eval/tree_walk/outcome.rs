@@ -1476,6 +1476,9 @@ pub struct EvalStats {
     pub(crate) force_cache_memoization_bypasses: u64,
     pub(crate) force_cache_materialization_materializes: u64,
     pub(crate) force_cache_materialization_keeps_in_memory: u64,
+    pub(crate) source_thunk_region_plan_decisions: u64,
+    pub(crate) source_thunk_region_plan_lexical_subregion_decisions: u64,
+    pub(crate) source_thunk_region_plan_conservative_fallbacks: u64,
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
@@ -1590,6 +1593,21 @@ impl EvalStats {
     pub const fn force_cache_materialization_decisions(&self) -> u64 {
         self.force_cache_materialization_materializes
             .saturating_add(self.force_cache_materialization_keeps_in_memory)
+    }
+
+    /// Returns region-placement policy decisions sampled at source thunk allocations.
+    pub const fn source_thunk_region_plan_decisions(&self) -> u64 {
+        self.source_thunk_region_plan_decisions
+    }
+
+    /// Returns sampled source thunk decisions that selected a lexical subregion candidate.
+    pub const fn source_thunk_region_plan_lexical_subregion_decisions(&self) -> u64 {
+        self.source_thunk_region_plan_lexical_subregion_decisions
+    }
+
+    /// Returns sampled source thunk decisions that failed closed to the active runtime tier.
+    pub const fn source_thunk_region_plan_conservative_fallbacks(&self) -> u64 {
+        self.source_thunk_region_plan_conservative_fallbacks
     }
 
     /// Returns the aggregate number of evaluator cache hits.

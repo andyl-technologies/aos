@@ -6036,9 +6036,10 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       strictness, cardinality, and escape fact producers, returns a combined
       report, and leaves conservative facts behind on producer errors. The
       tree-walk oracle already consumes the fact table carried by `Ir` for
-      thunk elision and now exposes region-plan classification from those
-      facts, but cache-key reuse, closed-world fixpoints, allocation-site
-      placement, and JIT consumers remain open.
+      thunk elision, exposes region-plan classification from those facts, and
+      records source-thunk allocation-site region-plan sampling in `EvalStats`,
+      but cache-key reuse, closed-world fixpoints, allocation-site placement,
+      and JIT consumers remain open.
 - [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the
       conservative `ExprFacts` lattice (`Unknown` strictness, `Many`
       cardinality, `Escapes` allocation behavior) plus an `IrFacts` table
@@ -6509,9 +6510,13 @@ it ships).**
       decision. Missing node/fact records fail closed to conservative placement,
       non-thunk nodes require `Strict + NoEscape + speculable` facts to become
       lexical-subregion candidates, and thunk allocations remain conservative
-      until a distinct no-latent-force proof exists. This is a classification
-      bridge for future allocation-site placement; it does not allocate into
-      subregions, pop automatically, or strengthen the current escape pass.
+      until a distinct no-latent-force proof exists. Successful source
+      `ThunkAlloc` allocations now record the conservative `RegionPlan` outcome
+      in `EvalStats` source-thunk region-plan counters, making source-thunk
+      allocation sampling observable without changing heap placement. This is a
+      classification bridge for future allocation-site placement; it does not
+      allocate into subregions, pop automatically, or strengthen the current
+      escape pass.
 - [x] Current arena region-pop primitive precursor: `BumpArena` can capture a
       lexical subregion marker and, behind an explicit caller proof, pop back to
       it by rewinding the retained chunk, unmapping later chunks, restoring the
@@ -6529,10 +6534,12 @@ it ships).**
       back to the marker, truncate typed records, advance the collector snapshot
       epoch, and make reclaimed handles fail as unknown until a later bump reuse
       assigns the address to a new record. Nested LIFO markers remain valid
-      across inner pops. This remains disconnected from automatic IR
-      allocation-site placement and escape-analysis proofs, but
-      `pop_worker_region_if_plan_permits` now routes the existing conservative
-      `RegionPlan` decision into the manual typed admission boundary.
+      across inner pops. Source thunk allocations now record the conservative
+      `RegionPlan` decision as telemetry, and
+      `pop_worker_region_if_plan_permits` routes that existing decision into
+      the manual typed admission boundary. Actual region allocation remains
+      disconnected from automatic IR allocation-site placement and
+      escape-analysis proofs.
 - [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
       (ZGC/Shenandoah-style colored pointers + load barriers), a committed
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode

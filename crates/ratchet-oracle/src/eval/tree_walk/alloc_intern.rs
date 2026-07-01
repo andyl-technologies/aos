@@ -591,7 +591,13 @@ impl TreeWalk {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
         match self.binding_lowering_for_thunk_alloc(id) {
-            BindingLowering::Thunk => self.alloc_thunk_for_node(id, body, node.span),
+            BindingLowering::Thunk => {
+                let value = self.alloc_thunk_for_node(id, body, node.span)?;
+                let region_plan =
+                    self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
+                self.record_source_thunk_region_plan_decision(region_plan);
+                Ok(value)
+            }
             BindingLowering::Eager | BindingLowering::Scalar => {
                 self.increment_thunks_elided();
                 self.eval_node(body)
