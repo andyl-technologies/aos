@@ -10,6 +10,7 @@
 use crate::compile::{
     RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError, runtime_symbol_manifest,
 };
+use thiserror::Error;
 
 use super::alloc::{RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint};
 use super::barrier::{RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint};
@@ -103,6 +104,205 @@ pub fn runtime_symbol_binding_manifest() -> RuntimeSymbolBindingManifestResult {
             ))
         })
         .collect()
+}
+
+/// One runtime symbol that still lacks a native registration binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolMissingBinding {
+    /// A helper symbol has no safe runtime helper binding yet.
+    Helper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The helper role reserved by the core runtime ABI.
+        role: RuntimeHelperRole,
+    },
+    /// A builtin symbol has no executable builtin binding yet.
+    Builtin {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+    },
+}
+
+impl RuntimeSymbolMissingBinding {
+    fn helper(symbol_name: String, role: RuntimeHelperRole) -> Self {
+        Self::Helper { symbol_name, role }
+    }
+
+    fn builtin(symbol_name: String) -> Self {
+        Self::Builtin { symbol_name }
+    }
+
+    /// Returns the stable runtime symbol name that is not yet bindable.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::Helper { symbol_name, .. } | Self::Builtin { symbol_name } => symbol_name,
+        }
+    }
+
+    /// Returns the helper role when the missing binding is a helper symbol.
+    pub const fn helper_role(&self) -> Option<RuntimeHelperRole> {
+        match self {
+            Self::Helper { role, .. } => Some(*role),
+            Self::Builtin { .. } => None,
+        }
+    }
+}
+
+/// The complete set of safe helper bindings ready for registration metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolRegistrationPlan {
+    helper_bindings: Vec<RuntimeHelperBinding>,
+}
+
+impl RuntimeSymbolRegistrationPlan {
+    fn new(helper_bindings: Vec<RuntimeHelperBinding>) -> Self {
+        Self { helper_bindings }
+    }
+
+    /// Returns safe helper bindings in runtime symbol-manifest order.
+    pub fn helper_bindings(&self) -> &[RuntimeHelperBinding] {
+        &self.helper_bindings
+    }
+}
+
+/// A deterministic readiness report for future native symbol registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolRegistrationPreflight {
+    helper_bindings: Vec<RuntimeHelperBinding>,
+    missing_bindings: Vec<RuntimeSymbolMissingBinding>,
+}
+
+impl RuntimeSymbolRegistrationPreflight {
+    fn new(
+        helper_bindings: Vec<RuntimeHelperBinding>,
+        missing_bindings: Vec<RuntimeSymbolMissingBinding>,
+    ) -> Self {
+        Self {
+            helper_bindings,
+            missing_bindings,
+        }
+    }
+
+    /// Returns safe helper bindings in runtime symbol-manifest order.
+    pub fn helper_bindings(&self) -> &[RuntimeHelperBinding] {
+        &self.helper_bindings
+    }
+
+    /// Returns unbound helper and builtin symbols in runtime symbol-manifest order.
+    pub fn missing_bindings(&self) -> &[RuntimeSymbolMissingBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every runtime symbol has a current safe binding.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+
+    /// Converts a complete preflight report into registration metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSymbolRegistrationError::Incomplete`] when any runtime
+    /// symbol still lacks a binding.
+    pub fn into_registration_plan(
+        self,
+    ) -> Result<RuntimeSymbolRegistrationPlan, RuntimeSymbolRegistrationError> {
+        let missing_count = self.missing_bindings.len();
+        if missing_count == 0 {
+            Ok(RuntimeSymbolRegistrationPlan::new(self.helper_bindings))
+        } else {
+            Err(RuntimeSymbolRegistrationError::Incomplete {
+                missing_count,
+                preflight: self,
+            })
+        }
+    }
+}
+
+/// Result returned when building runtime symbol registration readiness metadata.
+pub type RuntimeSymbolRegistrationPreflightResult =
+    Result<RuntimeSymbolRegistrationPreflight, RuntimeSymbolNameError>;
+
+/// A failure while preparing runtime symbol registration metadata.
+#[derive(Debug, Error)]
+pub enum RuntimeSymbolRegistrationError {
+    /// The core runtime symbol manifest could not be built.
+    #[error("failed to build runtime symbol binding manifest")]
+    SymbolManifest {
+        /// The underlying stable-symbol manifest error.
+        #[from]
+        source: RuntimeSymbolNameError,
+    },
+    /// Some runtime symbols have no current binding.
+    #[error("runtime symbol registration is incomplete: {missing_count} symbol bindings missing")]
+    Incomplete {
+        /// The number of symbols still missing registration bindings.
+        missing_count: usize,
+        /// The full preflight report, including bindable and missing symbols.
+        preflight: RuntimeSymbolRegistrationPreflight,
+    },
+}
+
+/// Result returned when requiring complete runtime symbol registration metadata.
+pub type RuntimeSymbolRegistrationPlanResult =
+    Result<RuntimeSymbolRegistrationPlan, RuntimeSymbolRegistrationError>;
+
+/// Builds a readiness report for future native symbol registration.
+///
+/// The report consumes [`runtime_symbol_binding_manifest`], preserves its order,
+/// keeps currently bindable helper metadata, and records every unbound helper or
+/// builtin symbol that prevents complete native registration today.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest cannot
+/// be built.
+pub fn runtime_symbol_registration_preflight() -> RuntimeSymbolRegistrationPreflightResult {
+    let mut helper_bindings = Vec::new();
+    let mut missing_bindings = Vec::new();
+
+    for entry in runtime_symbol_binding_manifest()? {
+        match entry.status() {
+            RuntimeSymbolBindingStatus::BoundHelper(binding) => {
+                debug_assert_eq!(entry.symbol_name(), binding.symbol_name());
+                helper_bindings.push(binding);
+            }
+            RuntimeSymbolBindingStatus::UnboundHelper(role) => {
+                missing_bindings.push(RuntimeSymbolMissingBinding::helper(
+                    entry.symbol_name().to_owned(),
+                    role,
+                ));
+            }
+            RuntimeSymbolBindingStatus::Builtin => {
+                missing_bindings.push(RuntimeSymbolMissingBinding::builtin(
+                    entry.symbol_name().to_owned(),
+                ));
+            }
+        }
+    }
+
+    Ok(RuntimeSymbolRegistrationPreflight::new(
+        helper_bindings,
+        missing_bindings,
+    ))
+}
+
+/// Builds complete safe runtime symbol registration metadata.
+///
+/// This function is intentionally stricter than
+/// [`runtime_symbol_registration_preflight`]: it succeeds only after every
+/// frozen runtime symbol has a safe binding.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolRegistrationError::SymbolManifest`] if the core
+/// runtime symbol manifest cannot be built. Returns
+/// [`RuntimeSymbolRegistrationError::Incomplete`] while any helper or builtin
+/// symbol remains unbound.
+pub fn runtime_symbol_registration_plan() -> RuntimeSymbolRegistrationPlanResult {
+    runtime_symbol_registration_preflight()
+        .map_err(RuntimeSymbolRegistrationError::from)?
+        .into_registration_plan()
 }
 
 /// The native failure behavior promised by a runtime helper binding.
@@ -393,5 +593,54 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(bound_symbols, helper_binding_symbols);
+    }
+
+    #[test]
+    fn runtime_symbol_registration_preflight_reports_current_gaps() {
+        let preflight =
+            runtime_symbol_registration_preflight().expect("registration preflight builds");
+        let binding_manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+
+        assert!(!preflight.is_complete());
+        assert_eq!(preflight.helper_bindings(), runtime_helper_bindings());
+        assert_eq!(
+            preflight.helper_bindings().len() + preflight.missing_bindings().len(),
+            binding_manifest.len()
+        );
+        assert!(
+            preflight
+                .missing_bindings()
+                .windows(2)
+                .all(|window| { window[0].symbol_name() < window[1].symbol_name() })
+        );
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_force"
+                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_apply"
+                && missing.helper_role() == Some(RuntimeHelperRole::CallControl)
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "nix.builtin.derivationStrict"
+                && missing.helper_role().is_none()
+        }));
+    }
+
+    #[test]
+    fn runtime_symbol_registration_plan_rejects_until_all_symbols_are_bound() {
+        let error = runtime_symbol_registration_plan()
+            .expect_err("complete registration is not available yet");
+
+        let RuntimeSymbolRegistrationError::Incomplete {
+            missing_count,
+            preflight,
+        } = error
+        else {
+            panic!("registration should fail because bindings are incomplete");
+        };
+        assert_eq!(missing_count, preflight.missing_bindings().len());
+        assert!(!preflight.is_complete());
+        assert_eq!(preflight.helper_bindings(), runtime_helper_bindings());
     }
 }

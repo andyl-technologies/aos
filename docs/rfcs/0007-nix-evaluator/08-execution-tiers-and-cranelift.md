@@ -940,6 +940,18 @@ harness, never cut for scope.
       builtin symbol. This is binding-status metadata only; it attaches no
       function pointers, exports no wrappers, registers no Cranelift symbols,
       and leaves builtin/forcing/call/attr/error helper addresses unbound.
+- [x] Current runtime symbol registration-preflight precursor:
+      `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
+      turns the binding manifest into a deterministic readiness report for
+      future `JITBuilder::symbol` setup: currently bindable helper metadata is
+      preserved in manifest order, and every unbound helper or builtin is
+      reported in the same stable order. The stricter
+      `runtime_symbol_registration_plan()` refuses to produce complete
+      registration metadata while missing bindings remain. Tests cover helper
+      readiness, sorted missing bindings, representative forcing/call helpers,
+      builtin gaps, and the current incomplete-plan error. This is a preflight
+      gate only; it attaches no executable addresses and performs no Cranelift
+      registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

@@ -790,6 +790,17 @@ harness, never cut for scope.
       roles, and builtin classification. This is status metadata only; it does
       not attach addresses, export native wrappers, register `JITBuilder`
       symbols, bind builtin bodies, or make compiled artifacts relinkable.
+- [x] Current runtime symbol registration-preflight precursor:
+      `runtime_symbol_registration_preflight()` derives a deterministic
+      readiness report from the binding manifest: bindable allocation and
+      write-barrier helpers stay in runtime-manifest order, and missing
+      helper/builtin bindings are reported in stable symbol order. The checked
+      `runtime_symbol_registration_plan()` currently returns an incomplete
+      registration error until forcing/call/attr/error helpers and builtin
+      executable bindings are added. Tests pin bindable-helper coverage,
+      sorted gaps, representative missing helper roles, builtin gaps, and the
+      incomplete-plan failure. This still does not register `JITBuilder` symbols,
+      attach addresses, export wrappers, or relink compiled artifacts.
 - [x] Current allocation ABI-signature precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
       success-path native parameter and typed pointer-result shape for every

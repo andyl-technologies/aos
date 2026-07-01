@@ -5207,6 +5207,18 @@ and helps the oracle directly.
       metadata only; it attaches no function pointers, exports no native
       wrappers, registers no Cranelift symbols, and leaves builtin,
       forcing/call/attr/error helper addresses unbound.
+- [x] Current runtime symbol registration-preflight precursor:
+      `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
+      converts the binding manifest into a deterministic readiness report for
+      future native registration: current allocation/write-barrier helper
+      bindings stay in runtime-manifest order, and every missing helper or
+      builtin binding is reported in stable symbol order. The stricter
+      `runtime_symbol_registration_plan()` currently returns an incomplete
+      registration error until all helper and builtin executable bindings exist.
+      Tests cover helper readiness, sorted missing bindings, representative
+      forcing/call helper gaps, a builtin gap, and the incomplete-plan failure.
+      This is a registration preflight only; it attaches no executable
+      addresses, exports no wrappers, and performs no Cranelift registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

@@ -917,6 +917,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       This is binding-status metadata only; it attaches no function pointers,
       exports no native wrappers, performs no Cranelift registration, and leaves
       forcing/call/attr/error helpers plus all builtin bodies unbound.
+- [x] Current runtime symbol registration-preflight precursor:
+      `runtime::helpers::runtime_symbol_registration_preflight()` converts the
+      binding-status manifest into a deterministic readiness report: current
+      allocation/write-barrier helper bindings stay in runtime-manifest order,
+      and every missing helper or builtin binding is reported in the same stable
+      order. `runtime_symbol_registration_plan()` is the stricter gate and
+      currently returns an incomplete-registration error until all helper and
+      builtin executable bindings exist. Tests cover helper readiness, sorted
+      missing symbols, representative forcing/call helper gaps, a builtin gap,
+      and the incomplete-plan failure. This is only a registration preflight; it
+      attaches no executable addresses, exports no wrappers, and performs no
+      Cranelift registration.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
