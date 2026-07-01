@@ -1124,11 +1124,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       returns `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights,
       writeback applications, and commit applications preserved together.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
-      boundary pipeline from the recorded GC-stress scans in one checked call.
-      Tests cover the worker dry-run path, including copy, forwarding,
-      reference-rewrite, and owned-buffer byte equality checks, permanent-shared
-      empty dry-run partitioning, plus the stress-disabled empty path. This is
-      still an owned dry-run surface only: it does not bind raw bytes to live
+      boundary pipeline from the recorded GC-stress scans in one checked call,
+      and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates
+      per-tier dry-run counts for copies, promotions, forwarding installs,
+      reference rewrites, root/heap-field writebacks, and remembered-set
+      publication. Tests cover the worker dry-run path, including copy,
+      forwarding, reference-rewrite, owned-buffer byte equality, and summary
+      counts; permanent-shared empty dry-run partitioning; mixed root/heap-field
+      summary aggregation; plus the stress-disabled empty path. This is still an
+      owned dry-run telemetry surface only: it does not bind raw bytes to live
       heap objects, install real object-header forwarding slots, mutate live
       tree-walk roots or heap fields, mutate remembered source fields, publish
       the evaluator-owned remembered set, or manage semispace storage.

@@ -868,6 +868,160 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
     pub const fn commit_applications(&self) -> &EvalGcStressBoundaryMinorGcCommitApplications {
         &self.commit_applications
     }
+
+    /// Returns aggregate counts for the owned dry-run applications.
+    pub fn summary(&self) -> EvalGcStressBoundaryMinorGcCommitDryRunSummary {
+        EvalGcStressBoundaryMinorGcCommitDryRunSummary::from_applications(
+            &self.reference_writebacks,
+            &self.commit_applications,
+        )
+    }
+}
+
+/// Aggregate counts from owned boundary minor-GC dry-run applications.
+///
+/// The summary is telemetry for the synthetic dry-run boundary only. It does
+/// not imply that live roots, heap fields, object bytes, forwarding headers,
+/// remembered sets, or semispace storage were mutated.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
+    tiers: usize,
+    object_copies: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    forwarding_pointers: usize,
+    reference_rewrites: usize,
+    root_writebacks: usize,
+    heap_field_writebacks: usize,
+    remembered_set_source_edges: usize,
+    remembered_set_published_edges: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
+    fn from_applications(
+        reference_writebacks: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+        commit_applications: &EvalGcStressBoundaryMinorGcCommitApplications,
+    ) -> Self {
+        let mut summary = Self::default();
+        summary.add_reference_writeback_applications(reference_writebacks);
+        summary.add_commit_applications(commit_applications);
+        summary
+    }
+
+    fn add_reference_writeback_applications(
+        &mut self,
+        applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+    ) {
+        if let Some(application) = applications.worker() {
+            self.add_reference_writeback_report(application.report());
+        }
+        if let Some(application) = applications.permanent_shared() {
+            self.add_reference_writeback_report(application.report());
+        }
+    }
+
+    fn add_commit_applications(
+        &mut self,
+        applications: &EvalGcStressBoundaryMinorGcCommitApplications,
+    ) {
+        if let Some(application) = applications.worker() {
+            self.add_commit_report(application.report());
+        }
+        if let Some(application) = applications.permanent_shared() {
+            self.add_commit_report(application.report());
+        }
+    }
+
+    fn add_reference_writeback_report(
+        &mut self,
+        report: AllocationCollectorPollReferenceWritebackReport,
+    ) {
+        self.root_writebacks = self
+            .root_writebacks
+            .saturating_add(report.root_writebacks());
+        self.heap_field_writebacks = self
+            .heap_field_writebacks
+            .saturating_add(report.heap_field_writebacks());
+    }
+
+    fn add_commit_report(&mut self, report: MinorGcCommitReport) {
+        self.tiers = self.tiers.saturating_add(1);
+        self.object_copies = self.object_copies.saturating_add(report.object_copies());
+        self.copied_to_nursery = self
+            .copied_to_nursery
+            .saturating_add(report.copied_to_nursery());
+        self.promoted_to_old = self
+            .promoted_to_old
+            .saturating_add(report.promoted_to_old());
+        self.forwarding_pointers = self
+            .forwarding_pointers
+            .saturating_add(report.forwarding_pointers());
+        self.reference_rewrites = self
+            .reference_rewrites
+            .saturating_add(report.reference_rewrites());
+        self.remembered_set_source_edges = self
+            .remembered_set_source_edges
+            .saturating_add(report.remembered_set_source_edges());
+        self.remembered_set_published_edges = self
+            .remembered_set_published_edges
+            .saturating_add(report.remembered_set_published_edges());
+    }
+
+    /// Returns how many allocator tiers produced dry-run applications.
+    pub const fn tiers(self) -> usize {
+        self.tiers
+    }
+
+    /// Returns the number of object byte-copy applications.
+    pub const fn object_copies(self) -> usize {
+        self.object_copies
+    }
+
+    /// Returns the number of survivors copied to the next nursery.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns the number of survivors promoted to old generation.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the number of forwarding slots populated.
+    pub const fn forwarding_pointers(self) -> usize {
+        self.forwarding_pointers
+    }
+
+    /// Returns the number of lower-level reference rewrites applied.
+    pub const fn reference_rewrites(self) -> usize {
+        self.reference_rewrites
+    }
+
+    /// Returns the number of caller-owned root slots rewritten.
+    pub const fn root_writebacks(self) -> usize {
+        self.root_writebacks
+    }
+
+    /// Returns the number of caller-owned heap-field slots rewritten.
+    pub const fn heap_field_writebacks(self) -> usize {
+        self.heap_field_writebacks
+    }
+
+    /// Returns the total number of caller-owned reference slots rewritten.
+    pub const fn reference_writebacks(self) -> usize {
+        self.root_writebacks
+            .saturating_add(self.heap_field_writebacks)
+    }
+
+    /// Returns remembered-set edges examined from source epochs.
+    pub const fn remembered_set_source_edges(self) -> usize {
+        self.remembered_set_source_edges
+    }
+
+    /// Returns remembered-set edges published into next epochs.
+    pub const fn remembered_set_published_edges(self) -> usize {
+        self.remembered_set_published_edges
+    }
 }
 
 /// Applied reference writeback buffers derived from boundary preflights.

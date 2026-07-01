@@ -5475,11 +5475,15 @@ and helps the oracle directly.
       returns `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights,
       writeback applications, and commit applications preserved together.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
-      boundary pipeline from the recorded GC-stress scans in one checked call.
+      boundary pipeline from the recorded GC-stress scans in one checked call,
+      and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates per-tier
+      dry-run counts for copies, promotions, forwarding installs, reference
+      rewrites, root/heap-field writebacks, and remembered-set publication.
       Tests cover the worker dry-run path, including copy, forwarding,
-      reference-rewrite, and owned-buffer byte equality checks, permanent-shared
-      empty dry-run partitioning, plus the stress-disabled empty path. This
-      remains an owned dry-run surface only; live heap-object byte binding, real
+      reference-rewrite, owned-buffer byte equality, and summary counts;
+      permanent-shared empty dry-run partitioning; mixed root/heap-field summary
+      aggregation; plus the stress-disabled empty path. This remains an owned
+      dry-run telemetry surface only; live heap-object byte binding, real
       object-header forwarding installation, live tree-walk root/heap-field
       mutation, remembered-source field mutation, evaluator remembered-set
       publication, and semispace management remain open.

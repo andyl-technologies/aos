@@ -667,6 +667,18 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
     assert!(dry_run.preflights().permanent_shared().is_none());
     assert!(dry_run.reference_writebacks().permanent_shared().is_none());
     assert!(dry_run.commit_applications().permanent_shared().is_none());
+    let summary = dry_run.summary();
+    assert_eq!(summary.tiers(), 1);
+    assert_eq!(summary.object_copies(), 1);
+    assert_eq!(summary.copied_to_nursery(), 1);
+    assert_eq!(summary.promoted_to_old(), 0);
+    assert_eq!(summary.forwarding_pointers(), 1);
+    assert_eq!(summary.reference_rewrites(), 1);
+    assert_eq!(summary.root_writebacks(), 1);
+    assert_eq!(summary.heap_field_writebacks(), 0);
+    assert_eq!(summary.reference_writebacks(), 1);
+    assert_eq!(summary.remembered_set_source_edges(), 0);
+    assert_eq!(summary.remembered_set_published_edges(), 0);
 
     let preflight = dry_run
         .preflights()
@@ -763,6 +775,18 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     assert!(dry_run.preflights().worker().is_none());
     assert!(dry_run.reference_writebacks().worker().is_none());
     assert!(dry_run.commit_applications().worker().is_none());
+    let summary = dry_run.summary();
+    assert_eq!(summary.tiers(), 1);
+    assert_eq!(summary.object_copies(), 0);
+    assert_eq!(summary.copied_to_nursery(), 0);
+    assert_eq!(summary.promoted_to_old(), 0);
+    assert_eq!(summary.forwarding_pointers(), 0);
+    assert_eq!(summary.reference_rewrites(), 0);
+    assert_eq!(summary.root_writebacks(), 0);
+    assert_eq!(summary.heap_field_writebacks(), 0);
+    assert_eq!(summary.reference_writebacks(), 0);
+    assert_eq!(summary.remembered_set_source_edges(), 0);
+    assert_eq!(summary.remembered_set_published_edges(), 0);
 
     let preflight = dry_run
         .preflights()
@@ -876,6 +900,24 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
             .iter()
             .all(|slot| slot.forwarded_value().is_some())
     );
+
+    let dry_run = preflights
+        .apply_owned_commit_dry_run()
+        .expect("mixed boundary dry-run applies");
+    let summary = dry_run.summary();
+    assert_eq!(summary.tiers(), 1);
+    assert_eq!(summary.root_writebacks(), 1);
+    assert!(summary.heap_field_writebacks() > 0);
+    assert_eq!(summary.reference_rewrites(), summary.reference_writebacks());
+    assert_eq!(
+        summary.object_copies(),
+        dry_run
+            .commit_applications()
+            .worker()
+            .expect("mixed worker commit records")
+            .object_byte_copies()
+            .len()
+    );
 }
 
 #[test]
@@ -952,6 +994,49 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         application.remembered_set().edges()[0].target(),
         nursery_base
     );
+
+    let dry_run = preflights
+        .apply_owned_commit_dry_run()
+        .expect("remembered boundary dry-run applies");
+    let summary = dry_run.summary();
+    let worker_commit = dry_run
+        .commit_applications()
+        .worker()
+        .expect("worker remembered dry-run commit records");
+    let permanent_commit = dry_run
+        .commit_applications()
+        .permanent_shared()
+        .expect("permanent empty dry-run commit records");
+    let worker_report = worker_commit.report();
+    let permanent_report = permanent_commit.report();
+
+    assert_eq!(summary.tiers(), dry_run.len());
+    assert_eq!(
+        summary.object_copies(),
+        worker_report
+            .object_copies()
+            .saturating_add(permanent_report.object_copies())
+    );
+    assert_eq!(
+        summary.reference_rewrites(),
+        worker_report
+            .reference_rewrites()
+            .saturating_add(permanent_report.reference_rewrites())
+    );
+    assert_eq!(
+        summary.remembered_set_source_edges(),
+        worker_report
+            .remembered_set_source_edges()
+            .saturating_add(permanent_report.remembered_set_source_edges())
+    );
+    assert_eq!(
+        summary.remembered_set_published_edges(),
+        worker_report
+            .remembered_set_published_edges()
+            .saturating_add(permanent_report.remembered_set_published_edges())
+    );
+    assert!(summary.remembered_set_source_edges() > 0);
+    assert!(summary.remembered_set_published_edges() > 0);
 }
 
 #[test]

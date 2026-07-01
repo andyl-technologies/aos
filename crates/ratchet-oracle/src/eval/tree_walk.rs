@@ -333,7 +333,8 @@ pub(crate) use options::{
 pub use outcome::{
     EvalDerivation, EvalGcStressBoundaryMinorGcCommitApplication,
     EvalGcStressBoundaryMinorGcCommitApplications, EvalGcStressBoundaryMinorGcCommitDryRun,
-    EvalGcStressBoundaryMinorGcCommitPreflight, EvalGcStressBoundaryMinorGcCommitPreflights,
+    EvalGcStressBoundaryMinorGcCommitDryRunSummary, EvalGcStressBoundaryMinorGcCommitPreflight,
+    EvalGcStressBoundaryMinorGcCommitPreflights,
     EvalGcStressBoundaryMinorGcObjectByteCopyApplication, EvalGcStressBoundaryMinorGcPlans,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
