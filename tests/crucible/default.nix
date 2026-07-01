@@ -1615,6 +1615,24 @@ in rec {
         phase1.gates.contentAddress
       ];
     };
+    failureClustering = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.failureClustering";
+      gate = import ./phase6-failure-clustering.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.failureClustering";
+        taskIds = ["T-TRI-4"];
+        dependencies = [
+          phase6.signaturePolicy.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.signaturePolicy
+        phase1.gates.contentAddress
+        phase4.gates.e2eDeterminism
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {

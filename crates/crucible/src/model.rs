@@ -73,6 +73,7 @@ const FAILURE_SIGNATURE_DOMAIN: &str = "crucible.failure-signature.v1";
 const FAILURE_SIGNATURE_KEY_DOMAIN: &str = "crucible.failure-signature.key.v1";
 const FAILURE_CAUSAL_SLICE_DOMAIN: &str = "crucible.failure-signature.causal-slice.v1";
 const FAILURE_TRIAGE_RESULT_IDENTITY_DOMAIN: &str = "crucible.failure-triage.result-identity.v1";
+const FAILURE_CLUSTERING_RESULT_DOMAIN: &str = "crucible.failure-triage.clustering-result.v1";
 const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
 const SIGNATURE_POLICY_SCHEMA_VERSION: u16 = 1;
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
@@ -4271,6 +4272,181 @@ impl FailureTriageResultIdentity {
     }
 }
 
+/// One finding and its recorded failure signature as consumed by clustering.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusterFinding {
+    /// Content hash of the reproduction artifact represented by this finding.
+    pub reproduction_artifact: ContentHash,
+    /// Recorded signature computed from the finding's stored run.
+    pub signature: FailureSignature,
+}
+
+impl FailureClusterFinding {
+    /// Builds one clustering input item.
+    #[must_use]
+    pub fn new(reproduction_artifact: ContentHash, signature: FailureSignature) -> Self {
+        Self {
+            reproduction_artifact,
+            signature,
+        }
+    }
+}
+
+/// One deterministically ordered member of a failure cluster.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusterMember {
+    /// Content hash of the member reproduction artifact.
+    pub reproduction_artifact: ContentHash,
+    /// Signature recorded for this member.
+    pub signature: FailureSignature,
+}
+
+/// Deterministic equivalence class of findings sharing one signature key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureCluster {
+    /// Cluster id, defined as the content hash of [`Self::signature_key`].
+    pub id: ContentHash,
+    /// Policy-projected key shared by every member.
+    pub signature_key: FailureSignatureKey,
+    /// Members ordered by reproduction-artifact content hash.
+    pub members: Vec<FailureClusterMember>,
+}
+
+impl FailureCluster {
+    /// Returns the content-address-least member for representative selection.
+    #[must_use]
+    pub fn representative_member(&self) -> Option<&FailureClusterMember> {
+        self.members.first()
+    }
+
+    /// Returns member reproduction-artifact hashes in deterministic order.
+    #[must_use]
+    pub fn member_hashes(&self) -> Vec<ContentHash> {
+        self.members
+            .iter()
+            .map(|member| member.reproduction_artifact)
+            .collect()
+    }
+}
+
+/// Deterministic clustering output for a findings ledger under one policy.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusteringResult {
+    /// Policy used to project signature keys.
+    pub policy: SignaturePolicy,
+    /// Clusters ordered by cluster id.
+    pub clusters: Vec<FailureCluster>,
+}
+
+impl FailureClusteringResult {
+    /// Partitions findings into deterministic content-address ordered clusters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if a signature
+    /// cannot be projected under `policy`, two distinct keys collide to the same
+    /// cluster id, or the same reproduction artifact is supplied with conflicting
+    /// signature evidence.
+    pub fn from_findings(
+        policy: SignaturePolicy,
+        findings: impl IntoIterator<Item = FailureClusterFinding>,
+    ) -> Result<Self, EngineError> {
+        let mut clusters = BTreeMap::new();
+        let mut seen_artifacts = BTreeMap::new();
+
+        for finding in findings {
+            let signature_key = finding.signature.signature_key(policy)?;
+            let cluster_id = signature_key.content_hash();
+            let signature_report = finding.signature.report_material();
+            if let Some((previous_key, previous_report)) = seen_artifacts.insert(
+                finding.reproduction_artifact,
+                (signature_key.clone(), signature_report.clone()),
+            ) {
+                if previous_key != signature_key || previous_report != signature_report {
+                    return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                        operation: "failure-clustering",
+                        reason: "same reproduction artifact has conflicting failure signatures",
+                    });
+                }
+            }
+
+            let member = FailureClusterMember {
+                reproduction_artifact: finding.reproduction_artifact,
+                signature: finding.signature,
+            };
+            match clusters.entry(cluster_id) {
+                Entry::Vacant(entry) => {
+                    let mut members = BTreeMap::new();
+                    members.insert(member.reproduction_artifact, member);
+                    entry.insert(FailureClusterBuilder {
+                        signature_key,
+                        members,
+                    });
+                }
+                Entry::Occupied(mut entry) => {
+                    if entry.get().signature_key != signature_key {
+                        return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                            operation: "failure-clustering",
+                            reason: "distinct signature keys collided to one cluster id",
+                        });
+                    }
+                    entry
+                        .get_mut()
+                        .members
+                        .insert(member.reproduction_artifact, member);
+                }
+            }
+        }
+
+        let clusters = clusters
+            .into_iter()
+            .map(|(id, builder)| FailureCluster {
+                id,
+                signature_key: builder.signature_key,
+                members: builder.members.into_values().collect(),
+            })
+            .collect();
+
+        Ok(Self { policy, clusters })
+    }
+
+    /// Returns the number of clusters in the partition.
+    #[must_use]
+    pub fn cluster_count(&self) -> usize {
+        self.clusters.len()
+    }
+
+    /// Returns the total number of clustered members.
+    #[must_use]
+    pub fn member_count(&self) -> usize {
+        self.clusters
+            .iter()
+            .map(|cluster| cluster.members.len())
+            .sum()
+    }
+
+    /// Returns canonical result material with clusters and members in content order.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_clustering_result_material(self)
+    }
+
+    /// Returns the content address of this deterministic clustering output.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_CLUSTERING_RESULT_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailureClusterBuilder {
+    signature_key: FailureSignatureKey,
+    members: BTreeMap<ContentHash, FailureClusterMember>,
+}
+
 /// Full canonical causal-cone material retained for exact policy keys.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FailureCausalCone {
@@ -5253,6 +5429,34 @@ fn failure_triage_result_identity_material(identity: FailureTriageResultIdentity
         identity.policy.canonical_material(),
     ]
     .join("\n")
+}
+
+fn failure_clustering_result_material(result: &FailureClusteringResult) -> String {
+    let mut lines = vec![
+        result.policy.canonical_material(),
+        format!("cluster_count={}", result.clusters.len()),
+        format!("member_count={}", result.member_count()),
+    ];
+    for (cluster_index, cluster) in result.clusters.iter().enumerate() {
+        lines.push(format!("cluster.index={cluster_index}"));
+        lines.push(format!("cluster.id={}", content_hash_hex(cluster.id)));
+        lines.push(String::from("cluster.signature_key_BEGIN"));
+        lines.push(cluster.signature_key.canonical_material().to_owned());
+        lines.push(String::from("cluster.signature_key_END"));
+        lines.push(format!("cluster.member_count={}", cluster.members.len()));
+        for (member_index, member) in cluster.members.iter().enumerate() {
+            lines.push(format!("cluster.member.index={member_index}"));
+            lines.push(format!(
+                "cluster.member.reproduction_artifact={}",
+                content_hash_hex(member.reproduction_artifact)
+            ));
+            lines.push(format!(
+                "cluster.member.signature={}",
+                content_hash_hex(member.signature.content_hash())
+            ));
+        }
+    }
+    lines.join("\n")
 }
 
 fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {

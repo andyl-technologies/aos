@@ -892,10 +892,18 @@ recomputable byte-for-byte from what was already stored.
   disallowing minimize-merge, and `FailureTriageResultIdentity` includes the
   findings ledger plus policy so re-clustering the same ledger under the same
   policy is idempotent.
-- [ ] **T-TRI-4** Implement deterministic clustering: equivalence-class partition
+- [x] **T-TRI-4** Implement deterministic clustering: equivalence-class partition
   by signature key, cluster id = content hash of the key, output and intra-cluster
   members content-address ordered with no host-nondeterminism on an
   ordering-significant path. — satisfies [TRI-10], [TRI-11]; spec §34.3.
+  Completed by `checks.crucible.phase6.failureClustering`: the model now exposes
+  `FailureClusterFinding`, `FailureClusterMember`, `FailureCluster`, and
+  `FailureClusteringResult`. The clustering fold projects each recorded
+  signature through the active `SignaturePolicy`, uses the signature-key content
+  hash as the cluster id, builds clusters and member sets with content-address
+  ordered `BTreeMap`s, rejects conflicting duplicate artifact evidence, and emits
+  canonical clustering material with clusters ordered by id and members ordered
+  by reproduction-artifact hash.
 - [ ] **T-TRI-5** Implement signature-preserving minimization by extending 22's
   pass ([ADV-30]) — strengthen the accept predicate to signature equality under
   the active policy, reuse the seeded order + per-candidate replay-oracle
