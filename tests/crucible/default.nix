@@ -1549,6 +1549,26 @@ in rec {
         phase6.reproductionArtifacts
       ];
     };
+    unifyingView = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.unifyingView";
+      gate = import ./phase6-unifying-view.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.unifyingView";
+        taskIds = ["T-ADV-16"];
+        dependencies = [
+          phase2.gates.singleVmFingerprint.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.minimization.rawGate
+        ];
+      };
+      dependencies = [
+        phase2.gates.singleVmFingerprint
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.minimization
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
