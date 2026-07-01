@@ -1015,6 +1015,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       empty snapshots. This is refresh metadata only: it does not mutate the
       remembered set, advance epochs, rescan old fields, copy objects, or manage
       semispaces.
+- [x] Current minor-GC remembered-set epoch-rebuild precursor:
+      `ratchet-value::heap::gc::RememberedSetEpoch::checked_next` and
+      `MinorGcRememberedSetRefreshPlan::rebuild_remembered_set` construct the
+      next-epoch remembered set from retained copied-young edges. The helper
+      preserves retained-edge order through the existing deduplicating
+      `RememberedSet`, advances the epoch exactly once, and rejects epoch
+      overflow. Tests cover non-empty rebuilds, empty rebuilds, retained-edge
+      filtering, and overflow rejection. This still does not mutate the source
+      snapshot, own the card-table protocol, rescan old fields, or invoke a
+      collector.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

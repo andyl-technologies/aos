@@ -5016,6 +5016,16 @@ and helps the oracle directly.
       This remains metadata only; mutating the remembered set, advancing epochs,
       rescanning old fields, copying objects, and semispace management remain
       open.
+- [x] Current minor-GC remembered-set epoch-rebuild precursor:
+      `ratchet-value::heap::gc::RememberedSetEpoch::checked_next` and
+      `MinorGcRememberedSetRefreshPlan::rebuild_remembered_set` construct a
+      next-epoch remembered set from the refresh plan's retained copied-young
+      edges. The helper preserves retained-edge order through the existing
+      deduplicating `RememberedSet`, advances the epoch exactly once, and
+      rejects epoch overflow. Unit tests cover non-empty rebuilds, empty
+      rebuilds, retained-edge filtering, and overflow rejection. This still does
+      not mutate the source snapshot, own card-table construction, rescan old
+      fields, or invoke the collector.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

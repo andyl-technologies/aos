@@ -237,6 +237,19 @@ impl RememberedSetEpoch {
     pub const fn value(self) -> u64 {
         self.value
     }
+
+    /// Returns the next remembered-set epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::RememberedSetEpochOverflow`] if the epoch
+    /// counter cannot advance.
+    pub const fn checked_next(self) -> Result<Self, GenerationalGcError> {
+        match self.value.checked_add(1) {
+            Some(value) => Ok(Self { value }),
+            None => Err(GenerationalGcError::RememberedSetEpochOverflow),
+        }
+    }
 }
 
 impl std::fmt::Display for RememberedSetEpoch {
@@ -837,6 +850,25 @@ impl MinorGcRememberedSetRefreshPlan {
             .filter_map(|refresh| refresh.retained_edge())
     }
 
+    /// Rebuilds the remembered set for the next minor-GC epoch.
+    ///
+    /// Only copied-young retained edges are inserted. Promoted and stale/dead
+    /// targets are omitted because they no longer name young-generation objects
+    /// that need minor-GC remembered edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::RememberedSetEpochOverflow`] if the source
+    /// epoch cannot advance. Returns [`GenerationalGcError`] if the rebuilt set
+    /// cannot reserve storage for retained edges.
+    pub fn rebuild_remembered_set(&self) -> Result<RememberedSet, GenerationalGcError> {
+        let mut set = RememberedSet::with_epoch(self.source_epoch.checked_next()?);
+        for edge in self.retained_edges() {
+            set.record(edge)?;
+        }
+        Ok(set)
+    }
+
     /// Returns the number of remembered edges examined.
     pub fn len(&self) -> usize {
         self.refreshes.len()
@@ -1254,6 +1286,9 @@ pub enum GenerationalGcError {
         /// The epoch attached to the remembered-set snapshot.
         actual: RememberedSetEpoch,
     },
+    /// The remembered-set epoch counter overflowed.
+    #[error("remembered-set epoch overflow")]
+    RememberedSetEpochOverflow,
     /// The minor-GC frontier length overflowed.
     #[error("minor-GC frontier length overflow")]
     MinorGcFrontierLengthOverflow,
@@ -1497,6 +1532,11 @@ mod tests {
         assert_eq!(snapshot.epoch(), epoch);
         assert_eq!(snapshot.edges(), &[edge]);
         assert_eq!(epoch.value(), 7);
+        assert_eq!(epoch.checked_next(), Ok(RememberedSetEpoch::new(8)));
+        assert_eq!(
+            RememberedSetEpoch::new(u64::MAX).checked_next(),
+            Err(GenerationalGcError::RememberedSetEpochOverflow)
+        );
     }
 
     #[test]
@@ -2149,6 +2189,17 @@ mod tests {
                 RememberedEdge::new(second_source, copy_destination),
             ]
         );
+        let rebuilt = refresh_plan
+            .rebuild_remembered_set()
+            .expect("remembered set rebuilds");
+        assert_eq!(rebuilt.epoch(), RememberedSetEpoch::new(14));
+        assert_eq!(
+            rebuilt.edges(),
+            &[
+                RememberedEdge::new(first_source, copy_destination),
+                RememberedEdge::new(second_source, copy_destination),
+            ]
+        );
     }
 
     #[test]
@@ -2166,6 +2217,22 @@ mod tests {
         assert!(refresh_plan.is_empty());
         assert_eq!(refresh_plan.refreshes(), &[]);
         assert_eq!(refresh_plan.retained_edges().collect::<Vec<_>>(), []);
+        let rebuilt = refresh_plan
+            .rebuild_remembered_set()
+            .expect("empty remembered set rebuilds");
+        assert_eq!(rebuilt.epoch(), RememberedSetEpoch::new(22));
+        assert_eq!(rebuilt.edges(), &[]);
+
+        let max_epoch_set = RememberedSet::with_epoch(RememberedSetEpoch::new(u64::MAX));
+        let max_epoch_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            max_epoch_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("max epoch empty refresh plan builds");
+        assert_eq!(
+            max_epoch_refresh.rebuild_remembered_set(),
+            Err(GenerationalGcError::RememberedSetEpochOverflow)
+        );
     }
 
     #[test]
