@@ -1050,6 +1050,12 @@ in rec {
       attrPath = "checks.crucible.phase4.guestHostChannelDeterminism";
       taskIds = ["T-GHC-12"];
     };
+    guestHostVirtualMemorySpike = import ./phase4-guest-host-virtual-memory-spike.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostVirtualMemorySpike";
+      taskIds = ["T-GHC-13"];
+      phase0S5 = phase0.s5VirtualMemory;
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
