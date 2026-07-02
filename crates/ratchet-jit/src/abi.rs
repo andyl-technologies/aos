@@ -2,11 +2,11 @@
 //!
 //! The inventory in this module mirrors the safe runtime ABI metadata owned by
 //! `ratchet-core`. It gives JIT-side code a local, documented entry point for the
-//! thunk, lambda, and builtin primop call signatures without creating raw
-//! function-pointer type aliases or executable wrappers. The CLIF adapter lowers
-//! those frozen call signatures to Cranelift [`Signature`] values only; it does
-//! not construct a Cranelift module, register symbols, emit code, or call native
-//! addresses.
+//! thunk, lambda, builtin primop, and core-owned helper call signatures without
+//! creating raw function-pointer type aliases or executable wrappers. The CLIF
+//! adapter lowers those frozen call signatures to Cranelift [`Signature`] values
+//! only; it does not construct a Cranelift module, register symbols, emit code,
+//! or call native addresses.
 
 use std::{error::Error, fmt};
 
@@ -17,7 +17,8 @@ use cranelift_codegen::{
 use ratchet_core::{
     RuntimeAbiCallingConvention, RuntimeAbiParameter, RuntimeAbiParameterKind,
     RuntimeAbiReturnKind, RuntimeAbiValueLayout, RuntimeCallSignature, runtime_abi_value_layout,
-    runtime_lambda_call_signature, runtime_primop_call_signatures, runtime_thunk_call_signature,
+    runtime_helper_call_signatures, runtime_lambda_call_signature, runtime_primop_call_signatures,
+    runtime_thunk_call_signature,
 };
 use target_lexicon::{CallingConvention, Triple};
 
@@ -31,6 +32,7 @@ pub struct JitRuntimeAbiInventory {
     thunk_body: RuntimeCallSignature,
     lambda_body: RuntimeCallSignature,
     primop_wrappers: Vec<RuntimeCallSignature>,
+    helper_wrappers: Vec<RuntimeCallSignature>,
 }
 
 impl JitRuntimeAbiInventory {
@@ -40,6 +42,7 @@ impl JitRuntimeAbiInventory {
             thunk_body: runtime_thunk_call_signature(),
             lambda_body: runtime_lambda_call_signature(),
             primop_wrappers: runtime_primop_call_signatures().to_vec(),
+            helper_wrappers: runtime_helper_call_signatures().to_vec(),
         }
     }
 
@@ -57,6 +60,11 @@ impl JitRuntimeAbiInventory {
     pub fn primop_wrapper_signatures(&self) -> &[RuntimeCallSignature] {
         &self.primop_wrappers
     }
+
+    /// Returns frozen helper call signatures with core-owned ABI shapes.
+    pub fn helper_wrapper_signatures(&self) -> &[RuntimeCallSignature] {
+        &self.helper_wrappers
+    }
 }
 
 /// Returns the JIT-side view of the frozen runtime-call ABI metadata.
@@ -66,9 +74,11 @@ pub fn jit_runtime_abi_inventory() -> JitRuntimeAbiInventory {
 
 /// Converts a frozen runtime-call signature into a Cranelift function signature.
 ///
-/// Runtime context and environment parameters become host-pointer-sized CLIF
-/// parameters. Each by-value runtime `Value` parameter or result is expanded to
-/// the frozen two-word `i64, i64` ABI shape recorded by `ratchet-core`.
+/// Runtime context, environment, code, and heap-object pointer parameters become
+/// host-pointer-sized CLIF parameters. Each by-value runtime `Value` parameter
+/// or result is expanded to the frozen two-word `i64, i64` ABI shape recorded by
+/// `ratchet-core`; fixed `u32`-sized fields lower to `i32`, and `usize` lowers
+/// to the host pointer type.
 ///
 /// # Errors
 ///
@@ -91,7 +101,11 @@ pub fn clif_signature_for_runtime_call(
     for parameter in signature.parameters() {
         append_parameter(&mut clif_signature.params, *parameter, pointer_type);
     }
-    append_return_kind(&mut clif_signature.returns, signature.return_kind());
+    append_return_kind(
+        &mut clif_signature.returns,
+        signature.return_kind(),
+        pointer_type,
+    );
 
     Ok(clif_signature)
 }
@@ -191,16 +205,39 @@ fn append_parameter(
     pointer_type: Type,
 ) {
     match parameter.kind() {
-        RuntimeAbiParameterKind::RuntimeContext | RuntimeAbiParameterKind::EnvPointer => {
+        RuntimeAbiParameterKind::RuntimeContext
+        | RuntimeAbiParameterKind::EnvPointer
+        | RuntimeAbiParameterKind::CodePointer
+        | RuntimeAbiParameterKind::ThunkPointer
+        | RuntimeAbiParameterKind::LambdaPointer
+        | RuntimeAbiParameterKind::AttrsPointer
+        | RuntimeAbiParameterKind::ListPointer
+        | RuntimeAbiParameterKind::StringHeaderPointer
+        | RuntimeAbiParameterKind::RawPointer => {
             params.push(AbiParam::new(pointer_type));
         }
         RuntimeAbiParameterKind::Value => append_value_words(params),
+        RuntimeAbiParameterKind::ShapeId
+        | RuntimeAbiParameterKind::TypeTag
+        | RuntimeAbiParameterKind::U32 => params.push(AbiParam::new(types::I32)),
+        RuntimeAbiParameterKind::Usize => params.push(AbiParam::new(pointer_type)),
     }
 }
 
-fn append_return_kind(returns: &mut Vec<AbiParam>, return_kind: RuntimeAbiReturnKind) {
+fn append_return_kind(
+    returns: &mut Vec<AbiParam>,
+    return_kind: RuntimeAbiReturnKind,
+    pointer_type: Type,
+) {
     match return_kind {
         RuntimeAbiReturnKind::Value => append_value_words(returns),
+        RuntimeAbiReturnKind::Unit => {}
+        RuntimeAbiReturnKind::ThunkPointer
+        | RuntimeAbiReturnKind::LambdaPointer
+        | RuntimeAbiReturnKind::AttrsPointer
+        | RuntimeAbiReturnKind::ListPointer
+        | RuntimeAbiReturnKind::StringHeaderPointer
+        | RuntimeAbiReturnKind::RawPointer => returns.push(AbiParam::new(pointer_type)),
     }
 }
 
@@ -255,9 +292,10 @@ fn validate_observed_value_layout(
 mod tests {
     use cranelift_codegen::ir::{Type, types};
     use ratchet_core::{
-        RuntimeCallableKind, runtime_abi_value_layout, runtime_lambda_call_signature,
-        runtime_primop_call_signature, runtime_primop_call_signatures,
-        runtime_thunk_call_signature,
+        RuntimeCallableKind, RuntimeHelperRole, runtime_abi_value_layout,
+        runtime_helper_call_signature, runtime_helper_call_signatures,
+        runtime_lambda_call_signature, runtime_primop_call_signature,
+        runtime_primop_call_signatures, runtime_thunk_call_signature,
     };
 
     use super::*;
@@ -277,6 +315,10 @@ mod tests {
         assert_eq!(
             inventory.primop_wrapper_signatures(),
             runtime_primop_call_signatures()
+        );
+        assert_eq!(
+            inventory.helper_wrapper_signatures(),
+            runtime_helper_call_signatures()
         );
     }
 
@@ -305,6 +347,17 @@ mod tests {
                 RuntimeCallableKind::Primop { arity: 2 },
                 RuntimeCallableKind::Primop { arity: 3 },
             ]
+        );
+        assert!(
+            inventory
+                .helper_wrapper_signatures()
+                .iter()
+                .any(|signature| matches!(
+                    signature.callable(),
+                    RuntimeCallableKind::Helper { symbol }
+                        if symbol.name() == "aos_alloc_attrs"
+                            && symbol.role() == RuntimeHelperRole::Allocation
+                ))
         );
     }
 
@@ -355,6 +408,41 @@ mod tests {
             assert_eq!(param_types(&signature), expected_params);
             assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
         }
+    }
+
+    #[test]
+    fn allocation_helper_clif_signature_lowers_scalars_and_pointer_return() {
+        let runtime_signature = runtime_helper_call_signature("aos_alloc_attrs")
+            .expect("allocation helper signature is core-owned");
+        let signature = clif_signature_for_runtime_call(runtime_signature)
+            .expect("allocation helper signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(
+            runtime_signature.return_kind(),
+            RuntimeAbiReturnKind::AttrsPointer
+        );
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, types::I32, types::I32]
+        );
+        assert_eq!(return_types(&signature), vec![pointer_type]);
+    }
+
+    #[test]
+    fn write_barrier_helper_clif_signature_lowers_value_and_unit_return() {
+        let runtime_signature = runtime_helper_call_signature("aos_gc_write_barrier")
+            .expect("write-barrier helper signature is core-owned");
+        let signature = clif_signature_for_runtime_call(runtime_signature)
+            .expect("write-barrier helper signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Unit);
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, pointer_type, types::I64, types::I64]
+        );
+        assert!(return_types(&signature).is_empty());
     }
 
     #[test]

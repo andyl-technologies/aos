@@ -467,10 +467,11 @@ impl From<JitModuleReadinessError> for JitCraneliftModuleSetupError {
 
 /// Builds a real JIT module and declares shape-known runtime symbol imports.
 ///
-/// The returned preflight owns a [`JITModule`] with callable builtin imports
-/// declared using `Linkage::Import`. Runtime helpers and value-only builtins
-/// remain explicit gaps. No runtime symbol addresses are registered and no CLIF
-/// functions are defined, finalized, or called.
+/// The returned preflight owns a [`JITModule`] with callable builtin and
+/// core-owned allocation/write-barrier helper imports declared using
+/// `Linkage::Import`. Unshaped helpers and value-only builtins remain explicit
+/// gaps. No runtime symbol addresses are registered and no CLIF functions are
+/// defined, finalized, or called.
 ///
 /// # Errors
 ///
@@ -501,8 +502,8 @@ pub fn jit_cranelift_module_declaration_preflight_for_artifact(
 ///
 /// The returned preflight owns a [`JITModule`] with callable builtin imports
 /// declared, plus one artifact body declared as an exported function and passed
-/// to Cranelift's definition API. Runtime helper and value-only builtin gaps are
-/// preserved. A successful definition lets Cranelift compile the body and
+/// to Cranelift's definition API. Unshaped helper and value-only builtin gaps
+/// are preserved. A successful definition lets Cranelift compile the body and
 /// allocate JIT code memory inside the private module. The module is not
 /// finalized, no code pointer is returned, and no native code is called.
 ///
@@ -544,8 +545,8 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
 /// Builds a complete JIT module setup for `artifact`.
 ///
 /// This strict gate only succeeds once runtime-symbol readiness is complete.
-/// In the current implementation it returns a readiness error because helper
-/// symbols and value-only builtins still have declaration gaps.
+/// In the current implementation it returns a readiness error because unshaped
+/// helper symbols and value-only builtins still have declaration gaps.
 ///
 /// # Errors
 ///

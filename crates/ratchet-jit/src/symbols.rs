@@ -12,9 +12,9 @@ use std::{collections::BTreeMap, error::Error, fmt};
 use cranelift_codegen::ir::Signature;
 
 use ratchet_core::{
-    RuntimeBuiltinCallBinding, RuntimeBuiltinCallMissingBinding, RuntimeHelperRole,
-    RuntimeSymbolKind, RuntimeSymbolManifestEntry, RuntimeSymbolNameError,
-    runtime_builtin_call_preflight, runtime_symbol_manifest,
+    RuntimeBuiltinCallBinding, RuntimeBuiltinCallMissingBinding, RuntimeCallSignature,
+    RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolManifestEntry, RuntimeSymbolNameError,
+    runtime_builtin_call_preflight, runtime_helper_call_signature, runtime_symbol_manifest,
 };
 
 use crate::abi::{JitClifSignatureError, clif_signature_for_runtime_call};
@@ -105,7 +105,7 @@ impl JitRuntimeSymbolDeclaration {
 /// A stable runtime symbol that cannot yet be declared with a CLIF signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JitRuntimeSymbolDeclarationGap {
-    /// Runtime helper ABI metadata is not owned by `ratchet-jit` yet.
+    /// Runtime helper ABI metadata is not core-owned yet.
     HelperWithoutCoreCallSignature {
         /// The stable `aos_*` helper symbol name.
         symbol_name: String,
@@ -284,17 +284,18 @@ impl From<RuntimeSymbolNameError> for JitRuntimeSymbolDeclarationError {
 
 /// Builds address-free CLIF declaration readiness for stable runtime symbols.
 ///
-/// Callable builtin symbols receive CLIF signatures from the frozen core
-/// primop ABI. Helper symbols and value-only builtin symbols remain explicit
-/// gaps, because this crate still has no helper wrapper ABI or executable
-/// addresses to register.
+/// Callable builtin symbols receive CLIF signatures from the frozen core primop
+/// ABI. Runtime helpers whose ABI shapes are core-owned receive helper CLIF
+/// signatures. Helpers without core-owned shapes and value-only builtin symbols
+/// remain explicit gaps, because this crate still has no executable addresses to
+/// register.
 ///
 /// # Errors
 ///
 /// Returns [`JitRuntimeSymbolDeclarationError::SymbolName`] if core symbol
 /// metadata cannot be built. Returns
-/// [`JitRuntimeSymbolDeclarationError::ClifSignature`] if a callable builtin
-/// signature cannot be lowered to CLIF on this host.
+/// [`JitRuntimeSymbolDeclarationError::ClifSignature`] if a callable builtin or
+/// core-owned helper signature cannot be lowered to CLIF on this host.
 pub fn jit_runtime_symbol_declaration_preflight()
 -> Result<JitRuntimeSymbolDeclarationPreflight, JitRuntimeSymbolDeclarationError> {
     let manifest = runtime_symbol_manifest()?;
@@ -308,10 +309,18 @@ pub fn jit_runtime_symbol_declaration_preflight()
     for symbol in manifest {
         match symbol.kind() {
             RuntimeSymbolKind::Helper(role) => {
-                gaps.push(JitRuntimeSymbolDeclarationGap::helper(
-                    symbol.name().to_owned(),
-                    role,
-                ));
+                if let Some(signature) = runtime_helper_call_signature(symbol.name()) {
+                    declarations.push(declaration_for_helper_signature(
+                        symbol.name(),
+                        role,
+                        signature,
+                    )?);
+                } else {
+                    gaps.push(JitRuntimeSymbolDeclarationGap::helper(
+                        symbol.name().to_owned(),
+                        role,
+                    ));
+                }
             }
             RuntimeSymbolKind::Builtin => {
                 if let Some(binding) = builtin_bindings.get(symbol.name()) {
@@ -353,16 +362,36 @@ fn builtin_gaps_by_symbol(
 fn declaration_for_builtin_binding(
     binding: &RuntimeBuiltinCallBinding,
 ) -> Result<JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError> {
-    let signature = clif_signature_for_runtime_call(binding.signature()).map_err(|source| {
+    declaration_for_runtime_signature(
+        binding.symbol_name(),
+        RuntimeSymbolKind::Builtin,
+        binding.signature(),
+    )
+}
+
+fn declaration_for_helper_signature(
+    symbol_name: &str,
+    role: RuntimeHelperRole,
+    signature: RuntimeCallSignature,
+) -> Result<JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError> {
+    declaration_for_runtime_signature(symbol_name, RuntimeSymbolKind::Helper(role), signature)
+}
+
+fn declaration_for_runtime_signature(
+    symbol_name: &str,
+    kind: RuntimeSymbolKind,
+    runtime_signature: RuntimeCallSignature,
+) -> Result<JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError> {
+    let signature = clif_signature_for_runtime_call(runtime_signature).map_err(|source| {
         JitRuntimeSymbolDeclarationError::ClifSignature {
-            symbol_name: binding.symbol_name().to_owned(),
+            symbol_name: symbol_name.to_owned(),
             source,
         }
     })?;
 
     Ok(JitRuntimeSymbolDeclaration::new(
-        binding.symbol_name().to_owned(),
-        RuntimeSymbolKind::Builtin,
+        symbol_name.to_owned(),
+        kind,
         signature,
     ))
 }
@@ -370,7 +399,8 @@ fn declaration_for_builtin_binding(
 #[cfg(test)]
 mod tests {
     use ratchet_core::{
-        RuntimeHelperRole, RuntimeSymbolKind, runtime_builtin_call_preflight,
+        RuntimeCallableKind, RuntimeHelperRole, RuntimeSymbolKind, runtime_builtin_call_preflight,
+        runtime_helper_call_signature, runtime_helper_call_signatures,
         runtime_primop_call_signature, runtime_symbol_manifest,
     };
 
@@ -447,7 +477,45 @@ mod tests {
     }
 
     #[test]
-    fn jit_runtime_symbol_declaration_preflight_reports_helper_gaps() {
+    fn jit_runtime_symbol_declaration_preflight_declares_core_owned_helpers() {
+        let preflight = jit_runtime_symbol_declaration_preflight()
+            .expect("JIT symbol declaration preflight builds");
+        let allocation_declaration = preflight
+            .declaration_for_symbol("aos_alloc_attrs")
+            .expect("core-owned allocation helper has a CLIF declaration");
+        let write_barrier_declaration = preflight
+            .declaration_for_symbol("aos_gc_write_barrier")
+            .expect("core-owned write-barrier helper has a CLIF declaration");
+        let expected_allocation = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_alloc_attrs")
+                .expect("allocation helper signature is core-owned"),
+        )
+        .expect("allocation helper signature lowers");
+        let expected_write_barrier = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_gc_write_barrier")
+                .expect("write-barrier helper signature is core-owned"),
+        )
+        .expect("write-barrier helper signature lowers");
+
+        assert_eq!(
+            allocation_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
+        );
+        assert_eq!(allocation_declaration.signature(), &expected_allocation);
+        assert_eq!(
+            write_barrier_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier)
+        );
+        assert_eq!(
+            write_barrier_declaration.signature(),
+            &expected_write_barrier
+        );
+        assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
+        assert!(preflight.gap_for_symbol("aos_gc_write_barrier").is_none());
+    }
+
+    #[test]
+    fn jit_runtime_symbol_declaration_preflight_reports_unshaped_helper_gaps() {
         let preflight = jit_runtime_symbol_declaration_preflight()
             .expect("JIT symbol declaration preflight builds");
 
@@ -456,15 +524,6 @@ mod tests {
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
-                    ..
-                }
-            )
-        ));
-        assert!(matches!(
-            preflight.gap_for_symbol("aos_alloc_attrs"),
-            Some(
-                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::Allocation,
                     ..
                 }
             )
@@ -501,7 +560,7 @@ mod tests {
         assert!(!preflight.is_complete());
         assert_eq!(
             preflight.declarations().len(),
-            builtin_preflight.call_bindings().len()
+            builtin_preflight.call_bindings().len() + runtime_helper_call_signatures().len()
         );
         for binding in builtin_preflight.call_bindings() {
             assert!(
@@ -510,6 +569,16 @@ mod tests {
                     .is_some(),
                 "{} has a JIT CLIF declaration",
                 binding.symbol_name()
+            );
+        }
+        for signature in runtime_helper_call_signatures() {
+            let RuntimeCallableKind::Helper { symbol } = signature.callable() else {
+                panic!("helper signature uses helper callable kind");
+            };
+            assert!(
+                preflight.declaration_for_symbol(symbol.name()).is_some(),
+                "{} has a JIT CLIF declaration",
+                symbol.name()
             );
         }
     }

@@ -223,6 +223,123 @@ pub const RUNTIME_PRIMOP_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_PRIMOP_3_CALL_SIGNATURE,
 ];
 
+const ALLOC_ATTRS_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("shape", RuntimeAbiParameterKind::ShapeId),
+    RuntimeAbiParameter::new("slots", RuntimeAbiParameterKind::U32),
+];
+const ALLOC_CONS_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("head", RuntimeAbiParameterKind::Value),
+    RuntimeAbiParameter::new("tail", RuntimeAbiParameterKind::ListPointer),
+];
+const ALLOC_LAMBDA_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("code_ptr", RuntimeAbiParameterKind::CodePointer),
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+];
+const ALLOC_LIST_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("len", RuntimeAbiParameterKind::Usize),
+];
+const ALLOC_RAW_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("size", RuntimeAbiParameterKind::Usize),
+    RuntimeAbiParameter::new("align", RuntimeAbiParameterKind::Usize),
+    RuntimeAbiParameter::new("type_tag", RuntimeAbiParameterKind::TypeTag),
+];
+const ALLOC_STRING_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("len", RuntimeAbiParameterKind::Usize),
+];
+const ALLOC_THUNK_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("code_ptr", RuntimeAbiParameterKind::CodePointer),
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+];
+const GC_WRITE_BARRIER_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("thunk", RuntimeAbiParameterKind::ThunkPointer),
+    RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+];
+
+const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_attrs", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_ATTRS_PARAMETERS,
+    RuntimeAbiReturnKind::AttrsPointer,
+);
+const RUNTIME_ALLOC_CONS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_cons", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_CONS_PARAMETERS,
+    RuntimeAbiReturnKind::ListPointer,
+);
+const RUNTIME_ALLOC_LAMBDA_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_lambda", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_LAMBDA_PARAMETERS,
+    RuntimeAbiReturnKind::LambdaPointer,
+);
+const RUNTIME_ALLOC_LIST_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_list", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_LIST_PARAMETERS,
+    RuntimeAbiReturnKind::ListPointer,
+);
+const RUNTIME_ALLOC_RAW_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_raw", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_RAW_PARAMETERS,
+    RuntimeAbiReturnKind::RawPointer,
+);
+const RUNTIME_ALLOC_STRING_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_string", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_STRING_PARAMETERS,
+    RuntimeAbiReturnKind::StringHeaderPointer,
+);
+const RUNTIME_ALLOC_THUNK_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_alloc_thunk", RuntimeHelperRole::Allocation),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ALLOC_THUNK_PARAMETERS,
+    RuntimeAbiReturnKind::ThunkPointer,
+);
+const RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_gc_write_barrier", RuntimeHelperRole::WriteBarrier),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    GC_WRITE_BARRIER_PARAMETERS,
+    RuntimeAbiReturnKind::Unit,
+);
+
+/// Frozen helper call signatures for helpers with core-owned ABI shapes today.
+pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
+    RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE,
+    RUNTIME_ALLOC_CONS_CALL_SIGNATURE,
+    RUNTIME_ALLOC_LAMBDA_CALL_SIGNATURE,
+    RUNTIME_ALLOC_LIST_CALL_SIGNATURE,
+    RUNTIME_ALLOC_RAW_CALL_SIGNATURE,
+    RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
+    RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
+    RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
+];
+
 /// Returns the by-value runtime value layout assumed by native call metadata.
 pub const fn runtime_abi_value_layout() -> RuntimeAbiValueLayout {
     RUNTIME_ABI_VALUE_LAYOUT
@@ -241,6 +358,26 @@ pub const fn runtime_lambda_call_signature() -> RuntimeCallSignature {
 /// Returns the frozen primop call-signature inventory.
 pub const fn runtime_primop_call_signatures() -> &'static [RuntimeCallSignature] {
     RUNTIME_PRIMOP_CALL_SIGNATURES
+}
+
+/// Returns frozen helper call signatures whose ABI shapes are core-owned today.
+pub const fn runtime_helper_call_signatures() -> &'static [RuntimeCallSignature] {
+    RUNTIME_HELPER_CALL_SIGNATURES
+}
+
+/// Returns the frozen helper call signature for `symbol_name`, when known.
+pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSignature> {
+    match symbol_name {
+        "aos_alloc_attrs" => Some(RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE),
+        "aos_alloc_cons" => Some(RUNTIME_ALLOC_CONS_CALL_SIGNATURE),
+        "aos_alloc_lambda" => Some(RUNTIME_ALLOC_LAMBDA_CALL_SIGNATURE),
+        "aos_alloc_list" => Some(RUNTIME_ALLOC_LIST_CALL_SIGNATURE),
+        "aos_alloc_raw" => Some(RUNTIME_ALLOC_RAW_CALL_SIGNATURE),
+        "aos_alloc_string" => Some(RUNTIME_ALLOC_STRING_CALL_SIGNATURE),
+        "aos_alloc_thunk" => Some(RUNTIME_ALLOC_THUNK_CALL_SIGNATURE),
+        "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
+        _ => None,
+    }
 }
 
 /// Returns the frozen primop call signature for `arity`.
@@ -275,6 +412,11 @@ pub enum RuntimeCallableKind {
     Primop {
         /// The number of positional [`RuntimeAbiParameterKind::Value`] arguments.
         arity: usize,
+    },
+    /// A runtime helper registered under a stable `aos_*` symbol.
+    Helper {
+        /// The stable helper symbol served by this signature.
+        symbol: RuntimeHelperSymbol,
     },
 }
 
@@ -348,8 +490,30 @@ pub enum RuntimeAbiParameterKind {
     RuntimeContext,
     /// The captured environment frame pointer.
     EnvPointer,
+    /// A pointer to native code for a thunk or lambda body.
+    CodePointer,
+    /// A pointer to a runtime thunk object.
+    ThunkPointer,
+    /// A pointer to a runtime lambda closure object.
+    LambdaPointer,
+    /// A pointer to a runtime attrset object.
+    AttrsPointer,
+    /// A pointer to a runtime list object.
+    ListPointer,
+    /// A pointer to a runtime string header object.
+    StringHeaderPointer,
+    /// A pointer to raw heap storage.
+    RawPointer,
     /// A by-value runtime `Value` using [`runtime_abi_value_layout`].
     Value,
+    /// A hidden-class shape identifier.
+    ShapeId,
+    /// A target-pointer-sized unsigned integer.
+    Usize,
+    /// A runtime-specific raw allocation type tag.
+    TypeTag,
+    /// A 32-bit unsigned integer.
+    U32,
 }
 
 /// The machine-level result kind returned by runtime-call signatures.
@@ -357,6 +521,20 @@ pub enum RuntimeAbiParameterKind {
 pub enum RuntimeAbiReturnKind {
     /// A by-value runtime `Value` using [`runtime_abi_value_layout`].
     Value,
+    /// No machine-level result.
+    Unit,
+    /// A pointer to a runtime thunk object.
+    ThunkPointer,
+    /// A pointer to a runtime lambda closure object.
+    LambdaPointer,
+    /// A pointer to a runtime attrset object.
+    AttrsPointer,
+    /// A pointer to a runtime list object.
+    ListPointer,
+    /// A pointer to a runtime string header object.
+    StringHeaderPointer,
+    /// A pointer to raw heap storage.
+    RawPointer,
 }
 
 /// A frozen native-call signature for a runtime callable family.
@@ -1024,6 +1202,109 @@ mod tests {
                 max: MAX_RUNTIME_PRIMOP_ABI_ARITY,
             }
         );
+    }
+
+    #[test]
+    fn helper_call_signatures_cover_core_owned_storage_helpers() {
+        let helper_signatures = runtime_helper_call_signatures();
+        let helper_symbols = helper_signatures
+            .iter()
+            .map(|signature| match signature.callable() {
+                RuntimeCallableKind::Helper { symbol } => symbol.name(),
+                other => panic!("helper signature had non-helper callable kind: {other:?}"),
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            helper_symbols,
+            BTreeSet::from([
+                "aos_alloc_attrs",
+                "aos_alloc_cons",
+                "aos_alloc_lambda",
+                "aos_alloc_list",
+                "aos_alloc_raw",
+                "aos_alloc_string",
+                "aos_alloc_thunk",
+                "aos_gc_write_barrier",
+            ])
+        );
+        assert_eq!(
+            runtime_helper_call_signature("aos_force"),
+            None,
+            "forcing helpers do not have core-owned call signatures yet"
+        );
+    }
+
+    #[test]
+    fn allocation_helper_call_signatures_pin_scalars_and_pointer_results() {
+        let attrs = runtime_helper_call_signature("aos_alloc_attrs")
+            .expect("attrs allocation signature is core-owned");
+        let thunk = runtime_helper_call_signature("aos_alloc_thunk")
+            .expect("thunk allocation signature is core-owned");
+        let raw = runtime_helper_call_signature("aos_alloc_raw")
+            .expect("raw allocation signature is core-owned");
+
+        assert_eq!(
+            attrs.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_alloc_attrs", RuntimeHelperRole::Allocation),
+            }
+        );
+        assert_eq!(
+            attrs.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("shape", RuntimeAbiParameterKind::ShapeId),
+                RuntimeAbiParameter::new("slots", RuntimeAbiParameterKind::U32),
+            ]
+        );
+        assert_eq!(attrs.return_kind(), RuntimeAbiReturnKind::AttrsPointer);
+
+        assert_eq!(
+            thunk.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("code_ptr", RuntimeAbiParameterKind::CodePointer),
+                RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+            ]
+        );
+        assert_eq!(thunk.return_kind(), RuntimeAbiReturnKind::ThunkPointer);
+
+        assert_eq!(
+            raw.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("size", RuntimeAbiParameterKind::Usize),
+                RuntimeAbiParameter::new("align", RuntimeAbiParameterKind::Usize),
+                RuntimeAbiParameter::new("type_tag", RuntimeAbiParameterKind::TypeTag),
+            ]
+        );
+        assert_eq!(raw.return_kind(), RuntimeAbiReturnKind::RawPointer);
+    }
+
+    #[test]
+    fn write_barrier_helper_call_signature_pins_unit_return() {
+        let signature = runtime_helper_call_signature("aos_gc_write_barrier")
+            .expect("write-barrier signature is core-owned");
+
+        assert_eq!(
+            signature.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new(
+                    "aos_gc_write_barrier",
+                    RuntimeHelperRole::WriteBarrier,
+                ),
+            }
+        );
+        assert_eq!(
+            signature.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("thunk", RuntimeAbiParameterKind::ThunkPointer),
+                RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+            ]
+        );
+        assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Unit);
     }
 
     #[test]
