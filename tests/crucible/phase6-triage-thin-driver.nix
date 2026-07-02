@@ -73,8 +73,8 @@
         needle = "checks.crucible.phase6.triageThinDriver";
       }
       {
-        label = "remaining triage task";
-        needle = "`T-TRI-8` remains";
+        label = "downstream triage CLI surface gate";
+        needle = "checks.crucible.phase6.triageCliSurface";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" modelSource [

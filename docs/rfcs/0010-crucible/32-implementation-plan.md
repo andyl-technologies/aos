@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b691e66a1b572f54`
+Checklist sync digest: `rfc0010-checklist-v1:624a47c7e5a72821`
 
 ## The phase ladder
 
@@ -289,8 +289,12 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   opens the local DagStore, loads stored/path ledgers, executes the
   cluster→minimize-representative→emit→store pipeline for representable
   discovery-signature evidence, and rejects bare non-empty artifact-only ledgers
-  instead of fabricating signatures; `T-TRI-8` remains pending
-  ([`34`](34-failure-triage.md)).
+  instead of fabricating signatures. `T-TRI-8` is green through
+  `checks.crucible.phase6.triageCliSurface`, which resolves the forward
+  reference into 23 by keeping `triage` in the closed subcommand set, aligning
+  the user-facing help copy for `--policy`, `--minimize`, `--report`, global
+  `--format`, `--recompute-signatures`, and `--compare`, and testing the
+  uniform triage exit-code surface ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
 and restores validated continuously), and reproduction artifacts replay

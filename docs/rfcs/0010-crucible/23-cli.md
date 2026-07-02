@@ -109,7 +109,7 @@ subcommand that runs or talks to a session.
     --qemu <path>           Patched QEMU system binary (26). Else discovered.
     --plugin <path>         crucible-qemu-plugin cdylib (12, 26). Else discovered.
     --store <path>          Content-addressed store root (06, 07). Else default.
-    --format <jsonl|json|table>    Trace/event-log render format. Default: jsonl.
+    --format <jsonl|json|table|markdown>    Trace/report render format. Default: jsonl.
     --trace <path>          Write the event-log stream here. Default: stdout.
     --artifact-dir <path>   Where failure artifacts are written. Default: ./.crucible.
     -v, --verbose           Increase log verbosity (repeatable: -vv).
@@ -242,13 +242,15 @@ and reproduces the failure on any machine ([HARN-28]).
       crucible verify cluster.scn --seed 0x9f86d081884c7d65 --runs 2
 ```
 
-**Rule 3 — trace/event-log output has three formats.** The `--format` flag
-selects `jsonl` (one canonical event-log entry per line, the default and the
-stream format), `json` (a single array, for tooling that wants one document),
-or `table` (a human-readable column view: virtual time, node, kind, summary).
-All three render the *same* canonical event log (19); the observational/canonical
-distinction is by schema (19), so `--format` never changes which entries appear,
-only how they are printed.
+**Rule 3 — trace/event-log output has three formats.** For canonical event-log
+rendering, the `--format` flag selects `jsonl` (one canonical event-log entry per
+line, the default and the stream format), `json` (a single array, for tooling
+that wants one document), or `table` (a human-readable column view: virtual time,
+node, kind, summary). All three render the *same* canonical event log (19); the
+observational/canonical distinction is by schema (19), so `--format` never
+changes which entries appear, only how they are printed. `markdown` is reserved
+for the offline `triage` report renderer (§16, 34 §34.5.2) and is not a
+canonical event-log format.
 
 - **[CLI-9]** The root seed MUST be resolved as `--seed`, else `CRUCIBLE_SEED`,
   else a freshly generated seed; and the resolved seed MUST be printed at run
@@ -276,7 +278,8 @@ only how they are printed.
   entries are emitted — the canonical/observational split is by schema (19), not
   by format — only how they are rendered. The `jsonl` form MUST be a stream:
   entries are emitted as they are produced (via the session's event bus, 20 §9),
-  not buffered to the end. *Spec:* §4; cross-ref 19, 20 §9.
+  not buffered to the end. `markdown` is a triage report format, not an event-log
+  trace format. *Spec:* §4; cross-ref 19, 20 §9.
 
 - **[CLI-12]** The CLI MUST NOT read host wall-clock on any path that feeds a
   run's canonical `State` ([INV-9]). Wall-clock MAY appear only in
@@ -733,7 +736,7 @@ shutdown signal.
 **Purpose.** Turn a pile of discovered failures (the counterexamples a `search`
 or `fuzz` campaign emits, §13) into a deduplicated, minimized, reportable set.
 `triage` is a **thin driver over the triage engine of
-[`34-triage-clustering.md`](34-triage-clustering.md)**: it clusters failures by
+[`34-failure-triage.md`](34-failure-triage.md)**: it clusters failures by
 signature, picks a representative per cluster, minimizes each representative to a
 smaller still-failing artifact, and emits reports. It holds no triage policy of
 its own ([CLI-1]); the clustering/minimization policy lives in 34.
@@ -745,12 +748,16 @@ its own ([CLI-1]); the clustering/minimization policy lives in 34.
     <FINDINGS>   A findings directory / corpus of reproduction artifacts (06 §7.1, 34).
 
   FLAGS (subcommand-local; global flags from §2 also apply)
-    --policy <name>           Clustering/signature policy to apply (34). Default: the corpus default.
-    --minimize                Minimize each cluster representative to a smaller still-failing artifact (34).
-    --report <path>           Write the triage report here. Default: --artifact-dir.
-    --format <jsonl|json|table>   Report render format (as §4). Default: table.
+    --policy <coarse|default|fine|exact>     Signature policy to apply (34). Default: default.
+    --minimize <none|representative|all>     Representative minimization mode (34). Default: representative.
+    --report <dir>                           Write the triage report here. Default: --artifact-dir.
     --recompute-signatures    Recompute failure signatures rather than reuse cached ones (34).
-    --compare <other>         Diff this triage against a prior triage report (regression/dedup view, 34).
+    --compare <other-triage-result>          Diff against a prior triage result (34).
+
+  GLOBAL FLAGS USED BY TRIAGE
+    --store <path>                          Content-addressed store root for ledgers/results.
+    --artifact-dir <path>                   Default report directory.
+    --format <jsonl|json|table|markdown>    Report render format (34 §34.5.2). Default: jsonl.
 ```
 
 `triage` reads the findings, computes a failure signature per artifact and
@@ -762,12 +769,12 @@ each is replayable (§12) and debuggable (§16's sibling, §17) exactly like a
 hand-found failure.
 
 **Exit codes.** `0` = triage completed (report written); `1` = at least one
-finding still reproduces as a failure after minimization (the normal case for a
-non-empty corpus; the report enumerates clusters); `4` = discovery/config;
-`5` = malformed/unresolvable findings corpus; `64` = usage.
+cluster's minimization failed its signature-preservation assertion or
+`--recompute-signatures` found a mismatch; `4` = discovery/config;
+`5` = malformed/unresolvable findings ledger or artifact; `64` = usage.
 
 - **[CLI-26]** `crucible triage <findings>` MUST be a thin driver over the
-  triage engine of [`34-triage-clustering.md`](34-triage-clustering.md): it MUST
+  triage engine of [`34-failure-triage.md`](34-failure-triage.md): it MUST
   cluster the findings by failure signature, elect a representative per cluster,
   optionally minimize each representative (`--minimize`) to a smaller artifact
   that still reproduces the failure bit-identically (06 §7.1, [CLI-22]), and emit

@@ -68,8 +68,8 @@
         needle = "checks.crucible.phase6.signaturePreservingMinimization";
       }
       {
-        label = "remaining triage tasks";
-        needle = "`T-TRI-6 … T-TRI-8` remain";
+        label = "downstream triage report gate";
+        needle = "checks.crucible.phase6.perClusterReports";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" modelSource [
