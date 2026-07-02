@@ -272,64 +272,86 @@ pub const fn negotiate_rpc_protocol(peer: ProtocolVersion) -> Result<ProtocolVer
 /// Encodes one structured RPC message into its canonical ABI bytes.
 #[must_use]
 pub fn encode_rpc_message(message: RpcGoldenVectorMessage) -> Vec<u8> {
-    let mut output = String::new();
     match message {
         RpcGoldenVectorMessage::HelloRequest {
             client_name,
             version,
-        } => {
-            output.push_str("crucible.rpc/hello-request\n");
-            push_version_line(&mut output, "version", version);
-            push_str_line(&mut output, "client", client_name);
-        }
+        } => encode_rpc_hello_request(client_name, version),
         RpcGoldenVectorMessage::HelloResponse {
             server_name,
             version,
             payload_kinds,
-        } => {
-            output.push_str("crucible.rpc/hello-response\n");
-            push_version_line(&mut output, "version", version);
-            push_str_line(&mut output, "server", server_name);
-            push_payload_kinds_line(&mut output, payload_kinds);
-        }
+        } => encode_rpc_hello_response(server_name, version, payload_kinds),
         RpcGoldenVectorMessage::Attached {
             session_id,
             session_epoch,
             mode,
             version,
         } => {
+            let mut output = String::new();
             output.push_str("crucible.rpc/attached\n");
             push_version_line(&mut output, "version", version);
             push_u64_line(&mut output, "session-id", session_id);
             push_u64_line(&mut output, "session-epoch", session_epoch);
             push_str_line(&mut output, "mode", attach_mode_wire_name(mode));
+            output.into_bytes()
         }
         RpcGoldenVectorMessage::CommandRequest {
             request_id,
             session_epoch,
             command_kind,
         } => {
+            let mut output = String::new();
             output.push_str("crucible.rpc/send-command-request\n");
             push_u64_line(&mut output, "request-id", request_id);
             push_u64_line(&mut output, "session-epoch", session_epoch);
             push_str_line(&mut output, "command-kind", command_kind);
+            output.into_bytes()
         }
         RpcGoldenVectorMessage::CommandResponse { request_id, status } => {
+            let mut output = String::new();
             output.push_str("crucible.rpc/send-command-response\n");
             push_u64_line(&mut output, "request-id", request_id);
             push_str_line(&mut output, "status", status_code_wire_name(status));
+            output.into_bytes()
         }
         RpcGoldenVectorMessage::Event {
             seq,
             class,
             payload_kind,
         } => {
+            let mut output = String::new();
             output.push_str("crucible.rpc/event\n");
             push_u64_line(&mut output, "seq", seq);
             push_str_line(&mut output, "class", event_class_wire_name(class));
             push_str_line(&mut output, "payload-kind", payload_kind);
+            output.into_bytes()
         }
     }
+}
+
+/// Encodes a typed `Hello` request into canonical RPC ABI bytes.
+#[must_use]
+pub fn encode_rpc_hello_request(client_name: &str, version: ProtocolVersion) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/hello-request\n");
+    push_version_line(&mut output, "version", version);
+    push_str_line(&mut output, "client", client_name);
+    output.into_bytes()
+}
+
+/// Encodes a typed `Hello` response into canonical RPC ABI bytes.
+#[must_use]
+pub fn encode_rpc_hello_response(
+    server_name: &str,
+    version: ProtocolVersion,
+    payload_kinds: &[&str],
+) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/hello-response\n");
+    push_version_line(&mut output, "version", version);
+    push_str_line(&mut output, "server", server_name);
+    push_payload_kinds_line(&mut output, payload_kinds);
     output.into_bytes()
 }
 

@@ -9,9 +9,11 @@ workspace = true
 
 [dependencies]
 crucible-session = { path = "../crucible-session" }
+reqwest = { workspace = true, features = ["http2"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-protocol = { path = "../crucible-protocol" }

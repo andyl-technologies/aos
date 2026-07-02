@@ -1232,6 +1232,16 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiControlClient = import ./phase5-api-control-client.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiControlClient";
+      taskIds = ["T-API-1"];
+      dependencies = [
+        phase5.sessionDebugTimeTravel
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

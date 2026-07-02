@@ -595,11 +595,19 @@ ran in-process against the double or over the wire against QEMU.
 > sync with the master plan by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-API-1** Define the one `ControlClient` trait (async, typed) and its two
+- [x] **T-API-1** Define the one `ControlClient` trait (async, typed) and its two
   implementations — an in-process client reaching a same-process
   `crucible-session` actor without serializing, and an RPC client over HTTP/2 —
   so callers are transport-agnostic; assert the wire types are the serialized form
   of the in-process types. — satisfies [API-1], [API-4]; spec §21.1.
+  Completed by `checks.crucible.phase5.apiControlClient`: `crucible-api::client`
+  defines the async `ControlClient` trait, `InProcessControlClient` over the
+  same-process session actor handles, `RpcControlClient` over an HTTP/2 endpoint,
+  and a shared `ControlWireModel` backed by the frozen RPC ABI encoder. The
+  focused gate test proves both transports negotiate through the same typed trait:
+  the RPC client posts the typed `Hello` payload over HTTP/2 to
+  `/crucible.rpc/hello`, and both transports serialize through the same wire
+  model; command mapping remains T-API-2.
 - [ ] **T-API-2** Implement the API as a thin wrapper over the session command set:
   every method/RPC maps to one session command (20 §4) or one lock-free mirror
   read, with no control semantics of its own and no browser-shaped request. —

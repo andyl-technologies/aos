@@ -277,6 +277,10 @@ long-held locks.
   the live backend, QEMU binding a retained mediated listener, and SimDouble/mock
   returning typed `Unsupported`.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
+  `T-API-1` is green through `checks.crucible.phase5.apiControlClient`,
+  which defines the shared async `ControlClient` trait, in-process and HTTP/2 RPC
+  client handles, the `/crucible.rpc/hello` HTTP/2 negotiation path, and a shared
+  `ControlWireModel` over the frozen RPC ABI encoder.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

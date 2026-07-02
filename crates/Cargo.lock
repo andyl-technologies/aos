@@ -1549,9 +1549,11 @@ dependencies = [
 name = "crucible-api"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "crucible",
  "crucible-protocol",
  "crucible-session",
+ "reqwest",
  "thiserror",
  "tokio",
 ]
@@ -3564,6 +3566,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "h2 0.4.14",
  "http 1.4.1",
  "http-body 1.0.1",
  "http-body-util",
