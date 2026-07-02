@@ -20,13 +20,12 @@ use crate::lifecycle::{
     DestroySessionResponse, LifecycleApiError, ListScenariosResponse, ListSessionsResponse,
     ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
+use crate::open_set::{open_set_command_kind, session_command_for_open_set_command_kind};
 use crate::rpc_abi::{
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError,
     encode_rpc_hello_request, encode_rpc_hello_response, negotiate_rpc_protocol,
 };
-use crate::session_mapping::{
-    API_COMMAND_MAPPINGS, api_command_for_session_command, session_command_for_api_command,
-};
+use crate::session_mapping::{API_COMMAND_MAPPINGS, api_command_for_session_command};
 use crate::streaming::{
     AttachRequest, Attached, CommandRejectionKind, CommandResult, CommandResultStatus, SendRequest,
     SendResponse, StateUpdate, StreamingApiError, StreamingCapabilitySet,
@@ -790,10 +789,9 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     }
     push_line(&mut output, "command-id", &request.command_id.to_string());
     let command_kind = SessionCommandKind::from(&request.command);
-    let command_name = api_command_for_session_command(command_kind)
-        .map(|mapping| mapping.command_name)
-        .unwrap_or(command_kind_name(command_kind));
-    push_line(&mut output, "command", command_name);
+    let command_kind = open_set_command_kind(command_kind)
+        .unwrap_or_else(|| format!("crucible.cmd.{}", command_kind_name(command_kind)));
+    push_line(&mut output, "command", &command_kind);
     output.into_bytes()
 }
 
@@ -1009,11 +1007,13 @@ fn parse_capabilities_line(
     }
 
     let mut commands = Vec::new();
-    for command_name in value.split(',') {
-        let command_kind = session_command_for_api_command(command_name)
-            .ok_or_else(|| rpc_decode(format!("unknown command capability `{command_name}`")))?;
+    for command_kind_wire in value.split(',') {
+        let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
+            .ok_or_else(|| {
+                rpc_decode(format!("unknown command capability `{command_kind_wire}`"))
+            })?;
         commands.push(StreamingCommandCapability {
-            command_name: command_name_from_static(command_name)?,
+            command_name: command_name_from_open_set_kind(command_kind_wire)?,
             command_kind,
         });
     }
@@ -1024,9 +1024,9 @@ fn parse_command_kind_line(
     line: Option<&str>,
     prefix: &'static str,
 ) -> Result<SessionCommandKind, ControlClientError> {
-    let command_name = parse_prefixed_line(line, prefix)?;
-    session_command_for_api_command(command_name)
-        .ok_or_else(|| rpc_decode(format!("unknown command `{command_name}`")))
+    let command_kind = parse_prefixed_line(line, prefix)?;
+    session_command_for_open_set_command_kind(command_kind)
+        .ok_or_else(|| rpc_decode(format!("unknown command `{command_kind}`")))
 }
 
 fn parse_command_status_line(
@@ -1106,6 +1106,13 @@ fn command_name_from_static(value: &str) -> Result<&'static str, ControlClientEr
         .find(|mapping| mapping.command_name == value)
         .map(|mapping| mapping.command_name)
         .ok_or_else(|| rpc_decode(format!("unknown command name `{value}`")))
+}
+
+fn command_name_from_open_set_kind(value: &str) -> Result<&'static str, ControlClientError> {
+    let Some(command_name) = value.strip_prefix("crucible.cmd.") else {
+        return Err(rpc_decode(format!("unknown command kind `{value}`")));
+    };
+    command_name_from_static(command_name)
 }
 
 fn parse_current_version_line(line: Option<&str>) -> Result<ProtocolVersion, ControlClientError> {

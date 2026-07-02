@@ -299,6 +299,12 @@ long-held locks.
   paths through `ControlClient`/`RpcControlClient`, and drives lifecycle plus
   non-basic command classes from both command paths while returning
   `CommandResult` plus optional `StateUpdate`.
+  `T-API-5` is green through `checks.crucible.phase5.apiOpenSetPayload`, which
+  adds the dotted-kind open-set payload model, reuses the unified event-log
+  catalog for event payload schemas, adapts command/fault/breakpoint kind
+  sources from existing model tables, treats unknown received event kinds as
+  opaque, rejects unknown or malformed send payloads with typed errors, and
+  updates `Hello`/golden vectors to advertise the open-set categories.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

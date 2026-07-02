@@ -651,11 +651,20 @@ ran in-process against the double or over the wire against QEMU.
   helper, and use the session lifecycle transition model for invalid-state
   command results. Cursor replay, event payload open-set encoding, and monotonic
   live `StateUpdate` streaming remain T-API-5 through T-API-7.
-- [ ] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
+- [x] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log
   catalog (19 §19.7); opaque-unknown-kind handling on receive, typed
   Unsupported/InvalidArgument on send; capabilities-advertised kinds. — satisfies
   [API-11], [API-12], [API-13], [API-14]; spec §21.3.
+  Completed by `checks.crucible.phase5.apiOpenSetPayload`:
+  `crucible-api::open_set` defines the shared `OpenSetPayload` typed attribute
+  map, category capability catalog, event-log envelope conversion, opaque
+  unknown-event receive path, and typed Unsupported/InvalidArgument send
+  validation. Event payload schemas are generated from the unified event-kind
+  catalog, command kinds from the thin session command mapping table, faults from
+  the existing taxonomy keys, and breakpoint kinds from the shared predicate
+  vocabulary. `Hello` now advertises the four dotted open-set categories and the
+  ABI golden seed uses dotted command and catalog event kinds.
 - [ ] **T-API-6** Implement the streaming cursor: replay from `from_seq` then live
   tail, deterministic causal subsequence with observational entries flowing
   (flagged), pure non-stalling observation, and optional snapshot-on-attach with

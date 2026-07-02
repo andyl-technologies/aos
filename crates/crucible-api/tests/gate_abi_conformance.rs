@@ -71,16 +71,16 @@ fn assert_frozen_golden_vectors() {
             "attached",
             "send-command-request",
             "send-command-response",
-            "event-fault-injected",
+            "event-fault-activated",
         ],
     );
     assert_eq!(
         RPC_OPEN_SET_PAYLOAD_KINDS,
         &[
-            "command.continue",
-            "event.fault-injected",
-            "state.update",
-            "session.closed",
+            "crucible.cmd.*",
+            "crucible.bp.*",
+            "crucible.fault.*",
+            "crucible.event.*",
         ],
     );
 
@@ -136,7 +136,7 @@ fn assert_structure_aware_fuzz_corpus() {
     );
     assert_vector_bytes(
         "hello-response",
-        b"crucible.rpc/hello-response\nversion=1.0.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=command.continue,event.fault-injected,state.update,session.closed\n",
+        b"crucible.rpc/hello-response\nversion=1.0.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_vector_bytes(
         "attached",
@@ -144,15 +144,15 @@ fn assert_structure_aware_fuzz_corpus() {
     );
     assert_vector_bytes(
         "send-command-request",
-        b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=command.continue\n",
+        b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=crucible.cmd.continue\n",
     );
     assert_vector_bytes(
         "send-command-response",
         b"crucible.rpc/send-command-response\nrequest-id=9001\nstatus=ok\n",
     );
     assert_vector_bytes(
-        "event-fault-injected",
-        b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=event.fault-injected\n",
+        "event-fault-activated",
+        b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.fault_activated\n",
     );
 
     for vector in regression_corpus() {

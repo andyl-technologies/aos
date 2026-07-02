@@ -15,7 +15,8 @@ use crucible_api::{
     ListScenariosResponse, ListSessionsResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
     RpcControlClient, RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest,
     SendResponse, SessionId, SessionRef, StateUpdate, assert_shared_wire_model,
-    encode_rpc_hello_request, encode_rpc_hello_response, session_command_for_api_command,
+    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
+    session_command_for_open_set_command_kind,
 };
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
 use tokio::sync::{Mutex, mpsc};
@@ -745,7 +746,10 @@ fn encode_attached_response(attached: &Attached) -> String {
         .capabilities
         .commands
         .iter()
-        .map(|capability| capability.command_name)
+        .map(|capability| {
+            open_set_command_kind(capability.command_kind)
+                .unwrap_or_else(|| format!("crucible.cmd.{}", capability.command_name))
+        })
         .collect::<Vec<_>>()
         .join(",");
     push_wire_line(&mut output, "commands", &commands);
@@ -762,7 +766,7 @@ fn encode_send_response(response: &SendResponse) -> String {
     push_wire_line(
         &mut output,
         "command",
-        command_name(response.result.command_kind),
+        &command_name(response.result.command_kind),
     );
     push_wire_line(
         &mut output,
@@ -889,12 +893,12 @@ fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
 ) -> Result<SessionCommand, String> {
-    let command_name = parse_wire_line(line, prefix)?;
-    let command_kind = session_command_for_api_command(command_name)
-        .ok_or_else(|| format!("unknown command `{command_name}`"))?;
+    let command_kind_wire = parse_wire_line(line, prefix)?;
+    let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
+        .ok_or_else(|| format!("unknown command `{command_kind_wire}`"))?;
     command_kind
         .representative_command()
-        .ok_or_else(|| format!("command `{command_name}` has no representative payload"))
+        .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
 }
 
 fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
@@ -978,12 +982,15 @@ fn state_wire_name(state: LiveStateKind) -> &'static str {
     }
 }
 
-fn command_name(command: SessionCommandKind) -> &'static str {
-    API_COMMAND_MAPPINGS
-        .iter()
-        .find(|mapping| mapping.command_kind == command)
-        .map(|mapping| mapping.command_name)
-        .unwrap_or("unknown")
+fn command_name(command: SessionCommandKind) -> String {
+    open_set_command_kind(command).unwrap_or_else(|| {
+        let command_name = API_COMMAND_MAPPINGS
+            .iter()
+            .find(|mapping| mapping.command_kind == command)
+            .map(|mapping| mapping.command_name)
+            .unwrap_or("unknown");
+        format!("crucible.cmd.{command_name}")
+    })
 }
 
 fn state_update_wire(update: StateUpdate) -> String {
