@@ -353,6 +353,13 @@ long-held locks.
   streaming observer load, and forbids wall-clock reads in the production API
   paths.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
+  `T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`, which
+  enforces a pre-dispatch thin-wrapper plan for every closed subcommand, records
+  the emitted session/API/driver operations, limits routed control capabilities
+  to `SessionCommandKind::ALL` and actual `ControlClient` methods, treats
+  CLI-held state only as daemon/content-addressed/artifact/savepoint handles, and
+  rejects CLI-owned canonical state, scheduler logic, checkpoint materialization,
+  fork logic, or invented control capabilities.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

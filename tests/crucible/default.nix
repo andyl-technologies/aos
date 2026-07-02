@@ -1421,6 +1421,21 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliThinWrapper = import ./phase5-cli-thin-wrapper.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliThinWrapper";
+      taskIds = ["T-CLI-2"];
+      dependencies = [
+        phase5.cliSkeleton
+        phase5.apiNondeterminism
+        phase5.apiReferenceClientConformance
+        phase5.sessionDebugTimeTravel
+        phase5.sessionSaveResumeFork
+        phase5.sessionCommandSet
+        phase5.sessionLockFreeObservation
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {
