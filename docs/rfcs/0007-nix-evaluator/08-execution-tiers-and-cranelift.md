@@ -1055,6 +1055,18 @@ harness, never cut for scope.
       outside line comments and ordinary strings. This is a precursor only: no
       unsafe JIT blocks, exported wrappers, executable code calls, CI jobs, or
       review automation are implemented here.
+- [x] Current copy-and-patch measurement hedge precursor:
+      `ratchet-jit::warmup::CopyAndPatchHedgeGate` keeps the deferred
+      copy-and-patch alternative measurable without adding a stencil backend. It
+      records a Cranelift compile-share threshold, an optional measured
+      copy-and-patch compile-time comparison, and a required speedup threshold
+      before `CopyAndPatchHedgeDecision::ConsiderCopyAndPatch` can favor the
+      stencil backend. Tests pin compile-share accounting, low-share Cranelift
+      retention, high-share measurement requests, insufficient and sufficient
+      speedup decisions, zero-cost speedup handling, and custom thresholds. This
+      is measurement policy only: no stencil generation, backend switch,
+      executable patching, benchmark harness, or Cranelift lowering is
+      implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
@@ -1126,6 +1138,15 @@ harness, never cut for scope.
 
 - [ ] **LLVM AOT tier-3** for the stable hot core (`stdenv`/`mkDerivation`/prelude): content-addressed ahead-of-time native compilation, loaded with zero JIT warmup, strictly additive to Cranelift ([§5.2](#52-not-llvm)) — P8; gate: benchmark + differential `.drv` harness.
 - [ ] **Copy-and-patch** stencil baseline as an alternative tier 1 (microsecond compile) ([§5.4](#54-copy-and-patch-a-noted-alternative-baseline)) — P6/P8, `M-8`; gate: tier-1 compile-time benchmark.
+- [x] Current copy-and-patch measurement hedge precursor:
+      `ratchet-jit::warmup::CopyAndPatchHedgeGate` models the `M-8`
+      measurement gate before any stencil backend exists. It keeps Cranelift as
+      the favored baseline unless tier-1 compile share is at or above the
+      configured threshold and measured copy-and-patch compile speedup meets the
+      configured speedup threshold. Missing copy-and-patch data under high
+      compile share requests more measurement; low compile share or insufficient
+      measured speedup keeps Cranelift.
+      This does not build copy-and-patch stencils or replace Cranelift.
 - [ ] NaN-boxing of the register-passed `Value` and its i64-out-of-line handling across the ABI ([§10](#10-open-questions), [05](05-value-representation.md)) — P8, `M-4`; gate: register-passing benchmark.
 
 ### Determinism gate (observational invisibility)

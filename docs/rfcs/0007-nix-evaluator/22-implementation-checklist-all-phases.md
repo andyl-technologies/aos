@@ -6562,6 +6562,18 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       review automation are implemented here.
 - [ ] Copy-and-patch hedge kept measurable if Cranelift warmup proves too high
       (`M-8`).
+- [x] Current copy-and-patch measurement hedge precursor:
+      `ratchet-jit::warmup::CopyAndPatchHedgeGate` keeps the deferred
+      copy-and-patch alternative measurable without adding a stencil backend. It
+      records a Cranelift compile-share threshold, an optional measured
+      copy-and-patch compile-time comparison, and a required speedup threshold
+      before `CopyAndPatchHedgeDecision::ConsiderCopyAndPatch` can favor the
+      stencil backend. Tests pin compile-share accounting, low-share Cranelift
+      retention, high-share measurement requests, insufficient and sufficient
+      speedup decisions, zero-cost speedup handling, and custom thresholds. This
+      is measurement policy only: no stencil generation, backend switch,
+      executable patching, benchmark harness, or Cranelift lowering is
+      implemented.
 
 **Conformance (hold parity).**
 

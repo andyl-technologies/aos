@@ -5,10 +5,10 @@
 //! metadata adapters only: [`abi`] mirrors the frozen runtime-call signatures
 //! from `ratchet-core`, and [`symbols`] mirrors the stable runtime-symbol
 //! manifest from `ratchet-core`, [`tier`] names the first safe tier-up policy,
-//! and [`safety`] records the unsafe-boundary discipline. Runtime-symbol
-//! candidate reports currently remain in `ratchet-oracle`; a later shared
-//! metadata layer can move them below both crates without making the JIT crate
-//! depend on the safe oracle stack.
+//! [`warmup`] keeps the copy-and-patch hedge measurable, and [`safety`] records
+//! the unsafe-boundary discipline. Runtime-symbol candidate reports currently
+//! remain in `ratchet-oracle`; a later shared metadata layer can move them below
+//! both crates without making the JIT crate depend on the safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
 //! module construction, and `JITBuilder::symbol` registration are future work
@@ -22,6 +22,7 @@ pub mod abi;
 pub mod safety;
 pub mod symbols;
 pub mod tier;
+pub mod warmup;
 
 pub use abi::{JitRuntimeAbiInventory, jit_runtime_abi_inventory};
 pub use safety::{
@@ -32,4 +33,9 @@ pub use symbols::{JitRuntimeSymbolInventory, jit_runtime_symbol_inventory};
 pub use tier::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpDecision, TierUpDemandHint,
     TierUpObservation, TierUpPolicy, TierUpReasons,
+};
+pub use warmup::{
+    CopyAndPatchComparison, CopyAndPatchHedgeDecision, CopyAndPatchHedgeGate,
+    DEFAULT_COPY_AND_PATCH_COMPILE_SHARE_THRESHOLD_PERCENT,
+    DEFAULT_COPY_AND_PATCH_SPEEDUP_THRESHOLD, Tier1WarmupBackend, Tier1WarmupObservation,
 };
