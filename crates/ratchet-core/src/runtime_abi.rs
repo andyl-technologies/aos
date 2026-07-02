@@ -270,6 +270,10 @@ const FORCE_VALUE_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
 ];
+const BLACKHOLE_CHECK_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+];
 const APPLY_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("function", RuntimeAbiParameterKind::Value),
@@ -389,6 +393,14 @@ const RUNTIME_FORCE_DEEP_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSigna
     FORCE_VALUE_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_BLACKHOLE_CHECK_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_blackhole_check", RuntimeHelperRole::ForcingControl),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    BLACKHOLE_CHECK_PARAMETERS,
+    RuntimeAbiReturnKind::Unit,
+);
 const RUNTIME_APPLY_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_apply", RuntimeHelperRole::CallControl),
@@ -448,6 +460,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
     RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
     RUNTIME_APPLY_CALL_SIGNATURE,
+    RUNTIME_BLACKHOLE_CHECK_CALL_SIGNATURE,
     RUNTIME_DEOPT_CALL_SIGNATURE,
     RUNTIME_ENV_GET_CALL_SIGNATURE,
     RUNTIME_FORCE_CALL_SIGNATURE,
@@ -455,8 +468,8 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
     RUNTIME_HAS_ATTR_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
-    RUNTIME_UPDATE_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
+    RUNTIME_UPDATE_CALL_SIGNATURE,
 ];
 
 /// Returns the by-value runtime value layout assumed by native call metadata.
@@ -497,6 +510,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_apply" => Some(RUNTIME_APPLY_CALL_SIGNATURE),
         "aos_deopt" => Some(RUNTIME_DEOPT_CALL_SIGNATURE),
         "aos_env_get" => Some(RUNTIME_ENV_GET_CALL_SIGNATURE),
+        "aos_blackhole_check" => Some(RUNTIME_BLACKHOLE_CHECK_CALL_SIGNATURE),
         "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
@@ -1364,6 +1378,7 @@ mod tests {
                 "aos_alloc_string",
                 "aos_alloc_thunk",
                 "aos_apply",
+                "aos_blackhole_check",
                 "aos_deopt",
                 "aos_env_get",
                 "aos_force",
@@ -1375,13 +1390,28 @@ mod tests {
                 "aos_update",
             ])
         );
-        for symbol_name in ["aos_blackhole_check", "aos_try_begin", "aos_try_end"] {
+        for symbol_name in ["aos_try_begin", "aos_try_end"] {
             assert_eq!(
                 runtime_helper_call_signature(symbol_name),
                 None,
                 "{symbol_name} does not have a frozen core-owned call signature yet"
             );
         }
+
+        let expected_order = runtime_helper_symbols()
+            .iter()
+            .filter_map(|symbol| {
+                runtime_helper_call_signature(symbol.name()).map(|_| symbol.name())
+            })
+            .collect::<Vec<_>>();
+        let actual_order = helper_signatures
+            .iter()
+            .map(|signature| match signature.callable() {
+                RuntimeCallableKind::Helper { symbol } => symbol.name(),
+                other => panic!("helper signature had non-helper callable kind: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual_order, expected_order);
     }
 
     #[test]
@@ -1504,6 +1534,8 @@ mod tests {
             runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
         let force_deep = runtime_helper_call_signature("aos_force_deep")
             .expect("deep-force signature is core-owned");
+        let blackhole_check = runtime_helper_call_signature("aos_blackhole_check")
+            .expect("blackhole-check signature is core-owned");
 
         for (symbol_name, signature) in [("aos_force", force), ("aos_force_deep", force_deep)] {
             assert_eq!(
@@ -1524,6 +1556,24 @@ mod tests {
             );
             assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
         }
+
+        assert_eq!(
+            blackhole_check.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new(
+                    "aos_blackhole_check",
+                    RuntimeHelperRole::ForcingControl,
+                ),
+            }
+        );
+        assert_eq!(
+            blackhole_check.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+            ]
+        );
+        assert_eq!(blackhole_check.return_kind(), RuntimeAbiReturnKind::Unit);
     }
 
     #[test]

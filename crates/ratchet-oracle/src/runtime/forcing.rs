@@ -9,13 +9,18 @@
 //! context, install a JIT symbol, or bypass the evaluator force path.
 
 use crate::compile::IrId;
-use crate::eval::tree_walk::{TreeWalk, TreeWalkError};
+use crate::eval::{
+    ForceError, ThunkState,
+    tree_walk::{TreeWalk, TreeWalkError, TreeWalkErrorKind},
+};
 use crate::syntax::Span;
 use crate::value::Value;
 
 /// The forcing entry point owned by the runtime ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeForcingEntryPoint {
+    /// The `aos_blackhole_check` helper that traps on recursive thunk re-entry.
+    AosBlackholeCheck,
     /// The `aos_force` helper that forces a value to weak head normal form.
     AosForce,
     /// The `aos_force_deep` helper that recursively forces lists and attrsets.
@@ -24,6 +29,7 @@ pub enum RuntimeForcingEntryPoint {
 
 /// Frozen forcing entry points registered by future native runtimes.
 pub const RUNTIME_FORCING_ENTRYPOINTS: &[RuntimeForcingEntryPoint] = &[
+    RuntimeForcingEntryPoint::AosBlackholeCheck,
     RuntimeForcingEntryPoint::AosForce,
     RuntimeForcingEntryPoint::AosForceDeep,
 ];
@@ -35,6 +41,11 @@ const FORCE_VALUE_PARAMETERS: &[RuntimeForcingAbiParameter] = &[
 
 /// Frozen forcing helper ABI signatures for future native runtimes.
 pub const RUNTIME_FORCING_ABI_SIGNATURES: &[RuntimeForcingAbiSignature] = &[
+    RuntimeForcingAbiSignature::new(
+        RuntimeForcingEntryPoint::AosBlackholeCheck,
+        FORCE_VALUE_PARAMETERS,
+        RuntimeForcingAbiReturnKind::Unit,
+    ),
     RuntimeForcingAbiSignature::new(
         RuntimeForcingEntryPoint::AosForce,
         FORCE_VALUE_PARAMETERS,
@@ -48,6 +59,36 @@ pub const RUNTIME_FORCING_ABI_SIGNATURES: &[RuntimeForcingAbiSignature] = &[
 ];
 
 type RuntimeForceValueFn = fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>;
+type RuntimeBlackholeCheckFn = fn(&mut TreeWalk, IrId, Span, Value) -> Result<(), TreeWalkError>;
+
+fn rust_callable_aos_blackhole_check(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    value: Value,
+) -> Result<(), TreeWalkError> {
+    if !value.is_thunk() {
+        return Ok(());
+    }
+    let thunk = eval
+        .heap()
+        .get_thunk(value)
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+    let state = thunk
+        .cell()
+        .state()
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+    if state == ThunkState::Blackhole {
+        return Err(TreeWalkError::new(
+            TreeWalkErrorKind::Force {
+                id,
+                source: ForceError::InfiniteRecursion,
+            },
+            span,
+        ));
+    }
+    Ok(())
+}
 
 fn rust_callable_aos_force(
     eval: &mut TreeWalk,
@@ -112,6 +153,7 @@ impl RuntimeForcingEntryPoint {
     /// Returns the stable runtime symbol name for this forcing entry point.
     pub const fn symbol_name(self) -> &'static str {
         match self {
+            Self::AosBlackholeCheck => "aos_blackhole_check",
             Self::AosForce => "aos_force",
             Self::AosForceDeep => "aos_force_deep",
         }
@@ -120,6 +162,7 @@ impl RuntimeForcingEntryPoint {
     /// Returns the forcing entry point for a frozen runtime symbol name.
     pub fn from_symbol_name(symbol_name: &str) -> Option<Self> {
         match symbol_name {
+            "aos_blackhole_check" => Some(Self::AosBlackholeCheck),
             "aos_force" => Some(Self::AosForce),
             "aos_force_deep" => Some(Self::AosForceDeep),
             _ => None,
@@ -129,6 +172,11 @@ impl RuntimeForcingEntryPoint {
     /// Returns the frozen ABI signature for this forcing entry point.
     pub const fn abi_signature(self) -> RuntimeForcingAbiSignature {
         match self {
+            Self::AosBlackholeCheck => RuntimeForcingAbiSignature::new(
+                self,
+                FORCE_VALUE_PARAMETERS,
+                RuntimeForcingAbiReturnKind::Unit,
+            ),
             Self::AosForce | Self::AosForceDeep => RuntimeForcingAbiSignature::new(
                 self,
                 FORCE_VALUE_PARAMETERS,
@@ -154,6 +202,7 @@ impl RuntimeForcingEntryPoint {
     /// Returns the Rust evaluator-wrapper call shape for this entry point.
     pub const fn rust_callable_shape(self) -> RuntimeForcingRustCallableShape {
         match self {
+            Self::AosBlackholeCheck => RuntimeForcingRustCallableShape::TreeWalkBlackholeCheck,
             Self::AosForce => RuntimeForcingRustCallableShape::TreeWalkForceValue,
             Self::AosForceDeep => RuntimeForcingRustCallableShape::TreeWalkDeepForceValue,
         }
@@ -166,6 +215,9 @@ impl RuntimeForcingEntryPoint {
     /// signature, and must not be persisted.
     pub fn rust_callable_address(self) -> RuntimeForcingRustCallableAddress {
         let ptr = match self {
+            Self::AosBlackholeCheck => {
+                rust_callable_aos_blackhole_check as RuntimeBlackholeCheckFn as *const ()
+            }
             Self::AosForce => rust_callable_aos_force as RuntimeForceValueFn as *const (),
             Self::AosForceDeep => rust_callable_aos_force_deep as RuntimeForceValueFn as *const (),
         };
@@ -175,7 +227,8 @@ impl RuntimeForcingEntryPoint {
     /// Returns the current native-export blockers for this forcing helper.
     pub const fn native_export_blockers(self) -> &'static [RuntimeForcingNativeExportBlocker] {
         match self {
-            Self::AosForce | Self::AosForceDeep => FORCING_NATIVE_EXPORT_BLOCKERS,
+            Self::AosBlackholeCheck => BLACKHOLE_CHECK_NATIVE_EXPORT_BLOCKERS,
+            Self::AosForce | Self::AosForceDeep => FORCE_VALUE_NATIVE_EXPORT_BLOCKERS,
         }
     }
 }
@@ -183,6 +236,8 @@ impl RuntimeForcingEntryPoint {
 /// The Rust function shape behind a callable forcing wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeForcingRustCallableShape {
+    /// `fn(&mut TreeWalk, IrId, Span, Value) -> Result<(), TreeWalkError>`.
+    TreeWalkBlackholeCheck,
     /// `fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>`.
     TreeWalkForceValue,
     /// `fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>`.
@@ -282,7 +337,14 @@ pub enum RuntimeForcingNativeExportBlocker {
     NativeValueReturnUnmaterialized,
 }
 
-const FORCING_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
+const BLACKHOLE_CHECK_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
+    RuntimeForcingNativeExportBlocker::MissingExternCWrapper,
+    RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+    RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+    RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+];
+
+const FORCE_VALUE_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
     RuntimeForcingNativeExportBlocker::MissingExternCWrapper,
     RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
@@ -457,6 +519,8 @@ pub enum RuntimeForcingAbiParameterKind {
 /// The success-path machine-level result kind returned by forcing helpers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeForcingAbiReturnKind {
+    /// No success-path machine-level value is returned.
+    Unit,
     /// A by-value runtime value word pair.
     Value,
 }
@@ -498,7 +562,7 @@ mod tests {
         );
         assert_eq!(
             entrypoint_symbols,
-            BTreeSet::from(["aos_force", "aos_force_deep"])
+            BTreeSet::from(["aos_blackhole_check", "aos_force", "aos_force_deep"])
         );
         assert_eq!(signature_symbols, entrypoint_symbols);
     }
@@ -508,6 +572,7 @@ mod tests {
         assert_eq!(
             runtime_forcing_entrypoints(),
             [
+                RuntimeForcingEntryPoint::AosBlackholeCheck,
                 RuntimeForcingEntryPoint::AosForce,
                 RuntimeForcingEntryPoint::AosForceDeep,
             ]
@@ -523,11 +588,12 @@ mod tests {
                 Some(entrypoint.abi_signature())
             );
         }
-        for symbol in runtime_helper_symbols()
-            .iter()
-            .copied()
-            .filter(|symbol| !matches!(symbol.name(), "aos_force" | "aos_force_deep"))
-        {
+        for symbol in runtime_helper_symbols().iter().copied().filter(|symbol| {
+            !matches!(
+                symbol.name(),
+                "aos_blackhole_check" | "aos_force" | "aos_force_deep"
+            )
+        }) {
             assert_eq!(
                 RuntimeForcingEntryPoint::from_symbol_name(symbol.name()),
                 None,
@@ -544,10 +610,15 @@ mod tests {
     }
 
     #[test]
-    fn forcing_abi_signature_pins_runtime_value_return() {
+    fn forcing_abi_signature_pins_runtime_return_boundaries() {
         assert_eq!(
             runtime_forcing_abi_signatures(),
             [
+                RuntimeForcingAbiSignature::new(
+                    RuntimeForcingEntryPoint::AosBlackholeCheck,
+                    FORCE_VALUE_PARAMETERS,
+                    RuntimeForcingAbiReturnKind::Unit,
+                ),
                 RuntimeForcingAbiSignature::new(
                     RuntimeForcingEntryPoint::AosForce,
                     FORCE_VALUE_PARAMETERS,
@@ -576,7 +647,10 @@ mod tests {
                 ]
                 .as_slice()
             );
-            assert_eq!(signature.return_kind(), RuntimeForcingAbiReturnKind::Value);
+            assert_eq!(
+                signature.return_kind(),
+                entrypoint.abi_signature().return_kind()
+            );
         }
     }
 
@@ -614,11 +688,14 @@ mod tests {
                 "{} core ABI parameters match the forcing family shape",
                 entrypoint.symbol_name()
             );
-            assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Value);
-            assert_eq!(
-                local_signature.return_kind(),
-                RuntimeForcingAbiReturnKind::Value
-            );
+            match local_signature.return_kind() {
+                RuntimeForcingAbiReturnKind::Unit => {
+                    assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Unit);
+                }
+                RuntimeForcingAbiReturnKind::Value => {
+                    assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Value);
+                }
+            }
         }
     }
 
@@ -626,6 +703,11 @@ mod tests {
     fn forcing_rust_callable_bindings_preserve_entrypoint_inventory() {
         let bindings = runtime_forcing_rust_callable_bindings();
         let expected = [
+            (
+                RuntimeForcingEntryPoint::AosBlackholeCheck,
+                RuntimeForcingRustCallableShape::TreeWalkBlackholeCheck,
+                rust_callable_aos_blackhole_check as RuntimeBlackholeCheckFn as *const (),
+            ),
             (
                 RuntimeForcingEntryPoint::AosForce,
                 RuntimeForcingRustCallableShape::TreeWalkForceValue,
@@ -738,40 +820,51 @@ mod tests {
                     &RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented
                 )
             );
-            assert!(
-                record.blockers().contains(
-                    &RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented
-                )
-            );
             assert!(record.blockers().contains(
                 &RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented
             ));
-            assert!(
-                record.blockers().contains(
-                    &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
-                )
-            );
             assert!(
                 record
                     .blockers()
                     .contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented)
             );
-            assert!(
-                record
-                    .blockers()
-                    .contains(&RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized)
-            );
+            match entrypoint {
+                RuntimeForcingEntryPoint::AosBlackholeCheck => {
+                    assert!(!record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
+                    ));
+                }
+                RuntimeForcingEntryPoint::AosForce | RuntimeForcingEntryPoint::AosForceDeep => {
+                    assert!(record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented
+                    ));
+                    assert!(record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
+                    ));
+                    assert!(record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
+                    ));
+                }
+            }
         }
     }
 
     #[test]
-    fn force_rust_callable_preserves_non_thunk_values() {
+    fn force_and_blackhole_check_rust_callables_preserve_non_thunk_values() {
         let ir = aos_nix_dialect::nix_lower(
             resolve(parse_str("null").expect("source parses")).expect("source resolves"),
         )
         .expect("source lowers");
         let mut eval = TreeWalk::new(&ir);
         let value = Value::int(42);
+        rust_callable_aos_blackhole_check(&mut eval, IrId::new(0), Span::new(0, 4), value)
+            .expect("non-thunk blackhole check succeeds");
         let forced = rust_callable_aos_force(&mut eval, IrId::new(0), Span::new(0, 4), value)
             .expect("non-thunk force succeeds");
         let deeply_forced =
@@ -784,6 +877,78 @@ mod tests {
                 .as_int()
                 .expect("deeply forced value is an int"),
             42
+        );
+    }
+
+    #[test]
+    fn blackhole_check_rust_callable_traps_only_blackholed_thunks() {
+        let source = "[ (1 + 2) (3 + 4) ]";
+        let ir = aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers");
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("list evaluates");
+        let (forced_candidate, blackhole_candidate) = {
+            let list = eval.heap().get_list(root).expect("root list is heap-owned");
+            (
+                list.get(0).expect("first element exists"),
+                list.get(1).expect("second element exists"),
+            )
+        };
+
+        rust_callable_aos_blackhole_check(
+            &mut eval,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            forced_candidate,
+        )
+        .expect("suspended thunk is not a blackhole");
+        rust_callable_aos_force(
+            &mut eval,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            forced_candidate,
+        )
+        .expect("first thunk forces");
+        rust_callable_aos_blackhole_check(
+            &mut eval,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            forced_candidate,
+        )
+        .expect("forced thunk is not a blackhole");
+
+        let guard = {
+            let thunk = eval
+                .heap()
+                .get_thunk(blackhole_candidate)
+                .expect("second element is a thunk");
+            let crate::eval::ForceClaim::Claimed(guard) = thunk
+                .cell()
+                .begin_force()
+                .expect("suspended thunk is claimed")
+            else {
+                panic!("expected a claimed suspended thunk");
+            };
+            guard
+        };
+        std::mem::forget(guard);
+
+        let error = rust_callable_aos_blackhole_check(
+            &mut eval,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            blackhole_candidate,
+        )
+        .expect_err("blackholed thunk traps");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Force {
+                id: ir.root,
+                source: ForceError::InfiniteRecursion,
+            }
         );
     }
 

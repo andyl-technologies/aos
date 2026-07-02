@@ -472,7 +472,7 @@ fn safe_external_name_display(function: &Function, name: &ExternalName) -> Strin
 mod tests {
     use cranelift_codegen::ir::{ExtFuncData, SigRef, UserExternalNameRef};
     use ratchet_core::{
-        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
+        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeSymbolKind,
         runtime_helper_call_signature, runtime_thunk_call_signature, syntax::Span,
     };
     use ratchet_value::value::Value;
@@ -515,21 +515,18 @@ mod tests {
         assert!(preflight.declaration_for_symbol("aos_apply").is_some());
         assert!(preflight.declaration_for_symbol("aos_deopt").is_some());
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
+        assert!(
+            preflight
+                .declaration_for_symbol("aos_blackhole_check")
+                .is_some()
+        );
         assert!(preflight.declaration_for_symbol("aos_force").is_some());
         assert!(preflight.declaration_for_symbol("aos_select_ic").is_some());
         assert!(preflight.declaration_for_symbol("aos_update").is_some());
         assert!(preflight.declaration_for_symbol("aos_throw").is_some());
         assert!(preflight.artifact_runtime_imports().is_empty());
         assert!(preflight.artifact_runtime_import_gaps().is_empty());
-        assert!(matches!(
-            preflight.gap_for_symbol("aos_blackhole_check"),
-            Some(
-                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
-                    ..
-                }
-            )
-        ));
+        assert!(preflight.gap_for_symbol("aos_blackhole_check").is_none());
         assert!(!preflight.is_complete());
     }
 
@@ -551,7 +548,7 @@ mod tests {
         assert!(
             preflight
                 .declaration_for_symbol("aos_blackhole_check")
-                .is_none()
+                .is_some()
         );
     }
 

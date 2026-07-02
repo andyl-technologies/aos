@@ -5254,12 +5254,11 @@ and helps the oracle directly.
       allocation, call-control, attrset-access, environment-access, forcing, or write-barrier helper, an
       unbound future helper role, or a builtin. Tests cross-check order parity
       with the core manifest, exact safe-helper coverage including `aos_apply`,
-      `aos_has_attr`, `aos_select_ic`, `aos_update`, `aos_env_get`, and both forcing helpers.
-      Representative unbound helpers include `aos_blackhole_check`,
-      error helpers, and builtin
+      `aos_has_attr`, `aos_select_ic`, `aos_update`, `aos_env_get`, `aos_blackhole_check`, and both forcing helpers.
+      Representative unbound helpers include error helpers and builtin
       classification. This is binding-status metadata only; it attaches
       no function pointers, exports no native wrappers, registers no Cranelift
-      symbols, and leaves builtin, blackhole-check/error helper addresses
+      symbols, and leaves builtin and error helper addresses
       unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
@@ -5271,7 +5270,7 @@ and helps the oracle directly.
       `runtime_symbol_registration_plan()` currently returns an incomplete
       registration error until all helper and builtin executable bindings exist.
       Tests cover helper readiness, sorted missing bindings, representative
-      blackhole-check helper gaps, a builtin gap, and the incomplete-plan failure.
+      error-helper gaps, a builtin gap, and the incomplete-plan failure.
       This is a registration preflight only; it attaches no executable
       addresses, exports no wrappers, and performs no Cranelift registration.
 - [x] Current runtime symbol ABI-signature preflight precursor:
@@ -5621,7 +5620,7 @@ and helps the oracle directly.
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for blackhole-check/error
+      register Cranelift symbols, or add bindings for error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
@@ -5636,7 +5635,7 @@ and helps the oracle directly.
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      blackhole-check/error helpers, builtin addresses, or complete
+      error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
@@ -7077,24 +7076,25 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       the stable runtime symbol manifest with callable builtin ABI metadata and
       core-owned allocation, attrset has-attr/select-IC/update, call-control apply,
       deoptimization, environment-access, error-control throw, write-barrier,
-      and force/deep-force helper ABI metadata, then lowers those
+      blackhole-check and force/deep-force helper ABI metadata, then lowers those
       runtime signatures to CLIF `Signature` declarations. `aos_env_get` is frozen as
       `(env, slot) -> Value` and lowers to a host-pointer environment parameter,
       an `i32` slot parameter, and two `i64` return slots;
       `aos_force`/`aos_force_deep` are frozen as `(rt, Value) -> Value`;
+      `aos_blackhole_check` is frozen as `(rt, Value) -> Unit`;
       `aos_apply` is frozen as `(rt, Value function, Value arg) -> Value`;
       `aos_has_attr`/`aos_select_ic` are frozen as
       `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`; `aos_update`
       is frozen as `(rt, Value left, Value right) -> Value`; `aos_deopt`
       is frozen as `(rt, DeoptRecordPointer) -> Value`; `aos_throw` is frozen
       as `(rt, ErrorPointer) -> !`.
-      Unshaped helpers (`aos_blackhole_check`, `aos_try_begin`, and `aos_try_end`)
+      Unshaped helpers (`aos_try_begin` and `aos_try_end`)
       and value-only builtins
       remain explicit declaration gaps. Tests pin a representative callable
       builtin declaration, allocation, attrset-access, call-control,
       deoptimization, environment-access, error-control,
       write-barrier, and forcing-helper declarations, the current unshaped
-      helper gaps, value-only builtin gaps, and exact declaration parity with callable
+      try-helper gaps, value-only builtin gaps, and exact declaration parity with callable
       builtins plus core-owned helpers.
       This is declaration metadata only: no environment layout, runtime helper
       address, `JITModule`, `JITBuilder::symbol`, executable address, exported
@@ -7133,11 +7133,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       declaration preflight and exposes the artifact metadata, callable builtin
       declarations, core-owned allocation, attrset has-attr/select-IC/update, deoptimization,
       environment-access, error-control throw, write-barrier, call-control
-      apply, and force/deep-force helper declarations, and stable
+      apply, blackhole-check, and force/deep-force helper declarations, and stable
       runtime-symbol gaps as one future module-setup handoff. The checked
       `jit_module_readiness_plan_for_artifact()` gate currently returns an
-      incomplete-symbol error while unshaped helpers (`aos_blackhole_check`,
-      `aos_try_begin`, and `aos_try_end`) and
+      incomplete-symbol error while unshaped helpers (`aos_try_begin` and `aos_try_end`) and
       value-only builtin declaration gaps remain.
       Tests pin artifact metadata, callable builtin/helper declaration
       visibility, representative helper gaps, the
@@ -7151,12 +7150,11 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       and declares every currently shape-known callable builtin plus
       core-owned allocation, attrset has-attr/select-IC/update, call-control apply,
       deoptimization, environment-access, error-control throw, write-barrier,
-      and force/deep-force helper runtime symbol as a
+      blackhole-check, and force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
-      while unshaped helpers (`aos_blackhole_check`, `aos_try_begin`,
-      and `aos_try_end`) and value-only builtin
+      while unshaped helpers (`aos_try_begin` and `aos_try_end`) and value-only builtin
       gaps remain. Tests pin the expanded Cranelift crate-version set,
       imported callable builtin/helper declarations, representative helper gaps,
       and the strict setup rejection.

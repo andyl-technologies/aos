@@ -463,19 +463,34 @@ mod tests {
     }
 
     #[test]
-    fn force_helper_clif_signature_lowers_value_argument_and_return() {
-        let runtime_signature =
-            runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
-        let signature =
-            clif_signature_for_runtime_call(runtime_signature).expect("force signature lowers");
+    fn force_helper_clif_signature_lowers_value_argument_and_return_boundaries() {
         let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
 
-        assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        for symbol_name in ["aos_force", "aos_force_deep"] {
+            let runtime_signature =
+                runtime_helper_call_signature(symbol_name).expect("force signature is core-owned");
+            let signature =
+                clif_signature_for_runtime_call(runtime_signature).expect("force signature lowers");
+
+            assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Value);
+            assert_eq!(
+                param_types(&signature),
+                vec![pointer_type, types::I64, types::I64]
+            );
+            assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+        }
+
+        let blackhole_check = runtime_helper_call_signature("aos_blackhole_check")
+            .expect("blackhole-check signature is core-owned");
+        let blackhole_check_signature = clif_signature_for_runtime_call(blackhole_check)
+            .expect("blackhole-check signature lowers");
+
+        assert_eq!(blackhole_check.return_kind(), RuntimeAbiReturnKind::Unit);
         assert_eq!(
-            param_types(&signature),
+            param_types(&blackhole_check_signature),
             vec![pointer_type, types::I64, types::I64]
         );
-        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+        assert!(return_types(&blackhole_check_signature).is_empty());
     }
 
     #[test]

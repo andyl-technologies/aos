@@ -18,7 +18,7 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic", "aos_update"];
-const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_force", "aos_force_deep"];
+const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force", "aos_force_deep"];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]

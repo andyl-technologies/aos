@@ -682,6 +682,7 @@ The core set:
 |--------|---------------|---------|
 | `aos_force` | `(rt, Value) -> Value` | Force a thunk to WHNF: state-check, blackhole, call `code_ptr`, cache, return. The hottest runtime call. |
 | `aos_force_deep` | `(rt, Value) -> Value` | Recursively force a value for deep-seq-style consumers while preserving the shared force boundary. |
+| `aos_blackhole_check` | `(rt, Value) -> Unit` | Trap on recursive re-entry when optimized force lowering has already isolated a thunk state check. |
 | `aos_apply` | `(rt, Value fn, Value arg) -> Value` | Apply a (forced) lambda or partial application to one argument. |
 | `aos_alloc_thunk` | `(rt, code_ptr, env) -> Value` | Allocate a suspended thunk. Routes through the active GC strategy (arena or generational). |
 | `aos_alloc_attrs` | `(rt, shape, *fields) -> Value` | Allocate an attrset of a given [hidden class](09-attribute-sets-hidden-classes-and-inline-caches.md). |
@@ -967,12 +968,12 @@ harness, never cut for scope.
       environment-access, forcing, or write-barrier helper, an unbound future
       helper role, or a builtin. Tests cross-check core-manifest order, exact
       safe-helper binding coverage including `aos_apply`, `aos_has_attr`,
-      `aos_select_ic`, `aos_update`, `aos_env_get`, and both forcing helpers. Representative
-      unbound helpers include `aos_blackhole_check`, error helpers, and a representative
+      `aos_select_ic`, `aos_update`, `aos_env_get`, `aos_blackhole_check`, and both forcing helpers. Representative
+      unbound helpers include error helpers and a representative
       builtin symbol.
       This is binding-status metadata only; it attaches no function pointers,
       exports no wrappers, registers no Cranelift symbols, and leaves
-      builtin/blackhole-check/error helper addresses unbound.
+      builtin/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -1014,9 +1015,9 @@ harness, never cut for scope.
       `jit_module_readiness_plan_for_artifact()` gate preserves callable builtin
       declarations plus core-owned allocation, attrset has-attr/select-IC/update,
       call-control apply, deoptimization, environment-access,
-      error-control throw, write-barrier, and force/deep-force helper
+      error-control throw, write-barrier, blackhole-check, and force/deep-force helper
       declarations, but currently rejects complete setup while unshaped helpers
-      (`aos_blackhole_check`, `aos_try_begin`, and `aos_try_end`) and value-only
+      (`aos_try_begin` and `aos_try_end`) and value-only
       builtin declaration gaps
       remain. Tests pin artifact metadata, callable builtin declaration
       visibility, representative helper gaps, the
@@ -1044,12 +1045,11 @@ harness, never cut for scope.
       and declares every currently shape-known callable builtin plus
       core-owned allocation, attrset has-attr/select-IC/update, call-control apply,
       deoptimization, environment-access, error-control throw, write-barrier,
-      and force/deep-force helper runtime symbol as a
+      blackhole-check, and force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
-      while unshaped helpers (`aos_blackhole_check`, `aos_try_begin`,
-      and `aos_try_end`) and value-only builtin
+      while unshaped helpers (`aos_try_begin` and `aos_try_end`) and value-only builtin
       gaps remain. Tests pin the expanded Cranelift crate-version set, imported
       callable builtin/helper declarations, representative helper gaps, and the
       strict setup rejection.
@@ -1285,19 +1285,20 @@ harness, never cut for scope.
       `aos_env_get` is frozen as `(env, slot) -> Value`
       and lowers to a host-pointer environment parameter, an `i32` slot
       parameter, and two `i64` return slots; `aos_force`/`aos_force_deep` are
-      frozen as `(rt, Value) -> Value`; `aos_apply` is frozen as
+      frozen as `(rt, Value) -> Value`; `aos_blackhole_check` is frozen as
+      `(rt, Value) -> Unit`; `aos_apply` is frozen as
       `(rt, Value function, Value arg) -> Value`;
       `aos_has_attr`/`aos_select_ic` are frozen as
       `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`; `aos_update`
       is frozen as `(rt, Value left, Value right) -> Value`; `aos_deopt`
       is frozen as `(rt, DeoptRecordPointer) -> Value`; `aos_throw` is frozen
       as `(rt, ErrorPointer) -> !`. Unshaped helpers
-      (`aos_blackhole_check`, `aos_try_begin`, and `aos_try_end`) and
+      (`aos_try_begin` and `aos_try_end`) and
       value-only builtins remain explicit gaps. Tests
       pin a representative callable builtin declaration, allocation,
       attrset-access, call-control, deoptimization, environment-access,
       error-control, write-barrier, and
-      forcing-helper declarations, the current unshaped helper gaps, value-only builtin gaps, and
+      forcing-helper declarations, the current unshaped try-helper gaps, value-only builtin gaps, and
       exact declaration parity with callable builtins plus core-owned helpers.
       This is declaration metadata only: no environment layout, runtime helper address,
       `JITModule`, `JITBuilder::symbol`, executable address, exported wrapper,

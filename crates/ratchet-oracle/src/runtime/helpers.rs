@@ -19,29 +19,26 @@ use thiserror::Error;
 use super::alloc::{
     RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint,
     RuntimeAllocationNativeExportBlocker, RuntimeAllocationRustCallableBinding,
-    runtime_allocation_rust_callable_bindings,
 };
 use super::apply::{
     RuntimeApplyAbiSignature, RuntimeApplyEntryPoint, RuntimeApplyNativeExportBlocker,
-    RuntimeApplyRustCallableBinding, runtime_apply_rust_callable_bindings,
+    RuntimeApplyRustCallableBinding,
 };
 use super::attr::{
     RuntimeAttrAccessAbiSignature, RuntimeAttrAccessEntryPoint,
     RuntimeAttrAccessNativeExportBlocker, RuntimeAttrAccessRustCallableBinding,
-    runtime_attr_access_rust_callable_bindings,
 };
 use super::barrier::{
     RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint,
     RuntimeWriteBarrierNativeExportBlocker, RuntimeWriteBarrierRustCallableBinding,
-    runtime_write_barrier_rust_callable_bindings,
 };
 use super::env::{
     RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint, RuntimeEnvAccessNativeExportBlocker,
-    RuntimeEnvAccessRustCallableBinding, runtime_env_access_rust_callable_bindings,
+    RuntimeEnvAccessRustCallableBinding,
 };
 use super::forcing::{
     RuntimeForcingAbiSignature, RuntimeForcingEntryPoint, RuntimeForcingNativeExportBlocker,
-    RuntimeForcingRustCallableBinding, runtime_forcing_rust_callable_bindings,
+    RuntimeForcingRustCallableBinding,
 };
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
@@ -54,6 +51,7 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocString.abi_signature()),
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocThunk.abi_signature()),
     RuntimeHelperBinding::CallControl(RuntimeApplyEntryPoint::AosApply.abi_signature()),
+    RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosBlackholeCheck.abi_signature()),
     RuntimeHelperBinding::EnvironmentAccess(RuntimeEnvAccessEntryPoint::AosEnvGet.abi_signature()),
     RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForce.abi_signature()),
     RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForceDeep.abi_signature()),
@@ -76,36 +74,11 @@ pub const fn runtime_helper_bindings() -> &'static [RuntimeHelperBinding] {
 /// The inventory is separate from complete runtime-symbol registration, which
 /// also has to bind future helper roles and builtin symbols.
 pub fn runtime_helper_rust_callable_bindings() -> Vec<RuntimeHelperRustCallableBinding> {
-    let mut bindings = runtime_allocation_rust_callable_bindings()
-        .into_iter()
-        .map(RuntimeHelperRustCallableBinding::Allocation)
-        .collect::<Vec<_>>();
-    bindings.extend(
-        runtime_apply_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::CallControl),
-    );
-    bindings.extend(
-        runtime_env_access_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
-    );
-    bindings.extend(
-        runtime_forcing_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::Forcing),
-    );
-    bindings.extend(
-        runtime_write_barrier_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::WriteBarrier),
-    );
-    bindings.extend(
-        runtime_attr_access_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::AttrsetAccess),
-    );
-    bindings
+    runtime_helper_bindings()
+        .iter()
+        .copied()
+        .filter_map(RuntimeHelperBinding::rust_callable_binding)
+        .collect()
 }
 
 /// Builds a helper-family preflight for callable Rust storage wrappers.
@@ -2043,28 +2016,27 @@ mod tests {
     use super::*;
     use crate::runtime::alloc::{
         RuntimeAllocationNativeExportBlocker, runtime_allocation_abi_signatures,
-        runtime_allocation_native_export_preflight, runtime_allocation_rust_callable_bindings,
+        runtime_allocation_native_export_preflight,
     };
     use crate::runtime::apply::{
         RuntimeApplyNativeExportBlocker, runtime_apply_abi_signatures,
-        runtime_apply_native_export_preflight, runtime_apply_rust_callable_bindings,
+        runtime_apply_native_export_preflight,
     };
     use crate::runtime::attr::{
         RuntimeAttrAccessNativeExportBlocker, runtime_attr_access_abi_signatures,
-        runtime_attr_access_native_export_preflight, runtime_attr_access_rust_callable_bindings,
+        runtime_attr_access_native_export_preflight,
     };
     use crate::runtime::barrier::{
         RuntimeWriteBarrierNativeExportBlocker, runtime_write_barrier_abi_signatures,
         runtime_write_barrier_native_export_preflight,
-        runtime_write_barrier_rust_callable_bindings,
     };
     use crate::runtime::env::{
         RuntimeEnvAccessNativeExportBlocker, runtime_env_access_abi_signatures,
-        runtime_env_access_native_export_preflight, runtime_env_access_rust_callable_bindings,
+        runtime_env_access_native_export_preflight,
     };
     use crate::runtime::forcing::{
         RuntimeForcingNativeExportBlocker, runtime_forcing_abi_signatures,
-        runtime_forcing_native_export_preflight, runtime_forcing_rust_callable_bindings,
+        runtime_forcing_native_export_preflight,
     };
 
     fn expected_runtime_symbol_abi_signature_projection(
@@ -2143,7 +2115,8 @@ mod tests {
                         | RuntimeHelperRole::WriteBarrier
                 ) || matches!(
                     symbol.name(),
-                    "aos_force"
+                    "aos_blackhole_check"
+                        | "aos_force"
                         | "aos_force_deep"
                         | "aos_has_attr"
                         | "aos_select_ic"
@@ -2304,6 +2277,10 @@ mod tests {
                 ),
                 ("aos_apply", RuntimeHelperFailureConvention::TrapToEvaluator,),
                 (
+                    "aos_blackhole_check",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
                     "aos_env_get",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
@@ -2335,35 +2312,11 @@ mod tests {
     #[test]
     fn runtime_helper_rust_callable_bindings_preserve_family_inventories() {
         let helper_callables = runtime_helper_rust_callable_bindings();
-        let mut expected_callables = runtime_allocation_rust_callable_bindings()
-            .into_iter()
-            .map(RuntimeHelperRustCallableBinding::Allocation)
+        let expected_callables = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .filter_map(RuntimeHelperBinding::rust_callable_binding)
             .collect::<Vec<_>>();
-        expected_callables.extend(
-            runtime_apply_rust_callable_bindings()
-                .into_iter()
-                .map(RuntimeHelperRustCallableBinding::CallControl),
-        );
-        expected_callables.extend(
-            runtime_env_access_rust_callable_bindings()
-                .into_iter()
-                .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
-        );
-        expected_callables.extend(
-            runtime_forcing_rust_callable_bindings()
-                .into_iter()
-                .map(RuntimeHelperRustCallableBinding::Forcing),
-        );
-        expected_callables.extend(
-            runtime_write_barrier_rust_callable_bindings()
-                .into_iter()
-                .map(RuntimeHelperRustCallableBinding::WriteBarrier),
-        );
-        expected_callables.extend(
-            runtime_attr_access_rust_callable_bindings()
-                .into_iter()
-                .map(RuntimeHelperRustCallableBinding::AttrsetAccess),
-        );
 
         assert_eq!(helper_callables, expected_callables);
         assert_eq!(
@@ -2469,7 +2422,12 @@ mod tests {
                     | RuntimeHelperRole::WriteBarrier
             ) && !matches!(
                 symbol.name(),
-                "aos_force" | "aos_force_deep" | "aos_has_attr" | "aos_select_ic" | "aos_update"
+                "aos_blackhole_check"
+                    | "aos_force"
+                    | "aos_force_deep"
+                    | "aos_has_attr"
+                    | "aos_select_ic"
+                    | "aos_update"
             )
         }) {
             assert_eq!(
@@ -2570,8 +2528,10 @@ mod tests {
                 .iter()
                 .find(|entry| entry.symbol_name() == "aos_blackhole_check")
                 .map(RuntimeSymbolBindingManifestEntry::status),
-            Some(RuntimeSymbolBindingStatus::UnboundHelper(
-                RuntimeHelperRole::ForcingControl
+            Some(RuntimeSymbolBindingStatus::BoundHelper(
+                RuntimeHelperBinding::Forcing(
+                    RuntimeForcingEntryPoint::AosBlackholeCheck.abi_signature()
+                )
             ))
         );
         assert_eq!(
@@ -2638,9 +2598,9 @@ mod tests {
         assert!(preflight.helper_bindings().iter().any(|binding| {
             binding.symbol_name() == "aos_apply" && binding.role() == RuntimeHelperRole::CallControl
         }));
-        assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_blackhole_check"
-                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+        assert!(preflight.helper_bindings().iter().any(|binding| {
+            binding.symbol_name() == "aos_blackhole_check"
+                && binding.role() == RuntimeHelperRole::ForcingControl
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "nix.builtin.derivationStrict"
@@ -2774,11 +2734,13 @@ mod tests {
         );
         assert!(
             signature_preflight
-                .missing_bindings()
+                .signature_bindings()
                 .iter()
-                .any(|missing| {
-                    missing.symbol_name() == "aos_blackhole_check"
-                        && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+                .any(|binding| {
+                    binding.helper_binding().is_some_and(|helper| {
+                        helper.symbol_name() == "aos_blackhole_check"
+                            && helper.role() == RuntimeHelperRole::ForcingControl
+                    })
                 })
         );
         assert!(
@@ -2856,9 +2818,11 @@ mod tests {
                     && helper.role() == RuntimeHelperRole::ForcingControl
             })
         }));
-        assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_blackhole_check"
-                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+        assert!(preflight.signature_bindings().iter().any(|binding| {
+            binding.helper_binding().is_some_and(|helper| {
+                helper.symbol_name() == "aos_blackhole_check"
+                    && helper.role() == RuntimeHelperRole::ForcingControl
+            })
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "nix.builtin.true"
@@ -2932,7 +2896,7 @@ mod tests {
                 RuntimeHelperRole::ForcingControl => {
                     assert!(matches!(
                         target.symbol_name(),
-                        "aos_force" | "aos_force_deep"
+                        "aos_blackhole_check" | "aos_force" | "aos_force_deep"
                     ))
                 }
                 RuntimeHelperRole::WriteBarrier => {
@@ -3080,13 +3044,11 @@ mod tests {
         );
         assert!(
             candidate_preflight
-                .missing_bindings()
+                .candidate_bindings()
                 .iter()
-                .any(|missing| {
-                    missing.missing_abi_signature().is_some_and(|gap| {
-                        gap.symbol_name() == "aos_blackhole_check"
-                            && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-                    })
+                .any(|candidate| {
+                    candidate.symbol_name() == "aos_blackhole_check"
+                        && candidate.helper_role() == RuntimeHelperRole::ForcingControl
                 })
         );
         assert!(
@@ -3176,11 +3138,9 @@ mod tests {
             candidate.symbol_name() == "aos_force_deep"
                 && candidate.helper_role() == RuntimeHelperRole::ForcingControl
         }));
-        assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.missing_abi_signature().is_some_and(|gap| {
-                gap.symbol_name() == "aos_blackhole_check"
-                    && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-            })
+        assert!(preflight.candidate_bindings().iter().any(|candidate| {
+            candidate.symbol_name() == "aos_blackhole_check"
+                && candidate.helper_role() == RuntimeHelperRole::ForcingControl
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing
@@ -3262,6 +3222,13 @@ mod tests {
                 && missing.missing_exported_c_abi_failure_convention()
                     == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
         }));
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_blackhole_check"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
         let allocation_preflight = runtime_allocation_native_export_preflight();
         let attrs_allocation_blockers = allocation_preflight
             .readiness_for_symbol("aos_alloc_attrs")
@@ -3295,6 +3262,10 @@ mod tests {
             .expect("update export readiness exists")
             .blockers();
         let forcing_preflight = runtime_forcing_native_export_preflight();
+        let blackhole_check_blockers = forcing_preflight
+            .readiness_for_symbol("aos_blackhole_check")
+            .expect("blackhole-check export readiness exists")
+            .blockers();
         let forcing_blockers = forcing_preflight
             .readiness_for_symbol("aos_force")
             .expect("force export readiness exists")
@@ -3336,6 +3307,10 @@ mod tests {
             .iter()
             .find(|missing| missing.symbol_name() == "aos_update")
             .expect("update export gap exists");
+        let blackhole_check_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_blackhole_check")
+            .expect("blackhole-check export gap exists");
         let force_export_gap = exported_wrapper_gaps
             .iter()
             .find(|missing| missing.symbol_name() == "aos_force")
@@ -3543,6 +3518,10 @@ mod tests {
             deep_force_export_gap.missing_exported_forcing_blockers(),
             Some(deep_forcing_blockers)
         );
+        assert_eq!(
+            blackhole_check_export_gap.missing_exported_forcing_blockers(),
+            Some(blackhole_check_blockers)
+        );
         assert!(
             force_export_gap
                 .missing_exported_forcing_blockers()
@@ -3703,6 +3682,11 @@ mod tests {
         }));
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "aos_force_deep"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+        }));
+        assert!(export_preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_blackhole_check"
                 && missing.missing_exported_c_abi_wrapper_role()
                     == Some(RuntimeHelperRole::ForcingControl)
         }));
@@ -3869,10 +3853,15 @@ mod tests {
                 .any(|callable| callable.symbol_name() == "aos_force_deep"
                     && callable.role() == RuntimeHelperRole::ForcingControl)
         );
-        assert!(callable_preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_blackhole_check"
-                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-        }));
+        assert!(
+            callable_preflight
+                .helper_callables()
+                .iter()
+                .any(|callable| {
+                    callable.symbol_name() == "aos_blackhole_check"
+                        && callable.role() == RuntimeHelperRole::ForcingControl
+                })
+        );
         assert!(callable_preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "nix.builtin.derivationStrict"
                 && missing.helper_role().is_none()
