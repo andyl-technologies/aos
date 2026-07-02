@@ -1130,6 +1130,15 @@ harness, never cut for scope.
       construction only: no generic IR traversal, force calls, runtime-symbol
       calls, `JITModule`, executable buffer, finalized function pointer, or
       native call is implemented.
+- [x] Current literal-IR CLIF root precursor:
+      `ratchet-jit::lower::lower_constant_ir_thunk_body()` connects the CLIF
+      smoke path to actual Core IR arena roots for `Int`, `Float`, `Bool`, and
+      `Null` literals. It rejects missing roots, unsupported kinds, and
+      mismatched kind/payload pairs before reusing the constant-thunk body
+      lowerer. Tests cover all supported literals plus those rejection cases.
+      This is still literal-only lowering: no child traversal, environment
+      access, forcing, runtime-symbol calls, branches, applications, `JITModule`,
+      executable buffer, or native call is implemented.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.

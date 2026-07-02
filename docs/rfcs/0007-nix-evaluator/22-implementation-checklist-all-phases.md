@@ -6491,6 +6491,16 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       test only: no generic IR traversal, force/runtime calls, `JITModule`,
       executable buffer, finalized function pointer, symbol registration, or
       native call is implemented.
+- [x] Current literal-IR CLIF root precursor:
+      `ratchet-jit::lower::lower_constant_ir_thunk_body()` accepts actual Core
+      IR arena roots for `Int`, `Float`, `Bool`, and `Null` literals, converts
+      them to the current `ratchet-value` representation, and reuses the
+      constant-thunk CLIF body path. It rejects missing roots, unsupported root
+      kinds, and mismatched kind/payload pairs. Tests cover supported literals
+      and those rejection paths. This remains literal-only lowering: no child
+      traversal, environment access, forcing, runtime-symbol calls, branches,
+      applications, `JITModule`, executable buffer, finalized function pointer,
+      symbol registration, or native call is implemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:
