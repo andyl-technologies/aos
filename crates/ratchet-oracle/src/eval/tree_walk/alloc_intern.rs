@@ -746,7 +746,7 @@ impl TreeWalk {
         Ok(value)
     }
 
-    pub(super) fn force_value(
+    pub(crate) fn force_value(
         &mut self,
         id: IrId,
         span: Span,

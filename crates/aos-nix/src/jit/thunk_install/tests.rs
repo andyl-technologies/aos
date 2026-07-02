@@ -313,7 +313,7 @@ fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_literal_r
 }
 
 #[test]
-fn force_aware_thunk_install_readiness_reports_missing_force_candidate() {
+fn force_aware_thunk_install_readiness_reports_force_finalization_guard() {
     let arena = local_var_arena(9);
     let thunk = EvalThunk::new(IrId::new(0));
 
@@ -326,7 +326,7 @@ fn force_aware_thunk_install_readiness_reports_missing_force_candidate() {
         &thunk,
     );
     let Err(error) = result else {
-        panic!("force-aware env-slot readiness requires an aos_force candidate");
+        panic!("force-aware env-slot readiness is guarded before finalization");
     };
 
     let NixJitThunkInstallReadinessError::Promotion(
@@ -341,10 +341,10 @@ fn force_aware_thunk_install_readiness_reports_missing_force_candidate() {
         DEFAULT_TIER1_INVOCATION_THRESHOLD
     );
     assert!(source.slot().tier1_code_ptr().is_none());
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
         source.setup_error()
     else {
-        panic!("expected force helper registration guard");
+        panic!("expected force helper finalization guard");
     };
     assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }

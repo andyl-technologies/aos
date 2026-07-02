@@ -182,10 +182,10 @@ pub fn nix_jit_tier1_conformance_readiness_for_ir_root(
 /// This function composes the top-level runtime-symbol registration bridge with
 /// the force-aware evaluator-thunk install-readiness report for `root`. It is a
 /// harness-facing gate only: local environment-slot roots currently surface the
-/// missing `aos_force` registration blocker before the returned readiness report
-/// can be built. Literal roots report the same runtime-symbol and evaluator
-/// publication blockers as the non-force-aware gate, while cold roots preserve
-/// the no-code gap.
+/// registered-module finalization guard for forced artifacts before the returned
+/// readiness report can be built. Literal roots report the same runtime-symbol
+/// and evaluator publication blockers as the non-force-aware gate, while cold
+/// roots preserve the no-code gap.
 ///
 /// # Errors
 ///
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn force_aware_tier1_conformance_readiness_reports_missing_force_candidate() {
+    fn force_aware_tier1_conformance_readiness_reports_force_finalization_guard() {
         let arena = local_var_arena(9);
         let thunk = EvalThunk::new(IrId::new(0));
 
@@ -530,7 +530,7 @@ mod tests {
             &thunk,
         );
         let Err(error) = result else {
-            panic!("force-aware env-slot conformance requires an aos_force candidate");
+            panic!("force-aware env-slot conformance is guarded before finalization");
         };
 
         let NixJitTier1ConformanceReadinessError::ThunkInstall(
@@ -547,11 +547,10 @@ mod tests {
             DEFAULT_TIER1_INVOCATION_THRESHOLD
         );
         assert!(source.slot().tier1_code_ptr().is_none());
-        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-            symbol_names,
-        } = source.setup_error()
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
+            source.setup_error()
         else {
-            panic!("expected force helper registration guard");
+            panic!("expected force helper finalization guard");
         };
         assert_eq!(symbol_names, &["aos_force".to_owned()]);
     }

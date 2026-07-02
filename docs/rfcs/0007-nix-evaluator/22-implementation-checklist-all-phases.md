@@ -5251,34 +5251,34 @@ and helps the oracle directly.
       `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
       consumes the full `ratchet-core` runtime symbol manifest and preserves its
       deterministic order while classifying each symbol as a currently bound
-      allocation, environment-access, or write-barrier helper, an unbound future
-      helper role, or a builtin. Tests cross-check order parity with the core
-      manifest, exact safe-helper coverage including `aos_env_get`,
-      representative unbound helpers such as `aos_force` and `aos_apply`, and
-      builtin classification. This is binding-status metadata only; it attaches
+      allocation, environment-access, forcing, or write-barrier helper, an
+      unbound future helper role, or a builtin. Tests cross-check order parity
+      with the core manifest, exact safe-helper coverage including `aos_env_get`
+      and `aos_force`, representative unbound helpers such as `aos_force_deep`
+      and `aos_apply`, and builtin classification. This is binding-status metadata only; it attaches
       no function pointers, exports no native wrappers, registers no Cranelift
-      symbols, and leaves builtin, forcing/call/attr/error helper addresses
+      symbols, and leaves builtin, deep-forcing/call/attr/error helper addresses
       unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       converts the binding manifest into a deterministic readiness report for
-      future native registration: current allocation, environment-access, and
-      write-barrier helper bindings stay in runtime-manifest order, and every
+      future native registration: current allocation, environment-access,
+      forcing, and write-barrier helper bindings stay in runtime-manifest order, and every
       missing helper or builtin binding is reported in stable symbol order. The
       stricter
       `runtime_symbol_registration_plan()` currently returns an incomplete
       registration error until all helper and builtin executable bindings exist.
       Tests cover helper readiness, sorted missing bindings, representative
-      forcing/call helper gaps, a builtin gap, and the incomplete-plan failure.
+      deep-forcing/call helper gaps, a builtin gap, and the incomplete-plan failure.
       This is a registration preflight only; it attaches no executable
       addresses, exports no wrappers, and performs no Cranelift registration.
 - [x] Current runtime symbol ABI-signature preflight precursor:
       `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines safe
       helper binding metadata with core-owned helper `RuntimeCallSignature`
       metadata and `ratchet-core` builtin call-shape metadata in stable runtime
-      symbol order. It attaches allocation, environment-access, and write-barrier
-      helper signatures only when the corresponding core helper signature
-      exists, plus callable builtin `RuntimeCallSignature` metadata, while
+      symbol order. It attaches allocation, environment-access, forcing, and
+      write-barrier helper signatures only when the corresponding core helper
+      signature exists, plus callable builtin `RuntimeCallSignature` metadata, while
       leaving unbound helper roles and value-only builtin symbols in the
       missing-binding report. Tests prove helper parity with the safe
       registration preflight, core signature coverage for every currently bound
@@ -5303,9 +5303,9 @@ and helps the oracle directly.
       `runtime::helpers::runtime_symbol_native_target_candidate_preflight()`
       consumes the ABI-signature preflight, then combines helper Rust-callable
       availability with the signature-covered helper/builtin set into a
-      target-readiness report. It records allocation, environment-access, and
-      write-barrier helpers as address-free symbol/role wrapper-generation
-      candidates and reports ABI-signature gaps, value-only builtins, and
+      target-readiness report. It records allocation, environment-access,
+      forcing, and write-barrier helpers as address-free symbol/role
+      wrapper-generation candidates and reports ABI-signature gaps, value-only builtins, and
       callable builtins without wrapper bodies as gaps carrying
       builtin-wrapper blockers: missing wrapper body, runtime/env ABI decoding,
       native `Value` argument materialization, evaluator call-frame binding,
@@ -5334,8 +5334,8 @@ and helps the oracle directly.
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches
       process-local Rust-callable helper metadata for the currently covered
-      allocation, environment-access, and write-barrier helper symbols while
-      reporting unbound helper and builtin symbols as gaps. Tests prove
+      allocation, environment-access, forcing, and write-barrier helper symbols
+      while reporting unbound helper and builtin symbols as gaps. Tests prove
       helper-callable order matches the helper-family callable inventory,
       callable helper symbols line up with the safe registration preflight, and
       missing symbols remain identical to the existing incomplete registration
@@ -5347,12 +5347,12 @@ and helps the oracle directly.
       `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
       composes oracle Rust-callable helper metadata with `ratchet-jit`
       runtime-symbol address candidates. It projects process-local callable
-      helper addresses for currently covered allocation, environment-access, and
-      write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
+      helper addresses for currently covered allocation, environment-access,
+      forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
       carrying oracle missing bindings for unbound helpers and builtins. The
       bridge now exposes helper-role filtered candidate views, including the
       allocation-helper manifest-order subset. Tests pin allocation,
-      environment-access, and write-barrier role filtering, feed only those
+      environment-access, forcing, and write-barrier role filtering, feed only those
       seven allocation candidates through JIT registration, and still cover
       registered env-slot tier-1 promotion for `aos_env_get`. This is safe
       integration preflight plumbing only: it does not export C ABI wrappers,
@@ -5366,11 +5366,11 @@ and helps the oracle directly.
       through `ratchet-jit` runtime-symbol registration readiness. The returned
       report owns those handoff inputs and separately reports that the current
       candidates still have Rust-callable rather than exported-wrapper address
-      provenance. Tests prove allocation-helper, `aos_env_get`, and
-      `aos_gc_write_barrier` binding/address parity, preserve the current
-      `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` missing-native-address registration gaps, and
-      prove registered helper addresses still retain missing exported-wrapper blockers plus
-      Rust-callable provenance gaps. This is safe integration preflight
+      provenance. Tests prove allocation-helper, `aos_env_get`, `aos_force`,
+      and `aos_gc_write_barrier` binding/address parity, preserve the current
+      unbound helper and builtin missing-native-address registration gaps, and
+      prove registered helper addresses still retain missing exported-wrapper
+      blockers plus Rust-callable provenance gaps. This is safe integration preflight
       metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
@@ -5381,9 +5381,11 @@ and helps the oracle directly.
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a complete
       plan. The current implementation returns a typed incomplete error carrying
-      the owned Nix preflight while the `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` address gaps,
-      helper/builtin gaps, exported-wrapper blockers, and Rust-callable
-      address-provenance gaps remain. This is strict metadata gating only: it
+      the owned Nix preflight while unbound helper/builtin address gaps,
+      exported-wrapper blockers, and Rust-callable address-provenance gaps
+      remain. `aos_force` now has a Rust-callable address candidate but still
+      carries forcing-specific native-export and provenance blockers. This is
+      strict metadata gating only: it
       does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
@@ -5410,9 +5412,9 @@ and helps the oracle directly.
       helper-address metadata. Literal roots still promote with no artifact
       runtime imports. Hot local environment-slot roots lower through the forced
       env-slot artifact importing `aos_env_get` and `aos_force`; the current
-      oracle candidates include `aos_env_get` but no `aos_force` candidate, so
-      the bridge reports that missing registration before Cranelift finalization
-      or tier-slot pointer installation. This keeps the force-aware bridge safe:
+      oracle candidates include both helpers, but `aos_force` still has no
+      exported native wrapper, so the bridge reports the registered-module
+      finalization guard before tier-slot pointer installation. This keeps the force-aware bridge safe:
       it does not mutate evaluator heap thunks, perform atomic thunk-state CAS,
       cast or call code pointers, dereference registered addresses, call native
       code, or complete runtime-symbol registration.
@@ -5432,8 +5434,8 @@ and helps the oracle directly.
       wraps the force-aware registered promotion preflight in the same safe
       handoff object used by the existing registered path. Tests cover cold slot
       preservation before candidate projection, literal pointer/module-owner
-      readiness, and the current hot env-slot `aos_force` registration gap
-      before finalization or pointer installation. This creates the future
+      readiness, and the current hot env-slot `aos_force` registered-module
+      finalization guard before pointer installation. This creates the future
       force-aware evaluator thunk install boundary but still does not mutate heap
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered addresses, call native code, or complete
@@ -5457,7 +5459,7 @@ and helps the oracle directly.
       wraps the force-aware registered install plan in the same read-only report
       against a target evaluator thunk. Tests cover cold no-code reports,
       literal roots reaching the existing future publication gaps, and hot
-      env-slot roots preserving the missing `aos_force` promotion blocker before
+      env-slot roots preserving the `aos_force` finalization guard before
       pointer installation or evaluator publication. This is safe readiness
       plumbing only: it does not mutate heap thunks, perform atomic thunk-state
       CAS, cast or call code pointers, dereference registered addresses, call
@@ -5482,8 +5484,8 @@ and helps the oracle directly.
       force-aware evaluator-thunk install-readiness report. Tests cover literal
       roots reaching the existing runtime-symbol and future-publish blockers,
       cold roots preserving the no-code gap, and hot env-slot roots surfacing the
-      missing `aos_force` promotion blocker before pointer installation or
-      evaluator publication. This is a harness gate only: it does not mutate heap
+      `aos_force` finalization guard before pointer installation or evaluator
+      publication. This is a harness gate only: it does not mutate heap
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered addresses, call native code, or complete
       runtime-symbol registration.
@@ -5594,35 +5596,35 @@ and helps the oracle directly.
       installation is implemented here.
 - [x] Current runtime-helper binding-manifest precursor:
       `ratchet-oracle::runtime::helpers` now combines the allocation,
-      environment-access, and write-barrier helper families into one safe
+      environment-access, forcing, and write-barrier helper families into one safe
       `RuntimeHelperBinding` inventory. Each binding carries the frozen helper
       symbol, core helper role, family-specific ABI signature, and failure
       convention, and resolves back from symbol text. The current allocation,
-      environment-access, and write-barrier helpers are pinned as
+      environment-access, forcing, and write-barrier helpers are pinned as
       `TrapToEvaluator`: they return only on success and future native wrappers
       must transfer failures to evaluator trap/error machinery instead of
       returning null pointers or sentinels. Tests prove the manifest exactly
       covers the currently bound `RuntimeHelperRole::Allocation`,
-      `RuntimeHelperRole::EnvironmentAccess`, and
+      `RuntimeHelperRole::EnvironmentAccess`, `RuntimeHelperRole::ForcingControl`, and
       `RuntimeHelperRole::WriteBarrier` symbols from `ratchet-core`, preserves
-      the allocation/environment-access/write-barrier ABI inventories, pins the
+      the allocation/environment-access/forcing/write-barrier ABI inventories, pins the
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for forcing/call/attr/error
+      register Cranelift symbols, or add bindings for deep-forcing/call/attr/error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
-      allocation, environment-access, and write-barrier Rust-callable
+      allocation, environment-access, forcing, and write-barrier Rust-callable
       storage-wrapper addresses into the helper-family layer, while
       `runtime_helper_rust_callable_preflight()` reports whether any currently
       bound helper family still lacks such a callable. The preflight is now
-      complete for the currently bound allocation, environment-access, and
-      write-barrier helper set. Tests prove family inventory parity, safe-helper
+      complete for the currently bound allocation, environment-access, forcing,
+      and write-barrier helper set. Tests prove family inventory parity, safe-helper
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      forcing/call/attr/error helpers, builtin addresses, or complete
+      deep-forcing/call/attr/error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every

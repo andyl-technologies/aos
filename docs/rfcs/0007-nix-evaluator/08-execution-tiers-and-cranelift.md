@@ -962,13 +962,14 @@ harness, never cut for scope.
       `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
       consumes the core runtime symbol manifest and preserves its order while
       classifying each symbol as a currently bound allocation,
-      environment-access, or write-barrier helper, an unbound future helper role,
-      or a builtin. Tests cross-check core-manifest order, exact safe-helper
-      binding coverage including `aos_env_get`, representative unbound helpers
-      such as `aos_force` and `aos_apply`, and a representative builtin symbol.
+      environment-access, forcing, or write-barrier helper, an unbound future
+      helper role, or a builtin. Tests cross-check core-manifest order, exact
+      safe-helper binding coverage including `aos_env_get` and `aos_force`,
+      representative unbound helpers such as `aos_force_deep` and `aos_apply`,
+      and a representative builtin symbol.
       This is binding-status metadata only; it attaches no function pointers,
       exports no wrappers, registers no Cranelift symbols, and leaves
-      builtin/forcing/call/attr/error helper addresses unbound.
+      builtin/deep-forcing/call/attr/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -977,7 +978,7 @@ harness, never cut for scope.
       reported in the same stable order. The stricter
       `runtime_symbol_registration_plan()` refuses to produce complete
       registration metadata while missing bindings remain. Tests cover helper
-      readiness, sorted missing bindings, representative forcing/call helpers,
+      readiness, sorted missing bindings, representative deep-forcing/call helpers,
       builtin gaps, and the current incomplete-plan error. This is a preflight
       gate only; it attaches no executable addresses and performs no Cranelift
       registration.
@@ -985,8 +986,8 @@ harness, never cut for scope.
       `runtime_symbol_abi_signature_preflight()` combines safe helper binding
       metadata with core-owned helper `RuntimeCallSignature` metadata and builtin
       call-shape metadata in stable runtime symbol order:
-      allocation, environment-access, and write-barrier helpers are bindable only
-      when the corresponding core helper signature exists, callable builtin
+      allocation, environment-access, forcing, and write-barrier helpers are
+      bindable only when the corresponding core helper signature exists, callable builtin
       `RuntimeCallSignature` entries are bindable metadata, and unbound helper
       roles plus value-only builtin symbols stay in the gap report. Tests pin helper parity with the
       safe registration preflight, core signature coverage for every currently
@@ -1190,8 +1191,8 @@ harness, never cut for scope.
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability
       with the signature-covered helper/builtin set into a target-readiness
-      report. Allocation, environment-access, and write-barrier helpers are
-      address-free symbol/role candidates for later wrapper generation, while
+      report. Allocation, environment-access, forcing, and write-barrier helpers
+      are address-free symbol/role candidates for later wrapper generation, while
       ABI-signature gaps, value-only builtins, and callable builtins without
       wrapper bodies stay in the gap report with builtin-wrapper blockers:
       missing wrapper body, runtime/env ABI decoding, native `Value` argument
@@ -1216,9 +1217,10 @@ harness, never cut for scope.
       `runtime_symbol_native_export_preflight()` is the checked safe boundary
       after address-free target candidacy. It reports current helper candidates
       as missing exported C ABI wrappers and preserves the family-specific
-      blockers from allocation, environment-access, and write-barrier native
-      export preflights: missing `unsafe extern "C"` wrappers,
-      runtime-context/environment-frame decoding, evaluator trap transfer,
+      blockers from allocation, environment-access, forcing, and write-barrier
+      native export preflights: missing `unsafe extern "C"` wrappers,
+      runtime-context/environment-frame decoding, active force-root binding,
+      thunk blackhole/force-cache integration, evaluator trap transfer,
       typed/native return materialization, allocation semantic-payload
       initialization, write-barrier GC-state extraction, and dispatch into the
       safe before-publish barrier path. `runtime_symbol_native_export_plan()`
@@ -1370,7 +1372,7 @@ harness, never cut for scope.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
-      currently covered allocation, environment-access, and write-barrier
+      currently covered allocation, environment-access, forcing, and write-barrier
       helpers and reporting the same unbound helper/builtin gaps as the safe
       registration preflight. Tests pin helper-callable order, symbol parity with
       the safe helper preflight, and gap parity with the incomplete registration
@@ -1387,7 +1389,7 @@ harness, never cut for scope.
       while preserving oracle missing bindings for unbound helpers and builtins.
       It also exposes helper-role filtered candidate views, including the
       allocation-helper subset in manifest order. Tests pin allocation,
-      environment-access, and write-barrier role filtering, feed only the
+      environment-access, forcing, and write-barrier role filtering, feed only the
       allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
       This is integration preflight plumbing only: the addresses are not
@@ -1400,11 +1402,11 @@ harness, never cut for scope.
       native-export preflight beside the `ratchet-jit` registration preflight
       built from those candidates, while separately reporting that the current
       candidates still have Rust-callable rather than exported-wrapper address
-      provenance. Tests pin allocation-helper, `aos_env_get`, and
+      provenance. Tests pin allocation-helper, `aos_env_get`, `aos_force`, and
       `aos_gc_write_barrier` binding/address parity, preserve the current
-      `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` missing-native-address registration gaps, and
-      prove registered helper addresses still carry missing exported-wrapper blockers plus
-      Rust-callable provenance gaps.
+      unbound helper and builtin missing-native-address registration gaps, and
+      prove registered helper addresses still carry missing exported-wrapper
+      blockers plus Rust-callable provenance gaps.
       This is still readiness metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, or call native code.
@@ -1414,9 +1416,10 @@ harness, never cut for scope.
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a plan.
       Today it returns a typed incomplete error carrying the owned Nix preflight
-      while the `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` address gaps, helper/builtin gaps,
-      exported-wrapper blockers, and Rust-callable address-provenance gaps
-      remain. This is still strict
+      while unbound helper/builtin address gaps, exported-wrapper blockers, and
+      Rust-callable address-provenance gaps remain. `aos_force` now has a
+      Rust-callable address candidate but still carries forcing-specific
+      native-export and provenance blockers. This is still strict
       metadata gating only: no `JITBuilder::symbol` registration, exported C ABI
       wrapper, code finalization, helper-address dereference, or native call is
       performed.
@@ -1441,10 +1444,10 @@ harness, never cut for scope.
       Literal roots still promote through the registered handoff with no
       runtime imports. Hot local environment-slot roots lower through the forced
       env-slot artifact importing `aos_env_get` and `aos_force`; because the
-      current oracle candidates include `aos_env_get` but no `aos_force`
-      address candidate, the bridge reports the missing `aos_force`
-      registration before Cranelift finalization or tier-slot pointer
-      installation. This remains safe preflight assembly only: no evaluator heap
+      current oracle candidates include both helpers but `aos_force` still has
+      no exported native wrapper, the bridge reports the registered-module
+      finalization guard before tier-slot pointer installation. This remains
+      safe preflight assembly only: no evaluator heap
       thunk is mutated, no atomic thunk-state CAS runs, no finalized code
       pointer is cast or called, and no registered helper address is
       dereferenced or called.
@@ -1465,8 +1468,8 @@ harness, never cut for scope.
       install handoff object used by the existing registered path. Cold roots
       preserve the updated tier slot without address-candidate requirements,
       literal roots can produce a ready pointer/module-owner plan, and hot local
-      environment-slot roots still report the missing `aos_force` candidate
-      before Cranelift finalization or tier-slot pointer installation. This is a
+      environment-slot roots still report the `aos_force` registered-module
+      finalization guard before tier-slot pointer installation. This is a
       safe plan only: no evaluator heap thunk is mutated, no atomic thunk-state
       CAS runs, no code pointer is cast or called, and no registered helper
       address is dereferenced or called.
@@ -1489,9 +1492,9 @@ harness, never cut for scope.
       composes the force-aware install-plan handoff with the same read-only
       evaluator thunk inspection. Cold roots report the no-code gap, literal
       roots reach the existing future publication gaps, and hot local
-      environment-slot roots still fail through the missing `aos_force`
-      promotion blocker before any readiness report can publish pointer
-      metadata. This remains safe readiness plumbing only: no evaluator heap
+      environment-slot roots still fail through the `aos_force` finalization
+      guard before any readiness report can publish pointer metadata. This
+      remains safe readiness plumbing only: no evaluator heap
       thunk is mutated, no atomic thunk-state CAS runs, no code pointer is cast
       or called, and no registered helper address is dereferenced or called.
 - [x] Current `aos-nix` tier-1 conformance-readiness preflight:
@@ -1514,8 +1517,8 @@ harness, never cut for scope.
       force-aware evaluator-thunk install-readiness report. Cold roots preserve
       the no-code gap, literal roots reach the same runtime-symbol and
       evaluator-publication blockers as the existing conformance gate, and hot
-      local environment-slot roots surface the missing `aos_force` promotion
-      blocker before a readiness report can publish pointer metadata. This
+      local environment-slot roots surface the `aos_force` finalization guard
+      before a readiness report can publish pointer metadata. This
       remains a harness gate only: no evaluator heap thunk is mutated, no code
       pointer is cast or called, and no registered helper address is dereferenced
       or called.
@@ -1538,12 +1541,12 @@ harness, never cut for scope.
       transfer, and Tier-B vtable installation remain open.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
-      allocation, environment-access, and write-barrier helper as
+      allocation, environment-access, forcing, and write-barrier helper as
       `TrapToEvaluator`, so the native ABI has no null-pointer or sentinel
       failure result: helpers return only on success, while allocation,
-      environment-access, or barrier failures must transfer to evaluator
+      environment-access, forcing, or barrier failures must transfer to evaluator
       trap/error machinery. Tests pin the convention for each `aos_alloc_*`,
-      `aos_env_get`, and `aos_gc_write_barrier` symbol. This remains metadata
+      `aos_env_get`, `aos_force`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.

@@ -30,6 +30,10 @@ use super::env::{
     RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint, RuntimeEnvAccessNativeExportBlocker,
     RuntimeEnvAccessRustCallableBinding, runtime_env_access_rust_callable_bindings,
 };
+use super::forcing::{
+    RuntimeForcingAbiSignature, RuntimeForcingEntryPoint, RuntimeForcingNativeExportBlocker,
+    RuntimeForcingRustCallableBinding, runtime_forcing_rust_callable_bindings,
+};
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
 pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
@@ -41,6 +45,7 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocString.abi_signature()),
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocThunk.abi_signature()),
     RuntimeHelperBinding::EnvironmentAccess(RuntimeEnvAccessEntryPoint::AosEnvGet.abi_signature()),
+    RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForce.abi_signature()),
     RuntimeHelperBinding::WriteBarrier(
         RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
     ),
@@ -65,6 +70,11 @@ pub fn runtime_helper_rust_callable_bindings() -> Vec<RuntimeHelperRustCallableB
         runtime_env_access_rust_callable_bindings()
             .into_iter()
             .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
+    );
+    bindings.extend(
+        runtime_forcing_rust_callable_bindings()
+            .into_iter()
+            .map(RuntimeHelperRustCallableBinding::Forcing),
     );
     bindings.extend(
         runtime_write_barrier_rust_callable_bindings()
@@ -641,6 +651,7 @@ fn project_native_export_preflight(
                         helper_binding.failure_convention(),
                         helper_binding.allocation_native_export_blockers(),
                         helper_binding.env_access_native_export_blockers(),
+                        helper_binding.forcing_native_export_blockers(),
                         helper_binding.write_barrier_native_export_blockers(),
                     ),
                 );
@@ -842,6 +853,8 @@ pub enum RuntimeHelperRustCallableBinding {
     Allocation(RuntimeAllocationRustCallableBinding),
     /// An environment-access helper backed by `runtime::env` storage-wrapper dispatch.
     EnvironmentAccess(RuntimeEnvAccessRustCallableBinding),
+    /// A forcing helper backed by `runtime::forcing` evaluator-wrapper dispatch.
+    Forcing(RuntimeForcingRustCallableBinding),
     /// A write-barrier helper backed by `runtime::barrier` storage-wrapper dispatch.
     WriteBarrier(RuntimeWriteBarrierRustCallableBinding),
 }
@@ -852,6 +865,7 @@ impl RuntimeHelperRustCallableBinding {
         match self {
             Self::Allocation(binding) => binding.symbol_name(),
             Self::EnvironmentAccess(binding) => binding.symbol_name(),
+            Self::Forcing(binding) => binding.symbol_name(),
             Self::WriteBarrier(binding) => binding.symbol_name(),
         }
     }
@@ -861,6 +875,7 @@ impl RuntimeHelperRustCallableBinding {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
             Self::EnvironmentAccess(_) => RuntimeHelperRole::EnvironmentAccess,
+            Self::Forcing(_) => RuntimeHelperRole::ForcingControl,
             Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
         }
     }
@@ -874,6 +889,9 @@ impl RuntimeHelperRustCallableBinding {
             Self::EnvironmentAccess(binding) => {
                 RuntimeHelperBinding::EnvironmentAccess(binding.entrypoint().abi_signature())
             }
+            Self::Forcing(binding) => {
+                RuntimeHelperBinding::Forcing(binding.entrypoint().abi_signature())
+            }
             Self::WriteBarrier(binding) => {
                 RuntimeHelperBinding::WriteBarrier(binding.entrypoint().abi_signature())
             }
@@ -884,7 +902,7 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn allocation_callable(self) -> Option<RuntimeAllocationRustCallableBinding> {
         match self {
             Self::Allocation(binding) => Some(binding),
-            Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
+            Self::EnvironmentAccess(_) | Self::Forcing(_) | Self::WriteBarrier(_) => None,
         }
     }
 
@@ -892,14 +910,22 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn env_access_callable(self) -> Option<RuntimeEnvAccessRustCallableBinding> {
         match self {
             Self::EnvironmentAccess(binding) => Some(binding),
-            Self::Allocation(_) | Self::WriteBarrier(_) => None,
+            Self::Allocation(_) | Self::Forcing(_) | Self::WriteBarrier(_) => None,
+        }
+    }
+
+    /// Returns the forcing callable when this binding serves forcing control.
+    pub const fn forcing_callable(self) -> Option<RuntimeForcingRustCallableBinding> {
+        match self {
+            Self::Forcing(binding) => Some(binding),
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
         }
     }
 
     /// Returns the write-barrier callable when this binding serves a barrier.
     pub const fn write_barrier_callable(self) -> Option<RuntimeWriteBarrierRustCallableBinding> {
         match self {
-            Self::Allocation(_) | Self::EnvironmentAccess(_) => None,
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::Forcing(_) => None,
             Self::WriteBarrier(binding) => Some(binding),
         }
     }
@@ -1387,6 +1413,8 @@ pub enum RuntimeSymbolNativeExportMissingBinding {
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
         /// Environment-access-specific blockers when this wrapper serves `aos_env_get`.
         env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
+        /// Forcing-specific blockers when this wrapper serves `aos_force`.
+        forcing_blockers: &'static [RuntimeForcingNativeExportBlocker],
         /// Write-barrier-specific blockers when this wrapper serves `aos_gc_write_barrier`.
         write_barrier_blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
     },
@@ -1403,6 +1431,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
         failure_convention: RuntimeHelperFailureConvention,
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
         env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
+        forcing_blockers: &'static [RuntimeForcingNativeExportBlocker],
         write_barrier_blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
     ) -> Self {
         Self::MissingExportedCAbiWrapper {
@@ -1411,6 +1440,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
             failure_convention,
             allocation_blockers,
             env_access_blockers,
+            forcing_blockers,
             write_barrier_blockers,
         }
     }
@@ -1475,6 +1505,18 @@ impl RuntimeSymbolNativeExportMissingBinding {
                 env_access_blockers,
                 ..
             } if !env_access_blockers.is_empty() => Some(*env_access_blockers),
+            Self::MissingExportedCAbiWrapper { .. } | Self::MissingNativeTargetCandidate(_) => None,
+        }
+    }
+
+    /// Returns forcing-specific blockers for a missing `aos_force` C ABI wrapper.
+    pub fn missing_exported_forcing_blockers(
+        &self,
+    ) -> Option<&'static [RuntimeForcingNativeExportBlocker]> {
+        match self {
+            Self::MissingExportedCAbiWrapper {
+                forcing_blockers, ..
+            } if !forcing_blockers.is_empty() => Some(*forcing_blockers),
             Self::MissingExportedCAbiWrapper { .. } | Self::MissingNativeTargetCandidate(_) => None,
         }
     }
@@ -1613,6 +1655,8 @@ pub enum RuntimeHelperBinding {
     Allocation(RuntimeAllocationAbiSignature),
     /// An environment-access helper routed through `runtime::env`.
     EnvironmentAccess(RuntimeEnvAccessAbiSignature),
+    /// A forcing helper routed through `runtime::forcing`.
+    Forcing(RuntimeForcingAbiSignature),
     /// A write-barrier helper routed through `runtime::barrier`.
     WriteBarrier(RuntimeWriteBarrierAbiSignature),
 }
@@ -1623,6 +1667,7 @@ impl RuntimeHelperBinding {
         match self {
             Self::Allocation(signature) => signature.symbol_name(),
             Self::EnvironmentAccess(signature) => signature.symbol_name(),
+            Self::Forcing(signature) => signature.symbol_name(),
             Self::WriteBarrier(signature) => signature.symbol_name(),
         }
     }
@@ -1632,6 +1677,7 @@ impl RuntimeHelperBinding {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
             Self::EnvironmentAccess(_) => RuntimeHelperRole::EnvironmentAccess,
+            Self::Forcing(_) => RuntimeHelperRole::ForcingControl,
             Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
         }
     }
@@ -1639,9 +1685,10 @@ impl RuntimeHelperBinding {
     /// Returns the native failure convention for this helper binding.
     pub const fn failure_convention(self) -> RuntimeHelperFailureConvention {
         match self {
-            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => {
-                RuntimeHelperFailureConvention::TrapToEvaluator
-            }
+            Self::Allocation(_)
+            | Self::EnvironmentAccess(_)
+            | Self::Forcing(_)
+            | Self::WriteBarrier(_) => RuntimeHelperFailureConvention::TrapToEvaluator,
         }
     }
 
@@ -1656,6 +1703,9 @@ impl RuntimeHelperBinding {
                     signature.entrypoint().rust_callable_binding(),
                 ))
             }
+            Self::Forcing(signature) => Some(RuntimeHelperRustCallableBinding::Forcing(
+                signature.entrypoint().rust_callable_binding(),
+            )),
             Self::WriteBarrier(signature) => Some(RuntimeHelperRustCallableBinding::WriteBarrier(
                 signature.entrypoint().rust_callable_binding(),
             )),
@@ -1671,6 +1721,9 @@ impl RuntimeHelperBinding {
                     .map(Self::EnvironmentAccess)
             })
             .or_else(|| {
+                RuntimeForcingAbiSignature::from_symbol_name(symbol_name).map(Self::Forcing)
+            })
+            .or_else(|| {
                 RuntimeWriteBarrierAbiSignature::from_symbol_name(symbol_name)
                     .map(Self::WriteBarrier)
             })
@@ -1680,7 +1733,7 @@ impl RuntimeHelperBinding {
     pub const fn allocation_signature(self) -> Option<RuntimeAllocationAbiSignature> {
         match self {
             Self::Allocation(signature) => Some(signature),
-            Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
+            Self::EnvironmentAccess(_) | Self::Forcing(_) | Self::WriteBarrier(_) => None,
         }
     }
 
@@ -1690,7 +1743,7 @@ impl RuntimeHelperBinding {
     ) -> &'static [RuntimeAllocationNativeExportBlocker] {
         match self {
             Self::Allocation(signature) => signature.entrypoint().native_export_blockers(),
-            Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => &[],
+            Self::EnvironmentAccess(_) | Self::Forcing(_) | Self::WriteBarrier(_) => &[],
         }
     }
 
@@ -1698,7 +1751,7 @@ impl RuntimeHelperBinding {
     pub const fn env_access_signature(self) -> Option<RuntimeEnvAccessAbiSignature> {
         match self {
             Self::EnvironmentAccess(signature) => Some(signature),
-            Self::Allocation(_) | Self::WriteBarrier(_) => None,
+            Self::Allocation(_) | Self::Forcing(_) | Self::WriteBarrier(_) => None,
         }
     }
 
@@ -1707,15 +1760,33 @@ impl RuntimeHelperBinding {
         self,
     ) -> &'static [RuntimeEnvAccessNativeExportBlocker] {
         match self {
-            Self::Allocation(_) | Self::WriteBarrier(_) => &[],
+            Self::Allocation(_) | Self::Forcing(_) | Self::WriteBarrier(_) => &[],
             Self::EnvironmentAccess(signature) => signature.entrypoint().native_export_blockers(),
+        }
+    }
+
+    /// Returns the forcing ABI signature when this binding serves forcing control.
+    pub const fn forcing_signature(self) -> Option<RuntimeForcingAbiSignature> {
+        match self {
+            Self::Forcing(signature) => Some(signature),
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
+        }
+    }
+
+    /// Returns forcing-native-export blockers for forcing helpers.
+    pub const fn forcing_native_export_blockers(
+        self,
+    ) -> &'static [RuntimeForcingNativeExportBlocker] {
+        match self {
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => &[],
+            Self::Forcing(signature) => signature.entrypoint().native_export_blockers(),
         }
     }
 
     /// Returns the write-barrier ABI signature when this binding serves a barrier.
     pub const fn write_barrier_signature(self) -> Option<RuntimeWriteBarrierAbiSignature> {
         match self {
-            Self::Allocation(_) | Self::EnvironmentAccess(_) => None,
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::Forcing(_) => None,
             Self::WriteBarrier(signature) => Some(signature),
         }
     }
@@ -1725,7 +1796,7 @@ impl RuntimeHelperBinding {
         self,
     ) -> &'static [RuntimeWriteBarrierNativeExportBlocker] {
         match self {
-            Self::Allocation(_) | Self::EnvironmentAccess(_) => &[],
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::Forcing(_) => &[],
             Self::WriteBarrier(signature) => signature.entrypoint().native_export_blockers(),
         }
     }
@@ -1759,6 +1830,10 @@ mod tests {
     use crate::runtime::env::{
         RuntimeEnvAccessNativeExportBlocker, runtime_env_access_abi_signatures,
         runtime_env_access_native_export_preflight, runtime_env_access_rust_callable_bindings,
+    };
+    use crate::runtime::forcing::{
+        RuntimeForcingNativeExportBlocker, runtime_forcing_abi_signatures,
+        runtime_forcing_native_export_preflight, runtime_forcing_rust_callable_bindings,
     };
 
     fn expected_runtime_symbol_abi_signature_projection(
@@ -1834,7 +1909,7 @@ mod tests {
                     RuntimeHelperRole::Allocation
                         | RuntimeHelperRole::EnvironmentAccess
                         | RuntimeHelperRole::WriteBarrier
-                )
+                ) || symbol.name() == "aos_force"
             })
             .map(|symbol| (symbol.name(), symbol.role()))
             .collect::<Vec<_>>();
@@ -1854,6 +1929,11 @@ mod tests {
             .copied()
             .filter_map(RuntimeHelperBinding::env_access_signature)
             .collect::<Vec<_>>();
+        let forcing_signatures = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .filter_map(RuntimeHelperBinding::forcing_signature)
+            .collect::<Vec<_>>();
         let write_barrier_signatures = runtime_helper_bindings()
             .iter()
             .copied()
@@ -1867,6 +1947,10 @@ mod tests {
         assert_eq!(
             env_access_signatures.as_slice(),
             runtime_env_access_abi_signatures()
+        );
+        assert_eq!(
+            forcing_signatures.as_slice(),
+            runtime_forcing_abi_signatures()
         );
         assert_eq!(
             write_barrier_signatures.as_slice(),
@@ -1965,6 +2049,7 @@ mod tests {
                     "aos_env_get",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
+                ("aos_force", RuntimeHelperFailureConvention::TrapToEvaluator,),
                 (
                     "aos_gc_write_barrier",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
@@ -1984,6 +2069,11 @@ mod tests {
             runtime_env_access_rust_callable_bindings()
                 .into_iter()
                 .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
+        );
+        expected_callables.extend(
+            runtime_forcing_rust_callable_bindings()
+                .into_iter()
+                .map(RuntimeHelperRustCallableBinding::Forcing),
         );
         expected_callables.extend(
             runtime_write_barrier_rust_callable_bindings()
@@ -2020,11 +2110,19 @@ mod tests {
                 RuntimeHelperRole::EnvironmentAccess => {
                     assert!(callable.allocation_callable().is_none());
                     assert!(callable.env_access_callable().is_some());
+                    assert!(callable.forcing_callable().is_none());
+                    assert!(callable.write_barrier_callable().is_none());
+                }
+                RuntimeHelperRole::ForcingControl => {
+                    assert!(callable.allocation_callable().is_none());
+                    assert!(callable.env_access_callable().is_none());
+                    assert!(callable.forcing_callable().is_some());
                     assert!(callable.write_barrier_callable().is_none());
                 }
                 RuntimeHelperRole::WriteBarrier => {
                     assert!(callable.allocation_callable().is_none());
                     assert!(callable.env_access_callable().is_none());
+                    assert!(callable.forcing_callable().is_none());
                     assert!(callable.write_barrier_callable().is_some());
                 }
                 role => panic!("unexpected callable helper role: {role:?}"),
@@ -2059,7 +2157,7 @@ mod tests {
                 RuntimeHelperRole::Allocation
                     | RuntimeHelperRole::EnvironmentAccess
                     | RuntimeHelperRole::WriteBarrier
-            )
+            ) && symbol.name() != "aos_force"
         }) {
             assert_eq!(
                 RuntimeHelperBinding::from_symbol_name(symbol.name()),
@@ -2130,8 +2228,8 @@ mod tests {
                 .iter()
                 .find(|entry| entry.symbol_name() == "aos_force")
                 .map(RuntimeSymbolBindingManifestEntry::status),
-            Some(RuntimeSymbolBindingStatus::UnboundHelper(
-                RuntimeHelperRole::ForcingControl
+            Some(RuntimeSymbolBindingStatus::BoundHelper(
+                RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForce.abi_signature())
             ))
         );
         assert_eq!(
@@ -2190,10 +2288,13 @@ mod tests {
                 .windows(2)
                 .all(|window| { window[0].symbol_name() < window[1].symbol_name() })
         );
-        assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_force"
-                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-        }));
+        assert!(
+            preflight
+                .helper_bindings()
+                .iter()
+                .any(|binding| binding.symbol_name() == "aos_force"
+                    && binding.role() == RuntimeHelperRole::ForcingControl)
+        );
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "aos_apply"
                 && missing.helper_role() == Some(RuntimeHelperRole::CallControl)
@@ -2297,10 +2398,21 @@ mod tests {
         );
         assert!(
             signature_preflight
+                .signature_bindings()
+                .iter()
+                .any(|binding| {
+                    binding.helper_binding().is_some_and(|helper| {
+                        helper.symbol_name() == "aos_force"
+                            && helper.role() == RuntimeHelperRole::ForcingControl
+                    })
+                })
+        );
+        assert!(
+            signature_preflight
                 .missing_bindings()
                 .iter()
                 .any(|missing| {
-                    missing.symbol_name() == "aos_force"
+                    missing.symbol_name() == "aos_force_deep"
                         && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
                 })
         );
@@ -2361,8 +2473,14 @@ mod tests {
                 builtin.symbol_name() == "nix.builtin.derivationStrict" && builtin.arity() == 1
             })
         }));
+        assert!(preflight.signature_bindings().iter().any(|binding| {
+            binding.helper_binding().is_some_and(|helper| {
+                helper.symbol_name() == "aos_force"
+                    && helper.role() == RuntimeHelperRole::ForcingControl
+            })
+        }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_force"
+            missing.symbol_name() == "aos_force_deep"
                 && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
@@ -2424,6 +2542,9 @@ mod tests {
                 }
                 RuntimeHelperRole::EnvironmentAccess => {
                     assert_eq!(target.symbol_name(), "aos_env_get")
+                }
+                RuntimeHelperRole::ForcingControl => {
+                    assert_eq!(target.symbol_name(), "aos_force")
                 }
                 RuntimeHelperRole::WriteBarrier => {
                     assert_eq!(target.symbol_name(), "aos_gc_write_barrier")
@@ -2543,11 +2664,20 @@ mod tests {
         }));
         assert!(
             candidate_preflight
+                .candidate_bindings()
+                .iter()
+                .any(|candidate| {
+                    candidate.symbol_name() == "aos_force"
+                        && candidate.helper_role() == RuntimeHelperRole::ForcingControl
+                })
+        );
+        assert!(
+            candidate_preflight
                 .missing_bindings()
                 .iter()
                 .any(|missing| {
                     missing.missing_abi_signature().is_some_and(|gap| {
-                        gap.symbol_name() == "aos_force"
+                        gap.symbol_name() == "aos_force_deep"
                             && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
                     })
                 })
@@ -2627,9 +2757,13 @@ mod tests {
             candidate.symbol_name() == "aos_env_get"
                 && candidate.helper_role() == RuntimeHelperRole::EnvironmentAccess
         }));
+        assert!(preflight.candidate_bindings().iter().any(|candidate| {
+            candidate.symbol_name() == "aos_force"
+                && candidate.helper_role() == RuntimeHelperRole::ForcingControl
+        }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.missing_abi_signature().is_some_and(|gap| {
-                gap.symbol_name() == "aos_force"
+                gap.symbol_name() == "aos_force_deep"
                     && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
             })
         }));
@@ -2683,6 +2817,13 @@ mod tests {
                 && missing.missing_exported_c_abi_failure_convention()
                     == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
         }));
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_force"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
         let allocation_preflight = runtime_allocation_native_export_preflight();
         let attrs_allocation_blockers = allocation_preflight
             .readiness_for_symbol("aos_alloc_attrs")
@@ -2696,6 +2837,11 @@ mod tests {
         let env_blockers = env_preflight
             .readiness_for_symbol("aos_env_get")
             .expect("env-get export readiness exists")
+            .blockers();
+        let forcing_preflight = runtime_forcing_native_export_preflight();
+        let forcing_blockers = forcing_preflight
+            .readiness_for_symbol("aos_force")
+            .expect("force export readiness exists")
             .blockers();
         let write_barrier_preflight = runtime_write_barrier_native_export_preflight();
         let write_barrier_blockers = write_barrier_preflight
@@ -2714,6 +2860,10 @@ mod tests {
             .iter()
             .find(|missing| missing.symbol_name() == "aos_env_get")
             .expect("env-get export gap exists");
+        let force_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_force")
+            .expect("force export gap exists");
         let write_barrier_export_gap = exported_wrapper_gaps
             .iter()
             .find(|missing| missing.symbol_name() == "aos_gc_write_barrier")
@@ -2768,8 +2918,45 @@ mod tests {
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized)
         );
         assert_eq!(env_export_gap.missing_exported_allocation_blockers(), None);
+        assert_eq!(env_export_gap.missing_exported_forcing_blockers(), None);
         assert_eq!(
             env_export_gap.missing_exported_write_barrier_blockers(),
+            None
+        );
+        assert_eq!(
+            force_export_gap.missing_exported_forcing_blockers(),
+            Some(forcing_blockers)
+        );
+        assert!(
+            force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("forcing blockers exist")
+                .contains(&RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented)
+        );
+        assert!(
+            force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("forcing blockers exist")
+                .contains(
+                    &RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented
+                )
+        );
+        assert!(
+            force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("forcing blockers exist")
+                .contains(&RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented)
+        );
+        assert_eq!(
+            force_export_gap.missing_exported_allocation_blockers(),
+            None
+        );
+        assert_eq!(
+            force_export_gap.missing_exported_env_access_blockers(),
+            None
+        );
+        assert_eq!(
+            force_export_gap.missing_exported_write_barrier_blockers(),
             None
         );
         assert_eq!(
@@ -2806,6 +2993,16 @@ mod tests {
             );
         }
         for gap in exported_wrapper_gaps.iter().filter(|missing| {
+            missing.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::ForcingControl)
+        }) {
+            assert!(
+                gap.missing_exported_forcing_blockers()
+                    .is_some_and(|blockers| !blockers.is_empty()),
+                "{} forcing export gaps must retain family blockers",
+                gap.symbol_name()
+            );
+        }
+        for gap in exported_wrapper_gaps.iter().filter(|missing| {
             missing.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::WriteBarrier)
         }) {
             assert!(
@@ -2816,14 +3013,9 @@ mod tests {
             );
         }
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
-            missing
-                .missing_native_target_candidate()
-                .is_some_and(|gap| {
-                    gap.missing_abi_signature().is_some_and(|abi_gap| {
-                        abi_gap.symbol_name() == "aos_force"
-                            && abi_gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-                    })
-                })
+            missing.symbol_name() == "aos_force"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
         }));
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
             missing
@@ -2920,14 +3112,9 @@ mod tests {
                     == Some(RuntimeHelperRole::Allocation)
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing
-                .missing_native_target_candidate()
-                .is_some_and(|gap| {
-                    gap.missing_abi_signature().is_some_and(|abi_gap| {
-                        abi_gap.symbol_name() == "aos_force"
-                            && abi_gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
-                    })
-                })
+            missing.symbol_name() == "aos_force"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
         }));
     }
 
@@ -2962,8 +3149,15 @@ mod tests {
             callable_preflight.missing_bindings(),
             registration_preflight.missing_bindings()
         );
+        assert!(
+            callable_preflight
+                .helper_callables()
+                .iter()
+                .any(|callable| callable.symbol_name() == "aos_force"
+                    && callable.role() == RuntimeHelperRole::ForcingControl)
+        );
         assert!(callable_preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_force"
+            missing.symbol_name() == "aos_force_deep"
                 && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
         }));
         assert!(callable_preflight.missing_bindings().iter().any(|missing| {

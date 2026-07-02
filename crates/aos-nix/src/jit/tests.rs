@@ -320,7 +320,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_promotes_literals() 
 }
 
 #[test]
-fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_missing_force_candidate() {
+fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_force_finalization_guard() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
     assert!(
@@ -331,7 +331,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_missing_forc
     assert!(
         candidate_preflight
             .address_candidate_for("aos_force")
-            .is_none()
+            .is_some()
     );
     let arena = IrArena::from_raw_parts(
         vec![IrNode::new(
@@ -351,7 +351,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_missing_forc
         IrId::new(0),
     );
     let Err(error) = result else {
-        panic!("force-aware env-slot promotion requires an aos_force candidate");
+        panic!("force-aware env-slot promotion is guarded before finalization");
     };
 
     assert!(error.decision().should_promote());
@@ -364,16 +364,16 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_missing_forc
     let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
         panic!("expected Cranelift promotion failure");
     };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
         source.setup_error()
     else {
-        panic!("expected force helper registration guard");
+        panic!("expected force helper finalization guard");
     };
     assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }
 
 #[test]
-fn nix_jit_force_aware_promotion_reports_missing_force_candidate_for_wrapped_slot() {
+fn nix_jit_force_aware_promotion_reports_force_finalization_guard_for_wrapped_slot() {
     let arena = IrArena::from_raw_parts(
         vec![
             IrNode::new(
@@ -400,7 +400,7 @@ fn nix_jit_force_aware_promotion_reports_missing_force_candidate_for_wrapped_slo
         IrId::new(0),
     );
     let Err(error) = result else {
-        panic!("wrapped force-aware env-slot promotion requires an aos_force candidate");
+        panic!("wrapped force-aware env-slot promotion is guarded before finalization");
     };
 
     assert!(error.decision().should_promote());
@@ -413,10 +413,10 @@ fn nix_jit_force_aware_promotion_reports_missing_force_candidate_for_wrapped_slo
     let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
         panic!("expected Cranelift promotion failure");
     };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
         source.setup_error()
     else {
-        panic!("expected force helper registration guard");
+        panic!("expected force helper finalization guard");
     };
     assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }
@@ -562,7 +562,7 @@ fn nix_jit_force_aware_registered_tier1_install_plan_carries_literal_slot_and_mo
 }
 
 #[test]
-fn nix_jit_force_aware_registered_tier1_install_plan_reports_missing_force_candidate() {
+fn nix_jit_force_aware_registered_tier1_install_plan_reports_force_finalization_guard() {
     let arena = IrArena::from_raw_parts(
         vec![IrNode::new(
             IrKind::LocalVar,
@@ -581,7 +581,7 @@ fn nix_jit_force_aware_registered_tier1_install_plan_reports_missing_force_candi
         IrId::new(0),
     );
     let Err(error) = result else {
-        panic!("force-aware env-slot install plan requires an aos_force candidate");
+        panic!("force-aware env-slot install plan is guarded before finalization");
     };
 
     assert!(error.decision().should_promote());
@@ -594,10 +594,10 @@ fn nix_jit_force_aware_registered_tier1_install_plan_reports_missing_force_candi
     let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
         panic!("expected Cranelift promotion failure");
     };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
         source.setup_error()
     else {
-        panic!("expected force helper registration guard");
+        panic!("expected force helper finalization guard");
     };
     assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }
