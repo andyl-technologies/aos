@@ -20,6 +20,7 @@ use crucible_sim::{
     DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
     DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, DecisionStream,
 };
+use serde::de;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::ExecutionFingerprint;
@@ -26977,6 +26978,10 @@ struct ScenarioDefToml {
 struct ScenarioHeaderToml {
     id: String,
     seed: String,
+    #[serde(
+        deserialize_with = "deserialize_u64_toml_number_or_string",
+        serialize_with = "serialize_u64_toml_number_or_string"
+    )]
     app_random_draw_cap: u64,
 }
 
@@ -27575,6 +27580,57 @@ fn reachable_disposition_warn_toml() -> ReachableDispositionToml {
 #[serde(deny_unknown_fields)]
 struct SeedToml {
     bytes: String,
+}
+
+fn serialize_u64_toml_number_or_string<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if *value <= i64::MAX as u64 {
+        serializer.serialize_u64(*value)
+    } else {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
+fn deserialize_u64_toml_number_or_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct NumberOrStringVisitor;
+
+    impl de::Visitor<'_> for NumberOrStringVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a non-negative integer or decimal u64 string")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u64::try_from(value).map_err(|_| E::custom("integer must be non-negative"))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            value
+                .parse::<u64>()
+                .map_err(|error| E::custom(format!("invalid u64 string `{value}`: {error}")))
+        }
+    }
+
+    deserializer.deserialize_any(NumberOrStringVisitor)
 }
 
 fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
