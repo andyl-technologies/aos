@@ -1242,6 +1242,17 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiSessionCommandMapping = import ./phase5-api-session-command-mapping.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiSessionCommandMapping";
+      taskIds = ["T-API-2"];
+      dependencies = [
+        phase5.apiControlClient
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {
