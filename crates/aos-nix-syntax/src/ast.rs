@@ -5,8 +5,11 @@
 //! indices rather than pointers. Variable-arity children live contiguously in
 //! the arena's child pool and are referenced through [`ChildSlice`].
 
-use std::collections::BTreeMap;
 use std::convert::TryFrom;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use thiserror::Error;
 
@@ -103,6 +106,11 @@ impl SymbolTable {
         Ok(symbol)
     }
 
+    /// Returns the symbol id already interned for `bytes`.
+    pub fn lookup(&self, bytes: &[u8]) -> Option<Symbol> {
+        self.by_text.get(bytes).copied()
+    }
+
     /// Returns the bytes for an interned symbol.
     pub fn resolve(&self, symbol: Symbol) -> Option<&[u8]> {
         self.text.get(symbol.as_u32() as usize).map(Vec::as_slice)
@@ -137,6 +145,111 @@ impl SymbolTable {
             self.lexicographic_rank_by_symbol[symbol_index] = rank as u32;
         }
     }
+}
+
+/// A same-process shared symbol table with idempotent insert-or-get admission.
+///
+/// This is a correctness precursor for the future concurrent evaluator symbol
+/// interner. It preserves the existing dense [`SymbolTable`] representation and
+/// serializes access with a standard-library mutex; it is not the final
+/// lock-free append-only table.
+#[derive(Clone, Debug, Default)]
+pub struct SharedSymbolTable {
+    inner: Arc<Mutex<SymbolTable>>,
+}
+
+impl SharedSymbolTable {
+    /// Creates an empty shared symbol table.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SymbolTable::new())),
+        }
+    }
+
+    /// Creates a shared symbol table from an existing dense table.
+    pub fn from_table(table: SymbolTable) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(table)),
+        }
+    }
+
+    /// Interns a byte string and reports whether this call inserted it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedSymbolTableError::Poisoned`] if another caller panicked
+    /// while holding the shared table lock. Returns
+    /// [`SharedSymbolTableError::Ast`] if the underlying dense table cannot
+    /// allocate another symbol id.
+    pub fn intern(&self, bytes: &[u8]) -> Result<SharedSymbolAdmission, SharedSymbolTableError> {
+        let mut table = self
+            .inner
+            .lock()
+            .map_err(|_| SharedSymbolTableError::Poisoned)?;
+        if let Some(symbol) = table.lookup(bytes) {
+            return Ok(SharedSymbolAdmission {
+                symbol,
+                kind: SharedSymbolAdmissionKind::Existing,
+            });
+        }
+        let symbol = table.intern(bytes)?;
+        Ok(SharedSymbolAdmission {
+            symbol,
+            kind: SharedSymbolAdmissionKind::Inserted,
+        })
+    }
+
+    /// Returns a cloned snapshot of the current dense symbol table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedSymbolTableError::Poisoned`] if another caller panicked
+    /// while holding the shared table lock.
+    pub fn snapshot(&self) -> Result<SymbolTable, SharedSymbolTableError> {
+        self.inner
+            .lock()
+            .map(|table| table.clone())
+            .map_err(|_| SharedSymbolTableError::Poisoned)
+    }
+}
+
+/// The result of interning through a shared symbol table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedSymbolAdmission {
+    symbol: Symbol,
+    kind: SharedSymbolAdmissionKind,
+}
+
+impl SharedSymbolAdmission {
+    /// Returns the interned symbol id.
+    pub const fn symbol(self) -> Symbol {
+        self.symbol
+    }
+
+    /// Returns whether the call inserted or reused the symbol.
+    pub const fn kind(self) -> SharedSymbolAdmissionKind {
+        self.kind
+    }
+}
+
+/// Whether a shared interner call inserted or reused a symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedSymbolAdmissionKind {
+    /// The call inserted a new symbol.
+    Inserted,
+    /// The call reused a previously interned symbol.
+    Existing,
+}
+
+/// A failure while interning through a shared symbol table.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SharedSymbolTableError {
+    /// The underlying dense symbol table failed.
+    #[error(transparent)]
+    Ast(#[from] AstError),
+    /// The shared symbol-table lock was poisoned by a panicking caller.
+    #[error("shared symbol table lock is poisoned")]
+    Poisoned,
 }
 
 /// A contiguous run of child nodes in the arena child pool.
@@ -671,6 +784,8 @@ mod tests {
         assert_eq!(a, a_again);
         assert_eq!(symbols.resolve(a), Some(b"a".as_slice()));
         assert_eq!(symbols.resolve(b), Some(b"b".as_slice()));
+        assert_eq!(symbols.lookup(b"a"), Some(a));
+        assert_eq!(symbols.lookup(b"missing"), None);
     }
 
     #[test]
@@ -690,6 +805,157 @@ mod tests {
         assert_eq!(symbols.lexicographic_rank(a_ff), Some(2));
         assert_eq!(symbols.lexicographic_rank(b), Some(3));
         assert_eq!(symbols.lexicographic_rank(Symbol::new(99)), None);
+    }
+
+    #[test]
+    fn shared_symbol_table_reports_inserted_and_existing_admissions() {
+        let symbols = SharedSymbolTable::new();
+        let first = symbols.intern(b"name").expect("first symbol interns");
+        let second = symbols.intern(b"name").expect("second symbol reuses");
+
+        assert_eq!(first.symbol(), Symbol::new(0));
+        assert_eq!(first.kind(), SharedSymbolAdmissionKind::Inserted);
+        assert_eq!(second.symbol(), first.symbol());
+        assert_eq!(second.kind(), SharedSymbolAdmissionKind::Existing);
+
+        let snapshot = symbols.snapshot().expect("snapshot succeeds");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.resolve(first.symbol()), Some(b"name".as_slice()));
+    }
+
+    #[test]
+    fn shared_symbol_table_wraps_existing_tables() {
+        let mut base = SymbolTable::new();
+        let existing = base.intern(b"base").expect("base interns");
+        let symbols = SharedSymbolTable::from_table(base);
+
+        let admission = symbols.intern(b"base").expect("existing symbol reuses");
+
+        assert_eq!(admission.symbol(), existing);
+        assert_eq!(admission.kind(), SharedSymbolAdmissionKind::Existing);
+    }
+
+    #[test]
+    fn shared_symbol_table_single_flights_concurrent_same_key_misses() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let symbols = SharedSymbolTable::new();
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let symbols = symbols.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    symbols
+                        .intern(b"shared")
+                        .expect("shared symbol interns from thread")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let admissions = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread joins"))
+            .collect::<Vec<_>>();
+
+        assert!(admissions.iter().all(|admission| {
+            admission.symbol() == Symbol::new(0)
+                && matches!(
+                    admission.kind(),
+                    SharedSymbolAdmissionKind::Inserted | SharedSymbolAdmissionKind::Existing
+                )
+        }));
+        assert_eq!(
+            admissions
+                .iter()
+                .filter(|admission| admission.kind() == SharedSymbolAdmissionKind::Inserted)
+                .count(),
+            1
+        );
+        assert_eq!(
+            admissions
+                .iter()
+                .filter(|admission| admission.kind() == SharedSymbolAdmissionKind::Existing)
+                .count(),
+            7
+        );
+        assert_eq!(symbols.snapshot().expect("snapshot succeeds").len(), 1);
+    }
+
+    #[test]
+    fn shared_symbol_table_keeps_mixed_key_race_snapshot_coherent() {
+        use std::collections::BTreeMap;
+        use std::sync::Barrier;
+        use std::thread;
+
+        let keys = [
+            b"alpha".as_slice(),
+            b"beta".as_slice(),
+            b"gamma".as_slice(),
+            b"delta".as_slice(),
+        ];
+        let symbols = SharedSymbolTable::new();
+        let barrier = Arc::new(Barrier::new(keys.len()));
+        let handles = keys
+            .iter()
+            .copied()
+            .map(|key| {
+                let symbols = symbols.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let admission = symbols
+                        .intern(key)
+                        .expect("distinct symbol interns from thread");
+                    (key.to_vec(), admission)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut by_key = BTreeMap::new();
+        for handle in handles {
+            let (key, admission) = handle.join().expect("thread joins");
+            assert_eq!(admission.kind(), SharedSymbolAdmissionKind::Inserted);
+            assert_eq!(by_key.insert(key, admission.symbol()), None);
+        }
+
+        let snapshot = symbols.snapshot().expect("snapshot succeeds");
+        assert_eq!(snapshot.len(), keys.len());
+        let mut dense_ids = by_key.values().copied().collect::<Vec<_>>();
+        dense_ids.sort_by_key(|symbol| symbol.as_u32());
+        dense_ids.dedup();
+        assert_eq!(dense_ids.len(), keys.len());
+        for (key, symbol) in by_key {
+            assert_eq!(snapshot.resolve(symbol), Some(key.as_slice()));
+        }
+    }
+
+    #[test]
+    fn shared_symbol_table_reports_poisoned_lock() {
+        use std::thread;
+
+        let symbols = SharedSymbolTable::new();
+        let poisoned = symbols.clone();
+        let _ = thread::spawn(move || {
+            let _guard = poisoned.inner.lock().expect("lock before poison");
+            panic!("poison shared symbol table lock");
+        })
+        .join();
+
+        assert_eq!(
+            symbols
+                .intern(b"after")
+                .expect_err("poisoned lock rejects interning"),
+            SharedSymbolTableError::Poisoned
+        );
+        assert_eq!(
+            symbols
+                .snapshot()
+                .expect_err("poisoned lock rejects snapshots"),
+            SharedSymbolTableError::Poisoned
+        );
     }
 
     #[test]

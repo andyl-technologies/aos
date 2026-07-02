@@ -15,7 +15,8 @@ pub mod parser;
 
 pub use ast::{
     AstArena, AstError, AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind,
-    ParsedAst, Symbol, SymbolTable, UnaryOpKind,
+    ParsedAst, SharedSymbolAdmission, SharedSymbolAdmissionKind, SharedSymbolTable,
+    SharedSymbolTableError, Symbol, SymbolTable, UnaryOpKind,
 };
 pub use lexer::{LexError, LexErrorKind, Lexer, Span, Token, TokenKind};
 pub use parser::{

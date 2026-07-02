@@ -6610,6 +6610,18 @@ nurseries build on the bump arena.
       two-machine single-flight, and loom/Miri audit remain open
       ([12](12-incremental-evaluation-cache.md) §8.3,
       [13](13-parallel-evaluation.md) §4.3).
+- [x] Current shared symbol-interner admission precursor:
+      `aos-nix-syntax::SharedSymbolTable` wraps the current dense `SymbolTable`
+      behind a same-process mutex and reports whether each intern call inserted
+      or reused an existing symbol. Tests prove same-key concurrent misses
+      converge on one dense id with one inserted admission, existing-table
+      wrapping preserves ids, snapshots expose a consistent dense-table clone,
+      and poisoned locks fail before interning or snapshotting. Distinct new
+      symbols racing for insertion still receive dense ids in mutex-acquisition
+      order. This is the same-process convergence contract only: it is not the
+      final lock-free append-only interner, does not provide global cross-process
+      ids, does not replace parser-local symbol ownership, and does not satisfy
+      the loom/Miri/TSan audit.
 - [ ] Per-worker bump nurseries + a concurrent (or per-worker-then-merged)
       hash-cons table; never-free in CLI mode sidesteps any moving-collector race
       ([13](13-parallel-evaluation.md) §5).

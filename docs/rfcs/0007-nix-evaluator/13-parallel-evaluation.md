@@ -928,6 +928,20 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5** precursor,
       `R-4`/`R-10`.
 - [ ] Read-mostly concurrent shared tables with idempotent insert-or-get: lock-free append-only symbol interner, hash-cons table, and the incremental cache as a concurrent content-addressed map — races converge, never diverge (§4.3) — **P3.5**, `C-12`; the hash-cons table is the `S-7`/`P2` substrate.
+- [x] Current shared symbol-interner admission precursor:
+      `aos-nix-syntax::SharedSymbolTable` wraps the existing dense
+      `SymbolTable` behind a same-process mutex, exposes
+      `SharedSymbolAdmission` from insert-or-get calls, and proves cloned
+      concurrent same-key misses converge on one inserted symbol while every
+      racing caller receives the same dense id. Snapshots clone the underlying
+      table for consistent inspection of the serialized insertion history, and
+      poisoned locks fail before interning or snapshotting. This is the
+      convergence contract only; distinct new symbols racing for insertion
+      still receive dense ids in mutex-acquisition order. It is not the final
+      lock-free append-only symbol table, does not provide global cross-process
+      ids, does not replace parser-local symbol ownership, and is not integrated
+      with the parallel evaluator scheduler or loom/Miri audit (§4.3) — **P3.5**
+      precursor, `C-12`/`R-4`.
 - [ ] Output-determinism guarantees under nondeterministic scheduling: order-independent string-context union, sorted `.drv` output collection, content-only SHA-256 hashing, deterministic-iteration attrsets (§4.4) — **P3.5**, `C-12`/`S-13`; differential `.drv` harness asserts identical output across thread counts `{1, 2, 8, N}`.
 
 ### Concurrency runtime — rayon, fibers, tokio (§5.5)
