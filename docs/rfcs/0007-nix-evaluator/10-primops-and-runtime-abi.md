@@ -912,6 +912,17 @@ harness, never cut for scope.
       registration report. This is not executable ABI registration: the
       addresses are Rust-callable metadata only, not exported wrappers,
       `JITBuilder::symbol` entries, or relinkable compiled-artifact targets.
+- [x] Current `aos-nix` JIT address-candidate bridge:
+      `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
+      projects oracle Rust-callable helper metadata into `ratchet-jit`
+      `JitRuntimeSymbolAddressCandidate` values for currently covered
+      allocation, environment-access, and write-barrier helpers, and carries the
+      oracle missing-binding set for unbound helpers and builtins. Tests prove
+      those candidates are accepted by the JIT registration preflight and by the
+      registered env-slot promotion path for `aos_env_get`. This is a safe
+      process-local integration bridge only: it does not export C ABI wrappers,
+      make addresses serializable or relinkable, cast finalized code pointers,
+      dereference registered addresses, or call native code.
 - [x] Current allocation ABI-signature precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
       success-path native parameter and typed pointer-result shape for every

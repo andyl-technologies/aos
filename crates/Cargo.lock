@@ -261,6 +261,7 @@ dependencies = [
  "nix-compat",
  "proptest",
  "ratchet-core",
+ "ratchet-jit",
  "ratchet-oracle",
  "ratchet-value",
  "regex",

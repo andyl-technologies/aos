@@ -1323,6 +1323,18 @@ harness, never cut for scope.
       `JITBuilder::symbol` registration: the addresses are Rust-callable
       storage-wrapper metadata only, not exported C ABI targets or final native
       call targets.
+- [x] Current `aos-nix` JIT address-candidate bridge:
+      `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
+      composes the oracle Rust-callable helper metadata with `ratchet-jit`
+      runtime-symbol address candidates. It projects process-local callable
+      helper addresses for the currently covered allocation, environment-access,
+      and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
+      while preserving oracle missing bindings for unbound helpers and builtins.
+      Tests feed those candidates through the JIT registration preflight and the
+      registered env-slot promotion path for `aos_env_get`. This is integration
+      preflight plumbing only: the addresses are not exported C ABI wrappers, not
+      serialized or relinkable native targets, and no finalized code pointer or
+      registered helper address is cast, dereferenced, or called.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

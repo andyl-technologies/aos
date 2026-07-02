@@ -29,6 +29,8 @@
 //! - [`list`] owns the Phase-1 immutable list-spine representation.
 //! - [`string`] owns byte-oriented Nix strings and string contexts.
 //! - [`runtime`] owns shared runtime metadata such as builtin declarations.
+//! - [`jit`] owns safe integration adapters between oracle runtime metadata and
+//!   JIT preflights.
 //! - [`drv_materialize`] re-exports Nix store-format materialization from
 //!   `aos-nix-compat`.
 //!
@@ -60,6 +62,7 @@ pub mod error;
 pub use ratchet_oracle::eval;
 pub use ratchet_value::heap;
 pub use ratchet_value::list;
+pub mod jit;
 pub mod native;
 pub use aos_nix_syntax as syntax;
 pub use ratchet_oracle::runtime;
