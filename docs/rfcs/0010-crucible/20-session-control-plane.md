@@ -1181,12 +1181,26 @@ pub enum SessionError {
     fork produce independent paused actors, child mutation leaves the parent
     snapshot unchanged, and direct checkpoint fork helpers reject loaded/running
     parents until the caller pauses at a boundary.
-- [ ] **T-SESS-9** Implement control-operation determinism: record every
+- [x] **T-SESS-9** Implement control-operation determinism: record every
   state-mutating intervention (inject/heal, mutating Action breakpoints) as a
   Decision/control-log entry keyed by virtual-time boundary; prove an
   interactively-controlled run reproduces bit-identically from its artifact and
   that operator wall-clock timing cannot influence State. — satisfies [SESS-20],
   [SESS-21], [SESS-22]; spec §8; cross-ref 24 §12.
+  - Completed by `checks.crucible.phase5.sessionControlDeterminism`:
+    accepted inject/heal commands now apply scheduler-owned control and append a
+    deterministic `SessionControlLogEntry` at both running and paused
+    boundaries, using the current frontier/quanta rather than host time.
+    `SessionControlReplayArtifact` captures the producer initial configuration,
+    final boundary snapshot, and control log, and
+    `Engine::replay_control_replay_artifact` replays every scheduler-control
+    payload with a fresh `QuantumLoop` only when the recorded quanta,
+    virtual-time frontier, scheduler-control batch, and final boundary snapshot
+    match. Focused tests cover paused mutator application/logging, mutating
+    breakpoint action logging including grouped action batch replay, replay of a
+    control-sensitive scheduler state to the same final configuration/frontier,
+    and rejection of artifacts whose recorded boundary or final snapshot has
+    drifted.
 - [ ] **T-SESS-10** Implement lock-free observation: the atomics live snapshot
   (state kind, virtual time, log length, quanta counter) written by the actor at
   quantum boundaries and read lock-free; broadcast buses for event-log entries
