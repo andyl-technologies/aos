@@ -194,6 +194,19 @@ pub const RUNTIME_ALLOCATION_ABI_SIGNATURES: &[RuntimeAllocationAbiSignature] = 
     ),
 ];
 
+/// Returns allocation helper bindings with callable Rust storage-wrapper addresses.
+///
+/// The addresses are process-local Rust function addresses for registration
+/// preflight metadata. They are not stable across builds or processes, are not
+/// exported C symbols, and are not callable with [`RuntimeAllocationAbiSignature`].
+pub fn runtime_allocation_rust_callable_bindings() -> Vec<RuntimeAllocationRustCallableBinding> {
+    runtime_allocation_entrypoints()
+        .iter()
+        .copied()
+        .map(RuntimeAllocationEntryPoint::rust_callable_binding)
+        .collect()
+}
+
 /// Returns the frozen allocation entry-point inventory.
 pub const fn runtime_allocation_entrypoints() -> &'static [RuntimeAllocationEntryPoint] {
     RUNTIME_ALLOCATION_ENTRYPOINTS
@@ -459,6 +472,57 @@ impl RuntimeAllocationEntryPoint {
             ),
         }
     }
+
+    /// Returns the callable Rust storage-wrapper binding for this entry point.
+    ///
+    /// The binding dispatches through [`RuntimeAllocator`], so future caller-side
+    /// registration metadata does not bake in the Tier-A arena body directly.
+    /// The callable's Rust shape is separate from the frozen native ABI
+    /// signature because semantic ABI payload initialization and trap transfer
+    /// are not implemented yet.
+    pub fn rust_callable_binding(self) -> RuntimeAllocationRustCallableBinding {
+        RuntimeAllocationRustCallableBinding::new(
+            self,
+            self.rust_callable_shape(),
+            self.rust_callable_address(),
+        )
+    }
+
+    /// Returns the Rust storage-wrapper call shape for this entry point.
+    pub const fn rust_callable_shape(self) -> RuntimeAllocationRustCallableShape {
+        match self {
+            Self::AosAllocAttrs => RuntimeAllocationRustCallableShape::AllocatorU32U32,
+            Self::AosAllocCons | Self::AosAllocLambda | Self::AosAllocThunk => {
+                RuntimeAllocationRustCallableShape::AllocatorOnly
+            }
+            Self::AosAllocList | Self::AosAllocString => {
+                RuntimeAllocationRustCallableShape::AllocatorUsize
+            }
+            Self::AosAllocRaw => RuntimeAllocationRustCallableShape::AllocatorUsizeUsizeU32,
+        }
+    }
+
+    /// Returns the process-local Rust storage-wrapper address for this entry point.
+    ///
+    /// The address is suitable for registration preflight metadata only. It is
+    /// not an exported C ABI symbol, is not callable with the frozen native ABI
+    /// signature, and must not be persisted.
+    pub fn rust_callable_address(self) -> RuntimeAllocationRustCallableAddress {
+        let ptr = match self {
+            Self::AosAllocThunk => native_aos_alloc_thunk as RuntimeAllocationThunkFn as *const (),
+            Self::AosAllocLambda => {
+                native_aos_alloc_lambda as RuntimeAllocationLambdaFn as *const ()
+            }
+            Self::AosAllocAttrs => native_aos_alloc_attrs as RuntimeAllocationAttrsFn as *const (),
+            Self::AosAllocCons => native_aos_alloc_cons as RuntimeAllocationConsFn as *const (),
+            Self::AosAllocList => native_aos_alloc_list as RuntimeAllocationListFn as *const (),
+            Self::AosAllocString => {
+                native_aos_alloc_string as RuntimeAllocationStringFn as *const ()
+            }
+            Self::AosAllocRaw => native_aos_alloc_raw as RuntimeAllocationRawFn as *const (),
+        };
+        RuntimeAllocationRustCallableAddress::new(ptr)
+    }
 }
 
 impl RuntimeAllocationRequest {
@@ -478,6 +542,92 @@ impl RuntimeAllocationRequest {
     /// Returns the stable runtime symbol name served by this request.
     pub const fn symbol_name(self) -> &'static str {
         self.entrypoint().symbol_name()
+    }
+}
+
+/// The Rust function shape behind a callable allocation storage wrapper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeAllocationRustCallableShape {
+    /// `fn(&mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError>`.
+    AllocatorOnly,
+    /// `fn(&mut RuntimeAllocator, u32, u32) -> Result<ArenaAllocation, ArenaError>`.
+    AllocatorU32U32,
+    /// `fn(&mut RuntimeAllocator, usize) -> Result<ArenaAllocation, ArenaError>`.
+    AllocatorUsize,
+    /// `fn(&mut RuntimeAllocator, usize, usize, u32) -> Result<ArenaAllocation, ArenaError>`.
+    AllocatorUsizeUsizeU32,
+}
+
+/// A process-local callable Rust storage-wrapper address.
+///
+/// This pointer identifies a Rust function in the current process. It is used as
+/// registration metadata for later native startup binding and is intentionally
+/// not serialized or treated as stable ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationRustCallableAddress {
+    ptr: *const (),
+}
+
+impl RuntimeAllocationRustCallableAddress {
+    const fn new(ptr: *const ()) -> Self {
+        Self { ptr }
+    }
+
+    /// Returns the process-local function pointer.
+    pub const fn as_ptr(self) -> *const () {
+        self.ptr
+    }
+
+    /// Returns true when the address pointer is non-null.
+    pub const fn is_non_null(self) -> bool {
+        !self.ptr.is_null()
+    }
+}
+
+/// A callable Rust storage-wrapper binding for one allocation helper entry point.
+///
+/// This is not a native ABI binding. It deliberately omits
+/// [`RuntimeAllocationAbiSignature`] because these Rust callables return
+/// [`ArenaAllocation`] through [`Result`] and some shapes omit semantic native
+/// payloads that the frozen ABI will eventually initialize.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationRustCallableBinding {
+    entrypoint: RuntimeAllocationEntryPoint,
+    shape: RuntimeAllocationRustCallableShape,
+    address: RuntimeAllocationRustCallableAddress,
+}
+
+impl RuntimeAllocationRustCallableBinding {
+    const fn new(
+        entrypoint: RuntimeAllocationEntryPoint,
+        shape: RuntimeAllocationRustCallableShape,
+        address: RuntimeAllocationRustCallableAddress,
+    ) -> Self {
+        Self {
+            entrypoint,
+            shape,
+            address,
+        }
+    }
+
+    /// Returns the allocation entry point served by this binding.
+    pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the Rust function shape behind this binding.
+    pub const fn shape(self) -> RuntimeAllocationRustCallableShape {
+        self.shape
+    }
+
+    /// Returns the stable runtime symbol name served by this binding.
+    pub const fn symbol_name(self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the process-local callable Rust address for this binding.
+    pub const fn address(self) -> RuntimeAllocationRustCallableAddress {
+        self.address
     }
 }
 
@@ -1375,6 +1525,51 @@ fn tier_a_alloc_raw(
     Ok(allocation)
 }
 
+fn native_aos_alloc_thunk(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_thunk()
+}
+
+fn native_aos_alloc_lambda(
+    allocator: &mut RuntimeAllocator,
+) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_lambda()
+}
+
+fn native_aos_alloc_attrs(
+    allocator: &mut RuntimeAllocator,
+    shape: u32,
+    slots: u32,
+) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_attrs(shape, slots)
+}
+
+fn native_aos_alloc_cons(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_cons()
+}
+
+fn native_aos_alloc_list(
+    allocator: &mut RuntimeAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_list(len)
+}
+
+fn native_aos_alloc_string(
+    allocator: &mut RuntimeAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_string(len)
+}
+
+fn native_aos_alloc_raw(
+    allocator: &mut RuntimeAllocator,
+    size: usize,
+    align: usize,
+    type_tag: u32,
+) -> Result<ArenaAllocation, ArenaError> {
+    allocator.aos_alloc_raw(size, align, type_tag)
+}
+
 #[derive(Debug)]
 enum RuntimeAllocatorBackend {
     TierAOneShot(BumpArena),
@@ -1543,6 +1738,26 @@ mod tests {
         assert_eq!(event.gc_poll_reason(), None);
         assert_eq!(event.collector_poll(), None);
         assert_eq!(state.last_safepoint_collector_poll(), None);
+    }
+
+    fn assert_last_request_safepoint(
+        state: AllocationSafepointState,
+        sequence: u64,
+        tier: RuntimeAllocatorTier,
+        request: RuntimeAllocationRequest,
+        allocation: ArenaAllocation,
+        stats: ArenaStats,
+    ) {
+        assert_last_safepoint(
+            state,
+            sequence,
+            tier,
+            request.entrypoint(),
+            allocation,
+            stats,
+        );
+        let event = state.last().expect("safepoint records");
+        assert_eq!(event.request(), request);
     }
 
     fn memory_budget(bytes: usize) -> HeapMemoryBudget {
@@ -2080,6 +2295,199 @@ mod tests {
             RuntimeAllocatorTier::TierAOneShot,
             RuntimeAllocationEntryPoint::AosAllocRaw,
             raw,
+            allocator.stats(),
+        );
+    }
+
+    #[test]
+    fn allocation_rust_callable_bindings_preserve_entrypoint_inventory() {
+        let bindings = runtime_allocation_rust_callable_bindings();
+        let expected = [
+            (
+                RuntimeAllocationEntryPoint::AosAllocAttrs,
+                RuntimeAllocationRustCallableShape::AllocatorU32U32,
+                native_aos_alloc_attrs as RuntimeAllocationAttrsFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocCons,
+                RuntimeAllocationRustCallableShape::AllocatorOnly,
+                native_aos_alloc_cons as RuntimeAllocationConsFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocLambda,
+                RuntimeAllocationRustCallableShape::AllocatorOnly,
+                native_aos_alloc_lambda as RuntimeAllocationLambdaFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocList,
+                RuntimeAllocationRustCallableShape::AllocatorUsize,
+                native_aos_alloc_list as RuntimeAllocationListFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocRaw,
+                RuntimeAllocationRustCallableShape::AllocatorUsizeUsizeU32,
+                native_aos_alloc_raw as RuntimeAllocationRawFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocString,
+                RuntimeAllocationRustCallableShape::AllocatorUsize,
+                native_aos_alloc_string as RuntimeAllocationStringFn as *const (),
+            ),
+            (
+                RuntimeAllocationEntryPoint::AosAllocThunk,
+                RuntimeAllocationRustCallableShape::AllocatorOnly,
+                native_aos_alloc_thunk as RuntimeAllocationThunkFn as *const (),
+            ),
+        ];
+
+        assert_eq!(bindings.len(), expected.len());
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(RuntimeAllocationRustCallableBinding::entrypoint)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_allocation_entrypoints()
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(|binding| (
+                    binding.entrypoint(),
+                    binding.shape(),
+                    binding.address().as_ptr(),
+                ))
+                .collect::<Vec<_>>()
+                .as_slice(),
+            expected.as_slice()
+        );
+
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(|binding| binding.entrypoint().abi_signature())
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_allocation_abi_signatures()
+        );
+
+        for binding in bindings {
+            assert_eq!(binding.symbol_name(), binding.entrypoint().symbol_name());
+            assert_eq!(binding.entrypoint().rust_callable_binding(), binding);
+            assert_eq!(binding.shape(), binding.entrypoint().rust_callable_shape());
+            assert_eq!(
+                binding.address(),
+                binding.entrypoint().rust_callable_address()
+            );
+            assert!(
+                binding.address().is_non_null(),
+                "{} has a callable allocation address",
+                binding.symbol_name()
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_native_callables_route_through_request_wall() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
+
+        let allocation =
+            native_aos_alloc_attrs(&mut allocator, 7, 2).expect("native attrs wrapper allocates");
+        assert_eq!(
+            allocation.kind,
+            HeapObjectKind::Attrs { shape: 7, slots: 2 }
+        );
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            1,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::Attrs { shape: 7, slots: 2 },
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation =
+            native_aos_alloc_cons(&mut allocator).expect("native cons wrapper allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::Cons);
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            2,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::Cons,
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation =
+            native_aos_alloc_lambda(&mut allocator).expect("native lambda wrapper allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::Lambda);
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            3,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::Lambda,
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation =
+            native_aos_alloc_list(&mut allocator, 3).expect("native list wrapper allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::List { len: 3 });
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            4,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::List { len: 3 },
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation = native_aos_alloc_raw(&mut allocator, 8, 8, 0x7261_7770)
+            .expect("native raw wrapper allocates");
+        assert_eq!(
+            allocation.kind,
+            HeapObjectKind::Raw {
+                type_tag: 0x7261_7770
+            }
+        );
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            5,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::Raw {
+                size: 8,
+                align: 8,
+                type_tag: 0x7261_7770,
+            },
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation =
+            native_aos_alloc_string(&mut allocator, 5).expect("native string wrapper allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::String { len: 5 });
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            6,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::String { len: 5 },
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation =
+            native_aos_alloc_thunk(&mut allocator).expect("native thunk wrapper allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::Thunk);
+        assert_last_request_safepoint(
+            allocator.allocation_safepoints(),
+            7,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationRequest::Thunk,
+            allocation,
             allocator.stats(),
         );
     }

@@ -888,6 +888,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       polls, and budget decisions. This remains metadata only: no collector is
       invoked, no native wrapper receives the payload, and Tier-B routing is
       still open.
+- [x] Current allocation Rust-callable address precursor:
+      `runtime::alloc::runtime_allocation_rust_callable_bindings()` now attaches
+      a process-local Rust storage-wrapper function address to every frozen
+      `aos_alloc_*` entry point in manifest order, separately from the frozen
+      native ABI signature. The callable wrappers dispatch back through
+      `RuntimeAllocator`, so registration metadata can name the selected
+      allocator strategy boundary rather than the Tier-A bump-arena bodies
+      directly. Tests prove entry-point/signature order parity, exact
+      entry-point-to-wrapper pointer mapping, non-null callable addresses, and
+      full request preservation through each wrapper (`attrs`, `cons`, `lambda`,
+      `list`, `raw`, `string`, and `thunk`). This is still not the exported C
+      ABI: these Rust addresses are not callable through
+      `RuntimeAllocationAbiSignature`, and no `unsafe extern "C"` symbols,
+      semantic payload initialization for `code_ptr`/`env` or `head`/`tail`,
+      trap transfer, Cranelift registration, Tier-B table, or compiled-artifact
+      relinking is implemented here.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
@@ -957,10 +973,10 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
-      `aos_alloc_string` / `aos_alloc_thunk` symbols, native registration against
-      the selected allocator vtable, every-tier/every-primop routing through those
-      symbols, and collector/JIT swapping without caller recompilation (§2) — **M0** (within
-      **P3**), `S-8`.
+      `aos_alloc_string` / `aos_alloc_thunk` symbols, executable trap transfer,
+      semantic native payload initialization, Cranelift/JIT registration,
+      every-tier/every-primop routing through those symbols, and collector/JIT
+      swapping without caller recompilation (§2) — **M0** (within **P3**), `S-8`.
 - [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
 - [x] Current allocation-safepoint metadata precursor:
       `ratchet-oracle::runtime::alloc` records an `AllocationSafepoint` event
