@@ -1774,7 +1774,14 @@ mod tests {
     fn allocation_safepoint_classifies_high_water_memory_budget() {
         let mut allocator =
             RuntimeAllocator::tier_a_with_initial_chunk_bytes(128).expect("allocator creates");
-        allocator.aos_alloc_thunk().expect("thunk allocates");
+        let request = RuntimeAllocationRequest::Raw {
+            size: 16,
+            align: 8,
+            type_tag: 0x7261_7770,
+        };
+        allocator
+            .allocate(request)
+            .expect("raw allocation succeeds");
         let state = allocator.allocation_safepoints();
         let safepoint = state.last().expect("safepoint records");
         let mapped_bytes = safepoint.heap_mapped_bytes_after();
@@ -1786,10 +1793,10 @@ mod tests {
         assert_eq!(continue_decision.tier(), RuntimeAllocatorTier::TierAOneShot);
         assert_eq!(
             continue_decision.entrypoint(),
-            RuntimeAllocationEntryPoint::AosAllocThunk
+            RuntimeAllocationEntryPoint::AosAllocRaw
         );
-        assert_eq!(safepoint.request(), RuntimeAllocationRequest::Thunk);
-        assert_eq!(continue_decision.request(), RuntimeAllocationRequest::Thunk);
+        assert_eq!(safepoint.request(), request);
+        assert_eq!(continue_decision.request(), request);
         assert_eq!(continue_decision.budget(), loose_budget);
         assert_eq!(
             continue_decision.sample(),
@@ -1811,7 +1818,7 @@ mod tests {
         let spill_decision = state
             .last_memory_budget_decision(spill_budget, spill_reclaim_bytes, 0)
             .expect("last safepoint classifies");
-        assert_eq!(spill_decision.request(), RuntimeAllocationRequest::Thunk);
+        assert_eq!(spill_decision.request(), request);
         assert_eq!(
             spill_decision.sample(),
             HeapMemorySample::new(mapped_bytes, spill_reclaim_bytes, 0)
@@ -1829,7 +1836,7 @@ mod tests {
 
         let tier_b_budget = memory_budget(mapped_bytes / 2);
         let tier_b_decision = safepoint.classify_memory_budget(tier_b_budget, 0, 0);
-        assert_eq!(tier_b_decision.request(), RuntimeAllocationRequest::Thunk);
+        assert_eq!(tier_b_decision.request(), request);
         assert_eq!(
             tier_b_decision.response(),
             HeapMemoryBudgetResponse::InstallTierB {
