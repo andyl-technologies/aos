@@ -1049,14 +1049,15 @@ harness, never cut for scope.
       module symbol for the artifact body, and passes that body through
       Cranelift's `JITModule::define_function` API while preserving callable
       builtin/helper imports and the current unshaped helper/value-only builtin
-      gaps. Tests pin constant-smoke and Core-IR-root module symbol names,
-      exported linkage, imported callable builtin/helper visibility,
-      representative helper gaps, and encapsulated-module ownership. This
-      compiles into a private `JITModule` and does allocate JIT code memory
-      through Cranelift on successful definition, but it still does not register
-      runtime symbol addresses, call `JITBuilder::symbol`, finalize definitions,
-      expose a code pointer, call native code, lower generic IR, or emit runtime
-      calls.
+      gaps, while rejecting call-bearing artifacts with a structured
+      runtime-import registration error. Tests pin constant-smoke and
+      Core-IR-root module symbol names, exported linkage, imported callable
+      builtin/helper visibility, representative helper gaps, env-slot
+      runtime-import rejection, and encapsulated-module ownership. This compiles
+      into a private `JITModule` and does allocate JIT code memory through
+      Cranelift on successful definition, but it still does not register runtime
+      symbol addresses, call `JITBuilder::symbol`, finalize definitions, expose a
+      code pointer, call native code, lower generic IR, or emit runtime calls.
 - [x] Current Cranelift artifact-finalization precursor:
       `ratchet-jit::cranelift::jit_cranelift_artifact_finalization_preflight_for_artifact()`
       takes one verified CLIF artifact through the same import declaration and
@@ -1065,13 +1066,14 @@ harness, never cut for scope.
       body. Tests pin constant-smoke and Core-IR-root symbol names, exported
       linkage, non-null code-pointer metadata, callable builtin imports,
       representative helper gaps, encapsulated-module ownership, and conversion
-      into the slot-compatible `JitCompiledCodePointer` metadata wrapper. This
-      finalizes executable memory for the one artifact but still does not install
-      the pointer into evaluator thunk state, cast the code pointer to a function
-      type, call native code, lower generic IR, emit runtime calls, or complete
-      runtime-symbol registration. Call-bearing artifacts still require a later
-      finalization path that composes with complete runtime-symbol address
-      registration before relocation.
+      into the slot-compatible `JitCompiledCodePointer` metadata wrapper, and
+      structured rejection for env-slot artifacts with runtime imports. This
+      finalizes executable memory for non-call-bearing artifacts but still does
+      not install the pointer into evaluator thunk state, cast the code pointer
+      to a function type, call native code, lower generic IR, emit runtime calls,
+      or complete runtime-symbol registration. Call-bearing artifacts still
+      require a later finalization path that composes with complete
+      runtime-symbol address registration before relocation.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs

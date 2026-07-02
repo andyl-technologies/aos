@@ -31,7 +31,7 @@ use crate::{
     lower::{JitLowerError, lower_constant_ir_thunk_body_artifact},
     module::{
         JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
-        jit_module_readiness_preflight_for_artifact,
+        JitModuleReadinessPreflight, jit_module_readiness_preflight_for_artifact,
     },
     symbols::{
         JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitRuntimeSymbolDeclaration,
@@ -765,6 +765,11 @@ pub enum JitCraneliftModuleSetupError {
     Readiness(JitModuleReadinessError),
     /// Native runtime-symbol registration metadata could not be built.
     RuntimeSymbolRegistration(JitRuntimeSymbolRegistrationError),
+    /// A call-bearing artifact requires runtime symbols that are not registered.
+    ArtifactRuntimeImportsRequireRegistration {
+        /// Stable runtime symbols imported by the artifact body.
+        symbol_names: Vec<String>,
+    },
     /// A tier-1 artifact could not be lowered from Core IR.
     LowerTier1Artifact {
         /// The Core IR root requested for tier-1 compilation.
@@ -824,6 +829,11 @@ impl fmt::Display for JitCraneliftModuleSetupError {
             Self::TargetIsa(error) => write!(formatter, "{error}"),
             Self::Readiness(error) => write!(formatter, "{error}"),
             Self::RuntimeSymbolRegistration(error) => write!(formatter, "{error}"),
+            Self::ArtifactRuntimeImportsRequireRegistration { symbol_names } => write!(
+                formatter,
+                "artifact runtime imports require registered native symbols before Cranelift definition: {}",
+                symbol_names.join(", ")
+            ),
             Self::LowerTier1Artifact { root, source } => write!(
                 formatter,
                 "IR root {root:?} could not be lowered for tier-1 compilation: {source}"
@@ -879,6 +889,7 @@ impl Error for JitCraneliftModuleSetupError {
             Self::TargetIsa(error) => Some(error),
             Self::Readiness(error) => Some(error),
             Self::RuntimeSymbolRegistration(error) => Some(error),
+            Self::ArtifactRuntimeImportsRequireRegistration { .. } => None,
             Self::LowerTier1Artifact { source, .. } => Some(source),
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
@@ -984,9 +995,11 @@ pub fn jit_cranelift_symbol_registration_preflight_with_candidates(
 /// The returned preflight owns a [`JITModule`] with callable builtin imports
 /// declared, plus one artifact body declared as an exported function and passed
 /// to Cranelift's definition API. Unshaped helper and value-only builtin gaps
-/// are preserved. A successful definition lets Cranelift compile the body and
-/// allocate JIT code memory inside the private module. The module is not
-/// finalized, no code pointer is returned, and no native code is called.
+/// are preserved. Artifacts with runtime imports are rejected until the later
+/// registered-symbol definition path lands. A successful definition lets
+/// Cranelift compile the body and allocate JIT code memory inside the private
+/// module. The module is not finalized, no code pointer is returned, and no
+/// native code is called.
 ///
 /// # Errors
 ///
@@ -999,6 +1012,9 @@ pub fn jit_cranelift_symbol_registration_preflight_with_candidates(
 /// rejects the native ISA configuration. Returns
 /// [`JitCraneliftModuleSetupError::DeclareRuntimeSymbol`] if Cranelift rejects
 /// an imported runtime-symbol declaration. Returns
+/// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration`]
+/// when the artifact body imports runtime helpers that the current path cannot
+/// register. Returns
 /// [`JitCraneliftModuleSetupError::DeclareArtifactFunction`] if Cranelift
 /// rejects the artifact function declaration. Returns
 /// [`JitCraneliftModuleSetupError::DefineArtifactFunction`] if Cranelift rejects
@@ -1006,7 +1022,9 @@ pub fn jit_cranelift_symbol_registration_preflight_with_candidates(
 pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
     artifact: JitClifArtifact,
 ) -> Result<JitCraneliftArtifactDefinitionPreflight, JitCraneliftModuleSetupError> {
-    let readiness = jit_module_readiness_preflight_for_artifact(&artifact)?;
+    let readiness = require_definition_ready_artifact_imports(
+        jit_module_readiness_preflight_for_artifact(&artifact)?,
+    )?;
     let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
     let artifact_metadata = readiness.artifact().clone();
     let symbol_gaps = readiness.symbol_gaps().to_vec();
@@ -1031,8 +1049,9 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
 /// metadata for later unsafe call-boundary work. This does not cast the code
 /// pointer to a function pointer, call native code, or lower generic IR.
 /// Current crate-built artifacts are constant/literal bodies with no runtime
-/// call relocations; call-bearing artifacts require the later path that composes
-/// artifact finalization with complete runtime-symbol address registration.
+/// call relocations; call-bearing artifacts are rejected until the later path
+/// that composes artifact finalization with complete runtime-symbol address
+/// registration.
 ///
 /// # Errors
 ///
@@ -1045,6 +1064,9 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
 /// rejects the native ISA configuration. Returns
 /// [`JitCraneliftModuleSetupError::DeclareRuntimeSymbol`] if Cranelift rejects
 /// an imported runtime-symbol declaration. Returns
+/// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration`]
+/// when the artifact body imports runtime helpers that the current path cannot
+/// register. Returns
 /// [`JitCraneliftModuleSetupError::DeclareArtifactFunction`] if Cranelift
 /// rejects the artifact function declaration. Returns
 /// [`JitCraneliftModuleSetupError::DefineArtifactFunction`] if Cranelift rejects
@@ -1056,14 +1078,15 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
 ///
 /// # Panics
 ///
-/// Panics if an artifact references imported runtime symbols whose addresses
-/// have not been registered before Cranelift relocation. Panics if Cranelift
-/// reports successful artifact definition and module finalization but then
-/// fails its own invariant for looking up the finalized function by [`FuncId`].
+/// Panics if Cranelift reports successful artifact definition and module
+/// finalization but then fails its own invariant for looking up the finalized
+/// function by [`FuncId`].
 pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
     artifact: JitClifArtifact,
 ) -> Result<JitCraneliftArtifactFinalizationPreflight, JitCraneliftModuleSetupError> {
-    let readiness = jit_module_readiness_preflight_for_artifact(&artifact)?;
+    let readiness = require_definition_ready_artifact_imports(
+        jit_module_readiness_preflight_for_artifact(&artifact)?,
+    )?;
     let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
     let artifact_metadata = readiness.artifact().clone();
     let symbol_gaps = readiness.symbol_gaps().to_vec();
@@ -1222,6 +1245,34 @@ pub fn jit_cranelift_module_setup_for_plan(
     ))
 }
 
+fn require_definition_ready_artifact_imports(
+    readiness: JitModuleReadinessPreflight,
+) -> Result<JitModuleReadinessPreflight, JitCraneliftModuleSetupError> {
+    if !readiness.artifact_runtime_import_gaps().is_empty() {
+        return Err(JitCraneliftModuleSetupError::Readiness(
+            JitModuleReadinessError::UnresolvedArtifactRuntimeImports {
+                preflight: readiness,
+            },
+        ));
+    }
+
+    let symbol_names = readiness
+        .artifact_runtime_imports()
+        .iter()
+        .map(|artifact_import| artifact_import.symbol_name().to_owned())
+        .collect::<Vec<_>>();
+
+    if symbol_names.is_empty() {
+        Ok(readiness)
+    } else {
+        Err(
+            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+                symbol_names,
+            },
+        )
+    }
+}
+
 fn module_with_imported_symbols(
     declarations: &[JitRuntimeSymbolDeclaration],
 ) -> Result<(JITModule, Vec<JitCraneliftImportedSymbol>), JitCraneliftModuleSetupError> {
@@ -1371,18 +1422,23 @@ fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
 mod tests {
     use std::{num::NonZeroUsize, ptr::NonNull};
 
-    use cranelift_codegen::ir::UserFuncName;
+    use cranelift_codegen::ir::{
+        ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName,
+    };
     use ratchet_core::syntax::Span;
     use ratchet_core::{
         EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
+        runtime_helper_call_signature, runtime_thunk_call_signature,
     };
     use ratchet_value::value::Value;
 
     use super::*;
     use crate::{
+        abi::clif_signature_for_runtime_call,
         lower::{
-            clif_name_for_ir_root, lower_constant_ir_thunk_body_artifact,
-            lower_constant_thunk_body_artifact,
+            AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, clif_name_for_ir_root,
+            lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body_artifact,
+            lower_env_get_ir_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
         tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
@@ -1398,6 +1454,50 @@ mod tests {
         raw: usize,
     ) -> JitRuntimeSymbolAddressCandidate {
         JitRuntimeSymbolAddressCandidate::new(symbol_name.to_owned(), kind, synthetic_address(raw))
+    }
+
+    fn env_get_artifact(slot: u32) -> JitClifArtifact {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            )],
+            Vec::new(),
+        );
+
+        lower_env_get_ir_thunk_body_artifact(&arena, IrId::new(0)).expect("env-get artifact lowers")
+    }
+
+    fn artifact_with_unknown_runtime_helper_import() -> JitClifArtifact {
+        let mut function = Function::with_name_signature(
+            UserFuncName::default(),
+            clif_signature_for_runtime_call(runtime_thunk_call_signature())
+                .expect("thunk signature lowers"),
+        );
+        let env_get_signature = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_env_get")
+                .expect("env-get helper signature is core-owned"),
+        )
+        .expect("env-get signature lowers");
+        let signature_ref = function.import_signature(env_get_signature);
+        let user_name = function.declare_imported_user_function(UserExternalName::new(
+            AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            99,
+        ));
+        function.import_function(ExtFuncData {
+            name: ExternalName::user(user_name),
+            signature: signature_ref,
+            colocated: false,
+        });
+
+        JitClifArtifact::new(
+            JitTier::Tier1Baseline,
+            JitClifArtifactKind::ThunkBody,
+            JitClifArtifactSource::ConstantSmoke,
+            function,
+        )
     }
 
     #[test]
@@ -1697,6 +1797,44 @@ mod tests {
     }
 
     #[test]
+    fn artifact_definition_preflight_refuses_artifact_runtime_imports() {
+        let Err(error) =
+            jit_cranelift_artifact_definition_preflight_for_artifact(env_get_artifact(4))
+        else {
+            panic!("call-bearing artifact must wait for registered runtime symbols");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn artifact_definition_preflight_preserves_unresolved_artifact_import_readiness() {
+        let Err(error) = jit_cranelift_artifact_definition_preflight_for_artifact(
+            artifact_with_unknown_runtime_helper_import(),
+        ) else {
+            panic!("unresolved artifact import must stay a readiness error");
+        };
+
+        let JitCraneliftModuleSetupError::Readiness(
+            JitModuleReadinessError::UnresolvedArtifactRuntimeImports { preflight },
+        ) = error
+        else {
+            panic!("expected unresolved artifact-import readiness error");
+        };
+
+        assert!(preflight.artifact_runtime_imports().is_empty());
+        assert_eq!(preflight.artifact_runtime_import_gaps().len(), 1);
+        assert!(!preflight.is_complete());
+    }
+
+    #[test]
     fn artifact_finalization_preflight_finalizes_constant_artifact_code_pointer() {
         let artifact =
             lower_constant_thunk_body_artifact(Value::int(11)).expect("constant artifact lowers");
@@ -1776,6 +1914,41 @@ mod tests {
             preflight.finalized_function().code_ptr()
         );
         assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn artifact_finalization_preflight_refuses_artifact_runtime_imports() {
+        let Err(error) =
+            jit_cranelift_artifact_finalization_preflight_for_artifact(env_get_artifact(8))
+        else {
+            panic!("call-bearing artifact must wait for registered runtime symbols");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn tier1_slot_preflight_refuses_artifact_runtime_imports() {
+        let Err(error) = jit_cranelift_tier1_slot_preflight_for_artifact(env_get_artifact(12))
+        else {
+            panic!("call-bearing artifact must wait for registered runtime symbols");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
     }
 
     #[test]
