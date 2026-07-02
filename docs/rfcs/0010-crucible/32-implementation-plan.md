@@ -411,6 +411,12 @@ long-held locks.
   corpus execution, and a per-gate PASS row; full closure waits for the broader
   double-backed gate runners, real-QEMU gate execution under `--with-qemu`, and
   file-backed corpus override support.
+  `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
+  covers `replay --check <original-log>` parsing, pinned-identity validation,
+  byte-identical canonical-log comparison, exit 1 on mismatch, and continued
+  rejection of `--to`/`--bisect`; full closure waits for content-addressed
+  component resolution, replay-to-savepoint, on-mismatch bisection, and
+  machine-independent backend replay coverage.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

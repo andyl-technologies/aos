@@ -35,6 +35,8 @@ use crucible_session::{
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
+    "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
 const CRUCIBLE_QEMU_ENV: &str = "CRUCIBLE_QEMU";
@@ -275,6 +277,9 @@ struct ReplayArgs {
     /// Read this reproduction artifact.
     #[arg(value_name = "ARTIFACT")]
     artifact: PathBuf,
+    /// Compare the replayed canonical log to this file.
+    #[arg(long, value_name = "original-log")]
+    check: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -2028,11 +2033,9 @@ fn render_canonical_event_log(
 
 fn jsonl_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
     let mut text = String::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if index > 0 {
-            text.push('\n');
-        }
+    for entry in entries {
         text.push_str(&json_for_canonical_log_entry(entry));
+        text.push('\n');
     }
     text
 }
@@ -3932,17 +3935,41 @@ fn canonical_log_entries_from_artifact(
             "verify comparison artifact contains no canonical decisions",
         ));
     }
-    Ok(artifact
+    artifact
         .decisions
         .iter()
-        .map(|decision| CanonicalLogEntry {
-            sequence: decision.sequence,
-            virtual_time_ticks: decision.virtual_time_ticks,
-            node: decision.node.clone(),
-            kind: decision.kind.clone(),
-            summary: decision.payload_digest.clone(),
+        .map(|decision| {
+            Ok(CanonicalLogEntry {
+                sequence: decision.sequence,
+                virtual_time_ticks: decision.virtual_time_ticks,
+                node: decision.node.clone(),
+                kind: decision.kind.clone(),
+                summary: decision_payload_summary(artifact, decision)?,
+            })
         })
-        .collect())
+        .collect()
+}
+
+fn decision_payload_summary(
+    artifact: &CliReproductionArtifact,
+    decision: &CliDecision,
+) -> Result<String, CliError> {
+    let payload = artifact
+        .payloads
+        .iter()
+        .find(|payload| payload.digest == decision.payload_digest)
+        .ok_or_else(|| {
+            artifact_error(format!(
+                "decision payload `{}` is missing from artifact payloads",
+                decision.payload_digest
+            ))
+        })?;
+    String::from_utf8(payload.bytes.clone()).map_err(|error| {
+        artifact_error(format!(
+            "decision payload `{}` is not UTF-8: {error}",
+            decision.payload_digest
+        ))
+    })
 }
 
 fn artifact_fingerprint_samples(
@@ -4160,10 +4187,40 @@ fn verify_reproduction_artifact_bytes(
             &scenario_bytes.len().to_string(),
         ],
     );
+    for decision in &decisions {
+        let payload = canonical_log
+            .get(decision.sequence as usize)
+            .ok_or_else(|| artifact_error("decision payload is missing from canonical log"))?
+            .summary
+            .as_bytes();
+        artifact_line(
+            &mut text,
+            &[
+                "component",
+                "other",
+                &format!("decision-{}-payload", decision.sequence),
+                &decision.payload_digest,
+                &format!("cas:{}", decision.payload_digest),
+                RECORDED_DECISION_PAYLOAD_MEDIA_TYPE,
+                &payload.len().to_string(),
+            ],
+        );
+    }
     artifact_line(
         &mut text,
         &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
     );
+    for decision in &decisions {
+        let payload = canonical_log
+            .get(decision.sequence as usize)
+            .ok_or_else(|| artifact_error("decision payload is missing from canonical log"))?
+            .summary
+            .as_bytes();
+        artifact_line(
+            &mut text,
+            &["payload", &decision.payload_digest, &hex_bytes(payload)],
+        );
+    }
     artifact_line(
         &mut text,
         &["schedule", &schedule_digest, &decisions.len().to_string()],
@@ -5257,6 +5314,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     report.scenario_digest,
                     report.digest
                 );
+                if let Some(check) = &report.check {
+                    println!(
+                        "crucible: replay check {} status=byte-identical digest={}",
+                        check.path.display(),
+                        check.digest
+                    );
+                }
             }
             Ok(())
         }
@@ -5572,11 +5636,31 @@ fn replay_reproduction_artifact(
 ) -> Result<ReplayArtifactReport, CliError> {
     let bytes = fs::read(&args.artifact)?;
     let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
+    let check = if let Some(path) = &args.check {
+        let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
+        let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
+        let original = fs::read(path)?;
+        if original != canonical_log_bytes {
+            return Err(CliError::ReplayCheck(format!(
+                "replay --check mismatch for `{}`: expected {}, replayed {}",
+                path.display(),
+                content_address_bytes(&original),
+                content_address_bytes(&canonical_log_bytes)
+            )));
+        }
+        Some(ReplayCheckReport {
+            path: path.clone(),
+            digest: content_address_bytes(&canonical_log_bytes),
+        })
+    } else {
+        None
+    };
     Ok(ReplayArtifactReport {
         path: args.artifact.clone(),
         digest: content_address_bytes(&bytes),
         seed: artifact.seed,
         scenario_digest: artifact.scenario.digest,
+        check,
     })
 }
 
@@ -6592,14 +6676,15 @@ fn mock_failure_reproduction_artifact_bytes_for_backend(
     let scenario_material = b"scenario\tmock-failure\nnode\tnode-a\tserver\n";
     let scenario_digest = content_address_bytes(scenario_material);
     let identity = expected_replay_identity_for_backend(backend);
-    let payload_digest = content_address_bytes(b"mock-failure-decision");
+    let payload = b"mock-failure-decision";
+    let payload_digest = content_address_bytes(payload);
     let fingerprint_digest = content_address_bytes(b"mock-failure-fingerprint");
     let decisions = vec![CliDecision {
         sequence: 0,
         virtual_time_ticks: 1,
         node: String::from("node-a"),
         kind: String::from("property_observation"),
-        payload_digest,
+        payload_digest: payload_digest.clone(),
     }];
     let schedule_digest = schedule_digest(&decisions);
     let scenario_size = scenario_material.len().to_string();
@@ -6647,7 +6732,23 @@ fn mock_failure_reproduction_artifact_bytes_for_backend(
     );
     artifact_line(
         &mut text,
+        &[
+            "component",
+            "other",
+            "decision-0-payload",
+            &payload_digest,
+            &format!("cas:{payload_digest}"),
+            RECORDED_DECISION_PAYLOAD_MEDIA_TYPE,
+            &payload.len().to_string(),
+        ],
+    );
+    artifact_line(
+        &mut text,
         &["payload", &scenario_digest, &hex_bytes(scenario_material)],
+    );
+    artifact_line(
+        &mut text,
+        &["payload", &payload_digest, &hex_bytes(payload)],
     );
     artifact_line(&mut text, &["schedule", &schedule_digest, &schedule_len]);
     for decision in &decisions {
@@ -6914,6 +7015,13 @@ struct ReplayArtifactReport {
     digest: String,
     seed: u64,
     scenario_digest: String,
+    check: Option<ReplayCheckReport>,
+}
+
+#[derive(Debug)]
+struct ReplayCheckReport {
+    path: PathBuf,
+    digest: String,
 }
 
 #[derive(Debug)]
@@ -7418,6 +7526,7 @@ enum CliError {
     Backend(String),
     Identity(String),
     Outcome(BackendCommandStatus),
+    ReplayCheck(String),
     InvalidScenario(String),
     Triage(String),
     Selftest(crucible::ExampleCorpusError),
@@ -7436,6 +7545,7 @@ impl CliError {
             Self::Outcome(BackendCommandStatus::Failed) => 1,
             Self::Outcome(BackendCommandStatus::Timeout) => 2,
             Self::Outcome(BackendCommandStatus::Crashed) => 3,
+            Self::ReplayCheck(_) => 1,
             Self::InvalidScenario(_) => 5,
             Self::Triage(_) => 1,
             Self::Selftest(_) => 1,
@@ -7453,6 +7563,7 @@ impl fmt::Display for CliError {
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
+            Self::ReplayCheck(error) => write!(formatter, "{error}"),
             Self::InvalidScenario(error) => write!(formatter, "{error}"),
             Self::Triage(error) => write!(formatter, "{error}"),
             Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
@@ -7470,6 +7581,7 @@ impl Error for CliError {
             Self::Backend(_) => None,
             Self::Identity(_) => None,
             Self::Outcome(_) => None,
+            Self::ReplayCheck(_) => None,
             Self::InvalidScenario(_) => None,
             Self::Triage(_) => None,
             Self::Selftest(error) => Some(error),
@@ -8042,7 +8154,7 @@ mod tests {
                 ],
             ),
             ("selftest", &["--gates <list>"]),
-            ("replay", &["ARTIFACT"]),
+            ("replay", &["ARTIFACT", "--check <original-log>"]),
             ("serve", &["--listen <addr>", "--store <path>"]),
         ] {
             let help = command
@@ -8063,12 +8175,13 @@ mod tests {
     fn cli_help_surface_rejects_unimplemented_future_flags() {
         for argv in [
             vec!["crucible", "selftest", "--with-qemu"],
+            vec!["crucible", "replay", "case.crucible", "--to", "savepoint"],
             vec![
                 "crucible",
                 "replay",
                 "case.crucible",
-                "--check",
-                "log.jsonl",
+                "--bisect",
+                "other.crucible",
             ],
             vec!["crucible", "serve", "--read-only"],
         ] {
@@ -10195,6 +10308,7 @@ mod tests {
             String::from_utf8(jsonl.bytes.clone())?.lines().count(),
             entries.len()
         );
+        assert!(String::from_utf8(jsonl.bytes.clone())?.ends_with('\n'));
         assert!(String::from_utf8(json.bytes)?.starts_with('['));
         assert!(String::from_utf8(table.bytes)?.starts_with("seq\tvirtual_time"));
 
@@ -10326,6 +10440,7 @@ mod tests {
             &cli,
             &ReplayArgs {
                 artifact: report.path.clone(),
+                check: None,
             },
         )?;
 
@@ -10724,6 +10839,7 @@ mod tests {
             &cli,
             &ReplayArgs {
                 artifact: path.clone(),
+                check: None,
             },
         )?;
 
@@ -10731,6 +10847,87 @@ mod tests {
         assert_eq!(report.seed, artifact.seed);
         assert_eq!(report.scenario_digest, artifact.scenario.digest);
         assert_eq!(report.digest, artifact.digest()?);
+        assert!(report.check.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("case.crucible");
+        let check_path = temp.path().join("original.jsonl");
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
+                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
+                    scenario
+                }
+            };
+        let entries = canonical_trace_entries();
+        let samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"replay-check-fingerprint-sample"),
+        }];
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &samples,
+        )?;
+        fs::write(&artifact_path, &artifact_bytes)?;
+
+        let emitted =
+            emit_canonical_trace(OutputFormat::Jsonl, &entries, Some(&check_path), false)?;
+        let canonical_log_bytes = canonical_log_entry_bytes(&entries);
+        assert_eq!(emitted.bytes, fs::read(&check_path)?);
+        assert_eq!(emitted.bytes, canonical_log_bytes);
+
+        let artifact_arg = artifact_path.display().to_string();
+        let check_arg = check_path.display().to_string();
+        let replay_cli =
+            Cli::parse_from(["crucible", "replay", &artifact_arg, "--check", &check_arg]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let report = replay_reproduction_artifact(&replay_cli, args)?;
+
+        let Some(check) = report.check.as_ref() else {
+            panic!("missing replay check report");
+        };
+        assert_eq!(check.path, check_path);
+        assert_eq!(check.digest, content_address_bytes(&canonical_log_bytes));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("case.crucible");
+        let check_path = temp.path().join("original.jsonl");
+        let artifact = mock_e2e_reproduction_artifact()?;
+        fs::write(&artifact_path, artifact.encode()?)?;
+        fs::write(&check_path, b"not the replayed canonical log\n")?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let check_arg = check_path.display().to_string();
+        let replay_cli =
+            Cli::parse_from(["crucible", "replay", &artifact_arg, "--check", &check_arg]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --check must reject byte mismatches"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::ReplayCheck(_)));
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("replay --check mismatch"));
 
         Ok(())
     }
@@ -10745,7 +10942,13 @@ mod tests {
         fs::write(&path, artifact.encode()?)?;
 
         let cli = Cli::parse_from(["crucible", "run"]);
-        let error = match replay_reproduction_artifact(&cli, &ReplayArgs { artifact: path }) {
+        let error = match replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: path,
+                check: None,
+            },
+        ) {
             Ok(_) => panic!("replay must reject artifacts from a different QEMU identity"),
             Err(error) => error,
         };
@@ -10782,6 +10985,7 @@ mod tests {
             &cli,
             &ReplayArgs {
                 artifact: artifact_path,
+                check: None,
             },
         ) {
             Ok(_) => panic!("replay must reject the selected QEMU identity mismatch"),
@@ -10848,6 +11052,7 @@ mod tests {
             &cli,
             &ReplayArgs {
                 artifact: report.path.clone(),
+                check: None,
             },
         )?;
         assert_eq!(report.digest, artifact.digest()?);
@@ -11090,7 +11295,13 @@ mod tests {
         fs::write(&path, encoded)?;
 
         let cli = Cli::parse_from(["crucible", "run"]);
-        let error = match replay_reproduction_artifact(&cli, &ReplayArgs { artifact: path }) {
+        let error = match replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: path,
+                check: None,
+            },
+        ) {
             Ok(_) => panic!("duplicate singleton line must fail CLI replay validation"),
             Err(error) => error,
         };

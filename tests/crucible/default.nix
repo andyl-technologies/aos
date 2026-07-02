@@ -1491,6 +1491,16 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliReplayCheck = import ./phase5-cli-replay-check.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliReplayCheck";
+      taskIds = ["T-CLI-12"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase4.gates.replayOracle.rawGate
+        phase4.gates.e2eDeterminism.rawGate
+      ];
+    };
     cliCompletionsHelp = import ./phase5-cli-completions-help.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";
