@@ -6480,6 +6480,17 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       ([08](08-execution-tiers-and-cranelift.md)).
 - [ ] `jit/lower.rs` — lower the annotated IR to Cranelift IR; compile
       per-expression once; thunks are `(code, env, state)` instances (`S-4`).
+- [x] Current constant-thunk CLIF body precursor:
+      `ratchet-jit::lower::lower_constant_thunk_body()` builds and verifies a
+      Cranelift `Function` for a compiled thunk body returning one constant
+      runtime `Value`. It consumes the frozen thunk signature, appends entry
+      block parameters for `rt` and `env`, emits two `iconst.i64` instructions
+      for the `ratchet-value` tag/payload words, and returns those two ABI
+      words. Tests pin signature parity, entry-block parameter shape,
+      int/bool/null constants, and verifier acceptance. This is a lowerer smoke
+      test only: no generic IR traversal, force/runtime calls, `JITModule`,
+      executable buffer, finalized function pointer, symbol registration, or
+      native call is implemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

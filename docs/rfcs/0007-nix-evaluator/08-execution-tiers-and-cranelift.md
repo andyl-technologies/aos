@@ -1119,6 +1119,17 @@ harness, never cut for scope.
 ### Tier 1 — the Cranelift baseline JIT
 
 - [ ] IR → Cranelift CLIF tree-directed lowering, fully generic (boxed values, generic `select`, runtime-checked arithmetic, every force a call) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§4](#4-the-compilation-pipeline)) — P6, `S-3`/`S-5`; gate: differential identity vs tier-0 oracle.
+- [x] Current constant-thunk CLIF body precursor:
+      `ratchet-jit::lower::lower_constant_thunk_body()` builds a verified
+      Cranelift `Function` for a compiled thunk body that returns a constant
+      runtime `Value`. It uses the frozen thunk signature from `ratchet-core`,
+      installs `rt`/`env` entry-block parameters, emits two `iconst.i64`
+      instructions for the `ratchet-value` tag/payload words, and returns those
+      two ABI words. Tests pin signature parity, entry-block parameter shape,
+      int/bool/null value words, and verifier acceptance. This is CLIF body
+      construction only: no generic IR traversal, force calls, runtime-symbol
+      calls, `JITModule`, executable buffer, finalized function pointer, or
+      native call is implemented.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.

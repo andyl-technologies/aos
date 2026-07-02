@@ -1,14 +1,16 @@
 //! `ratchet-jit` -- the future unsafe execution-tier boundary for RFC-0007.
 //!
 //! This crate is the landing zone for the Cranelift baseline JIT and later
-//! optimized native tiers. It intentionally starts with safe, address-free
-//! metadata adapters only: [`abi`] mirrors the frozen runtime-call signatures
-//! from `ratchet-core`, and [`symbols`] mirrors the stable runtime-symbol
-//! manifest from `ratchet-core`, [`tier`] names the first safe tier-up policy,
-//! [`warmup`] keeps the copy-and-patch hedge measurable, and [`safety`] records
-//! the unsafe-boundary discipline. Runtime-symbol candidate reports currently
-//! remain in `ratchet-oracle`; a later shared metadata layer can move them below
-//! both crates without making the JIT crate depend on the safe oracle stack.
+//! optimized native tiers. It intentionally starts with safe, non-executable
+//! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
+//! `ratchet-core`, [`lower`] builds verified CLIF bodies for the first
+//! constant-thunk smoke tests, [`symbols`] mirrors the stable
+//! runtime-symbol manifest from `ratchet-core`, [`tier`] names the first safe
+//! tier-up policy, [`warmup`] keeps the copy-and-patch hedge measurable, and
+//! [`safety`] records the unsafe-boundary discipline. Runtime-symbol candidate
+//! reports currently remain in `ratchet-oracle`; a later shared metadata layer
+//! can move them below both crates without making the JIT crate depend on the
+//! safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
 //! module construction, and `JITBuilder::symbol` registration are future work
@@ -19,6 +21,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod abi;
+pub mod lower;
 pub mod safety;
 pub mod symbols;
 pub mod tier;
@@ -28,6 +31,7 @@ pub use abi::{
     JitClifSignatureError, JitRuntimeAbiInventory, clif_signature_for_runtime_call,
     jit_runtime_abi_inventory,
 };
+pub use lower::{JitLowerError, lower_constant_thunk_body};
 pub use safety::{
     JIT_SAFETY_COMMENT_PREFIX, JIT_UNSAFE_CRATE_LINT, JitInnateUnsafeOperation,
     JitUnsafeDiscipline, jit_unsafe_discipline,

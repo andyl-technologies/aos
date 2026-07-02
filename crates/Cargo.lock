@@ -3858,6 +3858,7 @@ version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
  "ratchet-core",
+ "ratchet-value",
  "target-lexicon",
 ]
 

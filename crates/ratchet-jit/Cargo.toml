@@ -9,4 +9,5 @@ default = []
 [dependencies]
 cranelift-codegen = { workspace = true }
 ratchet-core = { workspace = true }
+ratchet-value = { workspace = true }
 target-lexicon = { workspace = true }
