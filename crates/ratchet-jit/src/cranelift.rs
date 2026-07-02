@@ -35,6 +35,7 @@ use crate::{
         JitRuntimeSymbolRegistrationError, JitRuntimeSymbolRegistrationGap,
         jit_runtime_symbol_registration_preflight_with_candidates,
     },
+    tier::JitCompiledCodePointer,
 };
 
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -258,6 +259,15 @@ impl JitCraneliftFinalizedFunction {
     /// metadata.
     pub const fn code_ptr(&self) -> NonNull<u8> {
         self.code_ptr
+    }
+
+    /// Returns the finalized code pointer as tier-slot metadata.
+    ///
+    /// This preserves the same non-callable, non-owning lifetime contract as
+    /// [`Self::code_ptr`]. It only adapts the pointer into the safe metadata type
+    /// accepted by [`crate::tier::JitTieredCodeSlot`].
+    pub const fn compiled_code_ptr(&self) -> JitCompiledCodePointer {
+        JitCompiledCodePointer::from_non_null(self.code_ptr)
     }
 }
 
@@ -1380,6 +1390,13 @@ mod tests {
             preflight.finalized_function().code_ptr().as_ptr() as usize,
             0
         );
+        assert_eq!(
+            preflight
+                .finalized_function()
+                .compiled_code_ptr()
+                .as_non_null(),
+            preflight.finalized_function().code_ptr()
+        );
         assert!(
             preflight
                 .imported_symbol_for("nix.builtin.derivationStrict")
@@ -1425,6 +1442,13 @@ mod tests {
         assert_ne!(
             preflight.finalized_function().code_ptr().as_ptr() as usize,
             0
+        );
+        assert_eq!(
+            preflight
+                .finalized_function()
+                .compiled_code_ptr()
+                .as_non_null(),
+            preflight.finalized_function().code_ptr()
         );
         assert!(preflight.owns_encapsulated_module());
     }
