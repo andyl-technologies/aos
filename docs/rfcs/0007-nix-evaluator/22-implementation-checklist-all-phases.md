@@ -6581,16 +6581,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-oracle` until a lower shared metadata layer exists. Tests prove ABI
       metadata parity and callable-kind coverage. This adds no oracle dependency,
       exported wrappers, raw function-pointer calls, executable addresses, or
-      `JITBuilder::symbol` registration; the narrow Cranelift dependency is now
-      confined to the CLIF signature adapter below.
+      `JITBuilder::symbol` registration.
 - [x] Current Cranelift crate-version pin precursor:
       `ratchet-jit::cranelift::jit_cranelift_dependency_pin()` records the exact
-      `cranelift-codegen` crate version used by the safe CLIF signature and body
-      lowering slices, and tests assert that the active linked
-      `cranelift_codegen::VERSION` still matches the pin. This is a crate-version
-      guard only: it does not add `cranelift-jit`, `JITModule`, executable
-      buffers, runtime-symbol registration, or the later user-stack-map
-      git-revision policy.
+      `cranelift-codegen`, `cranelift-jit`, `cranelift-module`, and
+      `cranelift-native` crate versions used by the safe CLIF and JIT-module
+      setup slices, and tests assert that the active linked crate versions still
+      match the pin. This is a crate-version guard only: it does not add
+      executable buffers, runtime-symbol address registration, or the later
+      user-stack-map git-revision policy.
 - [x] Current `ratchet-jit` CLIF-signature ABI precursor:
       `ratchet-jit::abi::clif_signature_for_runtime_call()` lowers the frozen
       `RuntimeCallSignature` metadata into Cranelift `Signature` values for the
@@ -6598,9 +6597,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       slots, expands every runtime `Value` argument or return to two `i64` ABI
       slots, and guards that lowering on the pinned 16-byte/two-8-byte-word
       `Value` layout. Tests cover thunk and lambda signatures, primop arities
-      0-3, and the layout guard. This remains signature metadata only: no
-      `cranelift-jit`, `JITModule`, `JITBuilder::symbol` registration, CLIF body
-      lowering, executable buffer, raw pointer call, or native wrapper is added.
+      0-3, and the layout guard. This signature adapter remains metadata only:
+      it does not construct a `JITModule`, register symbols, lower a CLIF body,
+      allocate an executable buffer, cross a raw pointer call boundary, or export
+      a native wrapper.
 - [x] Current `ratchet-jit` runtime-symbol inventory precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_inventory()` mirrors the
       address-free `ratchet-core` runtime symbol manifest inside the JIT crate
@@ -6631,9 +6631,23 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       builtin declaration gaps remain. Tests pin artifact metadata, callable
       builtin declaration visibility, representative helper gaps, the current
       incomplete-plan error, deterministic IR-root function-name copying, and a
-      synthetic complete conversion. This remains module-readiness metadata only:
-      no `cranelift-jit`, `JITModule`, executable buffer, symbol address,
-      relocation, or `JITBuilder::symbol` registration is implemented.
+      synthetic complete conversion. This readiness API remains metadata only:
+      it does not construct a `JITModule`, allocate an executable buffer, attach
+      a symbol address, emit a relocation, or call `JITBuilder::symbol`.
+- [x] Current safe `JITModule` declaration precursor:
+      `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
+      builds a real Cranelift `JITModule` through a fallible native-ISA builder
+      and declares every currently shape-known callable builtin runtime symbol
+      as a `Linkage::Import` function. The stricter
+      `jit_cranelift_module_setup_for_artifact()` remains gated by the
+      module-readiness plan and currently returns an incomplete-symbol error
+      while helper and value-only builtin gaps remain. Tests pin the expanded
+      Cranelift crate-version set, imported callable builtin declarations,
+      representative helper gaps, and the strict setup rejection. This is real
+      safe module construction and import declaration only: no runtime symbol
+      address is registered, no `JITBuilder::symbol` call is made, no CLIF body
+      is defined in the module, no executable memory is finalized, and no native
+      code pointer is produced or called.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps

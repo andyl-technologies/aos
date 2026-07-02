@@ -102,6 +102,9 @@ semver = "1"
 
 # Code generation
 cranelift-codegen = "=0.127.4"
+cranelift-jit = "=0.127.4"
+cranelift-module = "=0.127.4"
+cranelift-native = "=0.127.4"
 target-lexicon = "=0.13.5"
 
 # Dev
