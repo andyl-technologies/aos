@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use crucible::DagStore;
-use crucible_session::SessionCommand;
+use crucible_session::{SessionCommand, SessionCommandKind};
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -348,6 +348,519 @@ struct ServeArgs {}
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct CompletionsArgs {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum CliSubcommand {
+    Run,
+    Verify,
+    Selftest,
+    Save,
+    Resume,
+    Fork,
+    Replay,
+    Search,
+    Fuzz,
+    Triage,
+    Debug,
+    Serve,
+    Completions,
+}
+
+impl CliSubcommand {
+    fn from_command(command: &Commands) -> Self {
+        match command {
+            Commands::Run(_) => Self::Run,
+            Commands::Verify(_) => Self::Verify,
+            Commands::Selftest(_) => Self::Selftest,
+            Commands::Save(_) => Self::Save,
+            Commands::Resume(_) => Self::Resume,
+            Commands::Fork(_) => Self::Fork,
+            Commands::Replay(_) => Self::Replay,
+            Commands::Search(_) => Self::Search,
+            Commands::Fuzz(_) => Self::Fuzz,
+            Commands::Triage(_) => Self::Triage,
+            Commands::Debug(_) => Self::Debug,
+            Commands::Serve(_) => Self::Serve,
+            Commands::Completions(_) => Self::Completions,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliApiCall {
+    Hello,
+    ListScenarios,
+    CreateSession,
+    ListSessions,
+    DestroySession,
+    ControlAttach,
+    ControlSend,
+    WatchAttach,
+    SendCommand,
+    GetReproduction,
+}
+
+impl CliApiCall {
+    const ALL: &'static [Self] = &[
+        Self::Hello,
+        Self::ListScenarios,
+        Self::CreateSession,
+        Self::ListSessions,
+        Self::DestroySession,
+        Self::ControlAttach,
+        Self::ControlSend,
+        Self::WatchAttach,
+        Self::SendCommand,
+        Self::GetReproduction,
+    ];
+
+    const fn control_client_method(self) -> &'static str {
+        match self {
+            Self::Hello => "hello",
+            Self::ListScenarios => "list_scenarios",
+            Self::CreateSession => "create_session",
+            Self::ListSessions => "list_sessions",
+            Self::DestroySession => "destroy_session",
+            Self::ControlAttach => "control_attach",
+            Self::ControlSend => "control_send",
+            Self::WatchAttach => "watch_attach",
+            Self::SendCommand => "send_command",
+            Self::GetReproduction => "get_reproduction",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliDelegatedDriver {
+    SessionControlPlane,
+    ControlApi,
+    HarnessGateCatalog,
+    ReplayOracle,
+    ExplorationEngine,
+    TriageEngine,
+    TimeTravelDebugger,
+    DaemonHost,
+    ShellCompletionGenerator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliStateReferenceKind {
+    LocalSessionHandle,
+    DaemonConnection,
+    ContentAddressedStore,
+    ReproductionArtifact,
+    SavepointHandle,
+    FindingsLedger,
+    DebugCoordinate,
+}
+
+impl CliStateReferenceKind {
+    const fn is_non_canonical_reference(self) -> bool {
+        matches!(
+            self,
+            Self::LocalSessionHandle
+                | Self::DaemonConnection
+                | Self::ContentAddressedStore
+                | Self::ReproductionArtifact
+                | Self::SavepointHandle
+                | Self::FindingsLedger
+                | Self::DebugCoordinate
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CliThinWrapperPlan {
+    subcommand: CliSubcommand,
+    session_commands: Vec<SessionCommandKind>,
+    api_calls: Vec<CliApiCall>,
+    delegated_drivers: Vec<CliDelegatedDriver>,
+    state_references: Vec<CliStateReferenceKind>,
+    thin_wrapper: bool,
+    owns_canonical_run_state: bool,
+    implements_scheduler: bool,
+    implements_checkpoint_materialization: bool,
+    implements_fork_logic: bool,
+    extra_control_capabilities: Vec<&'static str>,
+}
+
+impl CliThinWrapperPlan {
+    fn proves_t_cli_2(&self) -> bool {
+        self.thin_wrapper
+            && !self.owns_canonical_run_state
+            && !self.implements_scheduler
+            && !self.implements_checkpoint_materialization
+            && !self.implements_fork_logic
+            && self.extra_control_capabilities.is_empty()
+            && !self.delegated_drivers.is_empty()
+            && self
+                .state_references
+                .iter()
+                .copied()
+                .all(CliStateReferenceKind::is_non_canonical_reference)
+            && self
+                .session_commands
+                .iter()
+                .all(|command| SessionCommandKind::ALL.contains(command))
+            && self.api_calls.iter().all(|call| {
+                CliApiCall::ALL.contains(call) && !call.control_client_method().is_empty()
+            })
+            && self.has_valid_decomposition()
+    }
+
+    fn has_valid_decomposition(&self) -> bool {
+        !self.session_commands.is_empty()
+            || !self.api_calls.is_empty()
+            || matches!(
+                self.subcommand,
+                CliSubcommand::Triage | CliSubcommand::Completions
+            )
+    }
+}
+
+fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
+    let subcommand = CliSubcommand::from_command(&cli.command);
+    let mut plan = match &cli.command {
+        Commands::Run(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+                SessionCommandKind::Stop,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::WatchAttach,
+                CliApiCall::SendCommand,
+                CliApiCall::GetReproduction,
+            ],
+            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
+            state_references: vec![CliStateReferenceKind::LocalSessionHandle],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Verify(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Snapshot,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![CliApiCall::Hello, CliApiCall::CreateSession],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Selftest(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+            ],
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::HarnessGateCatalog],
+            state_references: vec![CliStateReferenceKind::ContentAddressedStore],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Save(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::StepDuration,
+                SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::LocalSessionHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::SavepointHandle,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Resume(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
+            state_references: vec![
+                CliStateReferenceKind::SavepointHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Fork(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Fork,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
+            state_references: vec![
+                CliStateReferenceKind::SavepointHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Replay(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Snapshot,
+            ],
+            api_calls: Vec::new(),
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ReproductionArtifact,
+                CliStateReferenceKind::ContentAddressedStore,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Search(_) | Commands::Fuzz(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Fork,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::ExplorationEngine,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::LocalSessionHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Triage(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::TriageEngine],
+            state_references: vec![
+                CliStateReferenceKind::FindingsLedger,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Debug(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Query,
+                SessionCommandKind::Snapshot,
+                SessionCommandKind::AttachGdb,
+                SessionCommandKind::DebugGoto,
+                SessionCommandKind::DebugReverseStep,
+                SessionCommandKind::DebugReverseContinue,
+                SessionCommandKind::DebugForkNonCanonical,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::ListSessions,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::TimeTravelDebugger,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ReproductionArtifact,
+                CliStateReferenceKind::SavepointHandle,
+                CliStateReferenceKind::DaemonConnection,
+                CliStateReferenceKind::DebugCoordinate,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Serve(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Stop,
+                SessionCommandKind::Query,
+            ],
+            api_calls: CliApiCall::ALL.to_vec(),
+            delegated_drivers: vec![
+                CliDelegatedDriver::DaemonHost,
+                CliDelegatedDriver::ControlApi,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::DaemonConnection,
+                CliStateReferenceKind::LocalSessionHandle,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Completions(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::ShellCompletionGenerator],
+            state_references: Vec::new(),
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
+    };
+
+    if cli.daemon.is_some() {
+        plan.delegated_drivers.push(CliDelegatedDriver::ControlApi);
+        plan.state_references
+            .push(CliStateReferenceKind::DaemonConnection);
+    }
+
+    plan
+}
+
+trait CliOperationRecorder {
+    fn record_session_command(&mut self, command: SessionCommandKind);
+
+    fn record_api_call(&mut self, call: CliApiCall);
+
+    fn record_driver(&mut self, driver: CliDelegatedDriver);
+
+    fn record_state_reference(&mut self, reference: CliStateReferenceKind);
+}
+
+#[derive(Default)]
+struct NullOperationRecorder;
+
+impl CliOperationRecorder for NullOperationRecorder {
+    fn record_session_command(&mut self, _command: SessionCommandKind) {}
+
+    fn record_api_call(&mut self, _call: CliApiCall) {}
+
+    fn record_driver(&mut self, _driver: CliDelegatedDriver) {}
+
+    fn record_state_reference(&mut self, _reference: CliStateReferenceKind) {}
+}
+
+fn execute_cli_dispatch_plan(
+    plan: &CliThinWrapperPlan,
+    recorder: &mut impl CliOperationRecorder,
+) -> Result<(), CliError> {
+    if !plan.proves_t_cli_2() {
+        return Err(CliError::Backend(
+            "CLI invocation violates the RFC-0010 thin-wrapper contract".to_string(),
+        ));
+    }
+
+    for command in &plan.session_commands {
+        recorder.record_session_command(*command);
+    }
+    for call in &plan.api_calls {
+        recorder.record_api_call(*call);
+    }
+    for driver in &plan.delegated_drivers {
+        recorder.record_driver(*driver);
+    }
+    for reference in &plan.state_references {
+        recorder.record_state_reference(*reference);
+    }
+
+    Ok(())
+}
+
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -376,6 +889,9 @@ fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 }
 
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
+    let thin_plan = plan_cli_invocation(cli);
+    execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+
     match &cli.command {
         Commands::Replay(args) => {
             let report = replay_reproduction_artifact(cli, args)?;
@@ -2365,6 +2881,32 @@ mod tests {
 
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingOperationRecorder {
+        session_commands: Vec<SessionCommandKind>,
+        api_calls: Vec<CliApiCall>,
+        drivers: Vec<CliDelegatedDriver>,
+        state_references: Vec<CliStateReferenceKind>,
+    }
+
+    impl CliOperationRecorder for RecordingOperationRecorder {
+        fn record_session_command(&mut self, command: SessionCommandKind) {
+            self.session_commands.push(command);
+        }
+
+        fn record_api_call(&mut self, call: CliApiCall) {
+            self.api_calls.push(call);
+        }
+
+        fn record_driver(&mut self, driver: CliDelegatedDriver) {
+            self.drivers.push(driver);
+        }
+
+        fn record_state_reference(&mut self, reference: CliStateReferenceKind) {
+            self.state_references.push(reference);
+        }
+    }
+
     #[test]
     fn cli_skeleton_exposes_closed_subcommand_set() {
         let mut names = Cli::command()
@@ -2459,6 +3001,152 @@ mod tests {
         };
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
+        let cases = [
+            (
+                CliSubcommand::Run,
+                vec!["crucible", "--daemon", "127.0.0.1:9000", "run"],
+            ),
+            (CliSubcommand::Verify, vec!["crucible", "verify"]),
+            (CliSubcommand::Selftest, vec!["crucible", "selftest"]),
+            (CliSubcommand::Save, vec!["crucible", "save"]),
+            (CliSubcommand::Resume, vec!["crucible", "resume"]),
+            (CliSubcommand::Fork, vec!["crucible", "fork"]),
+            (
+                CliSubcommand::Replay,
+                vec!["crucible", "replay", "case.crucible"],
+            ),
+            (CliSubcommand::Search, vec!["crucible", "search"]),
+            (CliSubcommand::Fuzz, vec!["crucible", "fuzz"]),
+            (
+                CliSubcommand::Triage,
+                vec!["crucible", "triage", "findings"],
+            ),
+            (
+                CliSubcommand::Debug,
+                vec!["crucible", "debug", "case.crucible"],
+            ),
+            (CliSubcommand::Serve, vec!["crucible", "serve"]),
+            (CliSubcommand::Completions, vec!["crucible", "completions"]),
+        ];
+        let mut observed = BTreeSet::new();
+
+        for (expected, argv) in cases {
+            let cli = Cli::parse_from(argv);
+            let plan = plan_cli_invocation(&cli);
+            observed.insert(plan.subcommand);
+
+            assert_eq!(plan.subcommand, expected);
+            assert!(
+                plan.proves_t_cli_2(),
+                "{expected:?} must satisfy the thin-wrapper contract: {plan:?}"
+            );
+            assert!(!plan.owns_canonical_run_state);
+            assert!(!plan.implements_scheduler);
+            assert!(!plan.implements_checkpoint_materialization);
+            assert!(!plan.implements_fork_logic);
+            assert!(plan.extra_control_capabilities.is_empty());
+            assert!(
+                plan.session_commands
+                    .iter()
+                    .all(|command| SessionCommandKind::ALL.contains(command))
+            );
+            assert!(
+                plan.api_calls
+                    .iter()
+                    .all(|call| CliApiCall::ALL.contains(call)
+                        && !call.control_client_method().is_empty())
+            );
+
+            let mut recorder = RecordingOperationRecorder::default();
+            execute_cli_dispatch_plan(&plan, &mut recorder)
+                .expect("thin-wrapper dispatch plan should execute");
+            assert_eq!(recorder.session_commands, plan.session_commands);
+            assert_eq!(recorder.api_calls, plan.api_calls);
+            assert_eq!(recorder.drivers, plan.delegated_drivers);
+            assert_eq!(recorder.state_references, plan.state_references);
+        }
+
+        assert_eq!(observed.len(), 13);
+        assert!(observed.contains(&CliSubcommand::Run));
+        assert!(observed.contains(&CliSubcommand::Completions));
+    }
+
+    #[test]
+    fn cli_thin_wrapper_emits_only_control_client_methods_and_session_command_kinds() {
+        let cli = Cli::parse_from(["crucible", "--daemon", "127.0.0.1:9000", "run"]);
+        let plan = plan_cli_invocation(&cli);
+        let mut recorder = RecordingOperationRecorder::default();
+
+        execute_cli_dispatch_plan(&plan, &mut recorder)
+            .expect("remote run should emit a valid thin-wrapper plan");
+
+        assert!(recorder.drivers.contains(&CliDelegatedDriver::ControlApi));
+        assert!(
+            recorder
+                .state_references
+                .contains(&CliStateReferenceKind::DaemonConnection)
+        );
+        assert!(
+            recorder
+                .session_commands
+                .iter()
+                .all(|command| SessionCommandKind::ALL.contains(command))
+        );
+        assert_eq!(
+            recorder
+                .api_calls
+                .iter()
+                .map(|call| call.control_client_method())
+                .collect::<Vec<_>>(),
+            [
+                "hello",
+                "create_session",
+                "watch_attach",
+                "send_command",
+                "get_reproduction",
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabilities() {
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let base = plan_cli_invocation(&cli);
+        assert!(base.proves_t_cli_2());
+
+        let mut owns_state = base.clone();
+        owns_state.owns_canonical_run_state = true;
+        assert!(!owns_state.proves_t_cli_2());
+
+        let mut schedules = base.clone();
+        schedules.implements_scheduler = true;
+        assert!(!schedules.proves_t_cli_2());
+
+        let mut materializes = base.clone();
+        materializes.implements_checkpoint_materialization = true;
+        assert!(!materializes.proves_t_cli_2());
+
+        let mut forks = base.clone();
+        forks.implements_fork_logic = true;
+        assert!(!forks.proves_t_cli_2());
+
+        let mut extra_control = base;
+        extra_control
+            .extra_control_capabilities
+            .push("invented-control-capability");
+        assert!(!extra_control.proves_t_cli_2());
+        let mut recorder = RecordingOperationRecorder::default();
+        let error = match execute_cli_dispatch_plan(&extra_control, &mut recorder) {
+            Ok(_) => panic!("invented control capabilities must not dispatch"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert!(recorder.session_commands.is_empty());
+        assert!(recorder.api_calls.is_empty());
     }
 
     #[test]

@@ -926,10 +926,19 @@ branch on the verdict without parsing output:
   focused parser tests assert the closed command set, global flag parsing, and
   unknown-command rejection; command execution and thin session/API dispatch
   remain T-CLI-2 and later CLI tasks.
-- [ ] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
+- [x] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
   into session commands (20 §4) / API calls (21); add a lint/test that the CLI
   holds no canonical run state and adds no control capability absent from 20/21. —
   satisfies [CLI-1], [CLI-2]; spec §1.
+  Completed by `checks.crucible.phase5.cliThinWrapper`: the CLI now builds a
+  `CliThinWrapperPlan` for every closed subcommand before dispatch, executes that
+  plan through an operation recorder, and rejects a plan that owns canonical run
+  state, implements scheduler/checkpoint/fork logic, or advertises any control
+  capability outside `SessionCommandKind::ALL` and the actual `ControlClient`
+  method set. The focused tests cover all subcommand plans, recorder-emitted
+  session/API operations including a remote `--daemon` route, and negative cases
+  for CLI-owned state, scheduler logic, checkpoint materialization, fork logic,
+  and invented control capabilities.
 - [ ] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
