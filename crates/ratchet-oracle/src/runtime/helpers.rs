@@ -12,7 +12,10 @@ use crate::compile::{
 };
 use thiserror::Error;
 
-use super::alloc::{RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint};
+use super::alloc::{
+    RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint,
+    RuntimeAllocationRustCallableBinding, runtime_allocation_rust_callable_bindings,
+};
 use super::barrier::{RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint};
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
@@ -32,6 +35,33 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
 /// Returns the safe runtime-helper binding inventory.
 pub const fn runtime_helper_bindings() -> &'static [RuntimeHelperBinding] {
     RUNTIME_HELPER_BINDINGS
+}
+
+/// Returns helper bindings that currently have callable Rust storage wrappers.
+///
+/// These bindings are process-local Rust callables, not exported C ABI targets.
+/// The inventory is intentionally narrower than [`runtime_helper_bindings`]
+/// until every helper family has a callable wrapper shape.
+pub fn runtime_helper_rust_callable_bindings() -> Vec<RuntimeHelperRustCallableBinding> {
+    runtime_allocation_rust_callable_bindings()
+        .into_iter()
+        .map(RuntimeHelperRustCallableBinding::Allocation)
+        .collect()
+}
+
+/// Builds a helper-family preflight for callable Rust storage wrappers.
+pub fn runtime_helper_rust_callable_preflight() -> RuntimeHelperRustCallablePreflight {
+    let mut callable_bindings = Vec::new();
+    let mut missing_bindings = Vec::new();
+
+    for binding in runtime_helper_bindings().iter().copied() {
+        match binding.rust_callable_binding() {
+            Some(callable) => callable_bindings.push(callable),
+            None => missing_bindings.push(binding),
+        }
+    }
+
+    RuntimeHelperRustCallablePreflight::new(callable_bindings, missing_bindings)
 }
 
 /// One runtime symbol's current safe binding status.
@@ -305,6 +335,79 @@ pub fn runtime_symbol_registration_plan() -> RuntimeSymbolRegistrationPlanResult
         .into_registration_plan()
 }
 
+/// A callable Rust storage-wrapper binding for one runtime helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeHelperRustCallableBinding {
+    /// An allocation helper backed by `runtime::alloc` storage-wrapper dispatch.
+    Allocation(RuntimeAllocationRustCallableBinding),
+}
+
+impl RuntimeHelperRustCallableBinding {
+    /// Returns the stable helper symbol name served by this callable binding.
+    pub const fn symbol_name(self) -> &'static str {
+        match self {
+            Self::Allocation(binding) => binding.symbol_name(),
+        }
+    }
+
+    /// Returns the core helper role served by this callable binding.
+    pub const fn role(self) -> RuntimeHelperRole {
+        match self {
+            Self::Allocation(_) => RuntimeHelperRole::Allocation,
+        }
+    }
+
+    /// Returns the safe helper binding metadata associated with this callable.
+    pub const fn helper_binding(self) -> RuntimeHelperBinding {
+        match self {
+            Self::Allocation(binding) => {
+                RuntimeHelperBinding::Allocation(binding.entrypoint().abi_signature())
+            }
+        }
+    }
+
+    /// Returns the allocation callable when this binding serves allocation.
+    pub const fn allocation_callable(self) -> Option<RuntimeAllocationRustCallableBinding> {
+        match self {
+            Self::Allocation(binding) => Some(binding),
+        }
+    }
+}
+
+/// A deterministic helper-family report for callable Rust storage wrappers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeHelperRustCallablePreflight {
+    callable_bindings: Vec<RuntimeHelperRustCallableBinding>,
+    missing_bindings: Vec<RuntimeHelperBinding>,
+}
+
+impl RuntimeHelperRustCallablePreflight {
+    fn new(
+        callable_bindings: Vec<RuntimeHelperRustCallableBinding>,
+        missing_bindings: Vec<RuntimeHelperBinding>,
+    ) -> Self {
+        Self {
+            callable_bindings,
+            missing_bindings,
+        }
+    }
+
+    /// Returns helper bindings that have callable Rust storage wrappers.
+    pub fn callable_bindings(&self) -> &[RuntimeHelperRustCallableBinding] {
+        &self.callable_bindings
+    }
+
+    /// Returns bound helper metadata that still lacks a callable Rust wrapper.
+    pub fn missing_bindings(&self) -> &[RuntimeHelperBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every currently bound helper has a callable Rust wrapper.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+}
+
 /// The native failure behavior promised by a runtime helper binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeHelperFailureConvention {
@@ -348,6 +451,16 @@ impl RuntimeHelperBinding {
         }
     }
 
+    /// Returns the callable Rust storage-wrapper binding for this helper, if any.
+    pub fn rust_callable_binding(self) -> Option<RuntimeHelperRustCallableBinding> {
+        match self {
+            Self::Allocation(signature) => Some(RuntimeHelperRustCallableBinding::Allocation(
+                signature.entrypoint().rust_callable_binding(),
+            )),
+            Self::WriteBarrier(_) => None,
+        }
+    }
+
     /// Returns the binding for a frozen runtime helper symbol name.
     pub fn from_symbol_name(symbol_name: &str) -> Option<Self> {
         RuntimeAllocationAbiSignature::from_symbol_name(symbol_name)
@@ -382,7 +495,9 @@ mod tests {
     use crate::compile::{RuntimeHelperRole, runtime_helper_symbols, runtime_symbol_manifest};
 
     use super::*;
-    use crate::runtime::alloc::runtime_allocation_abi_signatures;
+    use crate::runtime::alloc::{
+        runtime_allocation_abi_signatures, runtime_allocation_rust_callable_bindings,
+    };
     use crate::runtime::barrier::runtime_write_barrier_abi_signatures;
 
     #[test]
@@ -475,6 +590,60 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn runtime_helper_rust_callable_bindings_preserve_allocation_inventory() {
+        let helper_callables = runtime_helper_rust_callable_bindings();
+        let allocation_callables = runtime_allocation_rust_callable_bindings()
+            .into_iter()
+            .map(RuntimeHelperRustCallableBinding::Allocation)
+            .collect::<Vec<_>>();
+
+        assert_eq!(helper_callables, allocation_callables);
+        assert_eq!(
+            helper_callables
+                .iter()
+                .copied()
+                .map(RuntimeHelperRustCallableBinding::helper_binding)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_helper_bindings()
+                .iter()
+                .copied()
+                .filter(|binding| binding.role() == RuntimeHelperRole::Allocation)
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+
+        for callable in helper_callables {
+            assert_eq!(callable.role(), RuntimeHelperRole::Allocation);
+            assert_eq!(
+                RuntimeHelperBinding::from_symbol_name(callable.symbol_name()),
+                Some(callable.helper_binding())
+            );
+            assert_eq!(
+                callable.helper_binding().rust_callable_binding(),
+                Some(callable)
+            );
+            assert!(callable.allocation_callable().is_some());
+        }
+    }
+
+    #[test]
+    fn runtime_helper_rust_callable_preflight_reports_missing_bound_helpers() {
+        let preflight = runtime_helper_rust_callable_preflight();
+        let missing_write_barrier = RuntimeHelperBinding::WriteBarrier(
+            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
+        );
+
+        assert!(!preflight.is_complete());
+        assert_eq!(
+            preflight.callable_bindings(),
+            runtime_helper_rust_callable_bindings().as_slice()
+        );
+        assert_eq!(preflight.missing_bindings(), [missing_write_barrier]);
+        assert_eq!(missing_write_barrier.rust_callable_binding(), None);
     }
 
     #[test]

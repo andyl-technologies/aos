@@ -5329,6 +5329,19 @@ and helps the oracle directly.
       registration manifest only; it does not export `unsafe extern "C"`
       functions, implement trap transfer, register Cranelift symbols, or add
       bindings for forcing/call/attr/error helpers.
+- [x] Current runtime-helper Rust-callable preflight precursor:
+      `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
+      allocation Rust-callable storage-wrapper addresses into the helper-family
+      layer, while `runtime_helper_rust_callable_preflight()` reports bound
+      helper families that still lack such a callable. Today the callable
+      inventory is exactly the allocation helper set, and the preflight reports
+      `aos_gc_write_barrier` as the only currently bound helper still missing a
+      Rust-callable wrapper address. Tests prove allocation inventory parity,
+      safe-helper metadata round trips, exact callable coverage, and the
+      write-barrier missing report. This is still helper-family Rust metadata
+      only: no exported C ABI symbols, Cranelift registration, callable
+      write-barrier wrapper, unbound forcing/call/attr/error helpers, builtin
+      addresses, or complete runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared
