@@ -342,6 +342,16 @@ long-held locks.
   rejection, destroy, idempotent destroy, and per-message RPC ABI snapshot
   coverage, and also runs the `crucible-qemu` `QemuNode`
   `SimulationBackend` contract test.
+  `T-API-14` is green through `checks.crucible.phase5.apiNondeterminism`,
+  which compares quiet/noisy in-process, quiet/noisy HTTP/2 RPC, and
+  server-observed read-before-mutate/mutate-before-read RPC `ControlClient`
+  projections for the same boundary-recorded scheduler controls, proves
+  `Hello`/`List*`/`Watch`/
+  `GetReproduction` and query-class traffic leave state, event-log cursor,
+  causal/observational event counts, and reproduction context unchanged, compares
+  a non-empty replayed causal event payload projection under quiet/noisy
+  streaming observer load, and forbids wall-clock reads in the production API
+  paths.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

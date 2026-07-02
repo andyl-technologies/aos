@@ -1116,6 +1116,72 @@ async fn reference_client_conformance_drives_full_lifecycle_across_transports_wi
     assert_eq!(rpc.transport, ControlTransportKind::Http2Rpc);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state()
+ {
+    let quiet_in_process = InProcessLifecycleClient::new(lifecycle_control_plane());
+    let noisy_in_process = InProcessLifecycleClient::new(lifecycle_control_plane());
+    let quiet_rpc_server = spawn_http2_lifecycle_server().await;
+    let quiet_rpc = RpcControlClient::new(RpcEndpoint::http2(quiet_rpc_server.endpoint()))
+        .unwrap_or_else(|error| panic!("quiet nondeterminism RPC client should build: {error}"));
+    let rpc_server = spawn_http2_lifecycle_server().await;
+    let noisy_rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
+        .unwrap_or_else(|error| panic!("nondeterminism RPC client should build: {error}"));
+    let arrival_rpc_server = spawn_http2_lifecycle_server().await;
+    let arrival_rpc = RpcControlClient::new(RpcEndpoint::http2(arrival_rpc_server.endpoint()))
+        .unwrap_or_else(|error| {
+            panic!("arrival-order nondeterminism RPC client should build: {error}")
+        });
+    let baseline =
+        drive_api_nondeterminism_projection(&quiet_in_process, ApiDeterminismTraffic::Quiet).await;
+    let noisy_in_process =
+        drive_api_nondeterminism_projection(&noisy_in_process, ApiDeterminismTraffic::Noisy).await;
+    let quiet_rpc =
+        drive_api_nondeterminism_projection(&quiet_rpc, ApiDeterminismTraffic::Quiet).await;
+    let noisy_rpc =
+        drive_api_nondeterminism_projection(&noisy_rpc, ApiDeterminismTraffic::Noisy).await;
+    let arrival_rpc =
+        drive_rpc_arrival_permutation_projection(&arrival_rpc, &arrival_rpc_server).await;
+    let quiet_causal =
+        drive_streaming_causal_subsequence_projection(ApiDeterminismTraffic::Quiet).await;
+    let noisy_causal =
+        drive_streaming_causal_subsequence_projection(ApiDeterminismTraffic::Noisy).await;
+
+    assert_eq!(baseline.transport, ControlTransportKind::InProcess);
+    assert_eq!(noisy_in_process.transport, ControlTransportKind::InProcess);
+    assert_eq!(quiet_rpc.transport, ControlTransportKind::Http2Rpc);
+    assert_eq!(noisy_rpc.transport, ControlTransportKind::Http2Rpc);
+    assert_eq!(arrival_rpc.transport, ControlTransportKind::Http2Rpc);
+    assert_eq!(
+        baseline.normalized(),
+        noisy_in_process.normalized(),
+        "in-process read-only traffic, observer load, and scheduling gaps must not perturb State",
+    );
+    assert_eq!(
+        baseline.normalized(),
+        quiet_rpc.normalized(),
+        "quiet RPC transport must match the quiet in-process projection",
+    );
+    assert_eq!(
+        baseline.normalized(),
+        noisy_rpc.normalized(),
+        "RPC transport and independent observer/request arrival order must not perturb State",
+    );
+    assert_eq!(
+        baseline.normalized(),
+        arrival_rpc.normalized(),
+        "server-observed RPC read/mutate order permutations must not perturb the boundary command projection",
+    );
+    assert_eq!(
+        quiet_causal, noisy_causal,
+        "read-only traffic and undrained observers must not perturb the causal event projection",
+    );
+    assert!(
+        !quiet_causal.causal_events.is_empty(),
+        "causal projection must be non-vacuous"
+    );
+}
+
 #[test]
 fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
     let (in_process, _actor) = in_process_client_fixture();
@@ -1540,6 +1606,687 @@ fn assert_qemu_node_implements_simulation_backend_contract() {
     assert_backend::<crucible_qemu::QemuNode>();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApiDeterminismTraffic {
+    Quiet,
+    Noisy,
+}
+
+impl ApiDeterminismTraffic {
+    const fn is_noisy(self) -> bool {
+        matches!(self, Self::Noisy)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiDeterminismProjection {
+    transport: ControlTransportKind,
+    final_state: LiveStateKind,
+    final_event_count: u64,
+    causal_event_count: u64,
+    observational_event_count: u64,
+    last_sequence: Option<u64>,
+    reproduction: Vec<ReproductionCommandRecord>,
+    mutating_results: Vec<ApiMutatingCommandResult>,
+}
+
+impl ApiDeterminismProjection {
+    fn normalized(&self) -> ApiDeterminismNormalizedProjection {
+        ApiDeterminismNormalizedProjection {
+            final_state: self.final_state,
+            final_event_count: self.final_event_count,
+            causal_event_count: self.causal_event_count,
+            observational_event_count: self.observational_event_count,
+            last_sequence: self.last_sequence,
+            reproduction: self.reproduction.clone(),
+            mutating_results: self.mutating_results.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiDeterminismNormalizedProjection {
+    final_state: LiveStateKind,
+    final_event_count: u64,
+    causal_event_count: u64,
+    observational_event_count: u64,
+    last_sequence: Option<u64>,
+    reproduction: Vec<ReproductionCommandRecord>,
+    mutating_results: Vec<ApiMutatingCommandResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiMutatingCommandResult {
+    command_id: u64,
+    command: SessionCommandKind,
+    status: CommandResultStatus,
+    state_update: Option<LiveStateKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiCausalSubsequenceProjection {
+    final_state: LiveStateKind,
+    event_count: u64,
+    causal_event_count: u64,
+    observational_event_count: u64,
+    last_sequence: Option<u64>,
+    causal_events: Vec<ApiCausalEventProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiCausalEventProjection {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    kind: String,
+    source: String,
+}
+
+async fn drive_api_nondeterminism_projection<C>(
+    client: &C,
+    traffic: ApiDeterminismTraffic,
+) -> ApiDeterminismProjection
+where
+    C: ControlClient,
+{
+    let hello = client
+        .hello(HelloRequest::new(
+            "api-control-client-test",
+            RPC_PROTOCOL_VERSION,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("nondeterminism Hello should succeed: {error}"));
+    assert_eq!(hello.version, RPC_PROTOCOL_VERSION);
+
+    let scenarios = client
+        .list_scenarios()
+        .await
+        .unwrap_or_else(|error| panic!("nondeterminism ListScenarios should succeed: {error}"));
+    let scenario = scenarios
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "api-control-client-scenario")
+        .unwrap_or_else(|| panic!("nondeterminism scenario should be registered"));
+    let created = client
+        .create_session(CreateSessionRequest::scenario_ref(
+            &scenario.name,
+            Seed::from_u64(30_014),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("nondeterminism CreateSession should succeed: {error}"));
+    assert_eq!(created.state, LiveStateKind::Paused);
+    let session = created.session;
+
+    let mut observer_controls = Vec::new();
+    let mut observer_watches = Vec::new();
+    if traffic.is_noisy() {
+        attach_observer_load(
+            client,
+            session,
+            &mut observer_controls,
+            &mut observer_watches,
+        )
+        .await;
+        assert_read_only_traffic_is_schedule_neutral(client, session, "before mutating controls")
+            .await;
+        simulate_wall_clock_gap_without_scheduler_input().await;
+    }
+
+    let before = read_api_determinism_observation(client, session, "before commands").await;
+    assert_eq!(before.final_state, LiveStateKind::Paused);
+    assert!(before.reproduction.is_empty());
+
+    let mut mutating_results = Vec::new();
+    for (command_id, command_kind) in [
+        (10, SessionCommandKind::InjectFault),
+        (11, SessionCommandKind::HealFault),
+    ] {
+        if traffic.is_noisy() {
+            assert_read_only_traffic_is_schedule_neutral(
+                client,
+                session,
+                "between mutating controls",
+            )
+            .await;
+            simulate_wall_clock_gap_without_scheduler_input().await;
+        }
+
+        let response = client
+            .send_command(
+                SendRequest::new(session, command_id, representative_command(command_kind))
+                    .with_expected_epoch(session.epoch),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("nondeterminism Send {command_kind:?} should succeed: {error}")
+            });
+        assert_eq!(response.result.command_id, command_id);
+        assert_eq!(response.result.command_kind, command_kind);
+        assert_eq!(response.result.status, CommandResultStatus::Accepted);
+        mutating_results.push(ApiMutatingCommandResult {
+            command_id,
+            command: command_kind,
+            status: response.result.status,
+            state_update: response.state_update.map(|update| update.state),
+        });
+    }
+
+    assert_read_only_traffic_is_schedule_neutral(client, session, "after mutating controls").await;
+    let final_observation =
+        read_api_determinism_observation(client, session, "after commands").await;
+    assert_eq!(final_observation.final_state, LiveStateKind::Paused);
+    assert_eq!(
+        final_observation.reproduction.len(),
+        mutating_results.len(),
+        "only boundary-mutating commands should enter reproduction"
+    );
+    for excluded in [
+        SessionCommandKind::Query,
+        SessionCommandKind::Start,
+        SessionCommandKind::Continue,
+    ] {
+        assert!(
+            !final_observation
+                .reproduction
+                .iter()
+                .any(|record| record.payload.command == excluded),
+            "read-only/non-boundary {excluded:?} must not enter reproduction"
+        );
+    }
+
+    drop(observer_controls);
+    drop(observer_watches);
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| panic!("nondeterminism DestroySession should succeed: {error}"));
+    assert_eq!(destroyed.session, session);
+    assert!(destroyed.stopped || destroyed.already_absent);
+
+    ApiDeterminismProjection {
+        transport: client.transport(),
+        final_state: final_observation.final_state,
+        final_event_count: final_observation.final_event_count,
+        causal_event_count: final_observation.causal_event_count,
+        observational_event_count: final_observation.observational_event_count,
+        last_sequence: final_observation.last_sequence,
+        reproduction: final_observation.reproduction,
+        mutating_results,
+    }
+}
+
+async fn drive_streaming_causal_subsequence_projection(
+    traffic: ApiDeterminismTraffic,
+) -> ApiCausalSubsequenceProjection {
+    let (streaming, actor, session) =
+        streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 30_115);
+    let event_log_hub = actor.event_log();
+    let actor_task = tokio::spawn(async move { actor.run().await });
+
+    let mut observer_controls = Vec::new();
+    let mut observer_watches = Vec::new();
+    if traffic.is_noisy() {
+        for index in 0..3 {
+            observer_watches.push(
+                streaming
+                    .watch(
+                        AttachRequest::new(session)
+                            .with_cursor(EventLogCursor::new(0))
+                            .with_client_name(format!("streaming-causal-watch-{index}")),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("streaming causal Watch observer should attach: {error}")
+                    }),
+            );
+        }
+        for index in 0..2 {
+            observer_controls.push(
+                streaming
+                    .control(
+                        AttachRequest::new(session)
+                            .with_cursor(EventLogCursor::new(0))
+                            .with_client_name(format!("streaming-causal-control-{index}")),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("streaming causal Control observer should attach: {error}")
+                    }),
+            );
+        }
+        let query = streaming
+            .send(SendRequest::new(
+                session,
+                7_900,
+                SessionCommand::query_snapshot(),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("streaming causal query should succeed: {error}"));
+        assert_eq!(query.result.command_kind, SessionCommandKind::Query);
+        assert_eq!(query.result.status, CommandResultStatus::Accepted);
+    }
+
+    let entries = event_burst(0, 7_000, 8);
+    append_event_log_entries_for_test(&event_log_hub, &entries);
+    let projection = capture_streaming_causal_projection(&streaming, session).await;
+
+    drop(observer_controls);
+    drop(observer_watches);
+    stop_streaming_actor(streaming, session, 7_999, actor_task).await;
+    projection
+}
+
+async fn capture_streaming_causal_projection(
+    streaming: &InProcessStreamingSession,
+    session: SessionRef,
+) -> ApiCausalSubsequenceProjection {
+    let mut replay = streaming
+        .watch(
+            AttachRequest::new(session)
+                .with_cursor(EventLogCursor::new(0))
+                .with_client_name("streaming-causal-projection"),
+        )
+        .unwrap_or_else(|error| panic!("streaming causal replay should attach: {error}"));
+    let attached = replay.attached().clone();
+    let snapshot = attached
+        .snapshot
+        .as_ref()
+        .unwrap_or_else(|| panic!("streaming causal replay should include a snapshot"));
+    assert!(
+        snapshot.causal_event_count > 0,
+        "streaming causal projection should be non-vacuous"
+    );
+
+    let mut causal_events = Vec::new();
+    for _ in 0..snapshot.event_count {
+        let frame = tokio::time::timeout(Duration::from_millis(100), replay.recv_event())
+            .await
+            .unwrap_or_else(|_| panic!("streaming causal replay event should arrive"))
+            .unwrap_or_else(|error| panic!("streaming causal replay event should decode: {error}"))
+            .unwrap_or_else(|| panic!("streaming causal replay stream should stay open"));
+        if !frame.event.observational {
+            causal_events.push(ApiCausalEventProjection {
+                sequence: frame.event.sequence,
+                virtual_time_ticks: frame.event.at.virtual_time_ticks,
+                kind: frame.event.payload.kind,
+                source: format!("{:?}", frame.event.source),
+            });
+        }
+    }
+    assert_eq!(
+        u64::try_from(causal_events.len()).unwrap_or(u64::MAX),
+        snapshot.causal_event_count,
+    );
+    ApiCausalSubsequenceProjection {
+        final_state: attached.state,
+        event_count: snapshot.event_count,
+        causal_event_count: snapshot.causal_event_count,
+        observational_event_count: snapshot.observational_event_count,
+        last_sequence: snapshot.last_sequence,
+        causal_events,
+    }
+}
+
+async fn drive_rpc_arrival_permutation_projection(
+    client: &RpcControlClient,
+    server: &Http2LifecycleServer,
+) -> ApiDeterminismProjection {
+    let hello = client
+        .hello(HelloRequest::new(
+            "api-control-client-test",
+            RPC_PROTOCOL_VERSION,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("arrival-order Hello should succeed: {error}"));
+    assert_eq!(hello.version, RPC_PROTOCOL_VERSION);
+    let scenarios = client
+        .list_scenarios()
+        .await
+        .unwrap_or_else(|error| panic!("arrival-order ListScenarios should succeed: {error}"));
+    let scenario = scenarios
+        .scenarios
+        .first()
+        .unwrap_or_else(|| panic!("arrival-order scenario should be registered"));
+    let created = client
+        .create_session(CreateSessionRequest::scenario_ref(
+            &scenario.name,
+            Seed::from_u64(30_014),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("arrival-order CreateSession should succeed: {error}"));
+    let session = created.session;
+
+    let mut observer_controls = Vec::new();
+    let mut observer_watches = Vec::new();
+    attach_observer_load(
+        client,
+        session,
+        &mut observer_controls,
+        &mut observer_watches,
+    )
+    .await;
+
+    let _ = server.take_arrivals().await;
+    let read_before = client
+        .clone()
+        .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("arrival-order read-before-mutate GetReproduction should succeed: {error}")
+        });
+    assert!(read_before.commands.is_empty());
+    let inject = client
+        .clone()
+        .send_command(
+            SendRequest::new(
+                session,
+                10,
+                representative_command(SessionCommandKind::InjectFault),
+            )
+            .with_expected_epoch(session.epoch),
+        )
+        .await;
+    assert_eq!(
+        inject
+            .unwrap_or_else(|error| panic!("arrival-order InjectFault should succeed: {error}"))
+            .result
+            .status,
+        CommandResultStatus::Accepted,
+    );
+    assert_eq!(
+        server.take_arrivals().await,
+        vec!["get-reproduction", "send"],
+        "RPC server should observe read-before-mutate order",
+    );
+
+    let hello_client = client.clone();
+    let list_client = client.clone();
+    let (hello, list_scenarios) = tokio::join!(
+        hello_client.hello(HelloRequest::new(
+            "api-control-client-test",
+            RPC_PROTOCOL_VERSION,
+        )),
+        list_client.list_scenarios(),
+    );
+    assert_eq!(
+        hello
+            .unwrap_or_else(|error| panic!(
+                "arrival-order concurrent Hello should succeed: {error}"
+            ))
+            .version,
+        RPC_PROTOCOL_VERSION,
+    );
+    assert!(
+        !list_scenarios
+            .unwrap_or_else(|error| {
+                panic!("arrival-order concurrent ListScenarios should succeed: {error}")
+            })
+            .scenarios
+            .is_empty()
+    );
+    let _ = server.take_arrivals().await;
+
+    let heal = client
+        .clone()
+        .send_command(
+            SendRequest::new(
+                session,
+                11,
+                representative_command(SessionCommandKind::HealFault),
+            )
+            .with_expected_epoch(session.epoch),
+        )
+        .await;
+    let read_after = client
+        .clone()
+        .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("arrival-order mutate-before-read GetReproduction should succeed: {error}")
+        });
+    assert_eq!(read_after.commands.len(), 2);
+    assert_eq!(
+        server.take_arrivals().await,
+        vec!["send", "get-reproduction"],
+        "RPC server should observe mutate-before-read order",
+    );
+
+    let list_sessions_client = client.clone();
+    let watch_client = client.clone();
+    let query_client = client.clone();
+    let (list_sessions, watch, query) = tokio::join!(
+        list_sessions_client.list_sessions(),
+        watch_client.watch_attach(
+            AttachRequest::new(session)
+                .with_expected_epoch(session.epoch)
+                .with_client_name("arrival-order-watch"),
+        ),
+        query_client.send_command(
+            SendRequest::new(session, 9_100, SessionCommand::query_snapshot())
+                .with_expected_epoch(session.epoch),
+        ),
+    );
+    assert_eq!(
+        heal.unwrap_or_else(|error| panic!("arrival-order HealFault should succeed: {error}"))
+            .result
+            .status,
+        CommandResultStatus::Accepted,
+    );
+    assert!(
+        list_sessions
+            .unwrap_or_else(|error| {
+                panic!("arrival-order concurrent ListSessions should succeed: {error}")
+            })
+            .sessions
+            .iter()
+            .any(|summary| summary.session == session)
+    );
+    assert_eq!(
+        watch
+            .unwrap_or_else(|error| {
+                panic!("arrival-order concurrent Watch should attach: {error}")
+            })
+            .attached()
+            .session,
+        session,
+    );
+    assert_eq!(
+        query
+            .unwrap_or_else(|error| panic!("arrival-order query should succeed: {error}"))
+            .result
+            .command_kind,
+        SessionCommandKind::Query,
+    );
+
+    let final_observation =
+        read_api_determinism_observation(client, session, "arrival-order final").await;
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| panic!("arrival-order DestroySession should succeed: {error}"));
+    assert_eq!(destroyed.session, session);
+
+    ApiDeterminismProjection {
+        transport: client.transport(),
+        final_state: final_observation.final_state,
+        final_event_count: final_observation.final_event_count,
+        causal_event_count: final_observation.causal_event_count,
+        observational_event_count: final_observation.observational_event_count,
+        last_sequence: final_observation.last_sequence,
+        reproduction: final_observation.reproduction,
+        mutating_results: vec![
+            ApiMutatingCommandResult {
+                command_id: 10,
+                command: SessionCommandKind::InjectFault,
+                status: CommandResultStatus::Accepted,
+                state_update: None,
+            },
+            ApiMutatingCommandResult {
+                command_id: 11,
+                command: SessionCommandKind::HealFault,
+                status: CommandResultStatus::Accepted,
+                state_update: None,
+            },
+        ],
+    }
+}
+
+async fn attach_observer_load<C>(
+    client: &C,
+    session: SessionRef,
+    observer_controls: &mut Vec<ClientControlStream>,
+    observer_watches: &mut Vec<ClientWatchStream>,
+) where
+    C: ControlClient,
+{
+    for index in 0..3 {
+        observer_watches.push(
+            client
+                .watch_attach(
+                    AttachRequest::new(session)
+                        .with_expected_epoch(session.epoch)
+                        .with_cursor(EventLogCursor::new(0))
+                        .with_client_name(format!("nondeterminism-watch-{index}")),
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("nondeterminism Watch observer should attach: {error}")
+                }),
+        );
+    }
+    for index in 0..2 {
+        observer_controls.push(
+            client
+                .control_attach(
+                    AttachRequest::new(session)
+                        .with_expected_epoch(session.epoch)
+                        .with_cursor(EventLogCursor::new(0))
+                        .with_client_name(format!("nondeterminism-control-{index}")),
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("nondeterminism Control observer should attach: {error}")
+                }),
+        );
+    }
+}
+
+async fn assert_read_only_traffic_is_schedule_neutral<C>(
+    client: &C,
+    session: SessionRef,
+    phase: &'static str,
+) where
+    C: ControlClient,
+{
+    let before = read_api_determinism_observation(client, session, phase).await;
+    let hello = client
+        .hello(HelloRequest::new(
+            "api-control-client-test",
+            RPC_PROTOCOL_VERSION,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: Hello should succeed: {error}"));
+    assert_eq!(hello.version, RPC_PROTOCOL_VERSION);
+    let scenarios = client
+        .list_scenarios()
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: ListScenarios should succeed: {error}"));
+    assert!(
+        scenarios
+            .scenarios
+            .iter()
+            .any(|scenario| scenario.name == "api-control-client-scenario"),
+        "{phase}: ListScenarios should observe the registered scenario"
+    );
+    let sessions = client
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: ListSessions should succeed: {error}"));
+    assert!(
+        sessions
+            .sessions
+            .iter()
+            .any(|summary| summary.session == session),
+        "{phase}: ListSessions should observe the live session"
+    );
+    let query = client
+        .send_command(
+            SendRequest::new(
+                session,
+                9_000 + before.reproduction.len() as u64,
+                SessionCommand::query_snapshot(),
+            )
+            .with_expected_epoch(session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: query-class Send should succeed: {error}"));
+    assert_eq!(query.result.command_kind, SessionCommandKind::Query);
+    assert_eq!(query.result.status, CommandResultStatus::Accepted);
+    assert!(query.state_update.is_none());
+
+    let after = read_api_determinism_observation(client, session, phase).await;
+    assert_eq!(
+        before, after,
+        "{phase}: read-only API traffic must not change state, event-log cursor, or reproduction"
+    );
+}
+
+async fn read_api_determinism_observation<C>(
+    client: &C,
+    session: SessionRef,
+    phase: &'static str,
+) -> ApiDeterminismProjection
+where
+    C: ControlClient,
+{
+    let sessions = client
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: ListSessions should succeed: {error}"));
+    let summary = sessions
+        .sessions
+        .iter()
+        .find(|summary| summary.session == session)
+        .unwrap_or_else(|| panic!("{phase}: live session should be listed"));
+    let reproduction = client
+        .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: GetReproduction should succeed: {error}"));
+    let attached = client
+        .watch_attach(
+            AttachRequest::new(session)
+                .with_expected_epoch(session.epoch)
+                .with_cursor(EventLogCursor::new(u64::MAX))
+                .with_client_name(format!("nondeterminism-snapshot-{phase}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{phase}: Watch snapshot should attach: {error}"))
+        .attached()
+        .clone();
+    let snapshot = attached
+        .snapshot
+        .as_ref()
+        .unwrap_or_else(|| panic!("{phase}: attach snapshot should be present"));
+    assert_eq!(attached.session, session);
+    assert_eq!(attached.event_log_len, summary.event_log_len);
+    assert_eq!(snapshot.event_count, summary.event_log_len);
+    assert_eq!(snapshot.reproduction, reproduction.commands);
+
+    ApiDeterminismProjection {
+        transport: client.transport(),
+        final_state: summary.state,
+        final_event_count: snapshot.event_count,
+        causal_event_count: snapshot.causal_event_count,
+        observational_event_count: snapshot.observational_event_count,
+        last_sequence: snapshot.last_sequence,
+        reproduction: reproduction.commands,
+        mutating_results: Vec::new(),
+    }
+}
+
+async fn simulate_wall_clock_gap_without_scheduler_input() {
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+}
+
 fn assert_command_rejection_taxonomy_is_closed() {
     let mappings = [
         (
@@ -1721,6 +2468,7 @@ struct Http2LifecycleServer {
     endpoint: String,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    arrival_log: std::sync::Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl Http2LifecycleServer {
@@ -1753,6 +2501,13 @@ impl Http2LifecycleServer {
                 last.sequence().saturating_add(1),
             );
         }
+    }
+
+    async fn take_arrivals(&self) -> Vec<&'static str> {
+        let mut arrivals = self.arrival_log.lock().await;
+        let snapshot = arrivals.clone();
+        arrivals.clear();
+        snapshot
     }
 }
 
@@ -1881,6 +2636,7 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
         .unwrap_or_else(|error| panic!("HTTP/2 test listener should report address: {error}"));
     let saw_http2 = Arc::new(AtomicBool::new(false));
     let control_plane = Arc::new(Mutex::new(lifecycle_control_plane()));
+    let arrival_log = Arc::new(Mutex::new(Vec::new()));
     let saw_http2_for_hello = Arc::clone(&saw_http2);
     let saw_http2_for_list_scenarios = Arc::clone(&saw_http2);
     let saw_http2_for_create_session = Arc::clone(&saw_http2);
@@ -1901,13 +2657,27 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     let control_plane_for_control_send = Arc::clone(&control_plane);
     let control_plane_for_watch_attach = Arc::clone(&control_plane);
     let control_plane_for_send_command = Arc::clone(&control_plane);
+    let arrival_log_for_hello = Arc::clone(&arrival_log);
+    let arrival_log_for_list_scenarios = Arc::clone(&arrival_log);
+    let arrival_log_for_create_session = Arc::clone(&arrival_log);
+    let arrival_log_for_list_sessions = Arc::clone(&arrival_log);
+    let arrival_log_for_destroy_session = Arc::clone(&arrival_log);
+    let arrival_log_for_get_reproduction = Arc::clone(&arrival_log);
+    let arrival_log_for_control_attach = Arc::clone(&arrival_log);
+    let arrival_log_for_control_send = Arc::clone(&arrival_log);
+    let arrival_log_for_watch_attach = Arc::clone(&arrival_log);
+    let arrival_log_for_send_command = Arc::clone(&arrival_log);
     let app = Router::new()
         .route(
             "/crucible.rpc/hello",
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_hello);
                 let saw_http2 = Arc::clone(&saw_http2_for_hello);
-                async move { handle_rpc_hello(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_hello);
+                async move {
+                    record_rpc_arrival(arrival_log, "hello").await;
+                    handle_rpc_hello(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1915,7 +2685,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_list_scenarios);
                 let saw_http2 = Arc::clone(&saw_http2_for_list_scenarios);
-                async move { handle_list_scenarios(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_list_scenarios);
+                async move {
+                    record_rpc_arrival(arrival_log, "list-scenarios").await;
+                    handle_list_scenarios(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1923,7 +2697,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_create_session);
                 let saw_http2 = Arc::clone(&saw_http2_for_create_session);
-                async move { handle_create_session(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_create_session);
+                async move {
+                    record_rpc_arrival(arrival_log, "create-session").await;
+                    handle_create_session(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1931,7 +2709,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_list_sessions);
                 let saw_http2 = Arc::clone(&saw_http2_for_list_sessions);
-                async move { handle_list_sessions(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_list_sessions);
+                async move {
+                    record_rpc_arrival(arrival_log, "list-sessions").await;
+                    handle_list_sessions(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1939,7 +2721,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_destroy_session);
                 let saw_http2 = Arc::clone(&saw_http2_for_destroy_session);
-                async move { handle_destroy_session(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_destroy_session);
+                async move {
+                    record_rpc_arrival(arrival_log, "destroy-session").await;
+                    handle_destroy_session(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1947,7 +2733,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_get_reproduction);
                 let saw_http2 = Arc::clone(&saw_http2_for_get_reproduction);
-                async move { handle_get_reproduction(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_get_reproduction);
+                async move {
+                    record_rpc_arrival(arrival_log, "get-reproduction").await;
+                    handle_get_reproduction(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1955,7 +2745,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_control_attach);
                 let saw_http2 = Arc::clone(&saw_http2_for_control_attach);
-                async move { handle_control_attach(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_control_attach);
+                async move {
+                    record_rpc_arrival(arrival_log, "control-attach").await;
+                    handle_control_attach(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1963,7 +2757,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_control_send);
                 let saw_http2 = Arc::clone(&saw_http2_for_control_send);
-                async move { handle_control_send(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_control_send);
+                async move {
+                    record_rpc_arrival(arrival_log, "control-send").await;
+                    handle_control_send(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1971,7 +2769,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_watch_attach);
                 let saw_http2 = Arc::clone(&saw_http2_for_watch_attach);
-                async move { handle_watch_attach(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_watch_attach);
+                async move {
+                    record_rpc_arrival(arrival_log, "watch").await;
+                    handle_watch_attach(request, control_plane, saw_http2).await
+                }
             }),
         )
         .route(
@@ -1979,7 +2781,11 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
             post(move |request: Request<Body>| {
                 let control_plane = Arc::clone(&control_plane_for_send_command);
                 let saw_http2 = Arc::clone(&saw_http2_for_send_command);
-                async move { handle_send_command(request, control_plane, saw_http2).await }
+                let arrival_log = Arc::clone(&arrival_log_for_send_command);
+                async move {
+                    record_rpc_arrival(arrival_log, "send").await;
+                    handle_send_command(request, control_plane, saw_http2).await
+                }
             }),
         );
     tokio::spawn(async move {
@@ -1992,7 +2798,15 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
         endpoint: format!("http://{addr}"),
         saw_http2,
         control_plane,
+        arrival_log,
     }
+}
+
+async fn record_rpc_arrival(
+    arrival_log: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    label: &'static str,
+) {
+    arrival_log.lock().await.push(label);
 }
 
 async fn handle_rpc_hello(
