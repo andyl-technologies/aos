@@ -1058,6 +1058,21 @@ harness, never cut for scope.
       Cranelift on successful definition, but it still does not register runtime
       symbol addresses, call `JITBuilder::symbol`, finalize definitions, expose a
       code pointer, call native code, lower generic IR, or emit runtime calls.
+- [x] Current registered-symbol artifact-definition precursor:
+      `ratchet-jit::cranelift::jit_cranelift_registered_artifact_definition_preflight_with_candidates()`
+      composes explicit native-address candidates with the artifact definition
+      path. It calls `JITBuilder::symbol` for declaration-matched candidates,
+      declares runtime imports in the same module, rewrites artifact runtime
+      helper imports such as `aos_env_get` from AOS user-external names to
+      Cranelift module-local `FuncId` names, and defines the artifact body. Tests
+      pin env-slot artifact definition with a synthetic `aos_env_get` candidate,
+      missing-candidate rejection for artifact imports, constant artifact
+      definition while unrelated registration gaps remain, exported linkage,
+      registered/imported symbol visibility, representative registration gaps,
+      and encapsulated-module ownership. This is still definition-only: it does
+      not use real exported wrappers, dereference or call registered addresses,
+      finalize executable memory, expose a code pointer, install tier metadata,
+      or call native code.
 - [x] Current Cranelift artifact-finalization precursor:
       `ratchet-jit::cranelift::jit_cranelift_artifact_finalization_preflight_for_artifact()`
       takes one verified CLIF artifact through the same import declaration and

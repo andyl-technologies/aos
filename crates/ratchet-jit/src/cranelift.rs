@@ -13,6 +13,7 @@
 //! pointers or calls native code.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
     ptr::{self, NonNull},
@@ -20,6 +21,7 @@ use std::{
 
 use cranelift_codegen::{
     CodegenError, Context,
+    ir::{ExternalName, Function, UserExternalName},
     settings::{self, Configurable, SetError},
 };
 use cranelift_jit::{JITBuilder, JITModule};
@@ -30,8 +32,9 @@ use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{JitLowerError, lower_constant_ir_thunk_body_artifact},
     module::{
-        JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
-        JitModuleReadinessPreflight, jit_module_readiness_preflight_for_artifact,
+        JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleReadinessError,
+        JitModuleReadinessPlan, JitModuleReadinessPreflight,
+        jit_module_readiness_preflight_for_artifact,
     },
     symbols::{
         JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitRuntimeSymbolDeclaration,
@@ -326,6 +329,107 @@ impl JitCraneliftSymbolRegistrationPreflight {
     /// Returns the registration gap for `symbol_name`, when present.
     pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolRegistrationGap> {
         self.symbol_gaps
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    /// Returns true because this preflight owns an encapsulated `JITModule`.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        let _module = &self.module;
+        true
+    }
+}
+
+/// A real `JITModule` with runtime symbols registered and one artifact defined.
+pub struct JitCraneliftRegisteredArtifactDefinitionPreflight {
+    artifact: JitModuleArtifactMetadata,
+    defined_function: JitCraneliftDefinedFunction,
+    imported_symbols: Vec<JitCraneliftImportedSymbol>,
+    registered_symbols: Vec<JitCraneliftRegisteredSymbol>,
+    artifact_runtime_imports: Vec<JitModuleArtifactRuntimeImport>,
+    registration_gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+    module: JITModule,
+}
+
+impl JitCraneliftRegisteredArtifactDefinitionPreflight {
+    fn new(
+        artifact: JitModuleArtifactMetadata,
+        defined_function: JitCraneliftDefinedFunction,
+        imported_symbols: Vec<JitCraneliftImportedSymbol>,
+        registered_symbols: Vec<JitCraneliftRegisteredSymbol>,
+        artifact_runtime_imports: Vec<JitModuleArtifactRuntimeImport>,
+        registration_gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+        module: JITModule,
+    ) -> Self {
+        Self {
+            artifact,
+            defined_function,
+            imported_symbols,
+            registered_symbols,
+            artifact_runtime_imports,
+            registration_gaps,
+            module,
+        }
+    }
+
+    /// Returns the CLIF artifact metadata that seeded module setup.
+    pub const fn artifact(&self) -> &JitModuleArtifactMetadata {
+        &self.artifact
+    }
+
+    /// Returns the artifact body defined inside the registered-symbol module.
+    pub const fn defined_function(&self) -> &JitCraneliftDefinedFunction {
+        &self.defined_function
+    }
+
+    /// Returns runtime symbols declared as imported functions in the module.
+    pub fn imported_symbols(&self) -> &[JitCraneliftImportedSymbol] {
+        &self.imported_symbols
+    }
+
+    /// Returns runtime symbols registered in the JIT builder's symbol table.
+    pub fn registered_symbols(&self) -> &[JitCraneliftRegisteredSymbol] {
+        &self.registered_symbols
+    }
+
+    /// Returns runtime imports required by this artifact body.
+    pub fn artifact_runtime_imports(&self) -> &[JitModuleArtifactRuntimeImport] {
+        &self.artifact_runtime_imports
+    }
+
+    /// Returns stable runtime symbols still missing complete registration metadata.
+    pub fn registration_gaps(&self) -> &[JitRuntimeSymbolRegistrationGap] {
+        &self.registration_gaps
+    }
+
+    /// Returns true when every stable runtime symbol has registration metadata.
+    pub fn is_complete(&self) -> bool {
+        self.registration_gaps.is_empty()
+    }
+
+    /// Returns the imported-symbol declaration for `symbol_name`, when present.
+    pub fn imported_symbol_for(&self, symbol_name: &str) -> Option<&JitCraneliftImportedSymbol> {
+        self.imported_symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name() == symbol_name)
+    }
+
+    /// Returns the registered symbol for `symbol_name`, when present.
+    pub fn registered_symbol_for(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitCraneliftRegisteredSymbol> {
+        self.registered_symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name() == symbol_name)
+    }
+
+    /// Returns the registration gap for `symbol_name`, when present.
+    pub fn registration_gap_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitRuntimeSymbolRegistrationGap> {
+        self.registration_gaps
             .iter()
             .find(|gap| gap.symbol_name() == symbol_name)
     }
@@ -990,6 +1094,69 @@ pub fn jit_cranelift_symbol_registration_preflight_with_candidates(
     ))
 }
 
+/// Registers explicit runtime symbols and defines one verified CLIF artifact body.
+///
+/// The returned preflight calls [`JITBuilder::symbol`] for every supplied
+/// native-address candidate that matches CLIF declaration metadata, declares
+/// shape-known runtime imports in the same module, rewrites artifact runtime
+/// imports to Cranelift module-local function references, and passes the artifact
+/// body to Cranelift's definition API. It does not finalize definitions,
+/// dereference registered addresses, expose a code pointer, or call native code.
+/// Stable runtime symbols outside the artifact's import set may remain
+/// registration gaps.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftModuleSetupError::Readiness`] if artifact readiness
+/// metadata cannot be built or has unresolved runtime imports. Returns
+/// [`JitCraneliftModuleSetupError::RuntimeSymbolRegistration`] if
+/// runtime-symbol registration metadata cannot be built. Returns
+/// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration`]
+/// when the artifact imports a runtime symbol without matching native-address
+/// registration metadata. Returns
+/// [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot build
+/// an ISA for the current host. Returns
+/// [`JitCraneliftModuleSetupError::Settings`] if required JIT settings are
+/// rejected. Returns [`JitCraneliftModuleSetupError::TargetIsa`] if Cranelift
+/// rejects the native ISA configuration. Returns
+/// [`JitCraneliftModuleSetupError::DeclareRuntimeSymbol`] if Cranelift rejects
+/// an imported runtime-symbol declaration. Returns
+/// [`JitCraneliftModuleSetupError::DeclareArtifactFunction`] if Cranelift
+/// rejects the artifact function declaration. Returns
+/// [`JitCraneliftModuleSetupError::DefineArtifactFunction`] if Cranelift rejects
+/// the artifact function definition.
+pub fn jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+    artifact: JitClifArtifact,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitCraneliftRegisteredArtifactDefinitionPreflight, JitCraneliftModuleSetupError> {
+    let readiness =
+        require_resolved_artifact_imports(jit_module_readiness_preflight_for_artifact(&artifact)?)?;
+    let registration = jit_runtime_symbol_registration_preflight_with_candidates(candidates)?;
+    require_registered_artifact_imports(&readiness, &registration)?;
+
+    let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
+    let artifact_metadata = readiness.artifact().clone();
+    let artifact_runtime_imports = readiness.artifact_runtime_imports().to_vec();
+    let registration_gaps = registration.gaps().to_vec();
+    let (mut module, registered_symbols, imported_symbols) =
+        module_with_registered_and_imported_symbols(
+            registration.bindings(),
+            readiness.symbol_declarations(),
+        )?;
+    let defined_function =
+        define_registered_artifact_function(&mut module, artifact, &imported_symbols, symbol_name)?;
+
+    Ok(JitCraneliftRegisteredArtifactDefinitionPreflight::new(
+        artifact_metadata,
+        defined_function,
+        imported_symbols,
+        registered_symbols,
+        artifact_runtime_imports,
+        registration_gaps,
+        module,
+    ))
+}
+
 /// Builds a real JIT module and defines one verified CLIF artifact body.
 ///
 /// The returned preflight owns a [`JITModule`] with callable builtin imports
@@ -1248,13 +1415,7 @@ pub fn jit_cranelift_module_setup_for_plan(
 fn require_definition_ready_artifact_imports(
     readiness: JitModuleReadinessPreflight,
 ) -> Result<JitModuleReadinessPreflight, JitCraneliftModuleSetupError> {
-    if !readiness.artifact_runtime_import_gaps().is_empty() {
-        return Err(JitCraneliftModuleSetupError::Readiness(
-            JitModuleReadinessError::UnresolvedArtifactRuntimeImports {
-                preflight: readiness,
-            },
-        ));
-    }
+    let readiness = require_resolved_artifact_imports(readiness)?;
 
     let symbol_names = readiness
         .artifact_runtime_imports()
@@ -1273,32 +1434,54 @@ fn require_definition_ready_artifact_imports(
     }
 }
 
+fn require_resolved_artifact_imports(
+    readiness: JitModuleReadinessPreflight,
+) -> Result<JitModuleReadinessPreflight, JitCraneliftModuleSetupError> {
+    if !readiness.artifact_runtime_import_gaps().is_empty() {
+        return Err(JitCraneliftModuleSetupError::Readiness(
+            JitModuleReadinessError::UnresolvedArtifactRuntimeImports {
+                preflight: readiness,
+            },
+        ));
+    }
+
+    Ok(readiness)
+}
+
+fn require_registered_artifact_imports(
+    readiness: &JitModuleReadinessPreflight,
+    registration: &crate::symbols::JitRuntimeSymbolRegistrationPreflight,
+) -> Result<(), JitCraneliftModuleSetupError> {
+    let missing_symbol_names = readiness
+        .artifact_runtime_imports()
+        .iter()
+        .filter(|artifact_import| {
+            registration
+                .binding_for_symbol(artifact_import.symbol_name())
+                .is_none()
+        })
+        .map(|artifact_import| artifact_import.symbol_name().to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if missing_symbol_names.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+                symbol_names: missing_symbol_names,
+            },
+        )
+    }
+}
+
 fn module_with_imported_symbols(
     declarations: &[JitRuntimeSymbolDeclaration],
 ) -> Result<(JITModule, Vec<JitCraneliftImportedSymbol>), JitCraneliftModuleSetupError> {
     let builder = native_jit_builder()?;
     let mut module = JITModule::new(builder);
-    let mut imported_symbols = Vec::with_capacity(declarations.len());
-
-    for declaration in declarations {
-        let func_id = module
-            .declare_function(
-                declaration.symbol_name(),
-                Linkage::Import,
-                declaration.signature(),
-            )
-            .map_err(
-                |source| JitCraneliftModuleSetupError::DeclareRuntimeSymbol {
-                    symbol_name: declaration.symbol_name().to_owned(),
-                    source,
-                },
-            )?;
-        imported_symbols.push(JitCraneliftImportedSymbol::new(
-            declaration.symbol_name().to_owned(),
-            Linkage::Import,
-            func_id,
-        ));
-    }
+    let imported_symbols = declare_imported_symbols(&mut module, declarations)?;
 
     Ok((module, imported_symbols))
 }
@@ -1323,12 +1506,91 @@ fn module_with_registered_symbols(
     Ok((JITModule::new(builder), registered_symbols))
 }
 
+fn module_with_registered_and_imported_symbols(
+    bindings: &[JitRuntimeSymbolRegistrationBinding],
+    declarations: &[JitRuntimeSymbolDeclaration],
+) -> Result<
+    (
+        JITModule,
+        Vec<JitCraneliftRegisteredSymbol>,
+        Vec<JitCraneliftImportedSymbol>,
+    ),
+    JitCraneliftModuleSetupError,
+> {
+    let mut builder = native_jit_builder()?;
+    let mut registered_symbols = Vec::with_capacity(bindings.len());
+
+    for binding in bindings {
+        builder.symbol(
+            binding.symbol_name(),
+            ptr::with_exposed_provenance::<u8>(binding.address().as_nonzero_usize().get()),
+        );
+        registered_symbols.push(JitCraneliftRegisteredSymbol::new(
+            binding.symbol_name().to_owned(),
+            binding.address(),
+        ));
+    }
+
+    let mut module = JITModule::new(builder);
+    let imported_symbols = declare_imported_symbols(&mut module, declarations)?;
+
+    Ok((module, registered_symbols, imported_symbols))
+}
+
+fn declare_imported_symbols(
+    module: &mut JITModule,
+    declarations: &[JitRuntimeSymbolDeclaration],
+) -> Result<Vec<JitCraneliftImportedSymbol>, JitCraneliftModuleSetupError> {
+    let mut imported_symbols = Vec::with_capacity(declarations.len());
+
+    for declaration in declarations {
+        let func_id = module
+            .declare_function(
+                declaration.symbol_name(),
+                Linkage::Import,
+                declaration.signature(),
+            )
+            .map_err(
+                |source| JitCraneliftModuleSetupError::DeclareRuntimeSymbol {
+                    symbol_name: declaration.symbol_name().to_owned(),
+                    source,
+                },
+            )?;
+        imported_symbols.push(JitCraneliftImportedSymbol::new(
+            declaration.symbol_name().to_owned(),
+            Linkage::Import,
+            func_id,
+        ));
+    }
+
+    Ok(imported_symbols)
+}
+
 fn define_artifact_function(
     module: &mut JITModule,
     artifact: JitClifArtifact,
     symbol_name: String,
 ) -> Result<JitCraneliftDefinedFunction, JitCraneliftModuleSetupError> {
     let function = artifact.into_function();
+    define_artifact_function_body(module, function, symbol_name)
+}
+
+fn define_registered_artifact_function(
+    module: &mut JITModule,
+    artifact: JitClifArtifact,
+    imported_symbols: &[JitCraneliftImportedSymbol],
+    symbol_name: String,
+) -> Result<JitCraneliftDefinedFunction, JitCraneliftModuleSetupError> {
+    let mut function = artifact.into_function();
+    rewrite_artifact_runtime_imports_for_module(&mut function, imported_symbols);
+    define_artifact_function_body(module, function, symbol_name)
+}
+
+fn define_artifact_function_body(
+    module: &mut JITModule,
+    function: Function,
+    symbol_name: String,
+) -> Result<JitCraneliftDefinedFunction, JitCraneliftModuleSetupError> {
     let func_id = module
         .declare_function(&symbol_name, Linkage::Export, &function.signature)
         .map_err(
@@ -1352,6 +1614,50 @@ fn define_artifact_function(
         Linkage::Export,
         func_id,
     ))
+}
+
+fn rewrite_artifact_runtime_imports_for_module(
+    function: &mut Function,
+    imported_symbols: &[JitCraneliftImportedSymbol],
+) {
+    let module_func_ids = imported_symbols
+        .iter()
+        .map(|symbol| (symbol.symbol_name(), symbol.func_id()))
+        .collect::<BTreeMap<_, _>>();
+    let runtime_import_func_ids = function
+        .dfg
+        .ext_funcs
+        .iter()
+        .filter_map(|(func_ref, import)| {
+            let ExternalName::User(user_name_ref) = import.name else {
+                return None;
+            };
+            let user_external_name = function.params.user_named_funcs().get(user_name_ref)?;
+            let symbol_name = runtime_symbol_name_for_user_external_name(user_external_name)?;
+            let func_id = module_func_ids.get(symbol_name)?;
+            Some((func_ref, *func_id))
+        })
+        .collect::<Vec<_>>();
+
+    for (func_ref, func_id) in runtime_import_func_ids {
+        let user_name_ref =
+            function.declare_imported_user_function(UserExternalName::new(0, func_id.as_u32()));
+        if let Some(import) = function.dfg.ext_funcs.get_mut(func_ref) {
+            import.name = ExternalName::user(user_name_ref);
+        }
+    }
+}
+
+fn runtime_symbol_name_for_user_external_name(
+    user_external_name: &UserExternalName,
+) -> Option<&'static str> {
+    match (user_external_name.namespace, user_external_name.index) {
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_ENV_GET_FUNCTION_INDEX,
+        ) => Some("aos_env_get"),
+        _ => None,
+    }
 }
 
 fn finalized_function_pointer(
@@ -1677,6 +1983,152 @@ mod tests {
                 }
             )
         ));
+    }
+
+    #[test]
+    fn registered_artifact_definition_defines_env_get_artifact_with_candidate() {
+        let candidates = [synthetic_address_candidate(
+            "aos_env_get",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+            3,
+        )];
+
+        let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            env_get_artifact(4),
+            &candidates,
+        )
+        .expect("registered env-get artifact definition preflight builds");
+
+        assert_eq!(
+            preflight.defined_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
+        assert_eq!(preflight.artifact_runtime_imports().len(), 1);
+        assert_eq!(
+            preflight.artifact_runtime_imports()[0].symbol_name(),
+            "aos_env_get"
+        );
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(matches!(
+            preflight.registration_gap_for_symbol("aos_force"),
+            Some(crate::symbols::JitRuntimeSymbolRegistrationGap::Declaration(
+                crate::symbols::JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                    role: RuntimeHelperRole::ForcingControl,
+                    ..
+                }
+            ))
+        ));
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_artifact_definition_requires_candidates_for_artifact_imports() {
+        let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            env_get_artifact(4),
+            &[],
+        ) else {
+            panic!("env-get artifact definition requires registered env helper candidate");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn registered_artifact_definition_preserves_unresolved_artifact_import_readiness() {
+        let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            artifact_with_unknown_runtime_helper_import(),
+            &[],
+        ) else {
+            panic!("unresolved artifact import must stay a readiness error");
+        };
+
+        let JitCraneliftModuleSetupError::Readiness(
+            JitModuleReadinessError::UnresolvedArtifactRuntimeImports { preflight },
+        ) = error
+        else {
+            panic!("expected unresolved artifact-import readiness error");
+        };
+
+        assert!(preflight.artifact_runtime_imports().is_empty());
+        assert_eq!(preflight.artifact_runtime_import_gaps().len(), 1);
+        assert!(!preflight.is_complete());
+    }
+
+    #[test]
+    fn registered_artifact_definition_rejects_wrong_kind_candidates_for_artifact_imports() {
+        let candidates = [synthetic_address_candidate(
+            "aos_env_get",
+            RuntimeSymbolKind::Builtin,
+            3,
+        )];
+
+        let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            env_get_artifact(4),
+            &candidates,
+        ) else {
+            panic!("wrong-kind env helper candidate must not satisfy artifact imports");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn registered_artifact_definition_allows_constant_artifacts_with_registration_gaps() {
+        let artifact =
+            lower_constant_thunk_body_artifact(Value::int(5)).expect("constant artifact lowers");
+
+        let preflight =
+            jit_cranelift_registered_artifact_definition_preflight_with_candidates(artifact, &[])
+                .expect("constant artifact does not need runtime imports");
+
+        assert_eq!(
+            preflight.defined_function().symbol_name(),
+            "aos.jit.constant_smoke.thunk_body"
+        );
+        assert!(preflight.artifact_runtime_imports().is_empty());
+        assert!(preflight.registered_symbols().is_empty());
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(matches!(
+            preflight.registration_gap_for_symbol("aos_env_get"),
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                    ..
+                }
+            )
+        ));
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
     }
 
     #[test]
