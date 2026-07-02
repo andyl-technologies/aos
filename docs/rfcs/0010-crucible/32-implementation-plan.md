@@ -417,6 +417,13 @@ long-held locks.
   rejection of `--to`/`--bisect`; full closure waits for content-addressed
   component resolution, replay-to-savepoint, on-mismatch bisection, and
   machine-independent backend replay coverage.
+  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeReadOnly` currently
+  covers `serve --read-only` parsing/help, CLI-to-daemon mode plumbing, and
+  HTTP/2 rejection of session creation/destruction, control attach, and mutating
+  send commands while allowing read-only query sends to reach normal routing;
+  full closure waits for the broader hosted-session concurrency surface,
+  max-session policy, shutdown lifecycle, and end-to-end multi-client
+  watch/query coverage.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

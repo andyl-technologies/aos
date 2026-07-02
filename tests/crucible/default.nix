@@ -1501,6 +1501,16 @@ in rec {
         phase4.gates.e2eDeterminism.rawGate
       ];
     };
+    cliServeReadOnly = import ./phase5-cli-serve-read-only.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliServeReadOnly";
+      taskIds = ["T-CLI-14"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase5.cliThinWrapper
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliCompletionsHelp = import ./phase5-cli-completions-help.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";

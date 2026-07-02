@@ -49,14 +49,42 @@ use crate::{ControlClientError, HelloRequest};
 
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
 
+/// Runtime policy for the HTTP/2 lifecycle server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LifecycleServerMode {
+    read_only: bool,
+}
+
+impl LifecycleServerMode {
+    /// Builds the default read-write server mode.
+    #[must_use]
+    pub const fn read_write() -> Self {
+        Self { read_only: false }
+    }
+
+    /// Builds a mode that rejects state-mutating lifecycle and control calls.
+    #[must_use]
+    pub const fn read_only() -> Self {
+        Self { read_only: true }
+    }
+
+    /// Returns whether the server rejects state-mutating calls.
+    #[must_use]
+    pub const fn is_read_only(self) -> bool {
+        self.read_only
+    }
+}
+
 struct Http2LifecycleState<L, F> {
     control_plane: SharedLifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
 }
 
 impl<L, F> Clone for Http2LifecycleState<L, F> {
     fn clone(&self) -> Self {
         Self {
             control_plane: Arc::clone(&self.control_plane),
+            mode: self.mode,
         }
     }
 }
@@ -79,8 +107,31 @@ where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
 {
+    serve_lifecycle_http2_with_mode(listener, control_plane, LifecycleServerMode::read_write())
+        .await
+}
+
+/// Serves a [`LifecycleControlPlane`] over HTTP/2 with an explicit server mode.
+///
+/// Use [`LifecycleServerMode::read_only`] when the daemon should accept only
+/// observation calls and reject lifecycle or session-control mutations.
+///
+/// # Errors
+///
+/// Returns the underlying `axum` server I/O error if the listener fails while
+/// serving requests.
+pub async fn serve_lifecycle_http2_with_mode<L, F>(
+    listener: TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+{
     let app = lifecycle_router(Http2LifecycleState {
         control_plane: Arc::new(Mutex::new(control_plane)),
+        mode,
     });
     axum::serve(listener, app).await
 }
@@ -186,6 +237,9 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("create-session");
+    }
     let create = match parse_create_session_request(&body) {
         Ok(create) => create,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
@@ -234,6 +288,9 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("destroy-session");
+    }
     let destroy = match parse_destroy_session_request(&body) {
         Ok(destroy) => destroy,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
@@ -295,6 +352,9 @@ where
         Ok(attach) => attach,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("control-attach");
+    }
     let streaming = match state
         .control_plane
         .lock()
@@ -381,6 +441,9 @@ where
         Ok(send) => send,
         Err(error) => return send_parse_error_response(&error),
     };
+    if state.mode.is_read_only() && !send.command.is_read_only() {
+        return read_only_rejection_response("send");
+    }
     let response = match state
         .control_plane
         .lock()
@@ -1120,6 +1183,16 @@ fn send_parse_error_response(error: &str) -> Response {
     typed_rpc_status_response(StatusCode::BAD_REQUEST, status, reason, error)
 }
 
+fn read_only_rejection_response(operation: &str) -> Response {
+    let message = format!("read-only daemon rejects state-mutating API call `{operation}`");
+    typed_rpc_status_response(
+        StatusCode::FORBIDDEN,
+        RpcStatusCode::Unsupported,
+        "read-only",
+        &message,
+    )
+}
+
 fn typed_rpc_status_response(
     http_status: StatusCode,
     status: RpcStatusCode,
@@ -1340,4 +1413,185 @@ fn hex_encode(bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use axum::http::Version;
+
+    use crate::lifecycle::QuiescentLifecycleLoop;
+
+    use super::*;
+
+    const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
+
+    type TestState = Http2LifecycleState<
+        QuiescentLifecycleLoop,
+        fn(&ScenarioDef, Seed) -> QuiescentLifecycleLoop,
+    >;
+
+    fn quiescent_loop(_: &ScenarioDef, _: Seed) -> QuiescentLifecycleLoop {
+        QuiescentLifecycleLoop::new()
+    }
+
+    fn test_state(mode: LifecycleServerMode) -> TestState {
+        Http2LifecycleState {
+            control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
+                "server-test",
+                Vec::new(),
+                quiescent_loop as fn(&ScenarioDef, Seed) -> QuiescentLifecycleLoop,
+            ))),
+            mode,
+        }
+    }
+
+    fn rpc_request(body: impl Into<String>) -> Request<Body> {
+        Request::builder()
+            .version(Version::HTTP_2)
+            .body(Body::from(body.into()))
+            .expect("test request must be well-formed")
+    }
+
+    async fn response_text(response: Response) -> Result<String, Box<dyn Error>> {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    fn create_session_request() -> String {
+        format!(
+            "crucible.rpc/create-session-request\nsource=scenario-ref\nname=missing\nseed={TEST_SEED}\nstart-paused=false\n"
+        )
+    }
+
+    fn destroy_session_request() -> String {
+        format!(
+            "crucible.rpc/destroy-session-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\nexpected-epoch=none\n"
+        )
+    }
+
+    fn attach_request() -> String {
+        format!(
+            "crucible.rpc/attach-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\nexpected-epoch=none\nfrom-seq=0\nclient-name=read-only-test\n"
+        )
+    }
+
+    fn send_request(command: &str, query: Option<&str>) -> String {
+        let mut body = format!(
+            "crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\nexpected-epoch=none\ncommand-id=9001\ncommand={command}\n"
+        );
+        if let Some(query) = query {
+            body.push_str("query=");
+            body.push_str(query);
+            body.push('\n');
+        }
+        body
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_rejects_session_creation() -> Result<(), Box<dyn Error>> {
+        let response = handle_create_session(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(create_session_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=unsupported"));
+        assert!(body.contains("reason=read-only"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_rejects_session_destruction() -> Result<(), Box<dyn Error>> {
+        let response = handle_destroy_session(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(destroy_session_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=unsupported"));
+        assert!(body.contains("reason=read-only"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_rejects_control_attach() -> Result<(), Box<dyn Error>> {
+        let response = handle_control_attach(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(attach_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=unsupported"));
+        assert!(body.contains("reason=read-only"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_allows_watch_attach() -> Result<(), Box<dyn Error>> {
+        let response = handle_watch_attach(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(attach_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=not-found"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_rejects_mutating_send_but_allows_query()
+    -> Result<(), Box<dyn Error>> {
+        let mutating = handle_streaming_send(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(send_request("crucible.cmd.continue", None)),
+        )
+        .await;
+
+        assert_eq!(mutating.status(), StatusCode::FORBIDDEN);
+        let body = response_text(mutating).await?;
+        assert!(body.contains("reason=read-only"));
+
+        let query = handle_streaming_send(
+            State(test_state(LifecycleServerMode::read_only())),
+            rpc_request(send_request("crucible.cmd.query", Some("state"))),
+        )
+        .await;
+
+        assert_eq!(query.status(), StatusCode::NOT_FOUND);
+        let body = response_text(query).await?;
+        assert!(body.contains("status=not-found"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_write_mode_keeps_default_mutating_routes() -> Result<(), Box<dyn Error>> {
+        let response = handle_create_session(
+            State(test_state(LifecycleServerMode::read_write())),
+            rpc_request(create_session_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=not-found"));
+
+        Ok(())
+    }
 }

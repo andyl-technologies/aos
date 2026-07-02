@@ -1045,6 +1045,13 @@ branch on the verdict without parsing output:
 - [ ] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
+  Work in progress under `checks.crucible.phase5.cliServeReadOnly`: the CLI now
+  accepts and advertises `serve --read-only`, threads it into the HTTP/2 daemon
+  transport, and the daemon rejects session creation/destruction, control attach,
+  and mutating send commands while allowing read-only query sends through the
+  normal transport path. Full closure remains blocked on the broader
+  hosted-session concurrency surface, max-session policy, shutdown lifecycle,
+  and end-to-end multi-client watch/query coverage.
 - [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
