@@ -1031,11 +1031,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       report. It records allocation/environment-access/write-barrier helpers as
       address-free symbol/role wrapper-generation candidates and reports unbound
       helpers, value-only builtins, and callable builtins with no wrapper body as
-      gaps. Tests pin exact projection order, helper-callable parity, representative
-      helper/value-only gaps, all callable builtin wrapper gaps, and the absence
-      of helper-callable gaps today. This is readiness metadata only: no
-      executable addresses, exported wrappers, `JITBuilder::symbol`
-      registrations, or native trap-transfer paths are implemented.
+      gaps with builtin-wrapper blockers. Tests pin exact projection order,
+      helper-callable parity, representative helper/value-only gaps, all
+      callable builtin wrapper gaps and blockers, and the absence of
+      helper-callable gaps today. This is readiness metadata only: no executable
+      addresses, exported wrappers, `JITBuilder::symbol` registrations, or
+      native trap-transfer paths are implemented.
 - [x] Current runtime symbol native-target candidate plan precursor:
       `runtime::helpers::runtime_symbol_native_target_candidate_plan()` is the
       checked completeness gate over the address-free candidate preflight. It

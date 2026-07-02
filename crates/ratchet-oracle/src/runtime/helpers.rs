@@ -758,6 +758,25 @@ pub fn runtime_symbol_registration_plan() -> RuntimeSymbolRegistrationPlanResult
         .into_registration_plan()
 }
 
+const RUNTIME_BUILTIN_NATIVE_WRAPPER_BLOCKERS: &[RuntimeBuiltinNativeWrapperBlocker] = &[
+    RuntimeBuiltinNativeWrapperBlocker::MissingWrapperBody,
+    RuntimeBuiltinNativeWrapperBlocker::RuntimeContextAbiDecodeUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::NativeEnvPointerDecodeUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::NativeValueArgumentDecodeUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::EvaluatorCallFrameBindingUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::ActiveArgumentRootRegistrationUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::BuiltinDispatchBindingUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::ArgumentForcingContractBindingUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::TrapTransferUnimplemented,
+    RuntimeBuiltinNativeWrapperBlocker::NativeValueReturnMaterializationUnimplemented,
+];
+
+/// Returns blockers for callable builtin native-wrapper generation.
+pub const fn runtime_builtin_native_wrapper_blockers()
+-> &'static [RuntimeBuiltinNativeWrapperBlocker] {
+    RUNTIME_BUILTIN_NATIVE_WRAPPER_BLOCKERS
+}
+
 fn builtin_call_binding_for(
     preflight: &RuntimeBuiltinCallPreflight,
     symbol_name: &str,
@@ -1143,7 +1162,12 @@ pub enum RuntimeSymbolNativeTargetCandidateMissingBinding {
         role: RuntimeHelperRole,
     },
     /// A callable builtin has ABI metadata but no native wrapper body yet.
-    MissingBuiltinWrapper(RuntimeBuiltinCallBinding),
+    MissingBuiltinWrapper {
+        /// The callable builtin ABI metadata that needs a wrapper.
+        binding: RuntimeBuiltinCallBinding,
+        /// The current blockers for generating that wrapper.
+        blockers: &'static [RuntimeBuiltinNativeWrapperBlocker],
+    },
 }
 
 impl RuntimeSymbolNativeTargetCandidateMissingBinding {
@@ -1159,7 +1183,10 @@ impl RuntimeSymbolNativeTargetCandidateMissingBinding {
     }
 
     fn builtin_wrapper(binding: RuntimeBuiltinCallBinding) -> Self {
-        Self::MissingBuiltinWrapper(binding)
+        Self::MissingBuiltinWrapper {
+            binding,
+            blockers: runtime_builtin_native_wrapper_blockers(),
+        }
     }
 
     /// Returns the stable runtime symbol name that is not yet candidate-ready.
@@ -1167,7 +1194,7 @@ impl RuntimeSymbolNativeTargetCandidateMissingBinding {
         match self {
             Self::MissingAbiSignature(binding) => binding.symbol_name(),
             Self::MissingHelperCallable { symbol_name, .. } => symbol_name,
-            Self::MissingBuiltinWrapper(binding) => binding.symbol_name(),
+            Self::MissingBuiltinWrapper { binding, .. } => binding.symbol_name(),
         }
     }
 
@@ -1175,7 +1202,7 @@ impl RuntimeSymbolNativeTargetCandidateMissingBinding {
     pub const fn missing_abi_signature(&self) -> Option<&RuntimeSymbolAbiMissingBinding> {
         match self {
             Self::MissingAbiSignature(binding) => Some(binding),
-            Self::MissingHelperCallable { .. } | Self::MissingBuiltinWrapper(_) => None,
+            Self::MissingHelperCallable { .. } | Self::MissingBuiltinWrapper { .. } => None,
         }
     }
 
@@ -1183,17 +1210,52 @@ impl RuntimeSymbolNativeTargetCandidateMissingBinding {
     pub const fn missing_helper_callable_role(&self) -> Option<RuntimeHelperRole> {
         match self {
             Self::MissingHelperCallable { role, .. } => Some(*role),
-            Self::MissingAbiSignature(_) | Self::MissingBuiltinWrapper(_) => None,
+            Self::MissingAbiSignature(_) | Self::MissingBuiltinWrapper { .. } => None,
         }
     }
 
     /// Returns builtin call metadata when a callable builtin lacks a wrapper.
     pub const fn missing_builtin_wrapper(&self) -> Option<&RuntimeBuiltinCallBinding> {
         match self {
-            Self::MissingBuiltinWrapper(binding) => Some(binding),
+            Self::MissingBuiltinWrapper { binding, .. } => Some(binding),
             Self::MissingAbiSignature(_) | Self::MissingHelperCallable { .. } => None,
         }
     }
+
+    /// Returns builtin-native-wrapper blockers when a callable builtin lacks a wrapper.
+    pub const fn missing_builtin_wrapper_blockers(
+        &self,
+    ) -> Option<&'static [RuntimeBuiltinNativeWrapperBlocker]> {
+        match self {
+            Self::MissingBuiltinWrapper { blockers, .. } => Some(*blockers),
+            Self::MissingAbiSignature(_) | Self::MissingHelperCallable { .. } => None,
+        }
+    }
+}
+
+/// A blocker preventing callable builtin native-wrapper generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeBuiltinNativeWrapperBlocker {
+    /// No callable Rust or C ABI wrapper body exists for builtin symbols.
+    MissingWrapperBody,
+    /// Native runtime-context decoding has not been bound to builtin dispatch.
+    RuntimeContextAbiDecodeUnimplemented,
+    /// Native environment-pointer decoding has not been bound to builtin dispatch.
+    NativeEnvPointerDecodeUnimplemented,
+    /// Native `Value` argument materialization has not been bound to builtin dispatch.
+    NativeValueArgumentDecodeUnimplemented,
+    /// Native wrappers do not yet enter and leave the evaluator builtin call frame.
+    EvaluatorCallFrameBindingUnimplemented,
+    /// Native wrappers do not yet register decoded builtin arguments as active roots.
+    ActiveArgumentRootRegistrationUnimplemented,
+    /// Native wrappers do not yet select and dispatch the safe builtin implementation.
+    BuiltinDispatchBindingUnimplemented,
+    /// Native wrappers do not yet preserve the builtin argument-forcing contract.
+    ArgumentForcingContractBindingUnimplemented,
+    /// Native wrappers do not yet transfer evaluator traps/errors instead of returning.
+    TrapTransferUnimplemented,
+    /// Native wrappers do not yet materialize the by-value `Value` ABI return.
+    NativeValueReturnMaterializationUnimplemented,
 }
 
 /// The complete set of address-free native-target candidates.
@@ -2431,6 +2493,13 @@ mod tests {
             .filter_map(RuntimeSymbolNativeTargetCandidateMissingBinding::missing_builtin_wrapper)
             .map(|binding| binding.symbol_name())
             .collect::<Vec<_>>();
+        let missing_builtin_wrapper_blockers = candidate_preflight
+            .missing_bindings()
+            .iter()
+            .filter_map(
+                RuntimeSymbolNativeTargetCandidateMissingBinding::missing_builtin_wrapper_blockers,
+            )
+            .collect::<Vec<_>>();
 
         assert_eq!(
             missing_builtin_wrappers,
@@ -2440,6 +2509,38 @@ mod tests {
                 .map(|binding| binding.symbol_name())
                 .collect::<Vec<_>>()
         );
+        assert_eq!(
+            missing_builtin_wrapper_blockers.len(),
+            builtin_preflight.call_bindings().len()
+        );
+        assert!(
+            missing_builtin_wrapper_blockers
+                .iter()
+                .all(|blockers| *blockers == runtime_builtin_native_wrapper_blockers())
+        );
+        assert!(missing_builtin_wrapper_blockers.iter().all(|blockers| {
+            blockers.contains(&RuntimeBuiltinNativeWrapperBlocker::MissingWrapperBody)
+        }));
+        assert!(missing_builtin_wrapper_blockers.iter().all(|blockers| {
+            blockers.contains(
+                &RuntimeBuiltinNativeWrapperBlocker::ArgumentForcingContractBindingUnimplemented,
+            )
+        }));
+        assert!(missing_builtin_wrapper_blockers.iter().all(|blockers| {
+            blockers.contains(
+                &RuntimeBuiltinNativeWrapperBlocker::EvaluatorCallFrameBindingUnimplemented,
+            )
+        }));
+        assert!(missing_builtin_wrapper_blockers.iter().all(|blockers| {
+            blockers.contains(
+                &RuntimeBuiltinNativeWrapperBlocker::ActiveArgumentRootRegistrationUnimplemented,
+            )
+        }));
+        assert!(missing_builtin_wrapper_blockers.iter().all(|blockers| {
+            blockers.contains(
+                &RuntimeBuiltinNativeWrapperBlocker::NativeValueReturnMaterializationUnimplemented,
+            )
+        }));
         assert!(
             candidate_preflight
                 .missing_bindings()
@@ -2730,6 +2831,25 @@ mod tests {
                 .is_some_and(|gap| {
                     gap.missing_builtin_wrapper().is_some_and(|binding| {
                         binding.symbol_name() == "nix.builtin.derivationStrict"
+                    })
+                })
+        }));
+        assert!(export_preflight.missing_bindings().iter().any(|missing| {
+            missing
+                .missing_native_target_candidate()
+                .is_some_and(|gap| {
+                    gap.missing_builtin_wrapper().is_some_and(|binding| {
+                        binding.symbol_name() == "nix.builtin.derivationStrict"
+                    }) && gap.missing_builtin_wrapper_blockers().is_some_and(|blockers| {
+                        blockers.contains(
+                            &RuntimeBuiltinNativeWrapperBlocker::BuiltinDispatchBindingUnimplemented,
+                        ) && blockers.contains(
+                            &RuntimeBuiltinNativeWrapperBlocker::EvaluatorCallFrameBindingUnimplemented,
+                        ) && blockers.contains(
+                            &RuntimeBuiltinNativeWrapperBlocker::ActiveArgumentRootRegistrationUnimplemented,
+                        ) && blockers.contains(
+                            &RuntimeBuiltinNativeWrapperBlocker::TrapTransferUnimplemented,
+                        )
                     })
                 })
         }));

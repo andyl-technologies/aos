@@ -1169,11 +1169,16 @@ harness, never cut for scope.
       report. Allocation, environment-access, and write-barrier helpers are
       address-free symbol/role candidates for later wrapper generation, while
       ABI-signature gaps, value-only builtins, and callable builtins without
-      wrapper bodies stay in the gap report. Tests prove exact projection order
-      from ABI-signature metadata, helper-callable parity, representative
-      helper/value-only gaps, all callable builtin wrapper gaps, and no current
-      helper-callable gaps. This does not attach executable addresses, export
-      wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
+      wrapper bodies stay in the gap report with builtin-wrapper blockers:
+      missing wrapper body, runtime/env ABI decoding, native `Value` argument
+      materialization, evaluator call-frame binding, active argument root
+      registration, builtin dispatch binding, argument-forcing contract
+      preservation, trap transfer, and native `Value` return materialization.
+      Tests prove exact projection order from ABI-signature metadata,
+      helper-callable parity, representative helper/value-only gaps, all
+      callable builtin wrapper gaps and blockers, and no current helper-callable
+      gaps. This does not attach executable addresses, export wrappers, lower
+      Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol native-target candidate plan precursor:
       `runtime_symbol_native_target_candidate_plan()` is the checked completeness
       gate over the address-free candidate preflight. It returns a
@@ -1193,9 +1198,10 @@ harness, never cut for scope.
       typed/native return materialization, allocation semantic-payload
       initialization, write-barrier GC-state extraction, and dispatch into the
       safe before-publish barrier path. `runtime_symbol_native_export_plan()`
-      still rejects as incomplete. This exports no functions, treats no Rust
-      callable as ABI-callable, lowers no Cranelift IR, and calls no
-      `JITBuilder::symbol`.
+      also preserves earlier builtin-wrapper blockers through nested
+      native-target gaps. `runtime_symbol_native_export_plan()` still rejects as
+      incomplete. This exports no functions, treats no Rust callable as
+      ABI-callable, lowers no Cranelift IR, and calls no `JITBuilder::symbol`.
 - [x] Current `ratchet-jit` crate-boundary precursor:
       `ratchet-jit` is now a workspace crate with
       `#![deny(unsafe_op_in_unsafe_fn)]`, crate-level docs for the future unsafe

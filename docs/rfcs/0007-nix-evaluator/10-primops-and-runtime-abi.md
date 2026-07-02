@@ -856,10 +856,15 @@ harness, never cut for scope.
       with allocation/environment-access/write-barrier callables are
       address-free symbol/role wrapper-generation candidates;
       forcing/call/attr/error helpers, value-only builtins, and callable builtins
-      without wrapper bodies remain gaps. Tests prove exact projection order,
-      helper-callable parity, representative helper/value-only gaps, all callable
-      builtin wrapper gaps, and the absence of helper-callable gaps today. This
-      is readiness metadata only; no addresses, exported wrappers,
+      without wrapper bodies remain gaps with builtin-wrapper blockers: missing
+      wrapper body, runtime/env ABI decoding, native `Value` argument
+      materialization, evaluator call-frame binding, active argument root
+      registration, builtin dispatch binding, argument-forcing contract
+      preservation, trap transfer, and native `Value` return materialization.
+      Tests prove exact projection order, helper-callable parity,
+      representative helper/value-only gaps, all callable builtin wrapper gaps
+      and blockers, and the absence of helper-callable gaps today. This is
+      readiness metadata only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
 - [x] Current runtime symbol native-target candidate plan precursor:
@@ -882,10 +887,11 @@ harness, never cut for scope.
       evaluator trap transfer, typed/native return materialization, allocation
       semantic-payload initialization, write-barrier GC-state extraction, and
       dispatch into the safe before-publish barrier path.
-      `runtime_symbol_native_export_plan()` still rejects as incomplete. This is
-      safe readiness metadata only; no function is exported, no Rust callable
-      becomes ABI-callable, no `JITBuilder::symbol` call runs, and no compiled
-      artifact is relinked.
+      It also preserves earlier builtin-wrapper blockers through nested
+      native-target gaps. `runtime_symbol_native_export_plan()` still rejects as
+      incomplete. This is safe readiness metadata only; no function is exported,
+      no Rust callable becomes ABI-callable, no `JITBuilder::symbol` call runs,
+      and no compiled artifact is relinked.
 - [x] Current `ratchet-jit` ABI-boundary precursor:
       `ratchet-jit::abi` provides a JIT-side, address-free
       `JitRuntimeAbiInventory` copied from the `ratchet-core` runtime-call

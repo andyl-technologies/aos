@@ -5306,13 +5306,18 @@ and helps the oracle directly.
       target-readiness report. It records allocation, environment-access, and
       write-barrier helpers as address-free symbol/role wrapper-generation
       candidates and reports ABI-signature gaps, value-only builtins, and
-      callable builtins without wrapper bodies as gaps. Tests prove exact
-      projection order from ABI-signature metadata, helper-callable parity,
-      representative helper/value-only gaps, all callable builtin wrapper gaps,
-      and no current helper-callable gaps. This is readiness metadata only: no executable
-      addresses, exported wrappers, `JITBuilder::symbol` registrations,
-      Cranelift lowering, native trap transfer, or compiled artifact relinking is
-      implemented.
+      callable builtins without wrapper bodies as gaps carrying
+      builtin-wrapper blockers: missing wrapper body, runtime/env ABI decoding,
+      native `Value` argument materialization, evaluator call-frame binding,
+      active argument root registration, builtin dispatch binding,
+      argument-forcing contract preservation, trap transfer, and native `Value`
+      return materialization. Tests prove exact projection order from
+      ABI-signature metadata, helper-callable parity, representative
+      helper/value-only gaps, all callable builtin wrapper gaps and blockers,
+      and no current helper-callable gaps. This is readiness metadata only: no
+      executable addresses, exported wrappers, `JITBuilder::symbol`
+      registrations, Cranelift lowering, native trap transfer, or compiled
+      artifact relinking is implemented.
 - [x] Current runtime symbol native-target candidate plan precursor:
       `runtime::helpers::runtime_symbol_native_target_candidate_plan()` is the
       checked completeness gate over the address-free candidate preflight. It
