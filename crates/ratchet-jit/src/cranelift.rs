@@ -657,6 +657,49 @@ impl JitCraneliftTier1SlotPreflight {
     }
 }
 
+/// A registered-symbol finalized artifact kept alive beside tier-1 slot metadata.
+pub struct JitCraneliftRegisteredTier1SlotPreflight {
+    finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+    slot: JitTieredCodeSlot,
+}
+
+impl JitCraneliftRegisteredTier1SlotPreflight {
+    fn new(
+        finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+        slot: JitTieredCodeSlot,
+    ) -> Self {
+        Self { finalization, slot }
+    }
+
+    /// Returns the finalization preflight that owns the encapsulated `JITModule`.
+    pub const fn finalization(&self) -> &JitCraneliftRegisteredArtifactFinalizationPreflight {
+        &self.finalization
+    }
+
+    /// Returns the safe tiered-code slot with tier-1 metadata installed.
+    ///
+    /// The slot's opaque pointer remains non-callable metadata. Its backend
+    /// lifetime is kept alive by [`Self::finalization`].
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        &self.slot
+    }
+
+    /// Returns the finalized artifact body metadata.
+    pub const fn finalized_function(&self) -> &JitCraneliftFinalizedFunction {
+        self.finalization.finalized_function()
+    }
+
+    /// Returns the CLIF artifact metadata that seeded the owned module setup.
+    pub const fn artifact(&self) -> &JitModuleArtifactMetadata {
+        self.finalization.artifact()
+    }
+
+    /// Returns true because this preflight owns the module backing the slot pointer.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.finalization.owns_encapsulated_module()
+    }
+}
+
 /// Result of one promotion-gated tier-1 compile attempt.
 pub enum JitCraneliftTier1PromotionPreflight {
     /// The invocation was recorded, but policy did not request compilation.
@@ -1344,11 +1387,11 @@ pub fn jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
 /// The returned preflight owns a [`JITModule`] with callable builtin imports
 /// declared, plus one artifact body declared as an exported function and passed
 /// to Cranelift's definition API. Unshaped helper and value-only builtin gaps
-/// are preserved. Artifacts with runtime imports are rejected until the later
-/// registered-symbol definition path lands. A successful definition lets
-/// Cranelift compile the body and allocate JIT code memory inside the private
-/// module. The module is not finalized, no code pointer is returned, and no
-/// native code is called.
+/// are preserved. Artifacts with runtime imports are rejected by this
+/// unregistered path and must use the registered-symbol definition path. A
+/// successful definition lets Cranelift compile the body and allocate JIT code
+/// memory inside the private module. The module is not finalized, no code
+/// pointer is returned, and no native code is called.
 ///
 /// # Errors
 ///
@@ -1397,10 +1440,10 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
 /// memory for that body. The finalized code pointer is exposed only as opaque
 /// metadata for later unsafe call-boundary work. This does not cast the code
 /// pointer to a function pointer, call native code, or lower generic IR.
-/// Current crate-built artifacts are constant/literal bodies with no runtime
-/// call relocations; call-bearing artifacts are rejected until the later path
-/// that composes artifact finalization with complete runtime-symbol address
-/// registration.
+/// This unregistered API rejects call-bearing artifacts; those artifacts must
+/// use the registered-symbol finalization path. Full native-call integration
+/// still requires real exported wrappers and matching address registration for
+/// every emitted runtime call.
 ///
 /// # Errors
 ///
@@ -1484,6 +1527,37 @@ pub fn jit_cranelift_tier1_slot_preflight_for_artifact(
 ) -> Result<JitCraneliftTier1SlotPreflight, JitCraneliftModuleSetupError> {
     let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)?;
     tier1_slot_preflight_from_finalization(finalization, JitTieredCodeSlot::new())
+}
+
+/// Finalizes one registered artifact and installs it into owned tier-1 metadata.
+///
+/// The returned preflight composes
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`]
+/// with safe [`JitTieredCodeSlot`] installation. Registered addresses may be used
+/// by Cranelift relocation during finalization, but this path does not
+/// dereference or call those addresses, publish into evaluator heap thunk state,
+/// cast the finalized code pointer, or call native code. Stable runtime symbols
+/// outside the artifact's import set may remain registration gaps.
+///
+/// # Errors
+///
+/// Returns any error from
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`].
+/// Returns [`JitCraneliftModuleSetupError::InstallTier1Code`] if the finalized
+/// pointer metadata cannot be installed into the fresh slot.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`].
+pub fn jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+    artifact: JitClifArtifact,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftModuleSetupError> {
+    let finalization = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+        artifact, candidates,
+    )?;
+    registered_tier1_slot_preflight_from_finalization(finalization, JitTieredCodeSlot::new())
 }
 
 /// Records one invocation and compiles a supported IR root only when policy promotes.
@@ -1879,6 +1953,40 @@ fn tier1_slot_preflight_from_finalization_preserving_slot(
     }
 
     Ok(JitCraneliftTier1SlotPreflight::new(finalization, slot))
+}
+
+fn registered_tier1_slot_preflight_from_finalization(
+    finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+    slot: JitTieredCodeSlot,
+) -> Result<JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftModuleSetupError> {
+    registered_tier1_slot_preflight_from_finalization_preserving_slot(finalization, slot)
+        .map_err(|(_slot, error)| error)
+}
+
+fn registered_tier1_slot_preflight_from_finalization_preserving_slot(
+    finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+    mut slot: JitTieredCodeSlot,
+) -> Result<
+    JitCraneliftRegisteredTier1SlotPreflight,
+    (JitTieredCodeSlot, JitCraneliftModuleSetupError),
+> {
+    let symbol_name = finalization.finalized_function().symbol_name().to_owned();
+    let code_ptr = finalization.finalized_function().compiled_code_ptr();
+
+    if let Err(source) = slot.install_tier1_code(code_ptr) {
+        return Err((
+            slot,
+            JitCraneliftModuleSetupError::InstallTier1Code {
+                symbol_name,
+                source,
+            },
+        ));
+    }
+
+    Ok(JitCraneliftRegisteredTier1SlotPreflight::new(
+        finalization,
+        slot,
+    ))
 }
 
 fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> String {
@@ -2810,6 +2918,169 @@ mod tests {
             Some(preflight.finalized_function().compiled_code_ptr())
         );
         assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_installs_env_get_artifact_with_candidate() {
+        let env_get_address = synthetic_runtime_import_address();
+        let candidates = [synthetic_address_candidate(
+            "aos_env_get",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+            env_get_address,
+        )];
+
+        let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+            env_get_artifact(7),
+            &candidates,
+        )
+        .expect("registered tier-1 env-get slot preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(preflight.slot().is_tier1_installed());
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            preflight
+                .slot()
+                .tier1_code_ptr()
+                .map(JitCompiledCodePointer::as_non_null),
+            Some(preflight.finalized_function().code_ptr())
+        );
+        assert_eq!(preflight.finalization().artifact_runtime_imports().len(), 1);
+        assert!(
+            preflight
+                .finalization()
+                .imported_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert_eq!(
+            preflight
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            env_get_address
+        );
+        assert!(
+            preflight
+                .finalization()
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(!preflight.finalization().is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_installs_constant_artifact_with_registration_gaps() {
+        let artifact =
+            lower_constant_thunk_body_artifact(Value::int(21)).expect("constant artifact lowers");
+
+        let preflight =
+            jit_cranelift_registered_tier1_slot_preflight_with_candidates(artifact, &[])
+                .expect("registered constant tier-1 slot preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.constant_smoke.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
+        );
+        assert!(
+            preflight
+                .finalization()
+                .artifact_runtime_imports()
+                .is_empty()
+        );
+        assert!(preflight.finalization().registered_symbols().is_empty());
+        assert!(matches!(
+            preflight
+                .finalization()
+                .registration_gap_for_symbol("aos_env_get"),
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                    ..
+                }
+            )
+        ));
+        assert!(!preflight.finalization().is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_requires_candidates_for_artifact_imports() {
+        let Err(error) =
+            jit_cranelift_registered_tier1_slot_preflight_with_candidates(env_get_artifact(7), &[])
+        else {
+            panic!("registered tier-1 env-get slot requires env helper candidate");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_preserves_unresolved_artifact_import_readiness() {
+        let Err(error) = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+            artifact_with_unknown_runtime_helper_import(),
+            &[],
+        ) else {
+            panic!("unresolved artifact import must stay a readiness error");
+        };
+
+        let JitCraneliftModuleSetupError::Readiness(
+            JitModuleReadinessError::UnresolvedArtifactRuntimeImports { preflight },
+        ) = error
+        else {
+            panic!("expected unresolved artifact-import readiness error");
+        };
+
+        assert!(preflight.artifact_runtime_imports().is_empty());
+        assert_eq!(preflight.artifact_runtime_import_gaps().len(), 1);
+        assert!(!preflight.is_complete());
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_rejects_wrong_kind_candidates_for_artifact_imports() {
+        let candidates = [synthetic_address_candidate(
+            "aos_env_get",
+            RuntimeSymbolKind::Builtin,
+            3,
+        )];
+
+        let Err(error) = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+            env_get_artifact(7),
+            &candidates,
+        ) else {
+            panic!("wrong-kind env helper candidate must not satisfy artifact imports");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
     }
 
     #[test]

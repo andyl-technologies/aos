@@ -6788,8 +6788,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       to a function type, call native code, lower generic IR, emit runtime calls,
       or complete runtime-symbol registration. This unregistered API still
       rejects call-bearing artifacts; those artifacts must use a registered
-      finalization path, and full native-call integration still requires
-      complete runtime-symbol address registration before relocation.
+      finalization path, and full native-call integration still requires real
+      exported wrappers plus matching address registration for every emitted
+      runtime call.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs
@@ -6797,10 +6798,25 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       and keeps the `JITModule` owner in the same returned preflight value. Tests
       pin constant-smoke and Core-IR-root slot installation, slot/current-tier
       state, pointer equality with the finalized artifact, incomplete runtime
-      symbol readiness, and module ownership. This is still metadata assembly
-      only: it does not publish into evaluator heap thunk state, perform atomic
-      thunk-state CAS, cast or call the code pointer, lower generic IR, emit
-      runtime calls, or complete runtime-symbol registration.
+      symbol readiness, runtime-import rejection, and module ownership. This
+      unregistered path is still metadata assembly only: it does not publish into
+      evaluator heap thunk state, perform atomic thunk-state CAS, cast or call
+      the code pointer, lower generic IR, emit runtime calls, or complete
+      runtime-symbol registration.
+- [x] Current registered-symbol tier-1 slot preflight:
+      `ratchet-jit::cranelift::jit_cranelift_registered_tier1_slot_preflight_with_candidates()`
+      composes registered-symbol artifact finalization with a fresh
+      `JitTieredCodeSlot`, installs the finalized artifact's opaque
+      `JitCompiledCodePointer`, and keeps the `JITModule` owner beside the slot
+      metadata. Tests pin env-slot installation with a synthetic relocation
+      target for `aos_env_get`, constant artifact installation while unrelated
+      registration gaps remain, missing-candidate rejection, slot/current-tier
+      state, pointer equality, registered/imported symbol visibility, artifact
+      runtime-import metadata, and module ownership. This remains metadata
+      assembly only: it does not publish into evaluator heap thunk state, perform
+      atomic thunk-state CAS, directly dereference or call registered addresses,
+      cast or call the code pointer, lower generic IR, or complete
+      runtime-symbol registration for unrelated stable symbols.
 - [x] Current promotion-gated tier-1 compile/install preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_promotion_preflight_for_ir_root()`
       records one invocation on an existing `JitTieredCodeSlot`, applies
