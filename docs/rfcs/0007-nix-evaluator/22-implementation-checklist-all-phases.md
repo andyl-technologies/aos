@@ -6581,6 +6581,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       helper/builtin coverage. This remains symbol metadata only: no candidate
       readiness, executable addresses, Cranelift lowering, exported wrappers, or
       `JITBuilder::symbol` registration is implemented.
+- [x] Current compiled-tier safepoint policy precursor:
+      `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
+      tier 1 and tier 2 code must emit safepoints and user stack maps
+      unconditionally, and that the required safepoint placements are allocation
+      sites and `aos_force` calls. Tests pin the policy for both compiled tiers
+      and the exact placement set. This remains policy metadata only: no
+      Cranelift user-stack-map emission, live-reference annotation, collector
+      root consumption, executable buffer, `JITModule`, or symbol registration is
+      implemented.
 - [ ] `jit/tier.rs` — tier-up policy (hot-thunk detection) into tier 1.
 - [x] Current `ratchet-jit` tier-up policy precursor:
       `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
