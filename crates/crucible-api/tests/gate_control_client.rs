@@ -649,6 +649,124 @@ async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 listener should bind: {error}"));
+    let addr = listener.local_addr().unwrap_or_else(|error| {
+        panic!("production HTTP/2 listener should report address: {error}")
+    });
+    let control_plane = LifecycleControlPlane::new(
+        "production-http2-multi-client-server",
+        Vec::new(),
+        test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
+    );
+    let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
+
+    let endpoint = RpcEndpoint::http2(format!("http://{addr}"));
+    let rpc = RpcControlClient::new(endpoint)
+        .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
+    let scenario = generated_scenario(92);
+    let created = rpc
+        .create_session(
+            CreateSessionRequest::inline(scenario.clone(), scenario.seed()).with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 create should decode: {error}"));
+    assert_eq!(created.state, LiveStateKind::Paused);
+
+    let control = rpc
+        .control_attach(
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_client_name("production-http2-control-client"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 control attach should decode: {error}"));
+    assert_eq!(control.attached().session, created.session);
+
+    let watch_a_client = rpc.clone();
+    let watch_b_client = rpc.clone();
+    let query_client = rpc.clone();
+    let watch_a = watch_a_client.watch_attach(
+        AttachRequest::new(created.session)
+            .with_expected_epoch(created.session.epoch)
+            .with_client_name("production-http2-watch-a"),
+    );
+    let watch_b = watch_b_client.watch_attach(
+        AttachRequest::new(created.session)
+            .with_expected_epoch(created.session.epoch)
+            .with_client_name("production-http2-watch-b"),
+    );
+    let paused_query =
+        query_client.send_command(SendRequest::new(created.session, 1, query_state_command()));
+    let (watch_a, watch_b, paused_query) = tokio::join!(watch_a, watch_b, paused_query);
+    let mut watch_a =
+        watch_a.unwrap_or_else(|error| panic!("first concurrent Watch should attach: {error}"));
+    let mut watch_b =
+        watch_b.unwrap_or_else(|error| panic!("second concurrent Watch should attach: {error}"));
+    let paused_query =
+        paused_query.unwrap_or_else(|error| panic!("concurrent Query should decode: {error}"));
+    assert_eq!(paused_query.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        paused_query.query_result,
+        Some(QueryResult::State(LifecycleStateKind::Paused)),
+    );
+
+    for attached in [watch_a.attached(), watch_b.attached()] {
+        assert_eq!(attached.session, created.session);
+        assert_eq!(attached.state, LiveStateKind::Paused);
+        assert!(attached.snapshot.is_some());
+    }
+
+    let continued = control
+        .send_command(2, SessionCommand::Continue)
+        .await
+        .unwrap_or_else(|error| panic!("Control Continue should decode: {error}"));
+    assert_eq!(continued.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        continued.state_update.map(|update| update.state),
+        Some(LiveStateKind::Running),
+    );
+
+    let running_query_client = rpc.clone();
+    let watch_a_running = recv_watch_state_update(&mut watch_a, LiveStateKind::Running);
+    let watch_b_running = recv_watch_state_update(&mut watch_b, LiveStateKind::Running);
+    let running_query = running_query_client.send_command(SendRequest::new(
+        created.session,
+        3,
+        query_state_command(),
+    ));
+    let (watch_a_state, watch_b_state, running_query) =
+        tokio::join!(watch_a_running, watch_b_running, running_query);
+    assert_eq!(watch_a_state, LiveStateKind::Running);
+    assert_eq!(watch_b_state, LiveStateKind::Running);
+    let running_query =
+        running_query.unwrap_or_else(|error| panic!("running Query should decode: {error}"));
+    assert_eq!(running_query.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        running_query.query_result,
+        Some(QueryResult::State(LifecycleStateKind::Running)),
+    );
+
+    let stopped = control
+        .send_command(4, SessionCommand::Stop)
+        .await
+        .unwrap_or_else(|error| panic!("Control Stop should decode: {error}"));
+    assert_eq!(stopped.result.status, CommandResultStatus::Accepted);
+    let destroyed = rpc
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 destroy should decode: {error}"));
+    assert_eq!(destroyed.session, created.session);
+    server.abort();
+    match server.await {
+        Err(error) if error.is_cancelled() => {}
+        other => panic!("production HTTP/2 server task should abort cleanly: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_stream() {
     let (streaming, actor, session) =
         streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 90);

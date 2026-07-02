@@ -1050,14 +1050,19 @@ branch on the verdict without parsing output:
   transport, and the daemon rejects session creation/destruction, control attach,
   and mutating send commands while allowing read-only query sends through the
   normal transport path. Full closure remains blocked on the broader
-  hosted-session concurrency surface, shutdown lifecycle, and end-to-end
-  multi-client watch/query coverage.
+  hosted-session concurrency surface, process-level serve harnessing, and
+  shutdown lifecycle.
   Work in progress under `checks.crucible.phase5.cliServeMaxSessions`: the CLI
   now accepts and advertises `serve --max-sessions <n>`, rejects zero before
   binding, threads the nonzero cap into the lifecycle control plane, and the
   daemon returns a typed session-limit error without creating an extra session
   when the live-session cap is reached. Full closure remains blocked on
-  end-to-end multi-client admission/concurrency coverage and shutdown lifecycle.
+  process-level serve harnessing and shutdown lifecycle.
+  Work in progress under `checks.crucible.phase5.cliServeMultiClient`: the
+  production HTTP/2 server now admits concurrent read-only Watch and Query
+  clients while a Control client drives the same session, and both Watch clients
+  observe the live running update. Full closure remains blocked on process-level
+  serve harnessing and shutdown lifecycle.
 - [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.

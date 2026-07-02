@@ -422,12 +422,17 @@ long-held locks.
   HTTP/2 rejection of session creation/destruction, control attach, and mutating
   send commands while allowing read-only query sends to reach normal routing;
   full closure waits for the broader hosted-session concurrency surface,
-  shutdown lifecycle, and end-to-end multi-client watch/query coverage.
+  process-level serve harnessing, and shutdown lifecycle.
   `T-CLI-14` remains open. `checks.crucible.phase5.cliServeMaxSessions`
   currently covers `serve --max-sessions <n>` parsing/help, zero-value usage
   rejection, lifecycle live-session cap enforcement, and typed daemon
-  session-limit responses; full closure waits for end-to-end multi-client
-  admission/concurrency coverage and shutdown lifecycle.
+  session-limit responses; full closure waits for process-level serve harnessing
+  and shutdown lifecycle.
+  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeMultiClient` covers
+  the production HTTP/2 server admitting concurrent read-only Watch and Query
+  clients while a Control client drives the same session and both Watch clients
+  observe the live running update; full closure waits for process-level serve
+  harnessing and shutdown lifecycle.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
