@@ -1,0 +1,844 @@
+//! Parallel thunk compare-and-swap state-word precursor.
+//!
+//! This module owns the safe Phase 3.5 model for the RFC-0007 L2 thunk state
+//! machine. It does not replace the serial tree-walk thunk cell in
+//! [`super::thunk`]. Instead, it pins the atomic word encoding and transition
+//! protocol that later evaluator wiring, waiter lists, and loom models build
+//! on: `Suspended`, owner-tagged `Pending`, owner-tagged `Awaited`, `Forced`,
+//! and `Failed`.
+//!
+//! The owner id carried by `Pending` and `Awaited` is the blackhole boundary:
+//! re-entering the same claimed thunk from the owning worker is a cycle, while
+//! observing a different owner is ordinary cross-worker contention.
+//!
+//! The await marker here is not a complete no-lost-wakeup protocol. Future
+//! waiter parking must pair the state transition with waiter-list registration,
+//! a terminal-state recheck, and owner wakeup.
+
+use std::{
+    marker::PhantomData,
+    num::NonZeroU64,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use thiserror::Error;
+
+const TAG_BITS: u64 = 3;
+const TAG_MASK: u64 = (1 << TAG_BITS) - 1;
+const SUSPENDED_TAG: u64 = 0;
+const FORCED_TAG: u64 = 1;
+const FAILED_TAG: u64 = 2;
+const PENDING_TAG: u64 = 3;
+const AWAITED_TAG: u64 = 4;
+
+/// The largest worker id that can be encoded in a thunk state word.
+pub const PARALLEL_THUNK_MAX_WORKER_ID: u64 = u64::MAX >> TAG_BITS;
+
+/// A non-zero worker or fiber id encoded in a parallel thunk state word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ParallelThunkWorkerId(NonZeroU64);
+
+impl ParallelThunkWorkerId {
+    /// Creates a worker id that can be stored in a thunk state word.
+    ///
+    /// Returns [`None`] when `raw` is zero or exceeds
+    /// [`PARALLEL_THUNK_MAX_WORKER_ID`].
+    pub const fn new(raw: u64) -> Option<Self> {
+        if raw == 0 || raw > PARALLEL_THUNK_MAX_WORKER_ID {
+            return None;
+        }
+
+        match NonZeroU64::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    /// Returns the raw non-zero worker id.
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// The decoded state stored in a parallel thunk state word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParallelThunkState {
+    /// The thunk has not been evaluated and can be claimed by one worker.
+    Suspended,
+    /// One worker is evaluating the thunk and no waiter has been recorded.
+    Pending {
+        /// The worker that won the suspended-to-pending claim CAS.
+        owner: ParallelThunkWorkerId,
+    },
+    /// One worker is evaluating the thunk and at least one waiter arrived.
+    Awaited {
+        /// The worker that owns evaluation of the thunk body.
+        owner: ParallelThunkWorkerId,
+    },
+    /// The thunk result has been published.
+    Forced,
+    /// The thunk body failed and the captured error should be re-raised.
+    Failed,
+}
+
+impl ParallelThunkState {
+    /// Returns the raw `u64` state-word encoding.
+    pub const fn as_raw(self) -> u64 {
+        match self {
+            Self::Suspended => SUSPENDED_TAG,
+            Self::Forced => FORCED_TAG,
+            Self::Failed => FAILED_TAG,
+            Self::Pending { owner } => encode_owned_state(PENDING_TAG, owner),
+            Self::Awaited { owner } => encode_owned_state(AWAITED_TAG, owner),
+        }
+    }
+
+    /// Decodes a raw thunk state word.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::InvalidStateWord`] when `raw` does
+    /// not encode a supported terminal or owner-tagged state.
+    pub const fn from_raw(raw: u64) -> Result<Self, ParallelThunkStateError> {
+        match raw & TAG_MASK {
+            SUSPENDED_TAG if raw == SUSPENDED_TAG => Ok(Self::Suspended),
+            FORCED_TAG if raw == FORCED_TAG => Ok(Self::Forced),
+            FAILED_TAG if raw == FAILED_TAG => Ok(Self::Failed),
+            PENDING_TAG => match decode_worker(raw) {
+                Some(owner) => Ok(Self::Pending { owner }),
+                None => Err(ParallelThunkStateError::InvalidStateWord { raw }),
+            },
+            AWAITED_TAG => match decode_worker(raw) {
+                Some(owner) => Ok(Self::Awaited { owner }),
+                None => Err(ParallelThunkStateError::InvalidStateWord { raw }),
+            },
+            _ => Err(ParallelThunkStateError::InvalidStateWord { raw }),
+        }
+    }
+
+    /// Returns the owner when this is an owner-tagged claimed state.
+    pub const fn owner(self) -> Option<ParallelThunkWorkerId> {
+        match self {
+            Self::Pending { owner } | Self::Awaited { owner } => Some(owner),
+            Self::Suspended | Self::Forced | Self::Failed => None,
+        }
+    }
+}
+
+const fn encode_owned_state(tag: u64, owner: ParallelThunkWorkerId) -> u64 {
+    (owner.get() << TAG_BITS) | tag
+}
+
+const fn decode_worker(raw: u64) -> Option<ParallelThunkWorkerId> {
+    ParallelThunkWorkerId::new(raw >> TAG_BITS)
+}
+
+/// An atomic parallel thunk state word.
+///
+/// This type contains only the synchronization word. The forced value, captured
+/// error, waiter list, and evaluator integration remain future work.
+#[derive(Debug)]
+pub struct ParallelThunkStateWord {
+    state: AtomicU64,
+}
+
+impl Default for ParallelThunkStateWord {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ParallelThunkStateWord {
+    /// Creates a suspended state word.
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(SUSPENDED_TAG),
+        }
+    }
+
+    /// Loads and decodes the current state with acquire ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
+    /// atomic word contains an unsupported encoding.
+    pub fn state(&self) -> Result<ParallelThunkState, ParallelThunkStateError> {
+        ParallelThunkState::from_raw(self.state.load(Ordering::Acquire))
+    }
+
+    /// Attempts to claim the thunk for `worker`.
+    ///
+    /// A suspended thunk is claimed with a single
+    /// `Suspended -> Pending(worker)` compare-and-swap. Owner-tagged states
+    /// observed for the same worker are reported as same-worker cycle
+    /// detection; owner-tagged states for a different worker are ordinary
+    /// contention and should feed the wait-or-steal path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
+    /// atomic word contains an unsupported encoding. Returns
+    /// [`ParallelThunkStateError::UnexpectedState`] if a just-marked state word
+    /// is no longer awaited by the expected owner and has not reached a terminal
+    /// state.
+    pub fn try_claim(
+        &self,
+        worker: ParallelThunkWorkerId,
+    ) -> Result<ParallelThunkClaim<'_>, ParallelThunkStateError> {
+        loop {
+            match self.state()? {
+                ParallelThunkState::Suspended => {
+                    let claimed = ParallelThunkState::Pending { owner: worker }.as_raw();
+                    if self
+                        .state
+                        .compare_exchange(
+                            SUSPENDED_TAG,
+                            claimed,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return Ok(ParallelThunkClaim::Claimed(ParallelThunkClaimGuard {
+                            state: self,
+                            owner: worker,
+                            active: true,
+                            _not_send: PhantomData,
+                        }));
+                    }
+                }
+                ParallelThunkState::Pending { owner } if owner == worker => {
+                    return Ok(ParallelThunkClaim::SelfCycle { owner });
+                }
+                ParallelThunkState::Pending { owner } => {
+                    return Ok(ParallelThunkClaim::ForeignPending { owner });
+                }
+                ParallelThunkState::Awaited { owner } if owner == worker => {
+                    return Ok(ParallelThunkClaim::SelfCycle { owner });
+                }
+                ParallelThunkState::Awaited { owner } => {
+                    return Ok(ParallelThunkClaim::ForeignAwaited { owner });
+                }
+                ParallelThunkState::Forced => return Ok(ParallelThunkClaim::AlreadyForced),
+                ParallelThunkState::Failed => return Ok(ParallelThunkClaim::AlreadyFailed),
+            }
+        }
+    }
+
+    /// Marks a foreign claimed thunk as awaited by `waiter`.
+    ///
+    /// This is only the state-word contention marker for the future
+    /// wait-or-steal path. It does not park the worker, install a waiter-list
+    /// node, or prove that a later park cannot miss a wakeup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
+    /// atomic word contains an unsupported encoding.
+    pub fn mark_awaited(
+        &self,
+        waiter: ParallelThunkWorkerId,
+    ) -> Result<ParallelThunkAwait, ParallelThunkStateError> {
+        loop {
+            match self.state()? {
+                ParallelThunkState::Suspended => return Ok(ParallelThunkAwait::Unclaimed),
+                ParallelThunkState::Pending { owner } if owner == waiter => {
+                    return Ok(ParallelThunkAwait::SelfCycle { owner });
+                }
+                ParallelThunkState::Pending { owner } => {
+                    let pending = ParallelThunkState::Pending { owner }.as_raw();
+                    let awaited = ParallelThunkState::Awaited { owner }.as_raw();
+                    if self
+                        .state
+                        .compare_exchange(pending, awaited, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return self.observe_awaited_after_mark(owner);
+                    }
+                }
+                ParallelThunkState::Awaited { owner } if owner == waiter => {
+                    return Ok(ParallelThunkAwait::SelfCycle { owner });
+                }
+                ParallelThunkState::Awaited { owner } => {
+                    return Ok(ParallelThunkAwait::Awaited {
+                        owner,
+                        newly_marked: false,
+                    });
+                }
+                ParallelThunkState::Forced => return Ok(ParallelThunkAwait::AlreadyForced),
+                ParallelThunkState::Failed => return Ok(ParallelThunkAwait::AlreadyFailed),
+            }
+        }
+    }
+
+    fn observe_awaited_after_mark(
+        &self,
+        owner: ParallelThunkWorkerId,
+    ) -> Result<ParallelThunkAwait, ParallelThunkStateError> {
+        match self.state()? {
+            ParallelThunkState::Awaited {
+                owner: actual_owner,
+            } if actual_owner == owner => Ok(ParallelThunkAwait::Awaited {
+                owner,
+                newly_marked: true,
+            }),
+            ParallelThunkState::Forced => Ok(ParallelThunkAwait::AlreadyForced),
+            ParallelThunkState::Failed => Ok(ParallelThunkAwait::AlreadyFailed),
+            actual => Err(ParallelThunkStateError::UnexpectedState {
+                expected_owner: owner,
+                actual,
+            }),
+        }
+    }
+
+    fn publish_forced(
+        &self,
+        owner: ParallelThunkWorkerId,
+    ) -> Result<ParallelThunkPublish, ParallelThunkStateError> {
+        self.publish_terminal(owner, ParallelThunkTerminalState::Forced)
+    }
+
+    fn publish_failed(
+        &self,
+        owner: ParallelThunkWorkerId,
+    ) -> Result<ParallelThunkPublish, ParallelThunkStateError> {
+        self.publish_terminal(owner, ParallelThunkTerminalState::Failed)
+    }
+
+    fn publish_terminal(
+        &self,
+        owner: ParallelThunkWorkerId,
+        terminal_state: ParallelThunkTerminalState,
+    ) -> Result<ParallelThunkPublish, ParallelThunkStateError> {
+        loop {
+            let actual = self.state()?;
+            let had_waiters = match actual {
+                ParallelThunkState::Pending {
+                    owner: actual_owner,
+                } if actual_owner == owner => false,
+                ParallelThunkState::Awaited {
+                    owner: actual_owner,
+                } if actual_owner == owner => true,
+                _ => {
+                    return Err(ParallelThunkStateError::UnexpectedState {
+                        expected_owner: owner,
+                        actual,
+                    });
+                }
+            };
+
+            if self
+                .state
+                .compare_exchange(
+                    actual.as_raw(),
+                    terminal_state.as_state().as_raw(),
+                    Ordering::Release,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return Ok(ParallelThunkPublish {
+                    owner,
+                    terminal_state,
+                    had_waiters,
+                });
+            }
+        }
+    }
+}
+
+/// Result of trying to claim a parallel thunk.
+#[must_use = "a claimed parallel thunk must be published as forced or failed"]
+#[derive(Debug)]
+pub enum ParallelThunkClaim<'a> {
+    /// The caller won the suspended-to-pending CAS and owns evaluation.
+    Claimed(ParallelThunkClaimGuard<'a>),
+    /// The thunk has already published a value.
+    AlreadyForced,
+    /// The thunk has already published an error.
+    AlreadyFailed,
+    /// The same worker re-entered a thunk it already owns.
+    SelfCycle {
+        /// The worker that owns the recursive force.
+        owner: ParallelThunkWorkerId,
+    },
+    /// Another worker is forcing the thunk and no waiter has been marked.
+    ForeignPending {
+        /// The worker that owns evaluation of the thunk body.
+        owner: ParallelThunkWorkerId,
+    },
+    /// Another worker is forcing the thunk and at least one waiter exists.
+    ForeignAwaited {
+        /// The worker that owns evaluation of the thunk body.
+        owner: ParallelThunkWorkerId,
+    },
+}
+
+/// A live claim on a parallel thunk state word.
+///
+/// Dropping an active guard publishes [`ParallelThunkTerminalState::Failed`] so
+/// safe unwinding cannot leave the state word stuck in `Pending` or `Awaited`.
+/// The later evaluator integration will pair that state with a captured error
+/// payload before waiters can re-raise it.
+///
+/// The guard is worker-affine and intentionally not [`Send`]:
+///
+/// ```compile_fail
+/// use ratchet_oracle::eval::ParallelThunkClaimGuard;
+///
+/// fn assert_send<T: Send>() {}
+///
+/// assert_send::<ParallelThunkClaimGuard<'static>>();
+/// ```
+#[must_use = "publish the claimed parallel thunk as forced or failed"]
+#[derive(Debug)]
+pub struct ParallelThunkClaimGuard<'a> {
+    state: &'a ParallelThunkStateWord,
+    owner: ParallelThunkWorkerId,
+    active: bool,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl ParallelThunkClaimGuard<'_> {
+    /// Returns the worker that owns this claim.
+    pub const fn owner(&self) -> ParallelThunkWorkerId {
+        self.owner
+    }
+
+    /// Publishes a successful thunk result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::UnexpectedState`] if the state word
+    /// is no longer pending or awaited for this guard's owner. Returns
+    /// [`ParallelThunkStateError::InvalidStateWord`] if the private atomic word
+    /// contains an unsupported encoding.
+    pub fn publish_forced(mut self) -> Result<ParallelThunkPublish, ParallelThunkStateError> {
+        let report = self.state.publish_forced(self.owner)?;
+        self.active = false;
+        Ok(report)
+    }
+
+    /// Publishes a failed thunk result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkStateError::UnexpectedState`] if the state word
+    /// is no longer pending or awaited for this guard's owner. Returns
+    /// [`ParallelThunkStateError::InvalidStateWord`] if the private atomic word
+    /// contains an unsupported encoding.
+    pub fn publish_failed(mut self) -> Result<ParallelThunkPublish, ParallelThunkStateError> {
+        let report = self.state.publish_failed(self.owner)?;
+        self.active = false;
+        Ok(report)
+    }
+}
+
+impl Drop for ParallelThunkClaimGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.state.publish_failed(self.owner);
+        }
+    }
+}
+
+/// Result of marking a claimed thunk as awaited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParallelThunkAwait {
+    /// No worker owns the thunk yet.
+    Unclaimed,
+    /// The thunk has already published a value.
+    AlreadyForced,
+    /// The thunk has already published an error.
+    AlreadyFailed,
+    /// The waiter is the same worker that owns the thunk, so this is a cycle.
+    SelfCycle {
+        /// The worker that owns the recursive force.
+        owner: ParallelThunkWorkerId,
+    },
+    /// The state word records that another worker owns the thunk.
+    ///
+    /// This does not by itself make it safe to park; the future waiter-list
+    /// protocol must still register the waiter and recheck terminal states.
+    Awaited {
+        /// The worker that owns evaluation of the thunk body.
+        owner: ParallelThunkWorkerId,
+        /// Whether this call changed the state from `Pending` to `Awaited`.
+        newly_marked: bool,
+    },
+}
+
+/// A terminal state that can be published by a claim owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParallelThunkTerminalState {
+    /// The thunk body produced a value.
+    Forced,
+    /// The thunk body produced an error.
+    Failed,
+}
+
+impl ParallelThunkTerminalState {
+    const fn as_state(self) -> ParallelThunkState {
+        match self {
+            Self::Forced => ParallelThunkState::Forced,
+            Self::Failed => ParallelThunkState::Failed,
+        }
+    }
+}
+
+/// Metadata returned when a claim owner publishes a terminal state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelThunkPublish {
+    owner: ParallelThunkWorkerId,
+    terminal_state: ParallelThunkTerminalState,
+    had_waiters: bool,
+}
+
+impl ParallelThunkPublish {
+    /// Returns the worker that published the terminal state.
+    pub const fn owner(self) -> ParallelThunkWorkerId {
+        self.owner
+    }
+
+    /// Returns the terminal state that was published.
+    pub const fn terminal_state(self) -> ParallelThunkTerminalState {
+        self.terminal_state
+    }
+
+    /// Returns whether the state had reached `Awaited` before publication.
+    pub const fn had_waiters(self) -> bool {
+        self.had_waiters
+    }
+}
+
+/// A failure while decoding or transitioning a parallel thunk state word.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ParallelThunkStateError {
+    /// The atomic state word contained an unsupported encoding.
+    #[error("invalid parallel thunk state word {raw}")]
+    InvalidStateWord {
+        /// The unsupported raw state word.
+        raw: u64,
+    },
+    /// A transition was attempted from the wrong claimed state.
+    #[error("expected parallel thunk owner {expected_owner:?}, got state {actual:?}")]
+    UnexpectedState {
+        /// The owner required by the live claim.
+        expected_owner: ParallelThunkWorkerId,
+        /// The state that was observed.
+        actual: ParallelThunkState,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc, Barrier, Mutex,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        },
+        thread,
+    };
+
+    use super::*;
+
+    fn worker(raw: u64) -> ParallelThunkWorkerId {
+        ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+    }
+
+    #[test]
+    fn worker_ids_reject_zero_and_reserved_overflow() {
+        assert_eq!(ParallelThunkWorkerId::new(0), None);
+        assert_eq!(
+            ParallelThunkWorkerId::new(PARALLEL_THUNK_MAX_WORKER_ID)
+                .map(ParallelThunkWorkerId::get),
+            Some(PARALLEL_THUNK_MAX_WORKER_ID)
+        );
+        assert_eq!(
+            ParallelThunkWorkerId::new(PARALLEL_THUNK_MAX_WORKER_ID + 1),
+            None
+        );
+    }
+
+    #[test]
+    fn states_roundtrip_raw_words() {
+        let owner = worker(7);
+        let states = [
+            ParallelThunkState::Suspended,
+            ParallelThunkState::Pending { owner },
+            ParallelThunkState::Awaited { owner },
+            ParallelThunkState::Forced,
+            ParallelThunkState::Failed,
+        ];
+
+        for state in states {
+            assert_eq!(ParallelThunkState::from_raw(state.as_raw()), Ok(state));
+        }
+
+        assert_eq!(
+            ParallelThunkState::from_raw(PENDING_TAG),
+            Err(ParallelThunkStateError::InvalidStateWord { raw: PENDING_TAG })
+        );
+        assert_eq!(
+            ParallelThunkState::from_raw(7),
+            Err(ParallelThunkStateError::InvalidStateWord { raw: 7 })
+        );
+        assert_eq!(ParallelThunkState::Pending { owner }.owner(), Some(owner));
+        assert_eq!(ParallelThunkState::Forced.owner(), None);
+    }
+
+    #[test]
+    fn suspended_thunk_claims_and_publishes_forced() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+
+        let ParallelThunkClaim::Claimed(guard) =
+            state.try_claim(owner).expect("claim checks state")
+        else {
+            panic!("suspended thunk should be claimed");
+        };
+
+        assert_eq!(
+            state.state(),
+            Ok(ParallelThunkState::Pending {
+                owner: guard.owner()
+            })
+        );
+
+        let publish = guard.publish_forced().expect("publish succeeds");
+
+        assert_eq!(publish.owner(), owner);
+        assert_eq!(publish.terminal_state(), ParallelThunkTerminalState::Forced);
+        assert!(!publish.had_waiters());
+        assert_eq!(state.state(), Ok(ParallelThunkState::Forced));
+        assert!(matches!(
+            state.try_claim(worker(2)),
+            Ok(ParallelThunkClaim::AlreadyForced)
+        ));
+    }
+
+    #[test]
+    fn concurrent_claim_has_single_winner() {
+        const WORKERS: usize = 8;
+
+        let state = Arc::new(ParallelThunkStateWord::new());
+        let start = Arc::new(Barrier::new(WORKERS));
+        let finish = Arc::new(Barrier::new(WORKERS));
+        let outcomes = Arc::new(Mutex::new(Vec::with_capacity(WORKERS)));
+        let mut handles = Vec::with_capacity(WORKERS);
+
+        for raw_worker in 1..=WORKERS as u64 {
+            let state = Arc::clone(&state);
+            let start = Arc::clone(&start);
+            let finish = Arc::clone(&finish);
+            let outcomes = Arc::clone(&outcomes);
+            handles.push(thread::spawn(move || {
+                let worker = worker(raw_worker);
+                start.wait();
+
+                match state.try_claim(worker).expect("claim checks state") {
+                    ParallelThunkClaim::Claimed(guard) => {
+                        outcomes.lock().expect("outcomes lock").push("claimed");
+                        finish.wait();
+                        guard.publish_forced().expect("winner publishes");
+                    }
+                    ParallelThunkClaim::ForeignPending { .. } => {
+                        outcomes.lock().expect("outcomes lock").push("foreign");
+                        finish.wait();
+                    }
+                    other => {
+                        panic!("unexpected claim result in contention test: {other:?}");
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("worker joins");
+        }
+
+        let outcomes = outcomes.lock().expect("outcomes lock");
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == "claimed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == "foreign")
+                .count(),
+            WORKERS - 1
+        );
+        assert_eq!(state.state(), Ok(ParallelThunkState::Forced));
+    }
+
+    #[test]
+    fn awaited_marks_foreign_pending_and_reports_waiters_on_publish() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+        let waiter = worker(2);
+        let second_waiter = worker(3);
+
+        let ParallelThunkClaim::Claimed(guard) =
+            state.try_claim(owner).expect("claim checks state")
+        else {
+            panic!("suspended thunk should be claimed");
+        };
+
+        assert_eq!(
+            state.mark_awaited(owner),
+            Ok(ParallelThunkAwait::SelfCycle { owner })
+        );
+        assert_eq!(
+            state.mark_awaited(waiter),
+            Ok(ParallelThunkAwait::Awaited {
+                owner,
+                newly_marked: true,
+            })
+        );
+        assert_eq!(state.state(), Ok(ParallelThunkState::Awaited { owner }));
+        assert_eq!(
+            state.mark_awaited(second_waiter),
+            Ok(ParallelThunkAwait::Awaited {
+                owner,
+                newly_marked: false,
+            })
+        );
+
+        let publish = guard.publish_forced().expect("publish succeeds");
+
+        assert!(publish.had_waiters());
+        assert_eq!(state.state(), Ok(ParallelThunkState::Forced));
+    }
+
+    #[test]
+    fn failed_state_is_terminal_for_claim_and_await() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+
+        let ParallelThunkClaim::Claimed(guard) =
+            state.try_claim(owner).expect("claim checks state")
+        else {
+            panic!("suspended thunk should be claimed");
+        };
+
+        let publish = guard.publish_failed().expect("publish succeeds");
+
+        assert_eq!(publish.terminal_state(), ParallelThunkTerminalState::Failed);
+        assert_eq!(state.state(), Ok(ParallelThunkState::Failed));
+        assert!(matches!(
+            state.try_claim(worker(2)),
+            Ok(ParallelThunkClaim::AlreadyFailed)
+        ));
+        assert_eq!(
+            state.mark_awaited(worker(2)),
+            Ok(ParallelThunkAwait::AlreadyFailed)
+        );
+    }
+
+    #[test]
+    fn dropped_claim_publishes_failed_to_avoid_stuck_pending() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+
+        {
+            let ParallelThunkClaim::Claimed(_guard) =
+                state.try_claim(owner).expect("claim checks state")
+            else {
+                panic!("suspended thunk should be claimed");
+            };
+            assert_eq!(state.state(), Ok(ParallelThunkState::Pending { owner }));
+        }
+
+        assert_eq!(state.state(), Ok(ParallelThunkState::Failed));
+    }
+
+    #[test]
+    fn dropped_claim_publishes_failed_from_awaited_state() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+        let waiter = worker(2);
+
+        {
+            let ParallelThunkClaim::Claimed(_guard) =
+                state.try_claim(owner).expect("claim checks state")
+            else {
+                panic!("suspended thunk should be claimed");
+            };
+            assert_eq!(
+                state.mark_awaited(waiter),
+                Ok(ParallelThunkAwait::Awaited {
+                    owner,
+                    newly_marked: true,
+                })
+            );
+            assert_eq!(state.state(), Ok(ParallelThunkState::Awaited { owner }));
+        }
+
+        assert_eq!(state.state(), Ok(ParallelThunkState::Failed));
+    }
+
+    #[test]
+    fn acquire_load_observes_payload_written_before_release_publish() {
+        let state = Arc::new(ParallelThunkStateWord::new());
+        let payload = Arc::new(AtomicUsize::new(0));
+        let owner_ready = Arc::new(Barrier::new(2));
+        let owner = worker(1);
+
+        let owner_thread = {
+            let state = Arc::clone(&state);
+            let payload = Arc::clone(&payload);
+            let owner_ready = Arc::clone(&owner_ready);
+            thread::spawn(move || {
+                let ParallelThunkClaim::Claimed(guard) =
+                    state.try_claim(owner).expect("claim checks state")
+                else {
+                    panic!("suspended thunk should be claimed");
+                };
+
+                owner_ready.wait();
+                payload.store(55, AtomicOrdering::Relaxed);
+                guard.publish_forced().expect("publish succeeds");
+            })
+        };
+
+        owner_ready.wait();
+        let observed = loop {
+            if state.state().expect("state decodes") == ParallelThunkState::Forced {
+                break payload.load(AtomicOrdering::Relaxed);
+            }
+            thread::yield_now();
+        };
+
+        owner_thread.join().expect("owner joins");
+        assert_eq!(observed, 55);
+    }
+
+    #[test]
+    fn publish_from_wrong_owner_fails_without_changing_state() {
+        let state = ParallelThunkStateWord::new();
+        let owner = worker(1);
+        let wrong_owner = worker(2);
+
+        let ParallelThunkClaim::Claimed(guard) =
+            state.try_claim(owner).expect("claim checks state")
+        else {
+            panic!("suspended thunk should be claimed");
+        };
+
+        assert_eq!(
+            state.publish_forced(wrong_owner),
+            Err(ParallelThunkStateError::UnexpectedState {
+                expected_owner: wrong_owner,
+                actual: ParallelThunkState::Pending { owner },
+            })
+        );
+        assert_eq!(state.state(), Ok(ParallelThunkState::Pending { owner }));
+
+        guard.publish_forced().expect("real owner publishes");
+    }
+}

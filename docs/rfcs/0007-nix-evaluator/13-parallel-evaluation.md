@@ -758,6 +758,24 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
 
 - [ ] Atomic thunk state word with the superset machine `Suspended → Pending → Awaited → Forced/Failed` plus same-thread `Blackhole` cycle detection (worker/fiber id in the `Pending` word distinguishes cross-thread reentry from a genuine cycle) (§3.1) — **P3.5**, `C-12`; the word is already atomic from **P1**, so this adds a scheduler, not a representation change.
 - [ ] The `force` claim protocol: acquire-load the state, single-winner CAS `Suspended → Pending`, self-reentry → `InfiniteRecursion`, release-store of `Forced`/`Failed` with waiter wakeup (§3.2) — **P3.5**, `C-12`; gated by the loom audit (§3.6).
+- [x] Current L2 CAS state-word precursor:
+      `ratchet-oracle::eval::thunk_cas` defines the owner-tagged atomic word
+      encoding for `Suspended`, `Pending(worker)`, `Awaited(worker)`,
+      `Forced`, and `Failed`; exposes acquire state loads, single-winner
+      `Suspended -> Pending(worker)` claim CAS, same-worker cycle
+      classification, foreign pending/awaited classification, non-parking
+      foreign `Pending -> Awaited` marking, and guarded release publication to
+      `Forced` or `Failed`. Active claim guards are deliberately not `Send`,
+      and dropping one publishes `Failed` so safe unwinding cannot strand a
+      thunk in a claimed state. Unit tests pin encoding round-trips,
+      exactly-one concurrent claimant, self-cycle versus foreign contention,
+      awaited publication metadata, failed terminal behavior, drop-to-failed
+      unwinding, acquire/release payload visibility, and wrong-owner publish
+      rejection. This is the state-word/protocol precursor only: it does not
+      replace the serial tree-walk thunk cell, does not store forced values or
+      captured errors, does not install waiter lists or wakeups, does not
+      perform work stealing or parking, and does not satisfy the loom/Miri/TSan
+      gate (§3.6).
 - [ ] Wait-or-steal on a foreign claimed thunk: drain own deque, then steal a peer task, then park on the waiter list — never busy-spin, never speculative *helping* (re-running a claimed effectful thunk) (§3.3) — **P3.5**, `C-12`.
 - [ ] Tag-test fast path: WHNF-tagged values return by inspection with no atomic load/CAS; only a tag miss enters the protocol (§3.4) — **P3.5**, `C-12`; co-designed with the pointer-tag work (`M-4`/`S-6`).
 
