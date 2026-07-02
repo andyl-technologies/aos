@@ -1448,6 +1448,17 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliDeterminismErgonomics = import ./phase5-cli-determinism-ergonomics.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliDeterminismErgonomics";
+      taskIds = ["T-CLI-4"];
+      dependencies = [
+        phase5.cliBackendSelection
+        phase4.gates.replayOracle.rawGate
+        phase4.gates.e2eDeterminism.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

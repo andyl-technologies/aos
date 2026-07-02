@@ -954,11 +954,27 @@ branch on the verdict without parsing output:
   focused tests record local and remote command-runner invocations and compare
   stdout/stderr, exit code, canonical-log digest, and artifact digest
   projections; full flag/env/AOS package-set discovery remains T-CLI-5.
-- [ ] **T-CLI-4** Implement determinism ergonomics: seed resolution
+- [x] **T-CLI-4** Implement determinism ergonomics: seed resolution
   (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
   artifact + copy-pasteable repro command, and the three trace formats
   (jsonl/json/table) over the canonical log; assert no wall-clock feeds canonical
   State. — satisfies [CLI-9], [CLI-10], [CLI-11], [CLI-12]; spec §4.
+  Completed by `checks.crucible.phase5.cliDeterminismErgonomics`: the CLI now
+  builds and executes a `DeterminismErgonomicsPlan` before backend routing for
+  commands that create a run identity, resolves the seed by explicit flag,
+  `CRUCIBLE_SEED`, then pre-run OS entropy, and prints the resolved seed unless
+  quiet; replay and resume are explicitly artifact/savepoint-owned seed modes.
+  The resolved seed is threaded into the backend-routed canonical run-identity
+  projection and into failure reproduction artifacts, so same-seed local/remote
+  routes stay equivalent while different seeds change the canonical digest. The
+  generic non-passing outcome path writes the self-contained artifact and emits
+  shell-quoted `crucible replay <artifact>` plus
+  `crucible debug <artifact> --at-failure` footer commands. Routed command
+  output now renders or writes the canonical log through `jsonl`, `json`, and
+  `table` over one canonical entry digest, emits `jsonl` entry by entry, rejects
+  `markdown` for event-log traces, and propagates non-passing outcomes through
+  the process exit-code path after writing artifacts. The gate scans the CLI plus
+  canonical model/session sources for wall-clock APIs on canonical paths.
 - [ ] **T-CLI-5** Implement hermetic QEMU/plugin discovery
   (flag → env → AOS package set, no host `$PATH`), clear fail-with-exit-4 on
   absence/mismatch, and pinning the AOS QEMU build identity + plugin ABI version

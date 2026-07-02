@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
@@ -26,6 +26,8 @@ use crucible_session::{SessionCommand, SessionCommandKind};
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
+const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
+const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(
@@ -36,7 +38,7 @@ const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
 )]
 struct Cli {
     /// Set root entropy.
-    #[arg(long, env = "CRUCIBLE_SEED", value_name = "u64|hex", global = true)]
+    #[arg(long, value_name = "u64|hex", global = true)]
     seed: Option<String>,
     /// Select local backend.
     #[arg(long, value_enum, default_value_t = Backend::Auto, global = true)]
@@ -862,6 +864,541 @@ fn execute_cli_dispatch_plan(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct DeterminismErgonomicsPlan {
+    subcommand: CliSubcommand,
+    seed: ResolvedSeed,
+    seed_printed_at_run_start: bool,
+    generated_seed_drawn_before_run: bool,
+    generated_seed_is_identity_only: bool,
+    failure_artifact_rule: FailureArtifactRule,
+    trace_formats: Vec<OutputFormat>,
+    jsonl_streams_entries: bool,
+    format_changes_only_rendering: bool,
+    no_wall_clock_feeds_canonical_state: bool,
+}
+
+impl DeterminismErgonomicsPlan {
+    fn proves_t_cli_4(&self) -> bool {
+        self.seed_printed_at_run_start
+            && self.failure_artifact_rule.self_contained_artifact
+            && self.failure_artifact_rule.replay_command_copy_pasteable
+            && self.failure_artifact_rule.debug_command_copy_pasteable
+            && self.trace_formats
+                == vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table]
+            && self.jsonl_streams_entries
+            && self.format_changes_only_rendering
+            && self.no_wall_clock_feeds_canonical_state
+            && match self.seed.source {
+                SeedSource::Flag | SeedSource::Environment => {
+                    !self.generated_seed_drawn_before_run && self.seed.value_source_pinned
+                }
+                SeedSource::Generated => {
+                    self.generated_seed_drawn_before_run
+                        && self.generated_seed_is_identity_only
+                        && self.seed.value_source_pinned
+                }
+            }
+    }
+
+    fn seed_announcement(&self) -> String {
+        self.seed.announcement()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvedSeed {
+    value: u64,
+    source: SeedSource,
+    value_source_pinned: bool,
+}
+
+impl ResolvedSeed {
+    fn announcement(&self) -> String {
+        match self.source {
+            SeedSource::Flag => {
+                format!("crucible: seed = {} (--seed)", format_seed(self.value))
+            }
+            SeedSource::Environment => {
+                format!(
+                    "crucible: seed = {} ({CRUCIBLE_SEED_ENV})",
+                    format_seed(self.value)
+                )
+            }
+            SeedSource::Generated => {
+                format!(
+                    "crucible: seed not set; generated seed = {} (set {CRUCIBLE_SEED_ENV} to pin)",
+                    format_seed(self.value)
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SeedSource {
+    Flag,
+    Environment,
+    Generated,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailureArtifactRule {
+    self_contained_artifact: bool,
+    replay_command_copy_pasteable: bool,
+    debug_command_copy_pasteable: bool,
+}
+
+trait SeedEnvironment {
+    fn variable(&self, name: &'static str) -> Option<String>;
+}
+
+#[derive(Default)]
+struct ProcessSeedEnvironment;
+
+impl SeedEnvironment for ProcessSeedEnvironment {
+    fn variable(&self, name: &'static str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+}
+
+trait SeedEntropySource {
+    fn generated_seed(&mut self) -> Result<u64, CliError>;
+}
+
+#[derive(Default)]
+struct OsSeedEntropySource;
+
+impl SeedEntropySource for OsSeedEntropySource {
+    fn generated_seed(&mut self) -> Result<u64, CliError> {
+        let mut bytes = [0u8; 8];
+        let mut device = fs::File::open(OS_ENTROPY_DEVICE).map_err(|error| {
+            CliError::Backend(format!(
+                "could not open OS entropy source before run identity creation: {error}"
+            ))
+        })?;
+        device.read_exact(&mut bytes).map_err(|error| {
+            CliError::Backend(format!(
+                "could not read OS entropy source before run identity creation: {error}"
+            ))
+        })?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+}
+
+trait DeterminismErgonomicsRecorder {
+    fn record_seed_resolution(&mut self, seed: &ResolvedSeed);
+
+    fn record_trace_format(&mut self, format: OutputFormat);
+
+    fn record_failure_artifact_rule(&mut self, rule: &FailureArtifactRule);
+}
+
+#[derive(Default)]
+struct NullDeterminismErgonomicsRecorder;
+
+impl DeterminismErgonomicsRecorder for NullDeterminismErgonomicsRecorder {
+    fn record_seed_resolution(&mut self, _seed: &ResolvedSeed) {}
+
+    fn record_trace_format(&mut self, _format: OutputFormat) {}
+
+    fn record_failure_artifact_rule(&mut self, _rule: &FailureArtifactRule) {}
+}
+
+fn plan_determinism_ergonomics(
+    cli: &Cli,
+    environment: &impl SeedEnvironment,
+    entropy: &mut impl SeedEntropySource,
+) -> Result<Option<DeterminismErgonomicsPlan>, CliError> {
+    validate_canonical_trace_format(cli)?;
+    if !subcommand_uses_seed_resolution(&cli.command) {
+        return Ok(None);
+    }
+    let seed = resolve_seed(cli, environment, entropy)?;
+    let generated = seed.source == SeedSource::Generated;
+    Ok(Some(DeterminismErgonomicsPlan {
+        subcommand: CliSubcommand::from_command(&cli.command),
+        seed,
+        seed_printed_at_run_start: true,
+        generated_seed_drawn_before_run: generated,
+        generated_seed_is_identity_only: generated,
+        failure_artifact_rule: FailureArtifactRule {
+            self_contained_artifact: true,
+            replay_command_copy_pasteable: true,
+            debug_command_copy_pasteable: true,
+        },
+        trace_formats: vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table],
+        jsonl_streams_entries: true,
+        format_changes_only_rendering: true,
+        no_wall_clock_feeds_canonical_state: true,
+    }))
+}
+
+fn execute_determinism_ergonomics_plan(
+    plan: &DeterminismErgonomicsPlan,
+    recorder: &mut impl DeterminismErgonomicsRecorder,
+) -> Result<(), CliError> {
+    if !plan.proves_t_cli_4() {
+        return Err(CliError::Backend(
+            "CLI determinism ergonomics violate the RFC-0010 seed/artifact/trace contract"
+                .to_string(),
+        ));
+    }
+    let rendered = render_canonical_trace_format_proof()?;
+    if !rendered.iter().all(|entry| {
+        entry.entry_count == 1
+            && entry.canonical_digest == rendered[0].canonical_digest
+            && (entry.format != OutputFormat::Jsonl || entry.jsonl_streams_entries)
+            && !entry.bytes.is_empty()
+    }) {
+        return Err(CliError::Backend(
+            "canonical event-log renderers do not preserve the same entry stream".to_string(),
+        ));
+    }
+    if !BackendCommandStatus::non_passing_variants()
+        .iter()
+        .all(|status| status.is_non_passing() && status.failure_slug() != "passed")
+    {
+        return Err(CliError::Backend(
+            "non-passing outcomes are not all artifact-producing statuses".to_string(),
+        ));
+    }
+    if !canonical_state_wall_clock_guard() {
+        return Err(CliError::Backend(
+            "canonical state paths expose host wall-clock APIs".to_string(),
+        ));
+    }
+    recorder.record_seed_resolution(&plan.seed);
+    for format in &plan.trace_formats {
+        recorder.record_trace_format(*format);
+    }
+    recorder.record_failure_artifact_rule(&plan.failure_artifact_rule);
+    Ok(())
+}
+
+fn subcommand_uses_seed_resolution(command: &Commands) -> bool {
+    seed_resolution_mode(command) == SeedResolutionMode::FreshRunIdentity
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SeedResolutionMode {
+    FreshRunIdentity,
+    ArtifactOrSavepointOwned,
+    NotApplicable,
+}
+
+fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
+    matches!(
+        command,
+        Commands::Run(_)
+            | Commands::Verify(_)
+            | Commands::Save(_)
+            | Commands::Fork(_)
+            | Commands::Search(_)
+            | Commands::Fuzz(_)
+    )
+    .then_some(SeedResolutionMode::FreshRunIdentity)
+    .unwrap_or_else(|| match command {
+        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
+        Commands::Selftest(_)
+        | Commands::Triage(_)
+        | Commands::Debug(_)
+        | Commands::Serve(_)
+        | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
+        Commands::Run(_)
+        | Commands::Verify(_)
+        | Commands::Save(_)
+        | Commands::Fork(_)
+        | Commands::Search(_)
+        | Commands::Fuzz(_) => SeedResolutionMode::FreshRunIdentity,
+    })
+}
+
+fn validate_canonical_trace_format(cli: &Cli) -> Result<(), CliError> {
+    if cli.format == OutputFormat::Markdown && subcommand_uses_canonical_event_trace(&cli.command) {
+        return Err(usage_error(
+            "--format markdown is reserved for triage reports, not canonical event-log traces",
+        ));
+    }
+    Ok(())
+}
+
+fn subcommand_uses_canonical_event_trace(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Run(_)
+            | Commands::Verify(_)
+            | Commands::Save(_)
+            | Commands::Resume(_)
+            | Commands::Fork(_)
+            | Commands::Replay(_)
+            | Commands::Search(_)
+            | Commands::Fuzz(_)
+            | Commands::Selftest(_)
+    )
+}
+
+fn resolve_seed(
+    cli: &Cli,
+    environment: &impl SeedEnvironment,
+    entropy: &mut impl SeedEntropySource,
+) -> Result<ResolvedSeed, CliError> {
+    if let Some(seed) = &cli.seed {
+        return Ok(ResolvedSeed {
+            value: parse_seed_value("--seed", seed)?,
+            source: SeedSource::Flag,
+            value_source_pinned: true,
+        });
+    }
+    if let Some(seed) = environment.variable(CRUCIBLE_SEED_ENV) {
+        return Ok(ResolvedSeed {
+            value: parse_seed_value(CRUCIBLE_SEED_ENV, &seed)?,
+            source: SeedSource::Environment,
+            value_source_pinned: true,
+        });
+    }
+    Ok(ResolvedSeed {
+        value: entropy.generated_seed()?,
+        source: SeedSource::Generated,
+        value_source_pinned: true,
+    })
+}
+
+fn parse_seed_value(field: &'static str, value: &str) -> Result<u64, CliError> {
+    if value.is_empty() {
+        return Err(usage_error(format!("{field} must not be empty")));
+    }
+    let parsed = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u64>()
+    };
+    parsed.map_err(|_| usage_error(format!("{field} must be a u64 decimal or hex value")))
+}
+
+fn format_seed(seed: u64) -> String {
+    format!("0x{seed:016x}")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalLogEntry {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    node: String,
+    kind: String,
+    summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RenderedCanonicalLog {
+    format: OutputFormat,
+    bytes: Vec<u8>,
+    entry_count: usize,
+    canonical_digest: String,
+    jsonl_streams_entries: bool,
+}
+
+fn render_canonical_event_log(
+    format: OutputFormat,
+    entries: &[CanonicalLogEntry],
+) -> Result<RenderedCanonicalLog, CliError> {
+    if format == OutputFormat::Markdown {
+        return Err(usage_error(
+            "--format markdown is reserved for triage reports, not canonical event-log traces",
+        ));
+    }
+    let canonical_digest = canonical_log_digest(entries);
+    let (bytes, jsonl_streams_entries) = match format {
+        OutputFormat::Jsonl => (jsonl_for_canonical_log_entries(entries).into_bytes(), true),
+        OutputFormat::Json => (
+            format!(
+                "[{}]",
+                entries
+                    .iter()
+                    .map(json_for_canonical_log_entry)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .into_bytes(),
+            false,
+        ),
+        OutputFormat::Table => (table_for_canonical_log_entries(entries).into_bytes(), false),
+        OutputFormat::Markdown => unreachable!("markdown rejected above"),
+    };
+    Ok(RenderedCanonicalLog {
+        format,
+        bytes,
+        entry_count: entries.len(),
+        canonical_digest,
+        jsonl_streams_entries,
+    })
+}
+
+fn jsonl_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
+    let mut text = String::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        text.push_str(&json_for_canonical_log_entry(entry));
+    }
+    text
+}
+
+fn canonical_log_digest(entries: &[CanonicalLogEntry]) -> String {
+    let mut material = String::new();
+    for entry in entries {
+        artifact_line(
+            &mut material,
+            &[
+                &entry.sequence.to_string(),
+                &entry.virtual_time_ticks.to_string(),
+                &entry.node,
+                &entry.kind,
+                &entry.summary,
+            ],
+        );
+    }
+    content_address_bytes(material.as_bytes())
+}
+
+fn json_for_canonical_log_entry(entry: &CanonicalLogEntry) -> String {
+    format!(
+        "{{\"seq\":{},\"virtual_time\":{},\"node\":\"{}\",\"kind\":\"{}\",\"summary\":\"{}\"}}",
+        entry.sequence,
+        entry.virtual_time_ticks,
+        json_escape(&entry.node),
+        json_escape(&entry.kind),
+        json_escape(&entry.summary)
+    )
+}
+
+fn table_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
+    let mut lines = vec![String::from("seq\tvirtual_time\tnode\tkind\tsummary")];
+    for entry in entries {
+        lines.push(format!(
+            "{}\t{}\t{}\t{}\t{}",
+            entry.sequence, entry.virtual_time_ticks, entry.node, entry.kind, entry.summary
+        ));
+    }
+    lines.join("\n")
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn render_canonical_trace_format_proof() -> Result<Vec<RenderedCanonicalLog>, CliError> {
+    let entries = [CanonicalLogEntry {
+        sequence: 0,
+        virtual_time_ticks: 0,
+        node: String::from("proof-node"),
+        kind: String::from("proof"),
+        summary: String::from("same canonical entry stream"),
+    }];
+    [OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table]
+        .into_iter()
+        .map(|format| render_canonical_event_log(format, &entries))
+        .collect()
+}
+
+fn canonical_state_wall_clock_guard() -> bool {
+    let sources = [
+        ("crucible-cli", include_str!("main.rs")),
+        (
+            "crucible-model",
+            include_str!("../../crucible/src/model.rs"),
+        ),
+        (
+            "crucible-session",
+            include_str!("../../crucible-session/src/lib.rs"),
+        ),
+    ];
+    let forbidden = [
+        ["System", "Time"].concat(),
+        ["Ins", "tant::now"].concat(),
+        ["std::", "ti", "me::", "Ins", "tant"].concat(),
+        ["UNIX", "_EPOCH"].concat(),
+    ];
+    sources.iter().all(|(_, source)| {
+        forbidden
+            .iter()
+            .all(|needle| !source.contains(needle.as_str()))
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailureReproductionFooter {
+    artifact_path: PathBuf,
+    replay_command: String,
+    debug_command: String,
+    self_contained_artifact: bool,
+}
+
+fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
+    let artifact = path.display().to_string();
+    FailureReproductionFooter {
+        replay_command: format!(
+            "crucible replay {}",
+            shell_quote_command_argument(&artifact)
+        ),
+        debug_command: crucible::DebugFailureFooterCommand::new(artifact).debug_command,
+        artifact_path: path,
+        self_contained_artifact: true,
+    }
+}
+
+fn shell_quote_command_argument(value: &str) -> String {
+    if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
+        return value.to_owned();
+    }
+
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'@'
+            | b'%'
+            | b'_'
+            | b'+'
+            | b'='
+            | b':'
+            | b','
+            | b'.'
+            | b'/'
+            | b'-'
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BackendSelectionPlan {
     subcommand: CliSubcommand,
     target: BackendExecutionTarget,
@@ -1177,11 +1714,14 @@ fn execute_backend_selection_plan(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BackendCommandOutcome {
     subcommand: CliSubcommand,
+    status: BackendCommandStatus,
     exit_code: i32,
     stdout: Vec<String>,
     stderr: Vec<String>,
+    canonical_log: Vec<CanonicalLogEntry>,
     canonical_log_digest: String,
     artifact_digest: String,
+    reproduction_artifact: Option<Vec<u8>>,
 }
 
 impl BackendCommandOutcome {
@@ -1189,6 +1729,7 @@ impl BackendCommandOutcome {
     fn normalized(&self) -> BackendCommandOutcomeProjection {
         BackendCommandOutcomeProjection {
             subcommand: self.subcommand,
+            status: self.status,
             exit_code: self.exit_code,
             stdout: self.stdout.clone(),
             stderr: self.stderr.clone(),
@@ -1198,10 +1739,38 @@ impl BackendCommandOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BackendCommandStatus {
+    Passed,
+    Failed,
+    Crashed,
+    Timeout,
+}
+
+impl BackendCommandStatus {
+    fn non_passing_variants() -> [Self; 3] {
+        [Self::Failed, Self::Crashed, Self::Timeout]
+    }
+
+    fn is_non_passing(self) -> bool {
+        !matches!(self, Self::Passed)
+    }
+
+    fn failure_slug(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Crashed => "crashed",
+            Self::Timeout => "timeout",
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BackendCommandOutcomeProjection {
     subcommand: CliSubcommand,
+    status: BackendCommandStatus,
     exit_code: i32,
     stdout: Vec<String>,
     stderr: Vec<String>,
@@ -1215,6 +1784,7 @@ trait BackendCommandRunner {
         backend: &ResolvedLocalBackend,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
+        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 
     fn run_remote(
@@ -1222,6 +1792,7 @@ trait BackendCommandRunner {
         daemon: &str,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
+        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 }
 
@@ -1234,8 +1805,13 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         _backend: &ResolvedLocalBackend,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
+        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
-        Ok(backend_command_outcome(thin_plan, backend_plan))
+        Ok(backend_command_outcome(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+        ))
     }
 
     fn run_remote(
@@ -1243,14 +1819,20 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         _daemon: &str,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
+        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
-        Ok(backend_command_outcome(thin_plan, backend_plan))
+        Ok(backend_command_outcome(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+        ))
     }
 }
 
 fn execute_backend_routed_command(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
     if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
@@ -1270,10 +1852,10 @@ fn execute_backend_routed_command(
         &backend_plan.daemon,
     ) {
         (BackendExecutionTarget::Local, Some(backend), None) => {
-            runner.run_local(backend, thin_plan, backend_plan)
+            runner.run_local(backend, thin_plan, backend_plan, ergonomics_plan)
         }
         (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => {
-            runner.run_remote(daemon, thin_plan, backend_plan)
+            runner.run_remote(daemon, thin_plan, backend_plan, ergonomics_plan)
         }
         _ => Err(CliError::Backend(
             "CLI backend route is internally inconsistent".to_string(),
@@ -1284,36 +1866,86 @@ fn execute_backend_routed_command(
 fn backend_command_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
 ) -> BackendCommandOutcome {
-    let mut material = format!("{:?}\n", thin_plan.subcommand);
-    for command in &thin_plan.session_commands {
-        material.push_str(&format!("session:{command:?}\n"));
-    }
-    for call in &thin_plan.api_calls {
-        material.push_str("api:");
-        material.push_str(call.control_client_method());
-        material.push('\n');
-    }
-    let canonical_log_digest = content_address_bytes(material.as_bytes());
+    let canonical_log = backend_canonical_log_entries(thin_plan, backend_plan, ergonomics_plan);
+    let canonical_log_digest = canonical_log_digest(&canonical_log);
     let artifact_digest = content_address_bytes(
         format!(
-            "artifact\n{:?}\n{}\n",
-            thin_plan.subcommand, canonical_log_digest
+            "artifact\n{:?}\n{}\nseed={}\n",
+            thin_plan.subcommand,
+            canonical_log_digest,
+            ergonomics_plan
+                .map(|plan| format_seed(plan.seed.value))
+                .unwrap_or_else(|| String::from("artifact-or-savepoint-owned"))
         )
         .as_bytes(),
     );
 
     BackendCommandOutcome {
         subcommand: backend_plan.subcommand,
+        status: BackendCommandStatus::Passed,
         exit_code: 0,
         stdout: vec![format!(
             "outcome\t{:?}\t{}",
             thin_plan.subcommand, canonical_log_digest
         )],
         stderr: Vec::new(),
+        canonical_log,
         canonical_log_digest,
         artifact_digest,
+        reproduction_artifact: None,
     }
+}
+
+fn backend_canonical_log_entries(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+) -> Vec<CanonicalLogEntry> {
+    let mut entries = Vec::new();
+    let seed_summary = ergonomics_plan
+        .map(|plan| {
+            format!(
+                "seed={} source={:?}",
+                format_seed(plan.seed.value),
+                plan.seed.source
+            )
+        })
+        .unwrap_or_else(|| String::from("seed=artifact-or-savepoint-owned"));
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: 0,
+        node: String::from("cli"),
+        kind: String::from("run_identity"),
+        summary: seed_summary,
+    });
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: 0,
+        node: String::from("cli"),
+        kind: String::from("backend_fidelity"),
+        summary: format!("{:?}", backend_plan.requested_backend),
+    });
+    for command in &thin_plan.session_commands {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("session"),
+            kind: String::from("session_command"),
+            summary: format!("{command:?}"),
+        });
+    }
+    for call in &thin_plan.api_calls {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("api"),
+            kind: String::from("api_call"),
+            summary: call.control_client_method().to_string(),
+        });
+    }
+    entries
 }
 
 fn main() {
@@ -1346,15 +1978,37 @@ fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    let mut seed_entropy = OsSeedEntropySource;
+    let ergonomics_plan =
+        plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
+    if let Some(plan) = &ergonomics_plan {
+        execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
+        if !cli.quiet {
+            println!("{}", plan.seed_announcement());
+        }
+    }
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
-        let _ = execute_backend_routed_command(
+        let mut outcome = execute_backend_routed_command(
             &thin_plan,
             &backend_plan,
+            ergonomics_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
+        if matches!(
+            &cli.command,
+            Commands::Run(RunArgs {
+                emit_mock_failure_artifact: true
+            })
+        ) {
+            mark_mock_failure_outcome(cli, &mut outcome, ergonomics_plan.as_ref())?;
+        }
         if backend_plan.should_announce(cli.quiet) {
             println!("{}", backend_plan.announcement());
+        }
+        emit_backend_command_output(cli, &outcome)?;
+        if outcome.status.is_non_passing() {
+            return Err(CliError::Outcome(outcome.status));
         }
     }
 
@@ -1373,26 +2027,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             Ok(())
         }
-        Commands::Run(args) => {
-            if args.emit_mock_failure_artifact {
-                let artifact = mock_failure_reproduction_artifact_bytes(cli)?;
-                let report = write_failure_reproduction_artifact(cli, &artifact, "mock failure")?;
-                if !cli.quiet {
-                    println!(
-                        "crucible: wrote reproduction artifact {} ({}) digest={}",
-                        report.path.display(),
-                        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-                        report.digest
-                    );
-                    println!("crucible: reproduce with:\n    {}", report.replay_command);
-                    println!(
-                        "crucible: debug at the failure with:\n    {}",
-                        report.debug_command
-                    );
-                }
-            }
-            Ok(())
-        }
+        Commands::Run(_) => Ok(()),
         Commands::Selftest(_) => {
             let report = run_selftest(cli)?;
             if !cli.quiet {
@@ -1469,6 +2104,133 @@ fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
     Ok(SelftestReport { verified })
 }
 
+fn mark_mock_failure_outcome(
+    cli: &Cli,
+    outcome: &mut BackendCommandOutcome,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+) -> Result<(), CliError> {
+    let Some(plan) = ergonomics_plan else {
+        return Err(CliError::Backend(
+            "run requires a resolved seed before emitting a reproduction artifact".to_string(),
+        ));
+    };
+    let artifact = mock_failure_reproduction_artifact_bytes(cli, plan.seed.value)?;
+    outcome.status = BackendCommandStatus::Failed;
+    outcome.exit_code = 1;
+    outcome.stderr.push(String::from(
+        "crucible: mock non-passing outcome requested for gate testing",
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("session"),
+        kind: String::from("outcome"),
+        summary: String::from("Failed"),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    outcome.artifact_digest = content_address_bytes(&artifact);
+    outcome.reproduction_artifact = Some(artifact);
+    Ok(())
+}
+
+fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Result<(), CliError> {
+    let _trace = emit_canonical_trace(
+        cli.format,
+        &outcome.canonical_log,
+        cli.trace.as_deref(),
+        !cli.quiet,
+    )?;
+    if outcome.status.is_non_passing() {
+        let Some(artifact) = &outcome.reproduction_artifact else {
+            return Err(CliError::Artifact(format!(
+                "{:?} outcome did not provide a reproduction artifact",
+                outcome.status
+            )));
+        };
+        let report =
+            write_failure_reproduction_artifact(cli, artifact, outcome.status.failure_slug())?;
+        if !cli.quiet {
+            println!(
+                "crucible: wrote reproduction artifact {} ({}) digest={}",
+                report.path.display(),
+                REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+                report.digest
+            );
+            println!(
+                "crucible: reproduce with:\n    {}",
+                report.footer.replay_command
+            );
+            println!(
+                "crucible: debug at the failure with:\n    {}",
+                report.footer.debug_command
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TraceRenderReport {
+    format: OutputFormat,
+    path: Option<PathBuf>,
+    bytes: Vec<u8>,
+    entry_count: usize,
+    streamed_entries: usize,
+    canonical_digest: String,
+}
+
+fn emit_canonical_trace(
+    format: OutputFormat,
+    entries: &[CanonicalLogEntry],
+    trace_path: Option<&Path>,
+    stdout: bool,
+) -> Result<TraceRenderReport, CliError> {
+    if format == OutputFormat::Markdown {
+        return Err(usage_error(
+            "--format markdown is reserved for triage reports, not canonical event-log traces",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    let mut streamed_entries = 0usize;
+    match format {
+        OutputFormat::Jsonl => {
+            let mut trace_file = trace_path.map(fs::File::create).transpose()?;
+            for entry in entries {
+                let line = json_for_canonical_log_entry(entry);
+                if stdout {
+                    println!("{line}");
+                }
+                if let Some(file) = trace_file.as_mut() {
+                    writeln!(file, "{line}")?;
+                }
+                writeln!(&mut bytes, "{line}")?;
+                streamed_entries += 1;
+            }
+        }
+        OutputFormat::Json | OutputFormat::Table => {
+            let rendered = render_canonical_event_log(format, entries)?;
+            if stdout {
+                println!("{}", String::from_utf8_lossy(&rendered.bytes));
+            }
+            if let Some(path) = trace_path {
+                fs::write(path, &rendered.bytes)?;
+            }
+            bytes = rendered.bytes;
+        }
+        OutputFormat::Markdown => unreachable!("markdown rejected above"),
+    }
+
+    Ok(TraceRenderReport {
+        format,
+        path: trace_path.map(Path::to_path_buf),
+        bytes,
+        entry_count: entries.len(),
+        streamed_entries,
+        canonical_digest: canonical_log_digest(entries),
+    })
+}
+
 fn replay_reproduction_artifact(
     cli: &Cli,
     args: &ReplayArgs,
@@ -1498,15 +2260,12 @@ fn write_failure_reproduction_artifact(
     );
     let path = cli.artifact_dir.join(file_name);
     fs::write(&path, artifact_bytes)?;
-    let replay_command = format!("crucible replay {}", path.display());
-    let debug_command =
-        crucible::DebugFailureFooterCommand::new(path.display().to_string()).debug_command;
+    let footer = failure_reproduction_footer(path.clone());
 
     Ok(FailureArtifactReport {
         path,
         digest,
-        replay_command,
-        debug_command,
+        footer,
     })
 }
 
@@ -2471,8 +3230,7 @@ fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponen
     );
 }
 
-fn mock_failure_reproduction_artifact_bytes(cli: &Cli) -> Result<Vec<u8>, CliError> {
-    let seed = 0xe2e0_0010_u64;
+fn mock_failure_reproduction_artifact_bytes(cli: &Cli, seed: u64) -> Result<Vec<u8>, CliError> {
     let scenario_material = b"scenario\tmock-failure\nnode\tnode-a\tserver\n";
     let scenario_digest = content_address_bytes(scenario_material);
     let identity = expected_replay_identity(cli)?;
@@ -2802,8 +3560,7 @@ struct ReplayArtifactReport {
 struct FailureArtifactReport {
     path: PathBuf,
     digest: String,
-    replay_command: String,
-    debug_command: String,
+    footer: FailureReproductionFooter,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3278,6 +4035,7 @@ enum CliError {
     Usage(String),
     Backend(String),
     Identity(String),
+    Outcome(BackendCommandStatus),
     Triage(String),
     Selftest(crucible::ExampleCorpusError),
 }
@@ -3291,6 +4049,10 @@ impl CliError {
             Self::Usage(_) => 64,
             Self::Backend(_) => 4,
             Self::Identity(_) => 3,
+            Self::Outcome(BackendCommandStatus::Passed) => 0,
+            Self::Outcome(BackendCommandStatus::Failed) => 1,
+            Self::Outcome(BackendCommandStatus::Timeout) => 2,
+            Self::Outcome(BackendCommandStatus::Crashed) => 3,
             Self::Triage(_) => 1,
             Self::Selftest(_) => 1,
         }
@@ -3306,6 +4068,7 @@ impl fmt::Display for CliError {
             Self::Usage(error) => write!(formatter, "{error}"),
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
+            Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
             Self::Triage(error) => write!(formatter, "{error}"),
             Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
         }
@@ -3321,6 +4084,7 @@ impl Error for CliError {
             Self::Usage(_) => None,
             Self::Backend(_) => None,
             Self::Identity(_) => None,
+            Self::Outcome(_) => None,
             Self::Triage(_) => None,
             Self::Selftest(error) => Some(error),
         }
@@ -3407,9 +4171,10 @@ mod tests {
             backend: &ResolvedLocalBackend,
             thin_plan: &CliThinWrapperPlan,
             backend_plan: &BackendSelectionPlan,
+            ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.local_runs.push(backend.clone());
-            let outcome = backend_command_outcome(thin_plan, backend_plan);
+            let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
             self.outcomes.push(outcome.clone());
             Ok(outcome)
         }
@@ -3419,12 +4184,86 @@ mod tests {
             daemon: &str,
             thin_plan: &CliThinWrapperPlan,
             backend_plan: &BackendSelectionPlan,
+            ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.remote_runs.push(daemon.to_string());
-            let outcome = backend_command_outcome(thin_plan, backend_plan);
+            let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
             self.outcomes.push(outcome.clone());
             Ok(outcome)
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingDeterminismErgonomicsRecorder {
+        seeds: Vec<ResolvedSeed>,
+        formats: Vec<OutputFormat>,
+        failure_rules: Vec<FailureArtifactRule>,
+    }
+
+    impl DeterminismErgonomicsRecorder for RecordingDeterminismErgonomicsRecorder {
+        fn record_seed_resolution(&mut self, seed: &ResolvedSeed) {
+            self.seeds.push(seed.clone());
+        }
+
+        fn record_trace_format(&mut self, format: OutputFormat) {
+            self.formats.push(format);
+        }
+
+        fn record_failure_artifact_rule(&mut self, rule: &FailureArtifactRule) {
+            self.failure_rules.push(rule.clone());
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeSeedEnvironment {
+        seed: Option<String>,
+    }
+
+    impl SeedEnvironment for FakeSeedEnvironment {
+        fn variable(&self, name: &'static str) -> Option<String> {
+            if name == CRUCIBLE_SEED_ENV {
+                self.seed.clone()
+            } else {
+                None
+            }
+        }
+    }
+
+    struct FakeSeedEntropySource {
+        next: u64,
+        draws: usize,
+    }
+
+    impl FakeSeedEntropySource {
+        fn new(next: u64) -> Self {
+            Self { next, draws: 0 }
+        }
+    }
+
+    impl SeedEntropySource for FakeSeedEntropySource {
+        fn generated_seed(&mut self) -> Result<u64, CliError> {
+            self.draws += 1;
+            Ok(self.next)
+        }
+    }
+
+    fn canonical_trace_entries() -> Vec<CanonicalLogEntry> {
+        vec![
+            CanonicalLogEntry {
+                sequence: 0,
+                virtual_time_ticks: 10,
+                node: String::from("node-a"),
+                kind: String::from("decision"),
+                summary: String::from("deliver packet"),
+            },
+            CanonicalLogEntry {
+                sequence: 1,
+                virtual_time_ticks: 12,
+                node: String::from("node-b"),
+                kind: String::from("assertion"),
+                summary: String::from("property ok"),
+            },
+        ]
     }
 
     fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
@@ -3996,7 +4835,7 @@ mod tests {
         );
         assert!(recorder.local_backends.is_empty());
         let mut runner = RecordingBackendCommandRunner::default();
-        let outcome = execute_backend_routed_command(&thin_plan, &backend_plan, &mut runner)?;
+        let outcome = execute_backend_routed_command(&thin_plan, &backend_plan, None, &mut runner)?;
         assert_eq!(runner.remote_runs, vec![String::from("127.0.0.1:9000")]);
         assert!(runner.local_runs.is_empty());
         assert_eq!(outcome.exit_code, 0);
@@ -4026,9 +4865,13 @@ mod tests {
         let mut local_runner = RecordingBackendCommandRunner::default();
         let mut remote_runner = RecordingBackendCommandRunner::default();
         let local_outcome =
-            execute_backend_routed_command(&local_thin, &local_backend, &mut local_runner)?;
-        let remote_outcome =
-            execute_backend_routed_command(&remote_thin, &remote_backend, &mut remote_runner)?;
+            execute_backend_routed_command(&local_thin, &local_backend, None, &mut local_runner)?;
+        let remote_outcome = execute_backend_routed_command(
+            &remote_thin,
+            &remote_backend,
+            None,
+            &mut remote_runner,
+        )?;
 
         assert!(local_backend.proves_t_cli_3());
         assert!(remote_backend.proves_t_cli_3());
@@ -4063,6 +4906,374 @@ mod tests {
         assert!(matches!(error, CliError::Usage(_)));
         assert_eq!(error.exit_code(), 64);
         assert!(error.to_string().contains("serve"));
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated()
+    -> Result<(), Box<dyn Error>> {
+        let mut entropy = FakeSeedEntropySource::new(0xfeed_face_cafe_beef);
+        let flag_cli = Cli::parse_from(["crucible", "--seed", "0x2a", "run"]);
+        let flag_plan = plan_determinism_ergonomics(
+            &flag_cli,
+            &FakeSeedEnvironment {
+                seed: Some(String::from("99")),
+            },
+            &mut entropy,
+        )?
+        .expect("run should resolve a seed");
+
+        assert_eq!(flag_plan.seed.value, 42);
+        assert_eq!(flag_plan.seed.source, SeedSource::Flag);
+        assert_eq!(entropy.draws, 0);
+        assert!(flag_plan.seed_announcement().contains("--seed"));
+        assert!(flag_plan.proves_t_cli_4());
+
+        let env_cli = Cli::parse_from(["crucible", "run"]);
+        let env_plan = plan_determinism_ergonomics(
+            &env_cli,
+            &FakeSeedEnvironment {
+                seed: Some(String::from("0X10")),
+            },
+            &mut entropy,
+        )?
+        .expect("run should resolve a seed");
+
+        assert_eq!(env_plan.seed.value, 16);
+        assert_eq!(env_plan.seed.source, SeedSource::Environment);
+        assert_eq!(entropy.draws, 0);
+        assert!(env_plan.seed_announcement().contains(CRUCIBLE_SEED_ENV));
+        assert!(env_plan.proves_t_cli_4());
+
+        let generated_cli = Cli::parse_from(["crucible", "run"]);
+        let generated_plan = plan_determinism_ergonomics(
+            &generated_cli,
+            &FakeSeedEnvironment::default(),
+            &mut entropy,
+        )?
+        .expect("run should resolve a seed");
+
+        assert_eq!(generated_plan.seed.value, 0xfeed_face_cafe_beef);
+        assert_eq!(generated_plan.seed.source, SeedSource::Generated);
+        assert_eq!(entropy.draws, 1);
+        assert!(generated_plan.generated_seed_drawn_before_run);
+        assert!(generated_plan.generated_seed_is_identity_only);
+        assert!(
+            generated_plan
+                .seed_announcement()
+                .contains("generated seed = 0xfeedfacecafebeef")
+        );
+        assert!(generated_plan.proves_t_cli_4());
+
+        let mut recorder = RecordingDeterminismErgonomicsRecorder::default();
+        execute_determinism_ergonomics_plan(&generated_plan, &mut recorder)?;
+        assert_eq!(recorder.seeds, vec![generated_plan.seed.clone()]);
+        assert_eq!(
+            recorder.formats,
+            vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table]
+        );
+        assert_eq!(
+            recorder.failure_rules,
+            vec![generated_plan.failure_artifact_rule.clone()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace_format()
+    -> Result<(), Box<dyn Error>> {
+        let mut entropy = FakeSeedEntropySource::new(7);
+        let bad_seed = Cli::parse_from(["crucible", "--seed", "not-a-seed", "run"]);
+        let error = match plan_determinism_ergonomics(
+            &bad_seed,
+            &FakeSeedEnvironment::default(),
+            &mut entropy,
+        ) {
+            Ok(_) => panic!("invalid seed must be rejected before dispatch"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("--seed"));
+
+        let markdown_trace = Cli::parse_from(["crucible", "--format", "markdown", "run"]);
+        let error = match plan_determinism_ergonomics(
+            &markdown_trace,
+            &FakeSeedEnvironment::default(),
+            &mut entropy,
+        ) {
+            Ok(_) => panic!("markdown must not render canonical event-log traces"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("triage reports"));
+
+        let triage = Cli::parse_from(["crucible", "--format", "markdown", "triage", "findings"]);
+        assert!(
+            plan_determinism_ergonomics(&triage, &FakeSeedEnvironment::default(), &mut entropy)?
+                .is_none()
+        );
+        assert_eq!(
+            seed_resolution_mode(&Cli::parse_from(["crucible", "replay", "case.crucible"]).command),
+            SeedResolutionMode::ArtifactOrSavepointOwned
+        );
+        assert_eq!(
+            seed_resolution_mode(&Cli::parse_from(["crucible", "resume"]).command),
+            SeedResolutionMode::ArtifactOrSavepointOwned
+        );
+        let draws_before = entropy.draws;
+        assert!(
+            plan_determinism_ergonomics(
+                &Cli::parse_from(["crucible", "replay", "case.crucible"]),
+                &FakeSeedEnvironment::default(),
+                &mut entropy,
+            )?
+            .is_none()
+        );
+        assert_eq!(entropy.draws, draws_before);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_renders_three_formats_over_same_canonical_log()
+    -> Result<(), Box<dyn Error>> {
+        let entries = canonical_trace_entries();
+        let jsonl = render_canonical_event_log(OutputFormat::Jsonl, &entries)?;
+        let json = render_canonical_event_log(OutputFormat::Json, &entries)?;
+        let table = render_canonical_event_log(OutputFormat::Table, &entries)?;
+
+        assert_eq!(jsonl.entry_count, entries.len());
+        assert_eq!(json.entry_count, entries.len());
+        assert_eq!(table.entry_count, entries.len());
+        assert_eq!(jsonl.canonical_digest, json.canonical_digest);
+        assert_eq!(json.canonical_digest, table.canonical_digest);
+        assert!(jsonl.jsonl_streams_entries);
+        assert!(!json.jsonl_streams_entries);
+        assert!(!table.jsonl_streams_entries);
+        assert_eq!(
+            String::from_utf8(jsonl.bytes.clone())?.lines().count(),
+            entries.len()
+        );
+        assert!(String::from_utf8(json.bytes)?.starts_with('['));
+        assert!(String::from_utf8(table.bytes)?.starts_with("seq\tvirtual_time"));
+
+        let error = match render_canonical_event_log(OutputFormat::Markdown, &entries) {
+            Ok(_) => panic!("markdown is not a canonical event-log trace format"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_threads_seed_into_backend_outcome() -> Result<(), Box<dyn Error>>
+    {
+        let local_cli = Cli::parse_from(["crucible", "--backend", "double", "--seed", "1", "run"]);
+        let remote_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "--daemon",
+            "127.0.0.1:9000",
+            "--seed",
+            "1",
+            "run",
+        ]);
+        let different_seed_cli =
+            Cli::parse_from(["crucible", "--backend", "double", "--seed", "2", "run"]);
+        let mut entropy = FakeSeedEntropySource::new(99);
+        let seed_one =
+            plan_determinism_ergonomics(&local_cli, &FakeSeedEnvironment::default(), &mut entropy)?
+                .expect("run should resolve a seed");
+        let remote_seed_one = plan_determinism_ergonomics(
+            &remote_cli,
+            &FakeSeedEnvironment::default(),
+            &mut entropy,
+        )?
+        .expect("remote run should resolve a seed");
+        let seed_two = plan_determinism_ergonomics(
+            &different_seed_cli,
+            &FakeSeedEnvironment::default(),
+            &mut entropy,
+        )?
+        .expect("run should resolve a seed");
+
+        let local_thin = plan_cli_invocation(&local_cli);
+        let remote_thin = plan_cli_invocation(&remote_cli);
+        let different_seed_thin = plan_cli_invocation(&different_seed_cli);
+        let local_backend =
+            plan_backend_selection(&local_cli)?.expect("run should require backend selection");
+        let remote_backend =
+            plan_backend_selection(&remote_cli)?.expect("run should require backend selection");
+        let different_seed_backend = plan_backend_selection(&different_seed_cli)?
+            .expect("run should require backend selection");
+        let mut local_runner = RecordingBackendCommandRunner::default();
+        let mut remote_runner = RecordingBackendCommandRunner::default();
+        let mut different_seed_runner = RecordingBackendCommandRunner::default();
+
+        let local = execute_backend_routed_command(
+            &local_thin,
+            &local_backend,
+            Some(&seed_one),
+            &mut local_runner,
+        )?;
+        let remote = execute_backend_routed_command(
+            &remote_thin,
+            &remote_backend,
+            Some(&remote_seed_one),
+            &mut remote_runner,
+        )?;
+        let different_seed = execute_backend_routed_command(
+            &different_seed_thin,
+            &different_seed_backend,
+            Some(&seed_two),
+            &mut different_seed_runner,
+        )?;
+
+        assert_eq!(local.normalized(), remote.normalized());
+        assert_ne!(
+            local.canonical_log_digest,
+            different_seed.canonical_log_digest
+        );
+        assert_ne!(local.artifact_digest, different_seed.artifact_digest);
+        assert!(
+            local
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_identity"
+                    && entry.summary.contains("0x0000000000000001"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_and_footer()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("artifacts");
+        let cli = Cli::parse_from([
+            "crucible",
+            "--seed",
+            "0x1234",
+            "--artifact-dir",
+            artifact_dir.to_str().unwrap_or("."),
+            "run",
+        ]);
+        let mut entropy = FakeSeedEntropySource::new(9);
+        let plan =
+            plan_determinism_ergonomics(&cli, &FakeSeedEnvironment::default(), &mut entropy)?
+                .expect("run should resolve a seed");
+        let artifact_bytes = mock_failure_reproduction_artifact_bytes(&cli, plan.seed.value)?;
+        let artifact = ReproductionArtifact::decode(&artifact_bytes)?;
+        let report =
+            write_failure_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
+
+        assert_eq!(artifact.seed, 0x1234);
+        assert_eq!(report.footer.artifact_path, report.path);
+        assert!(report.footer.self_contained_artifact);
+        assert!(report.footer.replay_command.starts_with("crucible replay "));
+        assert!(report.footer.debug_command.ends_with(" --at-failure"));
+        replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: report.path.clone(),
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_outcome()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("artifact dir with spaces");
+        let trace = temp.path().join("trace.jsonl");
+        let cli = Cli::parse_from([
+            "crucible",
+            "--seed",
+            "0x55",
+            "--artifact-dir",
+            artifact_dir.to_str().unwrap_or("."),
+            "--trace",
+            trace.to_str().unwrap_or("."),
+            "run",
+        ]);
+        let mut entropy = FakeSeedEntropySource::new(1);
+        let plan =
+            plan_determinism_ergonomics(&cli, &FakeSeedEnvironment::default(), &mut entropy)?
+                .expect("run should resolve a seed");
+        let thin = plan_cli_invocation(&cli);
+        let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
+        let mut runner = RecordingBackendCommandRunner::default();
+        let mut outcome =
+            execute_backend_routed_command(&thin, &backend, Some(&plan), &mut runner)?;
+        mark_mock_failure_outcome(&cli, &mut outcome, Some(&plan))?;
+
+        emit_backend_command_output(&cli, &outcome)?;
+
+        let trace_text = fs::read_to_string(&trace)?;
+        assert_eq!(trace_text.lines().count(), outcome.canonical_log.len());
+        let artifact_entries = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(artifact_entries.len(), 1);
+        let artifact_path = artifact_entries[0].path();
+        let artifact = ReproductionArtifact::decode(&fs::read(&artifact_path)?)?;
+        assert_eq!(artifact.seed, 0x55);
+        let footer = failure_reproduction_footer(artifact_path);
+        assert!(footer.replay_command.contains('\''));
+        assert!(footer.debug_command.contains('\''));
+        assert!(footer.replay_command.starts_with("crucible replay "));
+        assert!(footer.debug_command.ends_with(" --at-failure"));
+        assert_eq!(
+            CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
+            1
+        );
+        assert_eq!(
+            CliError::Outcome(BackendCommandStatus::Timeout).exit_code(),
+            2
+        );
+        assert_eq!(
+            CliError::Outcome(BackendCommandStatus::Crashed).exit_code(),
+            3
+        );
+
+        let dispatch_artifacts = temp.path().join("dispatch-artifacts");
+        let dispatch_cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--seed",
+            "0x55",
+            "--artifact-dir",
+            dispatch_artifacts.to_str().unwrap_or("."),
+            "run",
+            "--emit-mock-failure-artifact",
+        ]);
+        let error = match dispatch(&dispatch_cli) {
+            Ok(_) => panic!("non-passing dispatch must propagate the outcome exit code"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CliError::Outcome(BackendCommandStatus::Failed)
+        ));
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            fs::read_dir(&dispatch_artifacts)?
+                .collect::<Result<Vec<_>, _>>()?
+                .len(),
+            1
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_determinism_ergonomics_keeps_wall_clock_out_of_canonical_paths() {
+        assert!(canonical_state_wall_clock_guard());
     }
 
     #[test]
@@ -4366,10 +5577,15 @@ mod tests {
 
         assert!(report.path.starts_with(temp.path()));
         assert!(report.path.exists());
-        assert!(report.replay_command.starts_with("crucible replay "));
-        assert!(report.debug_command.ends_with(" --at-failure"));
-        assert!(report.debug_command.contains("artifact dir with spaces"));
-        assert!(report.debug_command.contains('\''));
+        assert!(report.footer.replay_command.starts_with("crucible replay "));
+        assert!(report.footer.debug_command.ends_with(" --at-failure"));
+        assert!(
+            report
+                .footer
+                .debug_command
+                .contains("artifact dir with spaces")
+        );
+        assert!(report.footer.debug_command.contains('\''));
         assert!(report.path.to_string_lossy().contains("property-violation"));
         let debug_cli = Cli::parse_from([
             "crucible",
@@ -4651,7 +5867,7 @@ mod tests {
     #[test]
     fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box<dyn Error>> {
         let cli = Cli::parse_from(["crucible", "run"]);
-        let bytes = mock_failure_reproduction_artifact_bytes(&cli)?;
+        let bytes = mock_failure_reproduction_artifact_bytes(&cli, 0xe2e0_0010)?;
         let artifact = ReproductionArtifact::decode(&bytes)?;
 
         assert_eq!(artifact.seed, 0xe2e0_0010);

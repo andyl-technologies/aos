@@ -368,6 +368,17 @@ long-held locks.
   with an announcement, fails explicit QEMU without readable artifacts with exit
   4, proves explicit double never resolves to QEMU, and compares recorded
   local/remote stdout/stderr, exit-code, canonical-log, and artifact projections.
+  `T-CLI-4` is green through `checks.crucible.phase5.cliDeterminismErgonomics`,
+  which resolves seed sources in explicit flag, `CRUCIBLE_SEED`, generated order
+  before run-identity dispatch, prints the resolved seed unless quiet, treats
+  replay/resume as artifact/savepoint-owned seed modes, threads the seed into the
+  backend-routed canonical run-identity projection and failure artifacts, emits
+  shell-quoted replay/debug footer commands from the artifact path, renders
+  routed canonical output or `--trace` through `jsonl`/`json`/`table` from one
+  event-log entry stream with `jsonl` emitted entry by entry, rejects `markdown`
+  for canonical event-log traces, propagates non-passing outcomes through the
+  process exit-code path after writing artifacts, and gates CLI/model/session
+  canonical paths against wall-clock APIs.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
