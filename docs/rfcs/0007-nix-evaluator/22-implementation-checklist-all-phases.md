@@ -5245,6 +5245,19 @@ and helps the oracle directly.
       path. This is metadata gating only: no executable addresses, exported
       wrappers, `JITBuilder::symbol` registrations, Cranelift lowering, native
       trap transfer, or compiled artifact relinking is implemented.
+- [x] Current runtime symbol native-target candidate preflight precursor:
+      `runtime::helpers::runtime_symbol_native_target_candidate_preflight()` combines the
+      stable symbol manifest, helper ABI signatures, helper Rust-callable
+      availability, and builtin call-shape metadata into a target-readiness
+      report. It records allocation/write-barrier helpers as address-free
+      symbol/role wrapper-generation candidates and reports forcing/call/attr/error
+      helpers, value-only builtins, and callable builtins without wrapper bodies as gaps.
+      Tests prove exact projection order, helper-callable parity, representative
+      helper/value-only gaps, all callable builtin wrapper gaps, and no current
+      helper-callable gaps. This is readiness metadata only: no executable
+      addresses, exported wrappers, `JITBuilder::symbol` registrations,
+      Cranelift lowering, native trap transfer, or compiled artifact relinking is
+      implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches
