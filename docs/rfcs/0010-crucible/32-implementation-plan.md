@@ -286,6 +286,13 @@ long-held locks.
   programmatic requests, map to session commands, lock-free mirror reads, or
   server/control-log reads, and the API command table covers
   `SessionCommandKind::ALL` exactly once.
+  `T-API-3` is green through `checks.crucible.phase5.apiLifecycleUnary`, which
+  implements side-effect-free discovery, scenario-ref and inline session creation
+  through `SessionCommand::Start`, live-mirror session listing, and
+  epoch-guarded/idempotent destroy through `SessionCommand::Stop`, exposed on the
+  shared `ControlClient` trait for both in-process lifecycle and HTTP/2 RPC
+  clients. Inline RPC carries scenario seed and request seed separately so the
+  lifecycle mismatch guard remains transport-facing.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

@@ -3,22 +3,25 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, GenesisCheckpoint, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScenarioDef, SchedulerError, Seed, TemporalGraph, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, EventLogOffset, GenesisCheckpoint,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed, TemporalGraph,
+    VirtualTime,
 };
 use crucible_api::{
-    ControlClient, ControlPlaneEventLog, ControlTransportKind, ControlWireModel, HelloRequest,
-    InProcessControlClient, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient,
-    RpcEndpoint, RpcTransportProtocol, assert_shared_wire_model, encode_rpc_hello_request,
-    encode_rpc_hello_response,
+    ControlClient, ControlPlaneEventLog, ControlTransportKind, ControlWireModel,
+    CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
+    HelloRequest, InProcessControlClient, LifecycleControlPlane, ListScenariosResponse,
+    ListSessionsResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient,
+    RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SessionId, SessionRef,
+    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
 };
-use crucible_session::{Engine, SessionActor, SessionCommand};
-use tokio::sync::mpsc;
+use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand};
+use tokio::sync::{Mutex, mpsc};
 
 #[tokio::test(flavor = "current_thread")]
 async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let (in_process, _actor) = in_process_client_fixture();
-    let rpc_server = spawn_http2_hello_server().await;
+    let rpc_server = spawn_http2_lifecycle_server().await;
     let rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
         .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
 
@@ -59,6 +62,87 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
             RPC_OPEN_SET_PAYLOAD_KINDS,
         )
     );
+    let scenarios = rpc
+        .list_scenarios()
+        .await
+        .unwrap_or_else(|error| panic!("RPC list scenarios should decode: {error}"));
+    assert_eq!(scenarios.scenarios.len(), 1);
+    assert_eq!(scenarios.scenarios[0].name, "api-control-client-scenario");
+
+    let created = rpc
+        .create_session(
+            CreateSessionRequest::scenario_ref("api-control-client-scenario", Seed::from_u64(77))
+                .with_start_paused(false),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("RPC create session should decode: {error}"));
+    assert_eq!(created.state, LiveStateKind::Running);
+    assert_eq!(created.session.id.value, 1);
+    assert_eq!(created.session.epoch, 1);
+    assert_eq!(created.session.seed, Seed::from_u64(77));
+
+    let sessions = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC list sessions should decode: {error}"));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, created.session);
+    assert_eq!(sessions.sessions[0].state, LiveStateKind::Running);
+
+    let destroyed = rpc
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("RPC destroy session should decode: {error}"));
+    assert_eq!(destroyed.session, created.session);
+    assert!(destroyed.stopped);
+    assert!(!destroyed.already_absent);
+
+    let inline_scenario = generated_scenario(78);
+    let inline_created = rpc
+        .create_session(CreateSessionRequest::inline(
+            inline_scenario.clone(),
+            inline_scenario.seed(),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC inline create session should decode: {error}"));
+    assert_eq!(inline_created.state, LiveStateKind::Paused);
+    assert_eq!(inline_created.session.id.value, 2);
+    assert_eq!(inline_created.session.epoch, 2);
+    assert_eq!(inline_created.session.seed, inline_scenario.seed());
+
+    let inline_sessions = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC inline list sessions should decode: {error}"));
+    assert_eq!(inline_sessions.sessions.len(), 1);
+    assert_eq!(inline_sessions.sessions[0].session, inline_created.session);
+    assert_eq!(inline_sessions.sessions[0].state, LiveStateKind::Paused);
+
+    let inline_destroyed = rpc
+        .destroy_session(DestroySessionRequest::new(inline_created.session))
+        .await
+        .unwrap_or_else(|error| panic!("RPC inline destroy session should decode: {error}"));
+    assert_eq!(inline_destroyed.session, inline_created.session);
+    assert!(inline_destroyed.stopped);
+    assert!(!inline_destroyed.already_absent);
+
+    let mismatch_error = rpc
+        .create_session(CreateSessionRequest::inline(
+            generated_scenario(108),
+            Seed::from_u64(109),
+        ))
+        .await
+        .expect_err("RPC inline seed mismatch should reject");
+    assert_eq!(
+        mismatch_error,
+        crucible_api::ControlClientError::HttpStatus { status: 400 }
+    );
+    let sessions_after_rejected_inline = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC list after rejected inline should decode: {error}"));
+    assert!(sessions_after_rejected_inline.sessions.is_empty());
+
     assert!(rpc_server.saw_http2_request().await);
     assert_eq!(
         in_process.live_snapshot().read().event_log_len,
@@ -98,12 +182,12 @@ fn assert_control_client_trait<C: ControlClient>(client: &C) {
     assert_eq!(client.wire_model(), ControlWireModel::current());
 }
 
-struct Http2HelloServer {
+struct Http2LifecycleServer {
     endpoint: String,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl Http2HelloServer {
+impl Http2LifecycleServer {
     fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -119,14 +203,34 @@ impl Http2HelloServer {
     }
 }
 
-async fn spawn_http2_hello_server() -> Http2HelloServer {
+type TestLifecyclePlane =
+    LifecycleControlPlane<ServerQuantumLoop, fn(&ScenarioDef, Seed) -> ServerQuantumLoop>;
+
+fn test_loop_factory(_: &ScenarioDef, _: Seed) -> ServerQuantumLoop {
+    ServerQuantumLoop { quanta: 0 }
+}
+
+fn lifecycle_control_plane() -> TestLifecyclePlane {
+    LifecycleControlPlane::new(
+        "crucible-http2-test-server",
+        vec![ScenarioCatalogEntry::from_canonical_material(
+            "api-control-client-scenario",
+            "Control client scenario",
+            "test://api-control-client-scenario",
+            "crucible.api.gate-control-client.scenario",
+            "scenario=api-control-client",
+        )],
+        test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
+    )
+}
+
+async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     use axum::Router;
-    use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode, Version};
-    use axum::response::Response;
+    use axum::body::Body;
+    use axum::http::Request;
     use axum::routing::post;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -135,54 +239,410 @@ async fn spawn_http2_hello_server() -> Http2HelloServer {
         .local_addr()
         .unwrap_or_else(|error| panic!("HTTP/2 test listener should report address: {error}"));
     let saw_http2 = Arc::new(AtomicBool::new(false));
-    let saw_http2_for_handler = Arc::clone(&saw_http2);
-    let app = Router::new().route(
-        "/crucible.rpc/hello",
-        post(move |request: Request<Body>| {
-            let saw_http2 = Arc::clone(&saw_http2_for_handler);
-            async move {
-                if request.version() == Version::HTTP_2 {
-                    saw_http2.store(true, Ordering::SeqCst);
-                }
-                let bytes = to_bytes(request.into_body(), usize::MAX).await;
-                let Ok(body) = bytes else {
-                    return Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::from("invalid request body"))
-                        .unwrap_or_else(|error| {
-                            panic!("HTTP/2 test response should build: {error}")
-                        });
-                };
-                if body != encode_rpc_hello_request("api-control-client-test", RPC_PROTOCOL_VERSION)
-                {
-                    return Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::from("unexpected hello request"))
-                        .unwrap_or_else(|error| {
-                            panic!("HTTP/2 test response should build: {error}")
-                        });
-                }
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .body(Body::from(encode_rpc_hello_response(
-                        "crucible-http2-test-server",
-                        RPC_PROTOCOL_VERSION,
-                        RPC_OPEN_SET_PAYLOAD_KINDS,
-                    )))
-                    .unwrap_or_else(|error| panic!("HTTP/2 test response should build: {error}"))
-            }
-        }),
-    );
+    let control_plane = Arc::new(Mutex::new(lifecycle_control_plane()));
+    let saw_http2_for_hello = Arc::clone(&saw_http2);
+    let saw_http2_for_list_scenarios = Arc::clone(&saw_http2);
+    let saw_http2_for_create_session = Arc::clone(&saw_http2);
+    let saw_http2_for_list_sessions = Arc::clone(&saw_http2);
+    let saw_http2_for_destroy_session = Arc::clone(&saw_http2);
+    let control_plane_for_hello = Arc::clone(&control_plane);
+    let control_plane_for_list_scenarios = Arc::clone(&control_plane);
+    let control_plane_for_create_session = Arc::clone(&control_plane);
+    let control_plane_for_list_sessions = Arc::clone(&control_plane);
+    let control_plane_for_destroy_session = Arc::clone(&control_plane);
+    let app = Router::new()
+        .route(
+            "/crucible.rpc/hello",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_hello);
+                let saw_http2 = Arc::clone(&saw_http2_for_hello);
+                async move { handle_rpc_hello(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/list-scenarios",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_list_scenarios);
+                let saw_http2 = Arc::clone(&saw_http2_for_list_scenarios);
+                async move { handle_list_scenarios(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/create-session",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_create_session);
+                let saw_http2 = Arc::clone(&saw_http2_for_create_session);
+                async move { handle_create_session(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/list-sessions",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_list_sessions);
+                let saw_http2 = Arc::clone(&saw_http2_for_list_sessions);
+                async move { handle_list_sessions(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/destroy-session",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_destroy_session);
+                let saw_http2 = Arc::clone(&saw_http2_for_destroy_session);
+                async move { handle_destroy_session(request, control_plane, saw_http2).await }
+            }),
+        );
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             panic!("HTTP/2 test server should serve: {error}");
         }
     });
 
-    Http2HelloServer {
+    Http2LifecycleServer {
         endpoint: format!("http://{addr}"),
         saw_http2,
     }
+}
+
+async fn handle_rpc_hello(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    if body != encode_rpc_hello_request("api-control-client-test", RPC_PROTOCOL_VERSION) {
+        return http2_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "unexpected hello request",
+        );
+    }
+
+    let hello = match control_plane.lock().await.hello(HelloRequest::new(
+        "api-control-client-test",
+        RPC_PROTOCOL_VERSION,
+    )) {
+        Ok(hello) => hello,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_rpc_hello_response(&hello.server_name, hello.version, hello.payload_kinds),
+    )
+}
+
+async fn handle_list_scenarios(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    if body.as_slice() != b"crucible.rpc/list-scenarios-request\n" {
+        return http2_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "unexpected list scenarios request",
+        );
+    }
+
+    let response = control_plane.lock().await.list_scenarios();
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_list_scenarios_response(&response),
+    )
+}
+
+async fn handle_create_session(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let create = match parse_create_session_request(&body) {
+        Ok(create) => create,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+
+    let response = match control_plane.lock().await.create_session(create).await {
+        Ok(response) => response,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_create_session_response(&response),
+    )
+}
+
+async fn handle_list_sessions(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    if body.as_slice() != b"crucible.rpc/list-sessions-request\n" {
+        return http2_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "unexpected list sessions request",
+        );
+    }
+
+    let response = control_plane.lock().await.list_sessions();
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_list_sessions_response(&response),
+    )
+}
+
+async fn handle_destroy_session(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let destroy = match parse_destroy_session_request(&body) {
+        Ok(destroy) => destroy,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+
+    let response = match control_plane.lock().await.destroy_session(destroy).await {
+        Ok(response) => response,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_destroy_session_response(&response),
+    )
+}
+
+async fn read_rpc_body(
+    request: axum::http::Request<axum::body::Body>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Vec<u8>, axum::Error> {
+    if request.version() == axum::http::Version::HTTP_2 {
+        saw_http2.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map(|body| body.to_vec())
+}
+
+fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
+    let mut output = String::from("crucible.rpc/list-scenarios-response\n");
+    for scenario in &response.scenarios {
+        output.push_str("scenario=");
+        output.push_str(&scenario.name);
+        output.push('|');
+        output.push_str(&scenario.description);
+        output.push('|');
+        output.push_str(&scenario.source_id);
+        output.push('\n');
+    }
+    output
+}
+
+fn encode_create_session_response(response: &CreateSessionResponse) -> String {
+    let mut output = String::from("crucible.rpc/create-session-response\n");
+    push_session_ref(&mut output, response.session);
+    push_wire_line(&mut output, "state", state_wire_name(response.state));
+    output
+}
+
+fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
+    let mut output = String::from("crucible.rpc/list-sessions-response\n");
+    for session in &response.sessions {
+        output.push_str("session=");
+        output.push_str(&session.session.id.value.to_string());
+        output.push('|');
+        output.push_str(&session.session.epoch.to_string());
+        output.push('|');
+        output.push_str(&session.session.seed.to_hex());
+        output.push('|');
+        output.push_str(state_wire_name(session.state));
+        output.push('|');
+        output.push_str(&session.event_log_len.to_string());
+        output.push('\n');
+    }
+    output
+}
+
+fn encode_destroy_session_response(response: &DestroySessionResponse) -> String {
+    let mut output = String::from("crucible.rpc/destroy-session-response\n");
+    push_session_ref(&mut output, response.session);
+    push_wire_line(
+        &mut output,
+        "already-absent",
+        if response.already_absent {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    push_wire_line(
+        &mut output,
+        "stopped",
+        if response.stopped { "true" } else { "false" },
+    );
+    output
+}
+
+fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/create-session-request")?;
+    match parse_wire_line(lines.next(), "source=")? {
+        "scenario-ref" => {
+            let name = parse_wire_line(lines.next(), "name=")?.to_owned();
+            let seed = parse_seed_line(lines.next(), "seed=")?;
+            let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
+            reject_extra_line(lines.next())?;
+            Ok(CreateSessionRequest::scenario_ref(name, seed).with_start_paused(start_paused))
+        }
+        "inline" => {
+            let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
+            let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
+            let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
+            let seed = parse_seed_line(lines.next(), "seed=")?;
+            let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
+            reject_extra_line(lines.next())?;
+            let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
+                id,
+                scenario_seed,
+                app_random_draw_cap,
+            );
+            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
+        }
+        source => Err(format!("unexpected create-session source `{source}`")),
+    }
+}
+
+fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/destroy-session-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    reject_extra_line(lines.next())?;
+    Ok(DestroySessionRequest::new(session))
+}
+
+fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let id = parse_u64_line(lines.next(), "session-id=")?;
+    let epoch = parse_u64_line(lines.next(), "epoch=")?;
+    let seed = parse_seed_line(lines.next(), "seed=")?;
+    Ok(SessionRef::new(SessionId::new(id), epoch, seed))
+}
+
+fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, String> {
+    let value = parse_wire_line(line, prefix)?;
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
+}
+
+fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
+    let value = parse_wire_line(line, prefix)?;
+    Ok(Seed::from_bytes(parse_hex_32(value, "seed")?))
+}
+
+fn parse_content_hash_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<ContentHash, String> {
+    let value = parse_wire_line(line, prefix)?;
+    Ok(ContentHash {
+        bytes: parse_hex_32(value, "content hash")?,
+    })
+}
+
+fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
+    if value.len() != 64 {
+        return Err(format!("{label} hex has length {}", value.len()));
+    }
+
+    let mut bytes = [0; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        let pair = &value[start..start + 2];
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|error| format!("invalid {label} hex `{pair}`: {error}"))?;
+    }
+    Ok(bytes)
+}
+
+fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, String> {
+    match parse_wire_line(line, prefix)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(format!("invalid bool `{value}` for `{prefix}`")),
+    }
+}
+
+fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), String> {
+    match line {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!("unexpected RPC message header `{actual}`")),
+        None => Err(String::from("empty RPC request")),
+    }
+}
+
+fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'a str, String> {
+    let line = line.ok_or_else(|| format!("missing `{prefix}` line"))?;
+    line.strip_prefix(prefix)
+        .ok_or_else(|| format!("expected `{prefix}` line, got `{line}`"))
+}
+
+fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
+    if line.is_some() {
+        return Err(String::from("unexpected trailing RPC request fields"));
+    }
+    Ok(())
+}
+
+fn push_session_ref(output: &mut String, session: SessionRef) {
+    push_wire_line(output, "session-id", &session.id.value.to_string());
+    push_wire_line(output, "epoch", &session.epoch.to_string());
+    push_wire_line(output, "seed", &session.seed.to_hex());
+}
+
+fn push_wire_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
+fn state_wire_name(state: LiveStateKind) -> &'static str {
+    match state {
+        LiveStateKind::Loaded => "loaded",
+        LiveStateKind::Paused => "paused",
+        LiveStateKind::Running => "running",
+        LiveStateKind::Stopped => "stopped",
+    }
+}
+
+fn http2_response(
+    status: axum::http::StatusCode,
+    body: impl Into<axum::body::Body>,
+) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(status)
+        .body(body.into())
+        .unwrap_or_else(|error| panic!("HTTP/2 test response should build: {error}"))
 }
 
 fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop>) {
@@ -196,6 +656,29 @@ fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop
     let event_log = ControlPlaneEventLog::new(actor.event_log());
     let client = InProcessControlClient::new(sender, live, event_log);
     (client, actor)
+}
+
+struct ServerQuantumLoop {
+    quanta: u64,
+}
+
+impl QuantumLoop for ServerQuantumLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
 }
 
 struct NoopLoop;

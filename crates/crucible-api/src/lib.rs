@@ -11,9 +11,8 @@
 //! boundary constants and frozen golden vectors; [`control_responsive`] owns the
 //! quantum-counted acknowledgement contract used by `gate:control-responsive`;
 //! [`event_log_stream`] owns the cursor-backed live event-log subscription facade;
-//! [`session_mapping`] owns the API-to-session thin-wrapper contract. Later
-//! modules will split by lifecycle, query, and temporal-graph surfaces as those
-//! APIs land.
+//! [`session_mapping`] owns the API-to-session thin-wrapper contract; [`lifecycle`]
+//! owns the unary discovery and lifecycle API.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -22,6 +21,7 @@
 pub mod client;
 pub mod control_responsive;
 pub mod event_log_stream;
+pub mod lifecycle;
 pub mod rpc_abi;
 pub mod session_mapping;
 
@@ -40,6 +40,13 @@ pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
     SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
     SessionEventLogStream, SessionEventLogStreamError,
+};
+pub use lifecycle::{
+    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
+    DestroySessionResponse, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
+    ListScenariosResponse, ListSessionsResponse, ScenarioCatalogEntry, ScenarioCatalogSource,
+    ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
 pub use rpc_abi::{
     GOLDEN_RPC_VECTORS, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_REGENERATION_RULE,
