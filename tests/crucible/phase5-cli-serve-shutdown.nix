@@ -1,7 +1,7 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase5.cliServeReadOnly",
+  attrPath ? "checks.crucible.phase5.cliServeShutdown",
   taskIds ? ["T-CLI-14"],
   dependencies ? [],
 }: let
@@ -14,8 +14,8 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
+  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -50,90 +50,100 @@
         needle = "- [ ] **T-CLI-14** Implement `serve`";
       }
       {
-        label = "T-CLI-14 read-only progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliServeReadOnly`";
+        label = "T-CLI-14 shutdown progress note";
+        needle = "Work in progress under `checks.crucible.phase5.cliServeShutdown`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI serve read-only progress note";
-        needle = "`T-CLI-14` remains open. `checks.crucible.phase5.cliServeReadOnly` currently";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
-      {
-        label = "server mode exported";
-        needle = "LifecycleServerMode";
+        label = "phase5 CLI serve shutdown progress note";
+        needle = "`checks.crucible.phase5.cliServeShutdown` covers";
       }
       {
-        label = "mode-aware server exported";
-        needle = "serve_lifecycle_http2_with_mode";
+        label = "phase5 CLI serve shutdown remaining harness wording";
+        needle = "external signal-process harness";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
       {
-        label = "server read-only mode";
-        needle = "pub struct LifecycleServerMode";
+        label = "shutdown-aware HTTP/2 server helper";
+        needle = "serve_lifecycle_http2_with_mode_until_shutdown";
       }
       {
-        label = "read-only rejection response";
-        needle = "read_only_rejection_response";
+        label = "graceful shutdown wiring";
+        needle = ".with_graceful_shutdown(async move";
       }
       {
-        label = "create-session read-only rejection";
-        needle = "read-only daemon rejects state-mutating API call";
+        label = "stream shutdown watch channel";
+        needle = "watch::channel(false)";
       }
       {
-        label = "destroy-session read-only rejection test";
-        needle = "server_read_only_mode_rejects_session_destruction";
+        label = "stream shutdown receiver state";
+        needle = "shutdown: watch::Receiver<bool>";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+      {
+        label = "shutdown helper public export";
+        needle = "serve_lifecycle_http2_with_mode_until_shutdown";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" (builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs) [
+      {
+        label = "active Watch shutdown regression";
+        needle = "production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream";
       }
       {
-        label = "control attach read-only rejection test";
-        needle = "server_read_only_mode_rejects_control_attach";
-      }
-      {
-        label = "watch attach read-only allowance test";
-        needle = "server_read_only_mode_allows_watch_attach";
-      }
-      {
-        label = "mutating send read-only rejection test";
-        needle = "server_read_only_mode_rejects_mutating_send_but_allows_query";
-      }
-      {
-        label = "default read-write route test";
-        needle = "server_read_write_mode_keeps_default_mutating_routes";
+        label = "active Watch shutdown timeout";
+        needle = "server should finish after shutdown with active Watch";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "serve read-only flag";
-        needle = "read_only: bool";
+        label = "serve-specific error variant";
+        needle = "Serve(String)";
       }
       {
-        label = "serve uses mode-aware daemon";
-        needle = "serve_lifecycle_http2_with_mode_until_shutdown(";
+        label = "serve exit code 3";
+        needle = "Self::Serve(_) => 3";
       }
       {
-        label = "serve help advertises read-only";
-        needle = "--read-only";
+        label = "production ctrl-c shutdown future";
+        needle = "serve_shutdown_signal()";
       }
       {
-        label = "serve help advertises max-sessions";
-        needle = "--max-sessions <n>";
+        label = "graceful shutdown channel";
+        needle = "tokio::sync::oneshot::channel";
+      }
+      {
+        label = "injectable serve shutdown helper";
+        needle = "run_serve_invocation_until_shutdown";
+      }
+      {
+        label = "serve shutdown signal error mapping";
+        needle = "serve shutdown signal error";
+      }
+      {
+        label = "serve shutdown/bind test";
+        needle = "cli_serve_shutdown_and_bind_errors_follow_exit_contract";
+      }
+      {
+        label = "serve bind error mapping";
+        needle = "serve bind error";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase5 exposes CLI serve read-only check";
-        needle = "cliServeReadOnly = import ./phase5-cli-serve-read-only.nix";
+        label = "phase5 exposes CLI serve shutdown check";
+        needle = "cliServeShutdown = import ./phase5-cli-serve-shutdown.nix";
       }
     ];
 in
   if failures != []
-  then throw "crucible phase5 CLI serve read-only check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase5 CLI serve shutdown check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase5-cli-serve-read-only";
+      pname = "crucible-phase5-cli-serve-shutdown";
       version = "0";
       src = crucibleSrc;
 
@@ -175,7 +185,7 @@ in
           '';
         }
         {
-          name = "run-cli-serve-read-only";
+          name = "run-cli-serve-shutdown";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -185,16 +195,16 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-cli-serve-read-only-target" \
-              -p crucible-api \
-              server_ \
+              --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
+              -p crucible-cli \
+              cli_serve_shutdown \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-cli-serve-read-only-target" \
-              -p crucible-cli \
-              cli_help \
+              --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
+              -p crucible-api \
+              production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream \
               -- --test-threads=1
           '';
         }
@@ -208,7 +218,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             component=crucible-cli,crucible-api
-            serve_read_only=transport-policy
+            serve_shutdown=graceful-shutdown-and-bind-exit
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

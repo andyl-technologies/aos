@@ -1049,20 +1049,25 @@ branch on the verdict without parsing output:
   accepts and advertises `serve --read-only`, threads it into the HTTP/2 daemon
   transport, and the daemon rejects session creation/destruction, control attach,
   and mutating send commands while allowing read-only query sends through the
-  normal transport path. Full closure remains blocked on the broader
-  hosted-session concurrency surface, process-level serve harnessing, and
-  shutdown lifecycle.
+  normal transport path. Full closure remains blocked on the external
+  signal-process harness.
   Work in progress under `checks.crucible.phase5.cliServeMaxSessions`: the CLI
   now accepts and advertises `serve --max-sessions <n>`, rejects zero before
   binding, threads the nonzero cap into the lifecycle control plane, and the
   daemon returns a typed session-limit error without creating an extra session
   when the live-session cap is reached. Full closure remains blocked on
-  process-level serve harnessing and shutdown lifecycle.
+  the external signal-process harness.
   Work in progress under `checks.crucible.phase5.cliServeMultiClient`: the
   production HTTP/2 server now admits concurrent read-only Watch and Query
   clients while a Control client drives the same session, and both Watch clients
-  observe the live running update. Full closure remains blocked on process-level
-  serve harnessing and shutdown lifecycle.
+  observe the live running update. Full closure remains blocked on the external
+  signal-process harness.
+  Work in progress under `checks.crucible.phase5.cliServeShutdown`: the API
+  exposes a graceful-shutdown server helper, production `serve` waits on the
+  `ctrl-c` shutdown signal, Control/Watch streams terminate on server shutdown,
+  tests inject a shutdown future to prove clean exit with an active Watch stream,
+  and bind/backend serve errors map to exit 3. Full closure remains blocked on
+  an external signal-process harness.
 - [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
