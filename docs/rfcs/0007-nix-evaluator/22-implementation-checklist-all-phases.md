@@ -5401,6 +5401,21 @@ and helps the oracle directly.
       atomic thunk-state CAS, cast or call finalized code pointers, dereference
       registered addresses, call native code, or complete runtime-symbol
       registration.
+- [x] Current `aos-nix` force-aware registered tier-1 promotion bridge:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root()`
+      derives oracle helper address candidates and drives the force-aware
+      Cranelift promotion preflight from the top-level integration crate.
+      Candidate projection still runs only after policy requests tier 1, so
+      cold roots record an invocation and remain in tier 0 without requiring
+      helper-address metadata. Literal roots still promote with no artifact
+      runtime imports. Hot local environment-slot roots lower through the forced
+      env-slot artifact importing `aos_env_get` and `aos_force`; the current
+      oracle candidates include `aos_env_get` but no `aos_force` candidate, so
+      the bridge reports that missing registration before Cranelift finalization
+      or tier-slot pointer installation. This keeps the force-aware bridge safe:
+      it does not mutate evaluator heap thunks, perform atomic thunk-state CAS,
+      cast or call code pointers, dereference registered addresses, call native
+      code, or complete runtime-symbol registration.
 - [x] Current `aos-nix` registered tier-1 install-plan handoff:
       `aos_nix::jit::nix_jit_registered_tier1_install_plan_for_ir_root()`
       wraps the registered promotion preflight in a safe handoff object that

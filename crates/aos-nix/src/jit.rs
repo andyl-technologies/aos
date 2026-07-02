@@ -12,6 +12,7 @@ use ratchet_jit::{
     JitCompiledCodePointer, JitCraneliftRegisteredTier1PromotionPreflight,
     JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftTier1PromotionError, JitTieredCodeSlot,
     TierUpDecision, TierUpDemandHint, TierUpPolicy,
+    jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
 };
 use thiserror::Error;
@@ -194,6 +195,50 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
     )
 }
 
+/// Drives force-aware registered tier-1 promotion using oracle-derived addresses.
+///
+/// This is the `aos-nix` bridge for the JIT crate's force-aware promotion
+/// preflight. It keeps the existing literal promotion behavior, but local
+/// environment-slot roots lower through a forced env-slot artifact that imports
+/// `aos_env_get` and `aos_force`. The current oracle address candidates include
+/// `aos_env_get` but not an exported `aos_force` wrapper, so hot local-slot
+/// roots report a structured registration gap before finalization or pointer
+/// installation.
+///
+/// Candidate projection runs only after the policy decision requests tier 1, so
+/// a cold attempt can record its invocation and stay in tier 0 without requiring
+/// helper-address metadata.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
+/// oracle helper addresses cannot be projected into JIT registration metadata.
+/// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
+/// requests tier-1 promotion but lowering, registration, finalization, or slot
+/// installation fails.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates`]
+/// when policy requests promotion for a finalizable artifact.
+pub fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitRegisteredTier1PromotionResult {
+    nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+        slot,
+        policy,
+        demand_hint,
+        arena,
+        root,
+        nix_jit_runtime_symbol_address_candidate_preflight,
+    )
+}
+
 /// Builds a safe registered tier-1 install plan for an IR root.
 ///
 /// This composes the `aos-nix` registered promotion bridge with a handoff object
@@ -253,6 +298,45 @@ fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_sourc
 
     Ok(
         jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+            slot,
+            policy,
+            demand_hint,
+            arena,
+            root,
+            candidates.address_candidates(),
+        )?,
+    )
+}
+
+fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+    candidate_source: impl FnOnce() -> NixJitPreflightResult,
+) -> NixJitRegisteredTier1PromotionResult {
+    let mut observed_slot = slot.clone();
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(
+            JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier {
+                slot: observed_slot,
+                decision,
+            },
+        );
+    }
+
+    let candidates = candidate_source().map_err(|source| {
+        NixJitRegisteredTier1PromotionError::AddressCandidates {
+            slot: observed_slot,
+            decision,
+            source,
+        }
+    })?;
+
+    Ok(
+        jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
             slot,
             policy,
             demand_hint,

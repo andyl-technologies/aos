@@ -1432,6 +1432,22 @@ harness, never cut for scope.
       preflight assembly only: no evaluator heap thunk is mutated, no atomic
       thunk-state CAS runs, no finalized code pointer is cast or called, and no
       registered helper address is dereferenced or called.
+- [x] Current `aos-nix` force-aware registered tier-1 promotion bridge:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root()`
+      derives the same oracle helper address candidates and delegates to the
+      force-aware Cranelift promotion preflight. Candidate projection still runs
+      only after the policy decision requests tier 1, so cold roots record their
+      invocation and stay in tier 0 without requiring helper-address metadata.
+      Literal roots still promote through the registered handoff with no
+      runtime imports. Hot local environment-slot roots lower through the forced
+      env-slot artifact importing `aos_env_get` and `aos_force`; because the
+      current oracle candidates include `aos_env_get` but no `aos_force`
+      address candidate, the bridge reports the missing `aos_force`
+      registration before Cranelift finalization or tier-slot pointer
+      installation. This remains safe preflight assembly only: no evaluator heap
+      thunk is mutated, no atomic thunk-state CAS runs, no finalized code
+      pointer is cast or called, and no registered helper address is
+      dereferenced or called.
 - [x] Current `aos-nix` registered tier-1 install-plan handoff:
       `aos_nix::jit::nix_jit_registered_tier1_install_plan_for_ir_root()`
       wraps the registered promotion preflight in an `aos-nix` handoff object
