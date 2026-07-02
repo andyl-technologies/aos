@@ -6554,6 +6554,23 @@ nurseries build on the bump arena.
       captured errors, does not install waiter lists or wakeups, does not
       perform work stealing or parking, and does not satisfy the loom/Miri/TSan
       gate.
+- [x] Current safe waiter/wakeup precursor:
+      `ratchet-oracle::eval::thunk_wait` wraps the CAS state word with a
+      standard-library mutex and condition variable so foreign workers can mark
+      a thunk `Awaited`, register under the waiter mutex, check the terminal
+      predicate before sleeping, and wake after the owner publishes `Forced` or
+      `Failed`. The owner stores the terminal state first, then takes the same
+      waiter mutex before notifying, which models the no-lost-wakeup ordering
+      required by [13](13-parallel-evaluation.md) §3.6. Claim guards remain
+      worker-affine and compile-fail doctests in this slice check that they are
+      not `Send`; dropping a wait-cell claim publishes `Failed` and broadcasts
+      to waiters.
+      Unit tests cover forced publish wakeup, drop-to-failed wakeup, self-cycle
+      classification, already terminal no-wait behavior, and
+      waiter/notification counters. This is a blocking correctness precursor
+      only: it does not drain local work, steal peer work before parking, store
+      values/errors, implement the final lock-free waiter list, integrate with
+      the evaluator scheduler, or satisfy the loom/Miri/TSan gate.
 - [x] Current shared node-table admission precursor: `SharedDemandGraph`
       wraps the existing in-memory `DemandGraph` behind a same-process mutex,
       exposes `DemandNodeAdmission` from insert-or-get calls, and proves cloned

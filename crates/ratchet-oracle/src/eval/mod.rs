@@ -13,6 +13,7 @@ pub mod module;
 pub mod parallel;
 pub mod thunk;
 pub mod thunk_cas;
+pub mod thunk_wait;
 pub mod tree_walk;
 
 pub use env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
@@ -34,6 +35,10 @@ pub use thunk_cas::{
     PARALLEL_THUNK_MAX_WORKER_ID, ParallelThunkAwait, ParallelThunkClaim, ParallelThunkClaimGuard,
     ParallelThunkPublish, ParallelThunkState, ParallelThunkStateError, ParallelThunkStateWord,
     ParallelThunkTerminalState, ParallelThunkWorkerId,
+};
+pub use thunk_wait::{
+    ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard,
+    ParallelThunkWaitStats,
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,

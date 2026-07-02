@@ -178,10 +178,7 @@ impl ParallelThunkStateWord {
     /// # Errors
     ///
     /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
-    /// atomic word contains an unsupported encoding. Returns
-    /// [`ParallelThunkStateError::UnexpectedState`] if a just-marked state word
-    /// is no longer awaited by the expected owner and has not reached a terminal
-    /// state.
+    /// atomic word contains an unsupported encoding.
     pub fn try_claim(
         &self,
         worker: ParallelThunkWorkerId,
@@ -235,7 +232,10 @@ impl ParallelThunkStateWord {
     /// # Errors
     ///
     /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
-    /// atomic word contains an unsupported encoding.
+    /// atomic word contains an unsupported encoding. Returns
+    /// [`ParallelThunkStateError::UnexpectedState`] if a just-marked state word
+    /// is no longer awaited by the expected owner and has not reached a terminal
+    /// state.
     pub fn mark_awaited(
         &self,
         waiter: ParallelThunkWorkerId,
