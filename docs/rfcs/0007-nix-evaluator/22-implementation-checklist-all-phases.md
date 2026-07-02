@@ -5251,20 +5251,20 @@ and helps the oracle directly.
       `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
       consumes the full `ratchet-core` runtime symbol manifest and preserves its
       deterministic order while classifying each symbol as a currently bound
-      allocation, call-control, environment-access, forcing, or write-barrier helper, an
+      allocation, call-control, attrset-access, environment-access, forcing, or write-barrier helper, an
       unbound future helper role, or a builtin. Tests cross-check order parity
       with the core manifest, exact safe-helper coverage including `aos_apply`,
-      `aos_env_get`, and both forcing helpers. Representative unbound helpers
-      include `aos_blackhole_check` plus attr/error helpers, and builtin
+      `aos_select_ic`, `aos_env_get`, and both forcing helpers. Representative unbound helpers
+      include `aos_blackhole_check` plus remaining attr/error helpers, and builtin
       classification. This is binding-status metadata only; it attaches
       no function pointers, exports no native wrappers, registers no Cranelift
-      symbols, and leaves builtin, blackhole-check/attr/error helper addresses
+      symbols, and leaves builtin, blackhole-check/remaining-attr/error helper addresses
       unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       converts the binding manifest into a deterministic readiness report for
       future native registration: current allocation, call-control,
-      environment-access, forcing, and write-barrier helper bindings stay in runtime-manifest order, and every
+      attrset-access, environment-access, forcing, and write-barrier helper bindings stay in runtime-manifest order, and every
       missing helper or builtin binding is reported in stable symbol order. The
       stricter
       `runtime_symbol_registration_plan()` currently returns an incomplete
@@ -5277,9 +5277,10 @@ and helps the oracle directly.
       `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines safe
       helper binding metadata with core-owned helper `RuntimeCallSignature`
       metadata and `ratchet-core` builtin call-shape metadata in stable runtime
-      symbol order. It attaches allocation, call-control, environment-access,
-      forcing, and write-barrier helper signatures only when the corresponding core helper
-      signature exists, plus callable builtin `RuntimeCallSignature` metadata, while
+      symbol order. It attaches allocation, call-control, attrset-access,
+      environment-access, forcing, and write-barrier helper signatures only when
+      the corresponding core helper signature exists, plus callable builtin
+      `RuntimeCallSignature` metadata, while
       leaving unbound helper roles and value-only builtin symbols in the
       missing-binding report. Tests prove helper parity with the safe
       registration preflight, core signature coverage for every currently bound
@@ -5305,7 +5306,7 @@ and helps the oracle directly.
       consumes the ABI-signature preflight, then combines helper Rust-callable
       availability with the signature-covered helper/builtin set into a
       target-readiness report. It records allocation, call-control,
-      environment-access, forcing, and write-barrier helpers as address-free symbol/role
+      attrset-access, environment-access, forcing, and write-barrier helpers as address-free symbol/role
       wrapper-generation candidates and reports ABI-signature gaps, value-only builtins, and
       callable builtins without wrapper bodies as gaps carrying
       builtin-wrapper blockers: missing wrapper body, runtime/env ABI decoding,
@@ -5335,7 +5336,7 @@ and helps the oracle directly.
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches
       process-local Rust-callable helper metadata for the currently covered
-      allocation, call-control, environment-access, forcing, and write-barrier helper symbols
+      allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helper symbols
       while reporting unbound helper and builtin symbols as gaps. Tests prove
       helper-callable order matches the helper-family callable inventory,
       callable helper symbols line up with the safe registration preflight, and
@@ -5349,11 +5350,11 @@ and helps the oracle directly.
       composes oracle Rust-callable helper metadata with `ratchet-jit`
       runtime-symbol address candidates. It projects process-local callable
       helper addresses for currently covered allocation, call-control,
-      environment-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
+      attrset-access, environment-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
       carrying oracle missing bindings for unbound helpers and builtins. The
       bridge now exposes helper-role filtered candidate views, including the
       allocation-helper manifest-order subset. Tests pin allocation,
-      call-control, environment-access, forcing, and write-barrier role filtering,
+      call-control, attrset-access, environment-access, forcing, and write-barrier role filtering,
       feed only the allocation-filtered subset through JIT registration, and still cover
       registered env-slot tier-1 promotion for `aos_env_get`. This is safe
       integration preflight plumbing only: it does not export C ABI wrappers,
@@ -5599,36 +5600,42 @@ and helps the oracle directly.
       installation is implemented here.
 - [x] Current runtime-helper binding-manifest precursor:
       `ratchet-oracle::runtime::helpers` now combines the allocation,
-      environment-access, forcing, and write-barrier helper families into one safe
+      call-control, attrset-access, environment-access, forcing, and
+      write-barrier helper families into one safe
       `RuntimeHelperBinding` inventory. Each binding carries the frozen helper
       symbol, core helper role, family-specific ABI signature, and failure
       convention, and resolves back from symbol text. The current allocation,
-      environment-access, forcing, and write-barrier helpers are pinned as
+      call-control, attrset-access, environment-access, forcing, and
+      write-barrier helpers are pinned as
       `TrapToEvaluator`: they return only on success and future native wrappers
       must transfer failures to evaluator trap/error machinery instead of
       returning null pointers or sentinels. Tests prove the manifest exactly
       covers the currently bound `RuntimeHelperRole::Allocation`,
-      `RuntimeHelperRole::CallControl`, `RuntimeHelperRole::EnvironmentAccess`,
+      `RuntimeHelperRole::CallControl`, `RuntimeHelperRole::AttrsetAccess`,
+      `RuntimeHelperRole::EnvironmentAccess`,
       `RuntimeHelperRole::ForcingControl`, and `RuntimeHelperRole::WriteBarrier`
       symbols from `ratchet-core`, preserves
-      the allocation/call-control/environment-access/forcing/write-barrier ABI inventories, pins the
+      the allocation/call-control/attrset-access/environment-access/forcing/write-barrier ABI
+      inventories, pins the
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for blackhole-check/attr/error
+      register Cranelift symbols, or add bindings for blackhole-check/remaining-attr/error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
-      allocation, call-control, environment-access, forcing, and write-barrier Rust-callable
+      allocation, call-control, attrset-access, environment-access, forcing, and
+      write-barrier Rust-callable
       storage-wrapper addresses into the helper-family layer, while
       `runtime_helper_rust_callable_preflight()` reports whether any currently
       bound helper family still lacks such a callable. The preflight is now
-      complete for the currently bound allocation, call-control,
-      environment-access, forcing, and write-barrier helper set. Tests prove family inventory parity, safe-helper
+      complete for the currently bound allocation, call-control, attrset-access,
+      environment-access, forcing, and write-barrier helper set. Tests prove
+      family inventory parity, safe-helper
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      blackhole-check/attr/error helpers, builtin addresses, or complete
+      blackhole-check/remaining-attr/error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every

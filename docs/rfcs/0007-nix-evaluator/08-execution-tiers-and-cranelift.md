@@ -966,11 +966,11 @@ harness, never cut for scope.
       helper role, or a builtin. Tests cross-check core-manifest order, exact
       safe-helper binding coverage including `aos_apply`, `aos_env_get`, and
       both forcing helpers. Representative unbound helpers include
-      `aos_blackhole_check`, plus attr/error helpers, and a representative
+      `aos_blackhole_check`, plus remaining attr/error helpers, and a representative
       builtin symbol.
       This is binding-status metadata only; it attaches no function pointers,
       exports no wrappers, registers no Cranelift symbols, and leaves
-      builtin/blackhole-check/attr/error helper addresses unbound.
+      builtin/blackhole-check/remaining-attr/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -987,7 +987,7 @@ harness, never cut for scope.
       `runtime_symbol_abi_signature_preflight()` combines safe helper binding
       metadata with core-owned helper `RuntimeCallSignature` metadata and builtin
       call-shape metadata in stable runtime symbol order:
-      allocation, call-control, environment-access, forcing, and write-barrier helpers are
+      allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helpers are
       bindable only when the corresponding core helper signature exists, callable builtin
       `RuntimeCallSignature` entries are bindable metadata, and unbound helper
       roles plus value-only builtin symbols stay in the gap report. Tests pin helper parity with the
@@ -1192,8 +1192,9 @@ harness, never cut for scope.
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability
       with the signature-covered helper/builtin set into a target-readiness
-      report. Allocation, environment-access, forcing, and write-barrier helpers
-      are address-free symbol/role candidates for later wrapper generation, while
+      report. Allocation, call-control, attrset-access, environment-access,
+      forcing, and write-barrier helpers are address-free symbol/role candidates
+      for later wrapper generation, while
       ABI-signature gaps, value-only builtins, and callable builtins without
       wrapper bodies stay in the gap report with builtin-wrapper blockers:
       missing wrapper body, runtime/env ABI decoding, native `Value` argument
@@ -1218,7 +1219,7 @@ harness, never cut for scope.
       `runtime_symbol_native_export_preflight()` is the checked safe boundary
       after address-free target candidacy. It reports current helper candidates
       as missing exported C ABI wrappers and preserves the family-specific
-      blockers from allocation, call-control, environment-access, forcing, and write-barrier
+      blockers from allocation, call-control, attrset-access, environment-access, forcing, and write-barrier
       native export preflights: missing `unsafe extern "C"` wrappers,
       runtime-context/environment-frame decoding, active force-root binding,
       thunk blackhole/force-cache integration, evaluator trap transfer,
@@ -1373,7 +1374,7 @@ harness, never cut for scope.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
-      currently covered allocation, call-control, environment-access, forcing, and write-barrier
+      currently covered allocation, call-control, attrset-access, environment-access, forcing, and write-barrier
       helpers and reporting the same unbound helper/builtin gaps as the safe
       registration preflight. Tests pin helper-callable order, symbol parity with
       the safe helper preflight, and gap parity with the incomplete registration
@@ -1386,11 +1387,11 @@ harness, never cut for scope.
       composes the oracle Rust-callable helper metadata with `ratchet-jit`
       runtime-symbol address candidates. It projects process-local callable
       helper addresses for the currently covered allocation, call-control,
-      environment-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
+      attrset-access, environment-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
       while preserving oracle missing bindings for unbound helpers and builtins.
       It also exposes helper-role filtered candidate views, including the
       allocation-helper subset in manifest order. Tests pin allocation,
-      call-control, environment-access, forcing, and write-barrier role filtering,
+      call-control, attrset-access, environment-access, forcing, and write-barrier role filtering,
       feed only the allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
       This is integration preflight plumbing only: the addresses are not
@@ -1544,7 +1545,7 @@ harness, never cut for scope.
       transfer, and Tier-B vtable installation remain open.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
-      allocation, call-control, environment-access, forcing, and write-barrier helper as
+      allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helper as
       `TrapToEvaluator`, so the native ABI has no null-pointer or sentinel
       failure result: helpers return only on success, while allocation,
       environment-access, forcing, or barrier failures must transfer to evaluator

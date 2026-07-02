@@ -9,6 +9,7 @@
 
 pub mod alloc;
 pub mod apply;
+pub mod attr;
 pub mod barrier;
 pub mod env;
 pub mod forcing;
