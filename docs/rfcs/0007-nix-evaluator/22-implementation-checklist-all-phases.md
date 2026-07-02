@@ -6586,6 +6586,21 @@ nurseries build on the bump arena.
       scheduler, cannot prove the caller exhausted real worker deques or peer
       steals, does not hold a scheduler park token, and still uses the blocking
       wait-cell precursor rather than a lock-free waiter list.
+- [x] Current semantic WHNF tag-test precursor:
+      `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
+      boundary for force entry. `classify_whnf_tag_fast_path` returns every
+      non-`Thunk` `ValueTag` as already-WHNF by inspection, and
+      `checked_whnf_tag_fast_path` resolves only thunk-tag misses through
+      `EvalHeap::get_thunk` before the caller enters the thunk protocol. The
+      serial tree-walk `force_value` now uses this classifier at its force-entry
+      boundary, and unit tests pin that inline scalars and heap WHNF tags return
+      without heap lookup, thunk tags miss, foreign thunk pointers are rejected
+      only on the slow path, and an already forced serial thunk still misses in
+      the current 16-byte representation. This is the semantic tag-compare
+      precursor only: it is not the future low-bit pointer-tag `FORCED`
+      shortcut, does not skip the thunk cell for already forced thunk values,
+      does not integrate with the parallel scheduler/CAS wait path, and does
+      not satisfy the loom/Miri/TSan gate.
 - [x] Current shared node-table admission precursor: `SharedDemandGraph`
       wraps the existing in-memory `DemandGraph` behind a same-process mutex,
       exposes `DemandNodeAdmission` from insert-or-get calls, and proves cloned

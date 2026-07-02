@@ -754,9 +754,10 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        if !value.is_thunk() {
-            return Ok(value);
-        }
+        let value = match classify_whnf_tag_fast_path(value) {
+            WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
+            WhnfTagFastPath::RequiresThunkProtocol(value) => value,
+        };
         let forced_payload = value.payload_bits();
         let thunk = self
             .heap

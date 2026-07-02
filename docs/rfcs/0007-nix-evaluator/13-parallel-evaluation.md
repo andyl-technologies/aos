@@ -810,6 +810,21 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       steals, does not hold a scheduler park token, and still uses the blocking
       wait-cell precursor rather than a lock-free waiter list.
 - [ ] Tag-test fast path: WHNF-tagged values return by inspection with no atomic load/CAS; only a tag miss enters the protocol (§3.4) — **P3.5**, `C-12`; co-designed with the pointer-tag work (`M-4`/`S-6`).
+- [x] Current semantic WHNF tag-test precursor:
+      `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
+      boundary for force entry. `classify_whnf_tag_fast_path` returns every
+      non-`Thunk` `ValueTag` as already-WHNF by inspection, and
+      `checked_whnf_tag_fast_path` resolves only thunk-tag misses through
+      `EvalHeap::get_thunk` before the caller enters the thunk protocol. The
+      serial tree-walk `force_value` now uses this classifier at its force-entry
+      boundary, and unit tests pin that inline scalars and heap WHNF tags return
+      without heap lookup, thunk tags miss, foreign thunk pointers are rejected
+      only on the slow path, and an already forced serial thunk still misses in
+      the current 16-byte representation. This is the semantic tag-compare
+      precursor only: it is not the future low-bit pointer-tag `FORCED`
+      shortcut, does not skip the thunk cell for already forced thunk values,
+      does not integrate with the parallel scheduler/CAS wait path, and does
+      not satisfy the loom/Miri/TSan gate (§3.6).
 
 ### L1 — coarse top-level parallelism (§4)
 

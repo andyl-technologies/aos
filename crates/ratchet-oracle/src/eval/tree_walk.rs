@@ -60,6 +60,7 @@ use super::heap::{
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
+use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
     repr::{AttrSetConstruction, AttrSetReprKind, AttrSetReprPolicy},
