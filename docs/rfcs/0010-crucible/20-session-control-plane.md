@@ -200,12 +200,14 @@ The complete, defined transitions. Every cell not listed is a no-op-with-error
   from \ command   start/instantiate   continue   pause   step    stop    inject/heal   set/rm bp   savepoint   fork    query
   ──────────────   ─────────────────   ────────   ─────   ────    ────    ───────────   ─────────   ─────────   ────    ─────
   Loaded           → Paused(Instan.)   error      error   error   →Stop   error         ok (stays)  error       error   ok
-  Running          error               error*     →Paused →Paused →Stop   queued(§5)    queued(§5)  queued(§5)  err**   ok(live)
-  Paused           error               →Running   ok      →Paused(StepComplete) →Stop   ok          ok          ok      ok      ok
+  Running          error               error*     →Paused →Running† →Stop queued(§5)    queued(§5)  queued(§5)  err**   ok(live)
+  Paused           error               →Running   ok      →Running† →Stop ok            ok          ok          ok      ok
   Stopped          error               error      error   error   error   error         ok(read)    error       ok***   ok
   ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   *   already Running  ** fork requires a pause point; a Running fork first pauses (§7)
   *** fork from a Stopped session is fork-from-its-final-checkpoint (a valid prefix is the tip)
+  †   bounded step execution has started; it polls the mailbox between quanta and later pauses
+      as Paused(StepComplete) when §4.3's deterministic stop point is reached.
 ```
 
 - **[SESS-7]** Every transition MUST be applied **on the actor task**, never by an
@@ -1101,10 +1103,18 @@ pub enum SessionError {
     reply delivery across engine boundaries and side-effect-free rejection
     replies. Full breakpoint predicate evaluation and independent forked child
     actors remain tracked by `T-SESS-7` and `T-SESS-8`.
-- [ ] **T-SESS-5** Implement the five step modes (Quantum/Event/Assertion/Timer/
+- [x] **T-SESS-5** Implement the five step modes (Quantum/Event/Assertion/Timer/
   Duration), each resolving to a deterministic stop point, interruptible by
   pause/stop, landing at the same configuration on every host. — satisfies
   [SESS-12]; spec §4.3.
+  - Completed by `checks.crucible.phase5.sessionStepModes`:
+    `crucible-session` now carries the forward `StepMode` vocabulary
+    (`Quantum`, `Event`, `Assertion`, `Timer`, `Duration`) and engine-owned
+    active-step state. The actor starts bounded execution through the mailbox,
+    polls between quanta, pauses with `StepComplete { mode }` only after the
+    requested event-log or virtual-time stop point, and clears active steps when
+    `pause` or `stop` interrupts. Focused tests cover event, assertion, timer,
+    duration, and interruptible pause/stop behavior.
 - [ ] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean

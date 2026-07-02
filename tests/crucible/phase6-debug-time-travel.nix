@@ -198,8 +198,8 @@
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
-        label = "instruction step mode";
-        needle = "Instruction,";
+        label = "duration step mode";
+        needle = "Duration(SimDuration)";
       }
       {
         label = "event step mode";
@@ -223,11 +223,11 @@
       }
       {
         label = "step-mode mirror test";
-        needle = "step_modes_mirror_debug_reverse_grains";
+        needle = "step_modes_cover_forward_vocabulary_and_reverse_grains";
       }
       {
-        label = "unsupported non-quantum step mode";
-        needle = "UnsupportedStepMode";
+        label = "forward-only duration step";
+        needle = "Duration(SimDuration { nanos: 10 }).reverse_grain()";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_debug_time_travel.rs" timeTravelTest [
