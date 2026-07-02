@@ -34,12 +34,13 @@ use crate::{
     CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash,
     ControlFaultAction, ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState,
     DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault,
-    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, GdbAttachInfo, GdbListen, Icount,
-    LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
-    PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SearchFrontierChoices, Shift, SimDuration, SimInstant, SimulationBackend, TimeConversionError,
-    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, FingerprintSample, GdbAttachInfo,
+    GdbListen, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
+    PartitionDirection, PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy,
+    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, SearchFrontierChoices, Shift, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
+    WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -69,6 +70,25 @@ pub trait QuantumLoop {
     /// Returns [`SchedulerError`] when the quantum cannot be driven or when the
     /// scheduler detects an invalid boundary condition.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
+
+    /// Samples a deterministic execution fingerprint for `node`.
+    ///
+    /// Backends that do not own concrete VM state use the default unsupported
+    /// implementation. Backend-backed loops should delegate to their
+    /// [`SimulationBackend`] so control-plane verification compares real
+    /// icount/register/memory evidence rather than API observation summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the wrapped backend cannot sample the
+    /// requested node or does not support execution fingerprints.
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "sample_fingerprint",
+        }
+        .into())
+    }
 
     /// Applies scheduler-owned control at the current boundary.
     ///
@@ -175,6 +195,10 @@ where
 {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.loop_impl.drive_quantum(request)
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        self.backend.fingerprint(node).map_err(Into::into)
     }
 
     fn apply_control_at_boundary(

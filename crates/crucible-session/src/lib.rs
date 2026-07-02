@@ -27,10 +27,10 @@ use crucible::{
     DebugGotoRequest, DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest,
     DebugReverseContinueReport, DebugReverseContinueRequest, DebugReverseStepGrain,
     DebugReverseStepReport, DebugReverseStepRequest, Decision, EngineError, Fault, FaultTag,
-    GdbListen, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
-    RuntimeState, Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
-    SimDuration, TemporalGraph, VirtualTime,
+    FingerprintSample, GdbListen, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome,
+    QuantumRequest, RuntimeState, Schedule, ScheduledEventPayload, SchedulerError,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerQuiescence, SimDuration, TemporalGraph, VirtualTime,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -849,7 +849,7 @@ pub struct SavepointInfo {
 }
 
 /// Read-only query kind served through the actor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum QueryKind {
     /// Return the complete boundary snapshot.
     Snapshot,
@@ -857,6 +857,11 @@ pub enum QueryKind {
     State,
     /// Return the canonical event-log length.
     EventLogLength,
+    /// Return one deterministic execution-fingerprint sample for a node.
+    ExecutionFingerprint {
+        /// Node whose backend fingerprint should be sampled.
+        node: NodeId,
+    },
 }
 
 /// Result returned by a read-only query command.
@@ -868,6 +873,8 @@ pub enum QueryResult {
     State(LifecycleStateKind),
     /// Canonical event-log length.
     EventLogLength(usize),
+    /// Deterministic execution-fingerprint sample for one node.
+    ExecutionFingerprint(FingerprintSample),
 }
 
 /// Read-only query kind served directly from the lock-free live snapshot.
@@ -3983,6 +3990,9 @@ impl<L: QuantumLoop> Engine<L> {
                     QueryKind::EventLogLength => {
                         QueryResult::EventLogLength(snapshot.event_log_len)
                     }
+                    QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
+                        self.quantum_loop.sample_fingerprint(node.clone())?,
+                    ),
                 };
                 reply.complete(Ok(result));
                 Ok(snapshot)

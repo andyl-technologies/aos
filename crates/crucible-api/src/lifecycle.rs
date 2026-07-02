@@ -12,9 +12,9 @@ use std::sync::Arc;
 use crucible::{
     Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
     EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
-    GenesisCheckpoint, LogLevel, MembershipFault, PartitionDirection, QuantumLoop, QuantumOutcome,
-    QuantumRequest, RestartPolicy, ScenarioDef, SchedulerError, SchedulerEventLogEntry,
-    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
+    ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel, MembershipFault,
+    PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest, RestartPolicy, ScenarioDef,
+    SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
@@ -90,6 +90,26 @@ impl QuantumLoop for QuiescentLifecycleLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::new(Default::default(), 0, self.event_log_events),
             scheduler_quiescence: Some(SchedulerQuiescence::default()),
+        })
+    }
+
+    fn sample_fingerprint(
+        &mut self,
+        node: crucible::NodeId,
+    ) -> Result<FingerprintSample, SchedulerError> {
+        let material = format!(
+            "node={}\nquanta={}\nevent-log-events={}\n",
+            node.name, self.quanta, self.event_log_events
+        );
+        Ok(FingerprintSample {
+            node,
+            at: VirtualTime { ticks: self.quanta },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_canonical_material(
+                    "crucible.lifecycle.quiescent-fingerprint.v1",
+                    &material,
+                ),
+            },
         })
     }
 }

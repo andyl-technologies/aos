@@ -397,12 +397,14 @@ impl SendRequest {
 }
 
 /// Response returned by unary `Send` and by a `Control` command envelope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SendResponse {
     /// Command result.
     pub result: CommandResult,
     /// State update observed for commands that changed run-state.
     pub state_update: Option<StateUpdate>,
+    /// Query payload returned by accepted read-only commands, when exposed.
+    pub query_result: Option<QueryResult>,
 }
 
 enum CommandReplyObserver {
@@ -421,10 +423,10 @@ enum CommandReplyObserver {
 }
 
 impl CommandReplyObserver {
-    async fn status(
+    async fn observe(
         self,
         command: SessionCommandKind,
-    ) -> Result<CommandResultStatus, StreamingApiError> {
+    ) -> Result<(CommandResultStatus, Option<QueryResult>), StreamingApiError> {
         let rejected = match self {
             Self::FaultTag(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
@@ -436,17 +438,23 @@ impl CommandReplyObserver {
             },
             Self::Savepoint(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Fork(receiver) => rejected_from_reply(receiver, command).await?,
-            Self::Query(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Query(receiver) => match await_reply(receiver, command).await? {
+                Ok(result) => return Ok((CommandResultStatus::Accepted, Some(result))),
+                Err(error) => Some(session_error_rejection_kind(&error)),
+            },
             Self::DebugAttach(receiver) => rejected_from_reply(receiver, command).await?,
             Self::DebugGoto(receiver) => rejected_from_reply(receiver, command).await?,
             Self::DebugReverseStep(receiver) => rejected_from_reply(receiver, command).await?,
             Self::DebugReverseContinue(receiver) => rejected_from_reply(receiver, command).await?,
             Self::DebugForkNonCanonical(receiver) => rejected_from_reply(receiver, command).await?,
         };
-        Ok(match rejected {
-            Some(reason) => CommandResultStatus::Rejected { reason },
-            None => CommandResultStatus::Accepted,
-        })
+        Ok((
+            match rejected {
+                Some(reason) => CommandResultStatus::Rejected { reason },
+                None => CommandResultStatus::Accepted,
+            },
+            None,
+        ))
     }
 }
 
@@ -1101,6 +1109,7 @@ async fn dispatch_command(
                 },
             },
             state_update: None,
+            query_result: None,
         });
     }
 
@@ -1113,9 +1122,9 @@ async fn dispatch_command(
             command: command_kind,
         })?;
 
-    let status = match reply_observer {
-        Some(observer) => observer.status(command_kind).await?,
-        None => CommandResultStatus::Accepted,
+    let (status, query_result) = match reply_observer {
+        Some(observer) => observer.observe(command_kind).await?,
+        None => (CommandResultStatus::Accepted, None),
     };
     let result = CommandResult {
         command_id,
@@ -1144,6 +1153,7 @@ async fn dispatch_command(
     Ok(SendResponse {
         result,
         state_update,
+        query_result,
     })
 }
 

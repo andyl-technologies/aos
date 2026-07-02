@@ -34,8 +34,8 @@ use crucible_api::{
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
-    CheckpointRef, CommandReply, Engine, LiveStateKind, OutcomeKind, SessionActor, SessionCommand,
-    SessionCommandKind, SessionError, SessionRunReport,
+    CheckpointRef, CommandReply, Engine, LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind,
+    QueryResult, SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport,
 };
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc};
@@ -613,10 +613,20 @@ async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
         .unwrap_or_else(|error| panic!("production HTTP/2 control attach should decode: {error}"));
     assert_eq!(control.attached().session, created.session);
     let query = control
-        .send_command(1, SessionCommand::query_snapshot())
+        .send_command(1, query_state_command())
         .await
         .unwrap_or_else(|error| panic!("production HTTP/2 control send should decode: {error}"));
     assert_eq!(query.result.status, CommandResultStatus::Accepted);
+    assert_raw_send_error(
+        &format!("http://{addr}"),
+        format!(
+            "{}query=snapshot\n",
+            raw_send_body(created.session, 2, "crucible.cmd.query")
+        ),
+        "invalid-argument",
+        "invalid-argument",
+    )
+    .await;
 
     let sessions = rpc
         .list_sessions()
@@ -830,11 +840,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
             CommandResultStatus::Rejected { reason },
         );
         let accepted = client
-            .send_command(SendRequest::new(
-                session,
-                2,
-                SessionCommand::query_snapshot(),
-            ))
+            .send_command(SendRequest::new(session, 2, query_state_command()))
             .await
             .unwrap_or_else(|error| panic!("scripted send after rejection should decode: {error}"));
         assert_eq!(accepted.result.status, CommandResultStatus::Accepted);
@@ -858,6 +864,41 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
             reason: CommandRejectionKind::NotFound,
         },
     );
+
+    let query_result_server = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        String::from(
+            "crucible.rpc/send-response\ncommand-id=12\ncommand=crucible.cmd.query\nstatus=accepted\nstate-update=none\nquery-result=state|paused\n",
+        ),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(query_result_server.endpoint()))
+        .unwrap_or_else(|error| panic!("query-result RPC client should build: {error}"));
+    let decoded = client
+        .send_command(SendRequest::new(session, 12, query_state_command()))
+        .await
+        .unwrap_or_else(|error| panic!("query-result send should decode: {error}"));
+    assert_eq!(
+        decoded.query_result,
+        Some(QueryResult::State(LifecycleStateKind::Paused)),
+    );
+
+    let no_request_server = spawn_scripted_send_server(Vec::new()).await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(no_request_server.endpoint()))
+        .unwrap_or_else(|error| panic!("snapshot rejection RPC client should build: {error}"));
+    let snapshot_error = client
+        .send_command(SendRequest::new(
+            session,
+            13,
+            SessionCommand::query_snapshot(),
+        ))
+        .await
+        .expect_err("RPC client should reject snapshot query before sending");
+    assert!(matches!(
+        snapshot_error,
+        ControlClientError::UnsupportedRpcCommand { ref message }
+            if message.contains("snapshot query is not supported")
+    ));
 
     let golden_error = spawn_scripted_send_server(vec![scripted_send_response(
         axum::http::StatusCode::PRECONDITION_FAILED,
@@ -913,7 +954,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=1.2.0+crucible-rpc-abi-v1\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=2.0.0+crucible-rpc-abi-v2\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1009,7 +1050,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=1.2.0+crucible-rpc-abi-v1\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=2.0.0+crucible-rpc-abi-v2\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1091,7 +1132,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=1.2.0+crucible-rpc-abi-v1\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=2.0.0+crucible-rpc-abi-v2\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1106,9 +1147,10 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 session,
                 state: LiveStateKind::Paused,
             }),
+            query_result: None,
         }),
         &format!(
-            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\n"
+            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1122,8 +1164,9 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 },
             },
             state_update: None,
+            query_result: None,
         }),
-        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\n",
+        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\n",
     );
 
     let mut attributes = BTreeMap::new();
@@ -1602,9 +1645,19 @@ fn record_accepted_command(
 }
 
 fn representative_command(command: SessionCommandKind) -> SessionCommand {
+    if command == SessionCommandKind::Query {
+        return query_state_command();
+    }
     command
         .representative_command()
         .unwrap_or_else(|| panic!("{command:?} should have a representative command"))
+}
+
+fn query_state_command() -> SessionCommand {
+    SessionCommand::Query {
+        kind: QueryKind::State,
+        reply: CommandReply::discard(),
+    }
 }
 
 async fn recv_control_state_update(
@@ -1926,11 +1979,7 @@ async fn drive_streaming_causal_subsequence_projection(
             );
         }
         let query = streaming
-            .send(SendRequest::new(
-                session,
-                7_900,
-                SessionCommand::query_snapshot(),
-            ))
+            .send(SendRequest::new(session, 7_900, query_state_command()))
             .await
             .unwrap_or_else(|error| panic!("streaming causal query should succeed: {error}"));
         assert_eq!(query.result.command_kind, SessionCommandKind::Query);
@@ -2133,7 +2182,7 @@ async fn drive_rpc_arrival_permutation_projection(
                 .with_client_name("arrival-order-watch"),
         ),
         query_client.send_command(
-            SendRequest::new(session, 9_100, SessionCommand::query_snapshot())
+            SendRequest::new(session, 9_100, query_state_command())
                 .with_expected_epoch(session.epoch),
         ),
     );
@@ -2285,7 +2334,7 @@ async fn assert_read_only_traffic_is_schedule_neutral<C>(
             SendRequest::new(
                 session,
                 9_000 + before.reproduction.len() as u64,
-                SessionCommand::query_snapshot(),
+                query_state_command(),
             )
             .with_expected_epoch(session.epoch),
         )
@@ -2662,6 +2711,7 @@ fn send_response_body(
     push_wire_line(&mut output, "command", &command_name(command));
     push_wire_line(&mut output, "status", &command_status_wire(status));
     push_wire_line(&mut output, "state-update", "none");
+    push_wire_line(&mut output, "query-result", "none");
     output
 }
 
@@ -3462,6 +3512,7 @@ fn encode_send_response(response: &SendResponse) -> String {
         Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
         None => push_wire_line(&mut output, "state-update", "none"),
     }
+    push_wire_line(&mut output, "query-result", "none");
     output
 }
 
@@ -3560,8 +3611,14 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let session = parse_session_ref(&mut lines)?;
     let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
-    let command = parse_session_command(lines.next(), "command=")?;
-    reject_extra_line(lines.next())?;
+    let command_line = lines.next();
+    let next_line = lines.next();
+    let (query_line, trailing_line) = match next_line {
+        Some(line) if line.starts_with("query=") => (Some(line), lines.next()),
+        line => (None, line),
+    };
+    let command = parse_session_command(command_line, "command=", query_line)?;
+    reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
         request = request.with_expected_epoch(expected_epoch);
@@ -3603,13 +3660,65 @@ fn parse_optional_epoch_line(
 fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
+    query_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
         .ok_or_else(|| format!("unknown command `{command_kind_wire}`"))?;
+    if command_kind == SessionCommandKind::Query {
+        let query_line = query_line
+            .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
+        return Ok(SessionCommand::Query {
+            kind: parse_query_kind_line(Some(query_line))?,
+            reply: CommandReply::discard(),
+        });
+    } else if query_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a query payload"
+        ));
+    }
     command_kind
         .representative_command()
         .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
+}
+
+fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
+    let value = parse_wire_line(line, "query=")?;
+    let mut fields = value.split('|');
+    match fields
+        .next()
+        .ok_or_else(|| String::from("missing query kind"))?
+    {
+        "snapshot" => {
+            reject_extra_query_field(fields.next())?;
+            Err(String::from(
+                "snapshot query is not supported by the RPC wire format",
+            ))
+        }
+        "state" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::State)
+        }
+        "event-log-length" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::EventLogLength)
+        }
+        "execution-fingerprint" => {
+            let node = parse_hex_string_field(fields.next(), "query fingerprint node")?;
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::ExecutionFingerprint {
+                node: NodeId { name: node },
+            })
+        }
+        kind => Err(format!("unknown query kind `{kind}`")),
+    }
+}
+
+fn reject_extra_query_field(field: Option<&str>) -> Result<(), String> {
+    if field.is_some() {
+        return Err(String::from("unexpected extra query fields"));
+    }
+    Ok(())
 }
 
 fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
@@ -3627,6 +3736,12 @@ fn parse_content_hash_line(
     })
 }
 
+fn parse_hex_string_field(value: Option<&str>, label: &'static str) -> Result<String, String> {
+    let value = value.ok_or_else(|| format!("missing {label}"))?;
+    String::from_utf8(parse_hex_bytes(value)?)
+        .map_err(|error| format!("invalid UTF-8 {label}: {error}"))
+}
+
 fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
     if value.len() != 64 {
         return Err(format!("{label} hex has length {}", value.len()));
@@ -3638,6 +3753,21 @@ fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
         let pair = &value[start..start + 2];
         *byte = u8::from_str_radix(pair, 16)
             .map_err(|error| format!("invalid {label} hex `{pair}`: {error}"))?;
+    }
+    Ok(bytes)
+}
+
+fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err(format!("hex string has odd length {}", value.len()));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let pair = &value[index..index + 2];
+        bytes.push(
+            u8::from_str_radix(pair, 16)
+                .map_err(|error| format!("invalid hex byte `{pair}`: {error}"))?,
+        );
     }
     Ok(bytes)
 }
@@ -4029,11 +4159,7 @@ async fn assert_accepted_query_after_rejection(
 ) {
     let response = tokio::time::timeout(
         Duration::from_secs(1),
-        streaming.send(SendRequest::new(
-            session,
-            command_id,
-            SessionCommand::query_snapshot(),
-        )),
+        streaming.send(SendRequest::new(session, command_id, query_state_command())),
     )
     .await
     .unwrap_or_else(|_| panic!("query after rejected command should not hang"))

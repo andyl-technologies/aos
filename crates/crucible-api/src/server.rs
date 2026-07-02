@@ -15,8 +15,11 @@ use axum::http::{Request, StatusCode, Version};
 use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
-use crucible::{ContentHash, EventLevel, QuantumLoop, ScenarioDef, Seed};
-use crucible_session::{LiveStateKind, OutcomeKind, SessionCommand, SessionCommandKind};
+use crucible::{ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, Seed};
+use crucible_session::{
+    LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind,
+};
 use futures_util::stream;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -506,8 +509,14 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let session = parse_session_ref(&mut lines)?;
     let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
-    let command = parse_session_command(lines.next(), "command=")?;
-    reject_extra_line(lines.next())?;
+    let command_line = lines.next();
+    let next_line = lines.next();
+    let (query_line, trailing_line) = match next_line {
+        Some(line) if line.starts_with("query=") => (Some(line), lines.next()),
+        line => (None, line),
+    };
+    let command = parse_session_command(command_line, "command=", query_line)?;
+    reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
         request = request.with_expected_epoch(expected_epoch);
@@ -579,13 +588,65 @@ fn parse_optional_epoch_line(
 fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
+    query_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
         .ok_or_else(|| format!("unknown command `{command_kind_wire}`"))?;
+    if command_kind == SessionCommandKind::Query {
+        let query_line = query_line
+            .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
+        return Ok(SessionCommand::Query {
+            kind: parse_query_kind_line(Some(query_line))?,
+            reply: crucible_session::CommandReply::discard(),
+        });
+    } else if query_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a query payload"
+        ));
+    }
     command_kind
         .representative_command()
         .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
+}
+
+fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
+    let value = parse_wire_line(line, "query=")?;
+    let mut fields = value.split('|');
+    match fields
+        .next()
+        .ok_or_else(|| String::from("missing query kind"))?
+    {
+        "snapshot" => {
+            reject_extra_query_field(fields.next())?;
+            Err(String::from(
+                "snapshot query is not supported by the RPC wire format",
+            ))
+        }
+        "state" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::State)
+        }
+        "event-log-length" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::EventLogLength)
+        }
+        "execution-fingerprint" => {
+            let node = parse_hex_string_field(fields.next(), "query fingerprint node")?;
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::ExecutionFingerprint {
+                node: NodeId { name: node },
+            })
+        }
+        kind => Err(format!("unknown query kind `{kind}`")),
+    }
+}
+
+fn reject_extra_query_field(field: Option<&str>) -> Result<(), String> {
+    if field.is_some() {
+        return Err(String::from("unexpected extra query fields"));
+    }
+    Ok(())
 }
 
 fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
@@ -603,6 +664,12 @@ fn parse_content_hash_line(
     })
 }
 
+fn parse_hex_string_field(value: Option<&str>, label: &'static str) -> Result<String, String> {
+    let value = value.ok_or_else(|| format!("missing {label}"))?;
+    String::from_utf8(parse_hex_bytes(value)?)
+        .map_err(|error| format!("invalid UTF-8 {label}: {error}"))
+}
+
 fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
     if value.len() != 64 {
         return Err(format!("{label} hex has length {}", value.len()));
@@ -613,6 +680,21 @@ fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
         let pair = &value[start..start.saturating_add(2)];
         *byte = u8::from_str_radix(pair, 16)
             .map_err(|error| format!("invalid {label} hex `{pair}`: {error}"))?;
+    }
+    Ok(bytes)
+}
+
+fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err(format!("hex string has odd length {}", value.len()));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let pair = &value[index..index + 2];
+        bytes.push(
+            u8::from_str_radix(pair, 16)
+                .map_err(|error| format!("invalid hex byte `{pair}`: {error}"))?,
+        );
     }
     Ok(bytes)
 }
@@ -640,8 +722,8 @@ fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'
 }
 
 fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
-    if line.is_some() {
-        return Err(String::from("unexpected trailing RPC request fields"));
+    if let Some(line) = line {
+        return Err(format!("unexpected trailing RPC request field `{line}`"));
     }
     Ok(())
 }
@@ -784,7 +866,31 @@ fn encode_send_response(response: &SendResponse) -> String {
         Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
         None => push_wire_line(&mut output, "state-update", "none"),
     }
+    push_wire_line(
+        &mut output,
+        "query-result",
+        &query_result_wire(response.query_result.as_ref()),
+    );
     output
+}
+
+fn query_result_wire(result: Option<&QueryResult>) -> String {
+    match result {
+        Some(QueryResult::State(state)) => {
+            format!("state|{}", lifecycle_state_wire_name(*state))
+        }
+        Some(QueryResult::EventLogLength(len)) => {
+            format!("event-log-length|{len}")
+        }
+        Some(QueryResult::ExecutionFingerprint(sample)) => format!(
+            "execution-fingerprint|{}|{}|{}",
+            hex_encode(sample.node.name.as_bytes()),
+            sample.at.ticks,
+            sample.fingerprint.hash.to_hex()
+        ),
+        Some(QueryResult::Snapshot(_)) => String::from("unsupported-snapshot"),
+        None => String::from("none"),
+    }
 }
 
 fn control_event_body(
@@ -1172,6 +1278,15 @@ fn state_wire_name(state: LiveStateKind) -> &'static str {
         LiveStateKind::Paused => "paused",
         LiveStateKind::Running => "running",
         LiveStateKind::Stopped => "stopped",
+    }
+}
+
+fn lifecycle_state_wire_name(state: LifecycleStateKind) -> &'static str {
+    match state {
+        LifecycleStateKind::Loaded => "loaded",
+        LifecycleStateKind::Paused => "paused",
+        LifecycleStateKind::Running => "running",
+        LifecycleStateKind::Stopped => "stopped",
     }
 }
 
