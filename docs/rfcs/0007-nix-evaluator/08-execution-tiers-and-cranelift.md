@@ -1172,6 +1172,20 @@ harness, never cut for scope.
       thunk-state CAS runs, registered addresses are not directly dereferenced or
       called, no native code pointer is cast or called, and generic runtime-call
       lowering beyond the env-slot precursor remains open.
+- [x] Current force-aware registered promotion precursor:
+      `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates()`
+      records one invocation with the same tier-up policy, preserves the
+      existing literal-root promotion path, and lowers local env-slot roots
+      through the forced env-slot CLIF artifact. Hot local-slot roots therefore
+      require both `aos_env_get` and `aos_force` candidates, then stop at the
+      explicit `aos_force` registered-finalization guard before any pointer is
+      installed. Tests pin cold unsupported-root no-lowering behavior, literal
+      multi-use promotion without runtime candidates, and hot env-slot
+      force-call promotion rejection with the invocation-updated slot preserved.
+      This is a policy/lowering handoff only: no evaluator heap thunk is
+      mutated, no atomic thunk-state CAS runs, no forced artifact is finalized,
+      no native code pointer is cast or called, and no `aos_force` wrapper is
+      exported or invoked.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability

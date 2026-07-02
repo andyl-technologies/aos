@@ -65,6 +65,7 @@ pub use cranelift::{
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact, jit_cranelift_dependency_pin,
+    jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
