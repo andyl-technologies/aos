@@ -200,11 +200,15 @@ async fn control_and_send_drive_non_basic_command_classes() {
             control_response.result.command_kind,
             send_response.result.command_kind,
         );
-        assert_eq!(
-            control_response.result.status,
+        let expected = if command == SessionCommandKind::RemoveBreakpoint {
+            CommandResultStatus::Rejected {
+                reason: CommandRejectionKind::NotFound,
+            }
+        } else {
             CommandResultStatus::Accepted
-        );
-        assert_eq!(send_response.result.status, CommandResultStatus::Accepted);
+        };
+        assert_eq!(control_response.result.status, expected);
+        assert_eq!(send_response.result.status, expected);
     }
 }
 

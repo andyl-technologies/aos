@@ -237,7 +237,7 @@
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 2;";
       }
       {
         label = "explicit patch version";
@@ -305,11 +305,19 @@
       }
       {
         label = "command request vector";
-        needle = "name: \"send-command-request\"";
+        needle = "name: \"send-request\"";
       }
       {
         label = "command response vector";
-        needle = "name: \"send-command-response\"";
+        needle = "name: \"send-response\"";
+      }
+      {
+        label = "rejected command response vector";
+        needle = "name: \"send-response-rejected-not-found\"";
+      }
+      {
+        label = "typed RPC error vector";
+        needle = "name: \"rpc-error-invalid-state\"";
       }
       {
         label = "event vector";
@@ -492,7 +500,7 @@ in
             gate=gate:abi-conformance
             shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
-            rpc_vectors=hello-request,hello-response,attached,send-command-request,send-command-response,event-fault-activated
+            rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-fault-activated
             plugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz
             engine_abi_aggregate=true
             version_bump_rule=shmem+protocol+rpc-golden-corpora

@@ -60,8 +60,8 @@
         needle = "Completed by `checks.crucible.phase5.apiReproductionContext`";
       }
       {
-        label = "T-API-10 remains next";
-        needle = "- [ ] **T-API-10**";
+        label = "T-API-13 remains pending";
+        needle = "- [ ] **T-API-13**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [

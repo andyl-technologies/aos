@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Action, Checkpoint, Condition, ConditionEvaluationError, ConditionEvaluationPass,
+    Action, BackendError, Checkpoint, Condition, ConditionEvaluationError, ConditionEvaluationPass,
     ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Configuration, ContentHash,
     ControlOperation, ControlOperationKind, DebugAttachReport, DebugAttachRequest, DebugGotoReport,
     DebugGotoRequest, DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest,
@@ -947,6 +947,13 @@ pub enum SessionCommand {
         /// Completion route returning the branch report.
         reply: CommandReply<DebugNonCanonicalBranchReport>,
     },
+    /// Apply an inner command and acknowledge actor-level completion.
+    Acknowledge {
+        /// Inner command whose command kind, payload, and side effects are preserved.
+        command: Box<SessionCommand>,
+        /// Completion route for the actor-level acknowledgement.
+        reply: CommandReply<()>,
+    },
 }
 
 impl SessionCommand {
@@ -986,63 +993,134 @@ impl SessionCommand {
         }
     }
 
+    /// Wraps a command with an actor-level completion acknowledgement.
+    #[must_use]
+    pub fn acknowledged(command: Self, reply: CommandReply<()>) -> Self {
+        Self::Acknowledge {
+            command: Box::new(command),
+            reply,
+        }
+    }
+
     /// Returns whether the command is observation-only.
     #[must_use]
     pub const fn is_read_only(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Self::Acknowledge { command, .. } => command.is_read_only(),
             Self::Query { .. }
-                | Self::Snapshot
-                | Self::AttachGdb { .. }
-                | Self::DebugGoto { .. }
-                | Self::DebugReverseStep { .. }
-                | Self::DebugReverseContinue { .. }
-        )
+            | Self::Snapshot
+            | Self::AttachGdb { .. }
+            | Self::DebugGoto { .. }
+            | Self::DebugReverseStep { .. }
+            | Self::DebugReverseContinue { .. } => true,
+            Self::Start
+            | Self::Continue
+            | Self::Pause
+            | Self::Step { .. }
+            | Self::Inject
+            | Self::InjectFault { .. }
+            | Self::HealFault { .. }
+            | Self::SetBreakpoint { .. }
+            | Self::RemoveBreakpoint { .. }
+            | Self::CreateSavepoint { .. }
+            | Self::Fork { .. }
+            | Self::Stop
+            | Self::DebugForkNonCanonical { .. } => false,
+        }
     }
 
     const fn is_terminal_accepted(&self) -> bool {
-        matches!(
-            self,
-            Self::Snapshot | Self::Fork { .. } | Self::Query { .. }
-        )
+        match self {
+            Self::Acknowledge { command, .. } => command.is_terminal_accepted(),
+            Self::Snapshot | Self::Fork { .. } | Self::Query { .. } => true,
+            Self::Start
+            | Self::Continue
+            | Self::Pause
+            | Self::Step { .. }
+            | Self::Inject
+            | Self::InjectFault { .. }
+            | Self::HealFault { .. }
+            | Self::SetBreakpoint { .. }
+            | Self::RemoveBreakpoint { .. }
+            | Self::CreateSavepoint { .. }
+            | Self::Stop
+            | Self::AttachGdb { .. }
+            | Self::DebugGoto { .. }
+            | Self::DebugReverseStep { .. }
+            | Self::DebugReverseContinue { .. }
+            | Self::DebugForkNonCanonical { .. } => false,
+        }
     }
 
     const fn is_control_acknowledged(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Self::Acknowledge { command, .. } => command.is_control_acknowledged(),
             Self::Pause
-                | Self::Snapshot
-                | Self::Fork { .. }
-                | Self::Inject
-                | Self::InjectFault { .. }
-                | Self::HealFault { .. }
-                | Self::SetBreakpoint { .. }
-                | Self::RemoveBreakpoint { .. }
-                | Self::CreateSavepoint { .. }
-                | Self::Query { .. }
-                | Self::AttachGdb { .. }
-                | Self::DebugGoto { .. }
-                | Self::DebugReverseStep { .. }
-                | Self::DebugReverseContinue { .. }
-                | Self::DebugForkNonCanonical { .. }
-        )
+            | Self::Snapshot
+            | Self::Fork { .. }
+            | Self::Inject
+            | Self::InjectFault { .. }
+            | Self::HealFault { .. }
+            | Self::SetBreakpoint { .. }
+            | Self::RemoveBreakpoint { .. }
+            | Self::CreateSavepoint { .. }
+            | Self::Query { .. }
+            | Self::AttachGdb { .. }
+            | Self::DebugGoto { .. }
+            | Self::DebugReverseStep { .. }
+            | Self::DebugReverseContinue { .. }
+            | Self::DebugForkNonCanonical { .. } => true,
+            Self::Start | Self::Continue | Self::Step { .. } | Self::Stop => false,
+        }
     }
 
     const fn requires_running_quantum_ack(&self) -> bool {
-        matches!(self, Self::Snapshot | Self::Query { .. })
+        match self {
+            Self::Acknowledge { command, .. } => command.requires_running_quantum_ack(),
+            Self::Snapshot | Self::Query { .. } => true,
+            Self::Start
+            | Self::Continue
+            | Self::Pause
+            | Self::Step { .. }
+            | Self::Inject
+            | Self::InjectFault { .. }
+            | Self::HealFault { .. }
+            | Self::SetBreakpoint { .. }
+            | Self::RemoveBreakpoint { .. }
+            | Self::CreateSavepoint { .. }
+            | Self::Fork { .. }
+            | Self::Stop
+            | Self::AttachGdb { .. }
+            | Self::DebugGoto { .. }
+            | Self::DebugReverseStep { .. }
+            | Self::DebugReverseContinue { .. }
+            | Self::DebugForkNonCanonical { .. } => false,
+        }
     }
 
     const fn requires_non_canonical_debug_branch(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Self::Acknowledge { command, .. } => command.requires_non_canonical_debug_branch(),
             Self::Continue
-                | Self::Step { .. }
-                | Self::Inject
-                | Self::InjectFault { .. }
-                | Self::HealFault { .. }
-                | Self::SetBreakpoint { .. }
-                | Self::RemoveBreakpoint { .. }
-        )
+            | Self::Step { .. }
+            | Self::Inject
+            | Self::InjectFault { .. }
+            | Self::HealFault { .. }
+            | Self::SetBreakpoint { .. }
+            | Self::RemoveBreakpoint { .. } => true,
+            Self::Start
+            | Self::Pause
+            | Self::Snapshot
+            | Self::CreateSavepoint { .. }
+            | Self::Fork { .. }
+            | Self::Stop
+            | Self::Query { .. }
+            | Self::AttachGdb { .. }
+            | Self::DebugGoto { .. }
+            | Self::DebugReverseStep { .. }
+            | Self::DebugReverseContinue { .. }
+            | Self::DebugForkNonCanonical { .. } => false,
+        }
     }
 
     fn complete_error(&self, error: SessionError) {
@@ -1059,6 +1137,10 @@ impl SessionCommand {
             Self::DebugReverseStep { reply, .. } => reply.complete(Err(error)),
             Self::DebugReverseContinue { reply, .. } => reply.complete(Err(error)),
             Self::DebugForkNonCanonical { reply, .. } => reply.complete(Err(error)),
+            Self::Acknowledge { command, reply } => {
+                command.complete_error(error.clone());
+                reply.complete(Err(error));
+            }
             Self::Start | Self::Continue | Self::Pause | Self::Step { .. } | Self::Stop => {}
             Self::Snapshot | Self::Inject => {}
         }
@@ -1279,6 +1361,7 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::DebugReverseStep { .. } => Self::DebugReverseStep,
             SessionCommand::DebugReverseContinue { .. } => Self::DebugReverseContinue,
             SessionCommand::DebugForkNonCanonical { .. } => Self::DebugForkNonCanonical,
+            SessionCommand::Acknowledge { command, .. } => Self::from(command.as_ref()),
         }
     }
 }
@@ -3589,6 +3672,14 @@ impl<L: QuantumLoop> Engine<L> {
         L: QuantumLoop,
     {
         match &command {
+            SessionCommand::Acknowledge { command, reply } => {
+                let result = self.apply_command_with_event_log((**command).clone(), event_log);
+                match &result {
+                    Ok(_) => reply.complete(Ok(())),
+                    Err(error) => reply.complete(Err(error.clone())),
+                }
+                result
+            }
             SessionCommand::Start => {
                 if matches!(self.state, EngineState::Loaded) {
                     self.instantiate_runtime()
@@ -3725,11 +3816,16 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::RemoveBreakpoint { id, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
                     self.reject_debug_forward_without_branch(&command)?;
+                    let removed = self.breakpoints.remove(*id);
+                    if !removed {
+                        let error = SessionError::BreakpointNotFound { id: *id };
+                        reply.complete(Err(error.clone()));
+                        return Err(error);
+                    }
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
-                    let removed = self.breakpoints.remove(*id);
-                    reply.complete(Ok(removed));
+                    reply.complete(Ok(true));
                     Ok(self.snapshot())
                 }
                 EngineState::Stopped { .. } => Err(self.invalid_transition(command.clone())),
@@ -4066,6 +4162,12 @@ pub enum SessionError {
         /// Stable reason for rejecting the fault action.
         reason: &'static str,
     },
+    /// A command referenced a breakpoint id that is not registered.
+    #[error("breakpoint {id} is not registered")]
+    BreakpointNotFound {
+        /// Missing breakpoint id.
+        id: BreakpointId,
+    },
     /// A debug command that needs an active gdb attach was issued before attach.
     #[error("debug operation {operation} requires an active gdb attach")]
     DebugAttachRequired {
@@ -4078,6 +4180,78 @@ pub enum SessionError {
         /// Operation blocked until branch metadata is recorded.
         operation: &'static str,
     },
+}
+
+fn is_recoverable_command_rejection(command: &SessionCommand, error: &SessionError) -> bool {
+    let SessionCommand::Acknowledge { .. } = command else {
+        return false;
+    };
+    match error {
+        SessionError::InvalidTransition { .. }
+        | SessionError::InvalidEngineState { .. }
+        | SessionError::BreakpointConditionPrefix { .. }
+        | SessionError::UnsupportedBreakpointAction { .. }
+        | SessionError::UnsupportedBreakpointFault { .. }
+        | SessionError::BreakpointNotFound { .. }
+        | SessionError::DebugAttachRequired { .. }
+        | SessionError::DebugNonCanonicalBranchRequired { .. } => true,
+        SessionError::Engine(error) => is_recoverable_engine_rejection(error),
+        SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),
+        SessionError::ChannelClosed
+        | SessionError::EventLogOffsetRegression { .. }
+        | SessionError::EventLogOffsetMismatch { .. }
+        | SessionError::ControlReplayBoundaryMismatch { .. }
+        | SessionError::ControlReplayFrontierMismatch { .. }
+        | SessionError::ControlReplayBatchMismatch { .. }
+        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => false,
+    }
+}
+
+fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
+    match error {
+        EngineError::CheckpointNotRecorded { .. }
+        | EngineError::MissingBakedGenesis { .. }
+        | EngineError::PlanFaultUnknownNode { .. }
+        | EngineError::PlanFaultUnknownLink { .. }
+        | EngineError::PlanFaultUnknownLinkId { .. }
+        | EngineError::PlanFaultUnknownDevice { .. }
+        | EngineError::PlanHealUnknownTag { .. }
+        | EngineError::PropertyPredicateUnknownNode { .. }
+        | EngineError::PropertyPredicateUnknownAssertion { .. }
+        | EngineError::DebugAttachUnknownNode { .. }
+        | EngineError::DebugTargetResolverFailureNotFound { .. }
+        | EngineError::DebugTimeTravelCoordinateNotFound { .. }
+        | EngineError::DebugTimeTravelUnknownNode { .. }
+        | EngineError::NotImplemented { .. }
+        | EngineError::WorldNodeUnsupportedWorkload { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
+        | EngineError::PlanFaultUnsupportedParam { .. }
+        | EngineError::DebugBreakpointRequiresAllowMutate { .. }
+        | EngineError::EventLogReplayUnsupported { .. } => true,
+        EngineError::SchedulePrefix(_) => true,
+        _ => false,
+    }
+}
+
+const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
+    match error {
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => true,
+        SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
+    }
+}
+
+const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
+    match error {
+        BackendError::NotImplemented { .. }
+        | BackendError::Unsupported { .. }
+        | BackendError::Rejected { .. } => true,
+    }
 }
 
 /// Evidence returned when a session actor exits.
@@ -4166,6 +4340,7 @@ pub enum SessionControlPayload {
 impl SessionControlPayload {
     fn from(command: &SessionCommand) -> Self {
         match command {
+            SessionCommand::Acknowledge { command, .. } => Self::from(command),
             SessionCommand::Fork { from, .. } => Self::Fork { from: *from },
             SessionCommand::InjectFault { spec, .. } => Self::InjectFault { spec: spec.clone() },
             SessionCommand::HealFault { tag, .. } => Self::HealFault { tag: tag.clone() },
@@ -4401,6 +4576,28 @@ impl<L> SessionActor<L> {
     }
 }
 
+fn split_acknowledged_command(
+    command: SessionCommand,
+) -> (SessionCommand, Option<CommandReply<()>>) {
+    match command {
+        SessionCommand::Acknowledge { command, reply } => (*command, Some(reply)),
+        command => (command, None),
+    }
+}
+
+fn complete_acknowledgement(
+    acknowledgement: Option<CommandReply<()>>,
+    result: &Result<(), SessionError>,
+) {
+    let Some(reply) = acknowledgement else {
+        return;
+    };
+    match result {
+        Ok(()) => reply.complete(Ok(())),
+        Err(error) => reply.complete(Err(error.clone())),
+    }
+}
+
 impl<L> SessionActor<L>
 where
     L: QuantumLoop + Send + 'static,
@@ -4437,7 +4634,7 @@ where
         match self.engine.state().clone() {
             EngineState::Running => {
                 if let Some(command) = self.next_boundary_command()? {
-                    self.apply_command(command).await?;
+                    self.apply_command_or_recover(command).await?;
                     return Ok(());
                 }
 
@@ -4465,7 +4662,7 @@ where
                     .recv()
                     .await
                     .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command(command).await
+                self.apply_command_or_recover(command).await
             }
             EngineState::Stopped { .. } => {
                 self.drain_terminal_commands().await?;
@@ -4478,7 +4675,8 @@ where
         match self.engine.state().clone() {
             EngineState::Running => {
                 if let Some(command) = self.next_boundary_command()? {
-                    self.apply_command_without_spawning_forks(command).await?;
+                    self.apply_command_without_spawning_forks_or_recover(command)
+                        .await?;
                     return Ok(());
                 }
 
@@ -4506,7 +4704,8 @@ where
                     .recv()
                     .await
                     .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command_without_spawning_forks(command).await
+                self.apply_command_without_spawning_forks_or_recover(command)
+                    .await
             }
             EngineState::Stopped { .. } => {
                 self.drain_terminal_commands_without_spawning_forks()
@@ -4525,17 +4724,45 @@ where
     }
 
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
+        let (command, acknowledgement) = split_acknowledged_command(command);
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
-            return self.apply_spawned_fork_command(command).await;
+            let result = self.apply_spawned_fork_command(command).await;
+            complete_acknowledgement(acknowledgement, &result);
+            return result;
         }
 
-        self.apply_command_without_spawning_forks(command).await
+        let result = self.apply_command_without_spawning_forks(command).await;
+        complete_acknowledgement(acknowledgement, &result);
+        result
+    }
+
+    async fn apply_command_or_recover(
+        &mut self,
+        command: SessionCommand,
+    ) -> Result<(), SessionError> {
+        let command_for_recovery = command.clone();
+        match self.apply_command(command).await {
+            Err(error) if is_recoverable_command_rejection(&command_for_recovery, &error) => Ok(()),
+            result => result,
+        }
+    }
+
+    async fn apply_command_without_spawning_forks_or_recover(
+        &mut self,
+        command: SessionCommand,
+    ) -> Result<(), SessionError> {
+        let command_for_recovery = command.clone();
+        match self.apply_command_without_spawning_forks(command).await {
+            Err(error) if is_recoverable_command_rejection(&command_for_recovery, &error) => Ok(()),
+            result => result,
+        }
     }
 
     async fn apply_command_without_spawning_forks(
         &mut self,
         command: SessionCommand,
     ) -> Result<(), SessionError> {
+        let (command, acknowledgement) = split_acknowledged_command(command);
         let quanta_before = self.engine.quanta();
         let pending_control_before = self.engine.pending_control_len() as u64;
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
@@ -4547,6 +4774,7 @@ where
             .apply_command_with_event_log(command.clone(), &condition_event_log)
         {
             command.complete_error(error.clone());
+            complete_acknowledgement(acknowledgement, &Err(error.clone()));
             return Err(error);
         }
         let entries = self.engine.drain_event_log_entries();
@@ -4568,6 +4796,7 @@ where
                 .saturating_add(self.engine.quanta() - quanta_before);
         }
         self.commands_applied = self.commands_applied.saturating_add(1);
+        complete_acknowledgement(acknowledgement, &Ok(()));
         tokio::task::yield_now().await;
         Ok(())
     }
@@ -5043,8 +5272,20 @@ mod tests {
                     continue;
                 };
                 let mut engine = engine_with_lifecycle_state(state);
-                let before = engine.snapshot();
                 let model = lifecycle_transition(state, command_kind);
+                if command_kind == SessionCommandKind::RemoveBreakpoint
+                    && matches!(model, LifecycleTransition::Accepted { .. })
+                {
+                    engine
+                        .apply_command(SessionCommand::SetBreakpoint {
+                            spec: BreakpointSpec::suspend_once(Condition::Quiescent),
+                            reply: CommandReply::discard(),
+                        })
+                        .unwrap_or_else(|error| {
+                            panic!("remove-breakpoint fixture should register breakpoint: {error}")
+                        });
+                }
+                let before = engine.snapshot();
                 let result = engine.apply_command(command.clone());
 
                 match model {

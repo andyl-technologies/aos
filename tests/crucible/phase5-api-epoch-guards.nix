@@ -110,12 +110,12 @@
         needle = "decode_error_response";
       }
       {
-        label = "failed precondition error code";
-        needle = "failed-precondition";
+        label = "typed invalid-state RPC status";
+        needle = "RpcStatusCode::InvalidState";
       }
       {
-        label = "session closed epoch mismatch code";
-        needle = "session-closed:epoch-mismatch";
+        label = "streaming epoch mismatch reason";
+        needle = ''"streaming-epoch-mismatch"'';
       }
       {
         label = "DestroySession RPC expected epoch encoding";

@@ -328,6 +328,12 @@ long-held locks.
   and observational ordering metadata, and proves read-only retrieval, epoch
   fast-fail, attach/unary agreement, and equivalent interactive-vs-scripted
   schedules.
+  `T-API-10` is green through
+  `checks.crucible.phase5.apiCommandStatusTaxonomy`, which closes command
+  rejections and transport errors over INVALID_STATE/NOT_FOUND/INVALID_ARGUMENT/
+  UNSUPPORTED/INTERNAL, freezes the new RPC status wire vectors, and proves
+  invalid commands, missing scenarios, missing sessions, and stale epochs decode
+  as typed errors without stream teardown or state mutation.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
