@@ -524,6 +524,21 @@ mod tests {
             );
             assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
         }
+
+        let update_signature =
+            runtime_helper_call_signature("aos_update").expect("update signature is core-owned");
+        let update_clif_signature =
+            clif_signature_for_runtime_call(update_signature).expect("update signature lowers");
+
+        assert_eq!(update_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        assert_eq!(
+            param_types(&update_clif_signature),
+            vec![pointer_type, types::I64, types::I64, types::I64, types::I64]
+        );
+        assert_eq!(
+            return_types(&update_clif_signature),
+            vec![types::I64, types::I64]
+        );
     }
 
     #[test]

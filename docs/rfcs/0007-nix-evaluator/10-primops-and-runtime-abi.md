@@ -231,7 +231,7 @@ fixed, named set of **runtime symbols**. These fall into four groups:
 |-------|----------|----------------------------------------|
 | Allocation | `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_alloc_list`, `aos_alloc_string` | GC strategy swaps (bump arena ↔ generational) with zero JIT recompilation |
 | Forcing / control | `aos_force`, `aos_force_deep`, `aos_blackhole_check` | One canonical force implementation shared by all tiers; deopt hooks here |
-| Attrset access | `aos_select_ic`, `aos_has_attr`, `aos_update` (`//`) | Inline-cache cells live in the runtime; see [hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md) |
+| Attrset access | `aos_select_ic`, `aos_has_attr`, `aos_update` (`//`) | Keyed selects/presence checks use runtime inline-cache cells; update is the shared shallow-merge slow path. See [hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md) |
 | Builtins | `nix.builtin.map`, `nix.builtin.derivationStrict`, … (~120) | Shared between oracle and JIT; perfect-hashed dispatch (§4) |
 
 The allocation indirection is the single most important design decision in this
@@ -817,11 +817,11 @@ harness, never cut for scope.
 - [x] Current runtime symbol registration-preflight precursor:
       `runtime_symbol_registration_preflight()` derives a deterministic
       readiness report from the binding manifest: bindable allocation,
-      call-control apply, attrset-access has-attr/select-IC, environment-access, forcing, and write-barrier helpers stay in runtime-manifest
+      call-control apply, attrset-access has-attr/select-IC/update, environment-access, forcing, and write-barrier helpers stay in runtime-manifest
       order, and missing
       helper/builtin bindings are reported in stable symbol order. The checked
       `runtime_symbol_registration_plan()` currently returns an incomplete
-      registration error until blackhole-check/update/error helpers and builtin
+      registration error until blackhole-check/error helpers and builtin
       executable bindings are added. Tests pin bindable-helper coverage,
       sorted gaps, representative missing helper roles, builtin gaps, and the
       incomplete-plan failure. This still does not register `JITBuilder` symbols,
@@ -844,7 +844,7 @@ harness, never cut for scope.
       into a checked completeness gate: callers receive a
       `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
       signature metadata. Today it returns an incomplete-plan error carrying the
-      preflight because blackhole-check/update/error helpers and value-only
+      preflight because blackhole-check/error helpers and value-only
       builtins remain gaps. Tests pin the missing count, representative helper and
       value-only builtin gaps, preserved callable builtin metadata, and a
       synthetic complete conversion path. This is metadata gating only; no
@@ -856,7 +856,7 @@ harness, never cut for scope.
       builtin call-shape metadata into a target-readiness report. Helper symbols
       with allocation/call-control/attrset-access/environment-access/forcing/write-barrier callables are
       address-free symbol/role wrapper-generation candidates;
-      blackhole-check/update/error helpers, value-only builtins, and callable builtins
+      blackhole-check/error helpers, value-only builtins, and callable builtins
       without wrapper bodies remain gaps with builtin-wrapper blockers: missing
       wrapper body, runtime/env ABI decoding, native `Value` argument
       materialization, evaluator call-frame binding, active argument root
@@ -927,7 +927,7 @@ harness, never cut for scope.
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata
       for currently covered allocation/call-control/attrset-access/environment-access/forcing/write-barrier helpers,
-      while keeping blackhole-check/update/error helpers and builtins in the
+      while keeping blackhole-check/error helpers and builtins in the
       missing-binding set. Tests prove helper-callable order, helper-symbol
       parity with the safe preflight, and gap parity with the incomplete
       registration report. This is not executable ABI registration: the
@@ -970,7 +970,7 @@ harness, never cut for scope.
       call-control, attrset-access, environment-access, forcing, or barrier failures
       must transfer to evaluator trap/error machinery. Tests pin the convention for
       each `aos_alloc_*`, `aos_apply`, `aos_has_attr`/`aos_select_ic`,
-      `aos_env_get`, `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
+      `aos_update`, `aos_env_get`, `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol`
       registration, and native startup binding remain open.
 

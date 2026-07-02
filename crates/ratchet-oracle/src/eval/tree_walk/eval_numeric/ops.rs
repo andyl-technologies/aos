@@ -139,43 +139,78 @@ impl TreeWalk {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
         let left = self.force_lazy_foldl_initial_value(lhs, lhs_span, left)?;
-        if left.tag() != ValueTag::Attrs {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: lhs,
-                    expected: "attrs",
-                    actual: left.tag(),
-                },
-                lhs_span,
-            ));
-        }
-        let left_entries = {
-            let attrs = self.heap.get_attrs(left).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
-            })?;
-            Self::clone_attr_entries(id, lhs_span, attrs)?
-        };
+        let left_entries = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
 
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
         let right = self.force_lazy_foldl_initial_value(rhs, rhs_span, right)?;
-        if right.tag() != ValueTag::Attrs {
+        let right_entries = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
+        self.merge_attr_update_entries(id, node.span, lhs, left_entries, right_entries)
+    }
+
+    /// Merges two already-forced attrset values using Nix `//` semantics.
+    ///
+    /// Callers own WHNF forcing and lazy-foldl normalization before entering
+    /// this helper boundary; this routine checks both operand tags, performs a
+    /// shallow right-biased merge, allocates the result, and records update
+    /// telemetry.
+    pub(crate) fn update_attr_values(
+        &mut self,
+        id: IrId,
+        span: Span,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.update_attr_values_with_operand_metadata(id, span, id, span, left, id, span, right)
+    }
+
+    fn update_attr_values_with_operand_metadata(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lhs: IrId,
+        lhs_span: Span,
+        left: Value,
+        rhs: IrId,
+        rhs_span: Span,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let left_entries = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
+        let right_entries = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
+        self.merge_attr_update_entries(id, span, lhs, left_entries, right_entries)
+    }
+
+    fn attr_entries_for_update(
+        &self,
+        id: IrId,
+        operand_id: IrId,
+        operand_span: Span,
+        value: Value,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        if value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
-                    id: rhs,
+                    id: operand_id,
                     expected: "attrs",
-                    actual: right.tag(),
+                    actual: value.tag(),
                 },
-                rhs_span,
+                operand_span,
             ));
         }
-        let right_entries = {
-            let attrs = self.heap.get_attrs(right).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, rhs_span)
-            })?;
-            Self::clone_attr_entries(id, rhs_span, attrs)?
-        };
+        let attrs = self.heap.get_attrs(value).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, operand_span)
+        })?;
+        Self::clone_attr_entries(id, operand_span, attrs)
+    }
 
+    fn merge_attr_update_entries(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lhs: IrId,
+        left_entries: Vec<AttrEntry>,
+        right_entries: Vec<AttrEntry>,
+    ) -> Result<Value, TreeWalkError> {
         let left_len = left_entries.len();
         let right_len = right_entries.len();
         let capacity = left_entries.len().checked_add(right_len).ok_or_else(|| {
@@ -184,7 +219,7 @@ impl TreeWalk {
                     id,
                     source: AttrError::TooManyEntries { len: usize::MAX },
                 },
-                node.span,
+                span,
             )
         })?;
         let mut entries = Vec::new();
@@ -194,7 +229,7 @@ impl TreeWalk {
                     id,
                     source: AttrError::AllocationFailed { entries: capacity },
                 },
-                node.span,
+                span,
             )
         })?;
         for entry in left_entries {
@@ -204,13 +239,13 @@ impl TreeWalk {
         }
         entries.extend(right_entries);
 
-        let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
-        })?;
-        let result = self.heap.alloc_attrs(0, attrs).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-        })?;
-        self.record_attr_update_telemetry(id, node.span, lhs, left_len, right_len);
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        let result = self
+            .heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.record_attr_update_telemetry(id, span, lhs, left_len, right_len);
         Ok(result)
     }
 

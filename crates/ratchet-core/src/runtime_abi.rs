@@ -295,6 +295,11 @@ const SELECT_IC_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
     RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
 ];
+const UPDATE_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("left", RuntimeAbiParameterKind::Value),
+    RuntimeAbiParameter::new("right", RuntimeAbiParameterKind::Value),
+];
 
 const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
@@ -424,6 +429,14 @@ const RUNTIME_SELECT_IC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignat
     SELECT_IC_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_UPDATE_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_update", RuntimeHelperRole::AttrsetAccess),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    UPDATE_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 
 /// Frozen helper call signatures for helpers with core-owned ABI shapes today.
 pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
@@ -442,6 +455,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
     RUNTIME_HAS_ATTR_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
+    RUNTIME_UPDATE_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
 ];
 
@@ -488,6 +502,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
+        "aos_update" => Some(RUNTIME_UPDATE_CALL_SIGNATURE),
         "aos_throw" => Some(RUNTIME_THROW_CALL_SIGNATURE),
         _ => None,
     }
@@ -1357,14 +1372,10 @@ mod tests {
                 "aos_has_attr",
                 "aos_select_ic",
                 "aos_throw",
+                "aos_update",
             ])
         );
-        for symbol_name in [
-            "aos_blackhole_check",
-            "aos_try_begin",
-            "aos_try_end",
-            "aos_update",
-        ] {
+        for symbol_name in ["aos_blackhole_check", "aos_try_begin", "aos_try_end"] {
             assert_eq!(
                 runtime_helper_call_signature(symbol_name),
                 None,
@@ -1540,6 +1551,24 @@ mod tests {
             );
             assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
         }
+
+        let update =
+            runtime_helper_call_signature("aos_update").expect("update signature is core-owned");
+        assert_eq!(
+            update.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_update", RuntimeHelperRole::AttrsetAccess,),
+            }
+        );
+        assert_eq!(
+            update.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("left", RuntimeAbiParameterKind::Value),
+                RuntimeAbiParameter::new("right", RuntimeAbiParameterKind::Value),
+            ]
+        );
+        assert_eq!(update.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

@@ -1,13 +1,13 @@
 //! Runtime attribute-access helper metadata.
 //!
-//! The tree-walk oracle already performs checked attribute lookup and presence
-//! probes after callers have forced the receiver to WHNF. Future native tiers
-//! reference the single-key inline cache boundary through stable attrset-access
-//! helper symbols. This module pins the helpers' safe family metadata and exposes
-//! process-local Rust callable wrappers for registration preflight only. It does
-//! not export a C ABI
-//! function, install a polymorphic inline cache, decode a native runtime
-//! context, or register a JIT symbol.
+//! The tree-walk oracle already performs checked attribute lookup, presence
+//! probes, and shallow attrset update after callers have forced operands to
+//! WHNF. Future native tiers reference the keyed inline-cache boundary and the
+//! non-keyed update slow path through stable attrset-access helper symbols.
+//! This module pins the helpers' safe family metadata and exposes process-local
+//! Rust callable wrappers for registration preflight only. It does not export a
+//! C ABI function, install a polymorphic inline cache, decode a native runtime
+//! context, merge attrsets through native code, or register a JIT symbol.
 
 use crate::compile::{IrId, IrInlineCacheSiteId};
 use crate::eval::tree_walk::{TreeWalk, TreeWalkError};
@@ -21,12 +21,15 @@ pub enum RuntimeAttrAccessEntryPoint {
     AosHasAttr,
     /// The `aos_select_ic` helper that selects one static attr key from an attrset value.
     AosSelectIc,
+    /// The `aos_update` helper that performs a shallow right-biased attrset merge.
+    AosUpdate,
 }
 
 /// Frozen attribute-access entry points registered by future native runtimes.
 pub const RUNTIME_ATTR_ACCESS_ENTRYPOINTS: &[RuntimeAttrAccessEntryPoint] = &[
     RuntimeAttrAccessEntryPoint::AosHasAttr,
     RuntimeAttrAccessEntryPoint::AosSelectIc,
+    RuntimeAttrAccessEntryPoint::AosUpdate,
 ];
 
 const HAS_ATTR_PARAMETERS: &[RuntimeAttrAccessAbiParameter] = &[
@@ -47,6 +50,11 @@ const SELECT_IC_PARAMETERS: &[RuntimeAttrAccessAbiParameter] = &[
         RuntimeAttrAccessAbiParameterKind::InlineCacheSiteId,
     ),
 ];
+const UPDATE_PARAMETERS: &[RuntimeAttrAccessAbiParameter] = &[
+    RuntimeAttrAccessAbiParameter::new("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
+    RuntimeAttrAccessAbiParameter::new("left", RuntimeAttrAccessAbiParameterKind::Value),
+    RuntimeAttrAccessAbiParameter::new("right", RuntimeAttrAccessAbiParameterKind::Value),
+];
 
 /// Frozen attribute-access helper ABI signatures for future native runtimes.
 pub const RUNTIME_ATTR_ACCESS_ABI_SIGNATURES: &[RuntimeAttrAccessAbiSignature] = &[
@@ -58,6 +66,11 @@ pub const RUNTIME_ATTR_ACCESS_ABI_SIGNATURES: &[RuntimeAttrAccessAbiSignature] =
     RuntimeAttrAccessAbiSignature::new(
         RuntimeAttrAccessEntryPoint::AosSelectIc,
         SELECT_IC_PARAMETERS,
+        RuntimeAttrAccessAbiReturnKind::Value,
+    ),
+    RuntimeAttrAccessAbiSignature::new(
+        RuntimeAttrAccessEntryPoint::AosUpdate,
+        UPDATE_PARAMETERS,
         RuntimeAttrAccessAbiReturnKind::Value,
     ),
 ];
@@ -78,6 +91,7 @@ type RuntimeSelectIcFn = fn(
     Symbol,
     IrInlineCacheSiteId,
 ) -> Result<Value, TreeWalkError>;
+type RuntimeUpdateFn = fn(&mut TreeWalk, IrId, Span, Value, Value) -> Result<Value, TreeWalkError>;
 
 fn rust_callable_aos_has_attr(
     eval: &mut TreeWalk,
@@ -99,6 +113,16 @@ fn rust_callable_aos_select_ic(
     site: IrInlineCacheSiteId,
 ) -> Result<Value, TreeWalkError> {
     eval.select_attr_value(id, span, attrs, symbol, site)
+}
+
+fn rust_callable_aos_update(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    left: Value,
+    right: Value,
+) -> Result<Value, TreeWalkError> {
+    eval.update_attr_values(id, span, left, right)
 }
 
 /// Returns attribute-access helper bindings with callable Rust wrapper addresses.
@@ -148,6 +172,7 @@ impl RuntimeAttrAccessEntryPoint {
         match self {
             Self::AosHasAttr => "aos_has_attr",
             Self::AosSelectIc => "aos_select_ic",
+            Self::AosUpdate => "aos_update",
         }
     }
 
@@ -156,6 +181,7 @@ impl RuntimeAttrAccessEntryPoint {
         match symbol_name {
             "aos_has_attr" => Some(Self::AosHasAttr),
             "aos_select_ic" => Some(Self::AosSelectIc),
+            "aos_update" => Some(Self::AosUpdate),
             _ => None,
         }
     }
@@ -171,6 +197,11 @@ impl RuntimeAttrAccessEntryPoint {
             Self::AosSelectIc => RuntimeAttrAccessAbiSignature::new(
                 self,
                 SELECT_IC_PARAMETERS,
+                RuntimeAttrAccessAbiReturnKind::Value,
+            ),
+            Self::AosUpdate => RuntimeAttrAccessAbiSignature::new(
+                self,
+                UPDATE_PARAMETERS,
                 RuntimeAttrAccessAbiReturnKind::Value,
             ),
         }
@@ -195,6 +226,7 @@ impl RuntimeAttrAccessEntryPoint {
         match self {
             Self::AosHasAttr => RuntimeAttrAccessRustCallableShape::TreeWalkHasAttrValue,
             Self::AosSelectIc => RuntimeAttrAccessRustCallableShape::TreeWalkSelectAttrValue,
+            Self::AosUpdate => RuntimeAttrAccessRustCallableShape::TreeWalkUpdateAttrValues,
         }
     }
 
@@ -207,6 +239,7 @@ impl RuntimeAttrAccessEntryPoint {
         let ptr = match self {
             Self::AosHasAttr => rust_callable_aos_has_attr as RuntimeHasAttrFn as *const (),
             Self::AosSelectIc => rust_callable_aos_select_ic as RuntimeSelectIcFn as *const (),
+            Self::AosUpdate => rust_callable_aos_update as RuntimeUpdateFn as *const (),
         };
         RuntimeAttrAccessRustCallableAddress::new(ptr)
     }
@@ -214,8 +247,8 @@ impl RuntimeAttrAccessEntryPoint {
     /// Returns the current native-export blockers for this attribute-access helper.
     pub const fn native_export_blockers(self) -> &'static [RuntimeAttrAccessNativeExportBlocker] {
         match self {
-            Self::AosHasAttr => ATTR_ACCESS_NATIVE_EXPORT_BLOCKERS,
-            Self::AosSelectIc => ATTR_ACCESS_NATIVE_EXPORT_BLOCKERS,
+            Self::AosHasAttr | Self::AosSelectIc => ATTR_ACCESS_KEYED_NATIVE_EXPORT_BLOCKERS,
+            Self::AosUpdate => ATTR_UPDATE_NATIVE_EXPORT_BLOCKERS,
         }
     }
 }
@@ -227,6 +260,8 @@ pub enum RuntimeAttrAccessRustCallableShape {
     TreeWalkHasAttrValue,
     /// `fn(&mut TreeWalk, IrId, Span, Value, Symbol, IrInlineCacheSiteId) -> Result<Value, TreeWalkError>`.
     TreeWalkSelectAttrValue,
+    /// `fn(&mut TreeWalk, IrId, Span, Value, Value) -> Result<Value, TreeWalkError>`.
+    TreeWalkUpdateAttrValues,
 }
 
 /// A process-local callable Rust attribute-access wrapper address.
@@ -319,19 +354,29 @@ pub enum RuntimeAttrAccessNativeExportBlocker {
     InlineCacheSiteBindingUnimplemented,
     /// The hidden-class/PIC dispatch path behind attrset-access helpers is not implemented yet.
     InlineCacheDispatchUnimplemented,
+    /// The attrset update slow path has no native merge implementation yet.
+    NativeAttrUpdateMergeUnimplemented,
     /// Helper failures cannot yet transfer into evaluator trap/error machinery.
     TrapTransferUnimplemented,
     /// The by-value [`Value`] return is not yet materialized through the native ABI.
     NativeValueReturnUnmaterialized,
 }
 
-const ATTR_ACCESS_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
+const ATTR_ACCESS_KEYED_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
     RuntimeAttrAccessNativeExportBlocker::MissingExternCWrapper,
     RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
+    RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
+    RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+];
+const ATTR_UPDATE_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
+    RuntimeAttrAccessNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+    RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
+    RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
 ];
@@ -548,7 +593,7 @@ mod tests {
         );
         assert_eq!(
             entrypoint_symbols,
-            BTreeSet::from(["aos_has_attr", "aos_select_ic"])
+            BTreeSet::from(["aos_has_attr", "aos_select_ic", "aos_update"])
         );
         assert_eq!(signature_symbols, entrypoint_symbols);
     }
@@ -559,7 +604,8 @@ mod tests {
             runtime_attr_access_entrypoints(),
             [
                 RuntimeAttrAccessEntryPoint::AosHasAttr,
-                RuntimeAttrAccessEntryPoint::AosSelectIc
+                RuntimeAttrAccessEntryPoint::AosSelectIc,
+                RuntimeAttrAccessEntryPoint::AosUpdate
             ]
         );
 
@@ -573,11 +619,12 @@ mod tests {
                 Some(entrypoint.abi_signature())
             );
         }
-        for symbol in runtime_helper_symbols()
-            .iter()
-            .copied()
-            .filter(|symbol| !matches!(symbol.name(), "aos_has_attr" | "aos_select_ic"))
-        {
+        for symbol in runtime_helper_symbols().iter().copied().filter(|symbol| {
+            !matches!(
+                symbol.name(),
+                "aos_has_attr" | "aos_select_ic" | "aos_update"
+            )
+        }) {
             assert_eq!(
                 RuntimeAttrAccessEntryPoint::from_symbol_name(symbol.name()),
                 None,
@@ -597,6 +644,7 @@ mod tests {
     fn attr_access_abi_signatures_pin_static_key_value_returns() {
         let has_attr = RuntimeAttrAccessEntryPoint::AosHasAttr.abi_signature();
         let select_ic = RuntimeAttrAccessEntryPoint::AosSelectIc.abi_signature();
+        let update = RuntimeAttrAccessEntryPoint::AosUpdate.abi_signature();
 
         assert_eq!(
             runtime_attr_access_abi_signatures(),
@@ -610,7 +658,12 @@ mod tests {
                     RuntimeAttrAccessEntryPoint::AosSelectIc,
                     SELECT_IC_PARAMETERS,
                     RuntimeAttrAccessAbiReturnKind::Value,
-                )
+                ),
+                RuntimeAttrAccessAbiSignature::new(
+                    RuntimeAttrAccessEntryPoint::AosUpdate,
+                    UPDATE_PARAMETERS,
+                    RuntimeAttrAccessAbiReturnKind::Value,
+                ),
             ]
         );
 
@@ -647,6 +700,28 @@ mod tests {
                 RuntimeAttrAccessAbiReturnKind::Value
             );
         }
+
+        assert_eq!(update.entrypoint(), RuntimeAttrAccessEntryPoint::AosUpdate);
+        assert_eq!(update.symbol_name(), "aos_update");
+        assert_eq!(
+            update.parameters(),
+            [
+                RuntimeAttrAccessAbiParameter::new(
+                    "rt",
+                    RuntimeAttrAccessAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAttrAccessAbiParameter::new(
+                    "left",
+                    RuntimeAttrAccessAbiParameterKind::Value,
+                ),
+                RuntimeAttrAccessAbiParameter::new(
+                    "right",
+                    RuntimeAttrAccessAbiParameterKind::Value,
+                ),
+            ]
+            .as_slice()
+        );
+        assert_eq!(update.return_kind(), RuntimeAttrAccessAbiReturnKind::Value);
     }
 
     #[test]
@@ -660,28 +735,44 @@ mod tests {
                 .map(|parameter| (parameter.name(), parameter.kind()))
                 .collect::<Vec<_>>();
 
+            let expected_local_parameters = match local_signature.entrypoint() {
+                RuntimeAttrAccessEntryPoint::AosHasAttr
+                | RuntimeAttrAccessEntryPoint::AosSelectIc => vec![
+                    ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
+                    ("attrs", RuntimeAttrAccessAbiParameterKind::Value),
+                    ("symbol", RuntimeAttrAccessAbiParameterKind::SymbolId),
+                    ("site", RuntimeAttrAccessAbiParameterKind::InlineCacheSiteId),
+                ],
+                RuntimeAttrAccessEntryPoint::AosUpdate => vec![
+                    ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
+                    ("left", RuntimeAttrAccessAbiParameterKind::Value),
+                    ("right", RuntimeAttrAccessAbiParameterKind::Value),
+                ],
+            };
+            let expected_core_parameters = match local_signature.entrypoint() {
+                RuntimeAttrAccessEntryPoint::AosHasAttr
+                | RuntimeAttrAccessEntryPoint::AosSelectIc => vec![
+                    ("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    ("attrs", RuntimeAbiParameterKind::Value),
+                    ("symbol", RuntimeAbiParameterKind::SymbolId),
+                    ("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+                ],
+                RuntimeAttrAccessEntryPoint::AosUpdate => vec![
+                    ("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    ("left", RuntimeAbiParameterKind::Value),
+                    ("right", RuntimeAbiParameterKind::Value),
+                ],
+            };
+
             assert_eq!(
                 local_signature
                     .parameters()
                     .iter()
                     .map(|parameter| (parameter.name(), parameter.kind()))
                     .collect::<Vec<_>>(),
-                vec![
-                    ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
-                    ("attrs", RuntimeAttrAccessAbiParameterKind::Value),
-                    ("symbol", RuntimeAttrAccessAbiParameterKind::SymbolId),
-                    ("site", RuntimeAttrAccessAbiParameterKind::InlineCacheSiteId,),
-                ]
+                expected_local_parameters
             );
-            assert_eq!(
-                core_parameters,
-                vec![
-                    ("rt", RuntimeAbiParameterKind::RuntimeContext),
-                    ("attrs", RuntimeAbiParameterKind::Value),
-                    ("symbol", RuntimeAbiParameterKind::SymbolId),
-                    ("site", RuntimeAbiParameterKind::InlineCacheSiteId),
-                ]
-            );
+            assert_eq!(core_parameters, expected_core_parameters);
             assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Value);
             assert_eq!(
                 local_signature.return_kind(),
@@ -703,6 +794,11 @@ mod tests {
                 RuntimeAttrAccessEntryPoint::AosSelectIc,
                 RuntimeAttrAccessRustCallableShape::TreeWalkSelectAttrValue,
                 rust_callable_aos_select_ic as RuntimeSelectIcFn as *const (),
+            ),
+            (
+                RuntimeAttrAccessEntryPoint::AosUpdate,
+                RuntimeAttrAccessRustCallableShape::TreeWalkUpdateAttrValues,
+                rust_callable_aos_update as RuntimeUpdateFn as *const (),
             ),
         ];
 
@@ -807,19 +903,37 @@ mod tests {
             assert!(record.blockers().contains(
                 &RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented
             ));
-            assert!(
-                record.blockers().contains(
-                    &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
-                )
-            );
-            assert!(record.blockers().contains(
-                &RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented
-            ));
-            assert!(
-                record.blockers().contains(
-                    &RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented
-                )
-            );
+            match entrypoint {
+                RuntimeAttrAccessEntryPoint::AosHasAttr
+                | RuntimeAttrAccessEntryPoint::AosSelectIc => {
+                    assert!(record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
+                    ));
+                    assert!(record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented
+                    ));
+                    assert!(record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented
+                    ));
+                }
+                RuntimeAttrAccessEntryPoint::AosUpdate => {
+                    assert!(record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented
+                    ));
+                    assert!(!record.blockers().contains(
+                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented
+                    ));
+                }
+            }
             assert!(
                 record
                     .blockers()
@@ -893,6 +1007,50 @@ mod tests {
         .expect("static attr selection succeeds");
 
         assert_eq!(selected.as_int().expect("selected value is int"), 42);
+    }
+
+    #[test]
+    fn attr_access_rust_callable_updates_attrsets_shallowly() {
+        let source = "{ left = { a = 1 / 0; b = 1; }; right = { b = 2; c = 3; }; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers");
+        let mut symbols = ir.symbols.clone();
+        let a = symbols.intern(b"a").expect("a symbol exists");
+        let b = symbols.intern(b"b").expect("b symbol exists");
+        let c = symbols.intern(b"c").expect("c symbol exists");
+        let left_key = symbols.intern(b"left").expect("left symbol exists");
+        let right_key = symbols.intern(b"right").expect("right symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("root attrset evaluates");
+        let (left, right) = {
+            let attrs = eval
+                .heap()
+                .get_attrs(root)
+                .expect("root is heap-owned attrs");
+            (
+                attrs.get(left_key).expect("left exists"),
+                attrs.get(right_key).expect("right exists"),
+            )
+        };
+        let left = eval
+            .force_value(ir.root, span, left)
+            .expect("left attrset thunk forces");
+        let right = eval
+            .force_value(ir.root, span, right)
+            .expect("right attrset thunk forces");
+        let result = rust_callable_aos_update(&mut eval, ir.root, span, left, right)
+            .expect("attrsets update");
+        let attrs = eval
+            .heap()
+            .get_attrs(result)
+            .expect("update result is heap-owned");
+
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(2));
+        assert_eq!(attrs.get(c).expect("c exists").as_int(), Ok(3));
+        assert_eq!(attrs.get(a).expect("a remains lazy").tag(), ValueTag::Thunk);
     }
 
     #[test]

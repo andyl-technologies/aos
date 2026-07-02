@@ -967,7 +967,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for blackhole-check/update/error
+      register Cranelift symbols, or add bindings for blackhole-check/error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
@@ -982,7 +982,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      blackhole-check/update/error helpers, builtin addresses, or complete
+      blackhole-check/error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current runtime symbol binding-manifest precursor:
       `runtime::helpers::runtime_symbol_binding_manifest()` consumes
@@ -991,11 +991,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocation/call-control/attrset-access/environment-access/forcing/write-barrier helper, an unbound
       future helper role, or a builtin. Tests pin order parity with the core
       manifest, exact safe-helper coverage including `aos_apply`, `aos_has_attr`,
-      `aos_select_ic`, `aos_env_get`, and both forcing helpers, representative
+      `aos_select_ic`, `aos_update`, `aos_env_get`, and both forcing helpers, representative
       unbound helper roles, and builtin classification. This is binding-status
       metadata only; it attaches no function pointers, exports no native
       wrappers, performs no Cranelift registration, and leaves
-      blackhole-check/update/error helpers plus all builtin bodies unbound.
+      blackhole-check/error helpers plus all builtin bodies unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `runtime::helpers::runtime_symbol_registration_preflight()` converts the
       binding-status manifest into a deterministic readiness report: current

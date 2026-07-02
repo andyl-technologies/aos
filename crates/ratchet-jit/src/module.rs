@@ -517,6 +517,7 @@ mod tests {
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
         assert!(preflight.declaration_for_symbol("aos_force").is_some());
         assert!(preflight.declaration_for_symbol("aos_select_ic").is_some());
+        assert!(preflight.declaration_for_symbol("aos_update").is_some());
         assert!(preflight.declaration_for_symbol("aos_throw").is_some());
         assert!(preflight.artifact_runtime_imports().is_empty());
         assert!(preflight.artifact_runtime_import_gaps().is_empty());
