@@ -1237,10 +1237,10 @@ impl From<JitRuntimeSymbolRegistrationError> for JitCraneliftModuleSetupError {
 /// Builds a real JIT module and declares shape-known runtime symbol imports.
 ///
 /// The returned preflight owns a [`JITModule`] with callable builtin and
-/// core-owned allocation, environment-access, and write-barrier helper imports
-/// declared using `Linkage::Import`. Unshaped helpers and value-only builtins
-/// remain explicit gaps. No runtime symbol addresses are registered and no CLIF
-/// functions are defined, finalized, or called.
+/// core-owned allocation, environment-access, write-barrier, and force/deep-force
+/// helper imports declared using `Linkage::Import`. Unshaped helpers and
+/// value-only builtins remain explicit gaps. No runtime symbol addresses are
+/// registered and no CLIF functions are defined, finalized, or called.
 ///
 /// # Errors
 ///
@@ -2310,12 +2310,12 @@ mod tests {
         ));
         assert!(matches!(
             preflight.gap_for_symbol("aos_force"),
-            Some(crate::symbols::JitRuntimeSymbolRegistrationGap::Declaration(
-                crate::symbols::JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                     ..
                 }
-            ))
+            )
         ));
     }
 
@@ -2484,12 +2484,12 @@ mod tests {
         );
         assert!(matches!(
             preflight.registration_gap_for_symbol("aos_force"),
-            Some(crate::symbols::JitRuntimeSymbolRegistrationGap::Declaration(
-                crate::symbols::JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                     ..
                 }
-            ))
+            )
         ));
         assert!(!preflight.is_complete());
         assert!(preflight.owns_encapsulated_module());
@@ -2641,12 +2641,12 @@ mod tests {
         );
         assert!(matches!(
             preflight.registration_gap_for_symbol("aos_force"),
-            Some(crate::symbols::JitRuntimeSymbolRegistrationGap::Declaration(
-                crate::symbols::JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                     ..
                 }
-            ))
+            )
         ));
         assert!(!preflight.is_complete());
         assert!(preflight.owns_encapsulated_module());
@@ -2788,8 +2788,9 @@ mod tests {
                 .is_some()
         );
         assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
@@ -2818,8 +2819,9 @@ mod tests {
                 .imported_symbol_for("nix.builtin.derivationStrict")
                 .is_some()
         );
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
@@ -2936,8 +2938,9 @@ mod tests {
                 .imported_symbol_for("nix.builtin.derivationStrict")
                 .is_some()
         );
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
@@ -3828,6 +3831,7 @@ mod tests {
                 .declaration_for_symbol("nix.builtin.derivationStrict")
                 .is_some()
         );
-        assert!(preflight.gap_for_symbol("aos_force").is_some());
+        assert!(preflight.declaration_for_symbol("aos_force").is_some());
+        assert!(preflight.gap_for_symbol("aos_blackhole_check").is_some());
     }
 }

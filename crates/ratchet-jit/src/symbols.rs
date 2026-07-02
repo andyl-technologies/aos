@@ -1038,6 +1038,12 @@ mod tests {
         let write_barrier_declaration = preflight
             .declaration_for_symbol("aos_gc_write_barrier")
             .expect("core-owned write-barrier helper has a CLIF declaration");
+        let force_declaration = preflight
+            .declaration_for_symbol("aos_force")
+            .expect("core-owned force helper has a CLIF declaration");
+        let force_deep_declaration = preflight
+            .declaration_for_symbol("aos_force_deep")
+            .expect("core-owned deep-force helper has a CLIF declaration");
         let expected_allocation = clif_signature_for_runtime_call(
             runtime_helper_call_signature("aos_alloc_attrs")
                 .expect("allocation helper signature is core-owned"),
@@ -1053,6 +1059,16 @@ mod tests {
                 .expect("write-barrier helper signature is core-owned"),
         )
         .expect("write-barrier helper signature lowers");
+        let expected_force = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_force")
+                .expect("force helper signature is core-owned"),
+        )
+        .expect("force helper signature lowers");
+        let expected_force_deep = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_force_deep")
+                .expect("deep-force helper signature is core-owned"),
+        )
+        .expect("deep-force helper signature lowers");
 
         assert_eq!(
             allocation_declaration.kind(),
@@ -1072,9 +1088,21 @@ mod tests {
             write_barrier_declaration.signature(),
             &expected_write_barrier
         );
+        assert_eq!(
+            force_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+        );
+        assert_eq!(force_declaration.signature(), &expected_force);
+        assert_eq!(
+            force_deep_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+        );
+        assert_eq!(force_deep_declaration.signature(), &expected_force_deep);
         assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
         assert!(preflight.gap_for_symbol("aos_env_get").is_none());
         assert!(preflight.gap_for_symbol("aos_gc_write_barrier").is_none());
+        assert!(preflight.gap_for_symbol("aos_force").is_none());
+        assert!(preflight.gap_for_symbol("aos_force_deep").is_none());
     }
 
     #[test]
@@ -1083,7 +1111,7 @@ mod tests {
             .expect("JIT symbol declaration preflight builds");
 
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
@@ -1091,7 +1119,11 @@ mod tests {
                 }
             )
         ));
-        assert!(preflight.declaration_for_symbol("aos_force").is_none());
+        assert!(
+            preflight
+                .declaration_for_symbol("aos_blackhole_check")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1182,12 +1214,10 @@ mod tests {
         ));
         assert!(matches!(
             preflight.gap_for_symbol("aos_force"),
-            Some(JitRuntimeSymbolRegistrationGap::Declaration(
-                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
-                    ..
-                }
-            ))
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                ..
+            })
         ));
     }
 
@@ -1246,12 +1276,13 @@ mod tests {
             3
         );
         assert!(preflight.gap_for_symbol("aos_env_get").is_none());
-        assert!(
-            preflight
-                .gap_for_symbol("aos_force")
-                .and_then(JitRuntimeSymbolRegistrationGap::declaration_gap)
-                .is_some()
-        );
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_force"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1278,16 +1309,20 @@ mod tests {
     #[test]
     fn jit_runtime_symbol_registration_preflight_keeps_declaration_gaps_before_addresses() {
         let candidates = [synthetic_address_candidate(
-            "aos_force",
+            "aos_blackhole_check",
             RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
             1,
         )];
         let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
             .expect("JIT symbol registration preflight builds");
 
-        assert!(preflight.binding_for_symbol("aos_force").is_none());
+        assert!(
+            preflight
+                .binding_for_symbol("aos_blackhole_check")
+                .is_none()
+        );
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(JitRuntimeSymbolRegistrationGap::Declaration(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,

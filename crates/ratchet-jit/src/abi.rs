@@ -459,6 +459,22 @@ mod tests {
     }
 
     #[test]
+    fn force_helper_clif_signature_lowers_value_argument_and_return() {
+        let runtime_signature =
+            runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
+        let signature =
+            clif_signature_for_runtime_call(runtime_signature).expect("force signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, types::I64, types::I64]
+        );
+        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
     fn unsupported_host_calling_convention_reports_error() {
         let wasm_triple = "wasm32-wasi"
             .parse::<Triple>()

@@ -5368,9 +5368,10 @@ and helps the oracle directly.
       candidates still have Rust-callable rather than exported-wrapper address
       provenance. Tests prove allocation-helper, `aos_env_get`, and
       `aos_gc_write_barrier` binding/address parity, preserve the current
-      `aos_force` registration gap, and prove registered helper addresses still
-      retain missing exported-wrapper blockers plus Rust-callable provenance
-      gaps. This is safe integration preflight metadata only: it does not call
+      `aos_force` missing-native-address registration gap, and prove registered
+      helper addresses still retain missing exported-wrapper blockers plus
+      Rust-callable provenance gaps. This is safe integration preflight
+      metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
       registration.
@@ -5380,9 +5381,10 @@ and helps the oracle directly.
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a complete
       plan. The current implementation returns a typed incomplete error carrying
-      the owned Nix preflight while helper/builtin gaps such as `aos_force`,
-      exported-wrapper blockers, and Rust-callable address-provenance gaps
-      remain. This is strict metadata gating only: it does not call
+      the owned Nix preflight while the `aos_force` address gap,
+      helper/builtin gaps, exported-wrapper blockers, and Rust-callable
+      address-provenance gaps remain. This is strict metadata gating only: it
+      does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
       registration.
@@ -6972,15 +6974,18 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
 - [x] Current JIT symbol-declaration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` joins
       the stable runtime symbol manifest with callable builtin ABI metadata and
-      core-owned allocation, environment-access, and write-barrier helper ABI
-      metadata, then lowers those runtime signatures to CLIF `Signature`
-      declarations. `aos_env_get` is frozen as `(env, slot) -> Value` and lowers
-      to a host-pointer environment parameter, an `i32` slot parameter, and two
-      `i64` return slots. Unshaped helpers and value-only builtins remain
-      explicit declaration gaps. Tests pin a representative callable builtin
-      declaration, allocation, environment-access, and write-barrier helper
-      declarations, an unshaped forcing-helper gap, value-only builtin gaps, and
-      exact declaration parity with callable builtins plus core-owned helpers.
+      core-owned allocation, environment-access, write-barrier, and
+      force/deep-force helper ABI metadata, then lowers those runtime signatures
+      to CLIF `Signature` declarations. `aos_env_get` is frozen as
+      `(env, slot) -> Value` and lowers to a host-pointer environment parameter,
+      an `i32` slot parameter, and two `i64` return slots;
+      `aos_force`/`aos_force_deep` are frozen as `(rt, Value) -> Value`.
+      Unshaped helpers such as `aos_blackhole_check` and value-only builtins
+      remain explicit declaration gaps. Tests pin a representative callable
+      builtin declaration, allocation, environment-access, write-barrier, and
+      forcing-helper declarations, an unshaped forcing-helper gap, value-only
+      builtin gaps, and exact declaration parity with callable builtins plus
+      core-owned helpers.
       This is declaration metadata only: no environment layout, runtime helper
       address, `JITModule`, `JITBuilder::symbol`, executable address, exported
       wrapper, relocation, or native call is implemented.
@@ -7016,13 +7021,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-jit::module::jit_module_readiness_preflight_for_artifact()`
       composes a verified CLIF artifact with the address-free JIT runtime-symbol
       declaration preflight and exposes the artifact metadata, callable builtin
-      declarations, core-owned allocation, environment-access, and write-barrier
-      helper declarations, and stable runtime-symbol gaps as one future
-      module-setup handoff. The checked
+      declarations, core-owned allocation, environment-access, write-barrier,
+      and force/deep-force helper declarations, and stable runtime-symbol gaps
+      as one future module-setup handoff. The checked
       `jit_module_readiness_plan_for_artifact()` gate currently returns an
-      incomplete-symbol error while unshaped helper and value-only builtin
-      declaration gaps remain. Tests pin artifact metadata, callable
-      builtin/helper declaration visibility, representative helper gaps, the
+      incomplete-symbol error while unshaped helpers such as
+      `aos_blackhole_check` and value-only builtin declaration gaps remain.
+      Tests pin artifact metadata, callable builtin/helper declaration
+      visibility, representative helper gaps, the
       current incomplete-plan error, deterministic IR-root function-name copying,
       and a synthetic complete conversion. This readiness API remains metadata
       only: it does not construct a `JITModule`, allocate an executable buffer,
@@ -7031,14 +7037,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
       and declares every currently shape-known callable builtin plus
-      core-owned allocation, environment-access, and write-barrier helper
-      runtime symbol as a
+      core-owned allocation, environment-access, write-barrier, and
+      force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
-      while unshaped helper and value-only builtin gaps remain. Tests pin the
-      expanded Cranelift crate-version set, imported callable builtin/helper
-      declarations, representative helper gaps, and the strict setup rejection.
+      while unshaped helpers such as `aos_blackhole_check` and value-only
+      builtin gaps remain. Tests pin the expanded Cranelift crate-version set,
+      imported callable builtin/helper declarations, representative helper gaps,
+      and the strict setup rejection.
       This is real safe module construction and import declaration only: no
       runtime symbol address is registered, no `JITBuilder::symbol` call is made,
       no CLIF body is defined in the module, no executable memory is finalized,
@@ -7048,8 +7055,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       consumes one verified CLIF artifact, declares a deterministic exported
       module symbol for the artifact body, and passes that body through
       Cranelift's `JITModule::define_function` API while preserving callable
-      builtin/helper imports and the current unshaped helper/value-only builtin
-      gaps, while rejecting call-bearing artifacts with a structured
+      builtin/helper imports and the current `aos_blackhole_check`/value-only
+      builtin declaration gaps, while rejecting call-bearing artifacts with a structured
       runtime-import registration error. Tests pin constant-smoke and
       Core-IR-root module symbol names, exported linkage, imported callable
       builtin/helper visibility, representative helper gaps, env-slot

@@ -266,6 +266,10 @@ const ENV_GET_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
     RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
 ];
+const FORCE_VALUE_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+];
 
 const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
@@ -339,6 +343,22 @@ const RUNTIME_ENV_GET_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignatur
     ENV_GET_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_FORCE_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_force", RuntimeHelperRole::ForcingControl),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    FORCE_VALUE_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
+const RUNTIME_FORCE_DEEP_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_force_deep", RuntimeHelperRole::ForcingControl),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    FORCE_VALUE_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 
 /// Frozen helper call signatures for helpers with core-owned ABI shapes today.
 pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
@@ -350,6 +370,8 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
     RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
     RUNTIME_ENV_GET_CALL_SIGNATURE,
+    RUNTIME_FORCE_CALL_SIGNATURE,
+    RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
 ];
 
@@ -389,6 +411,8 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_alloc_string" => Some(RUNTIME_ALLOC_STRING_CALL_SIGNATURE),
         "aos_alloc_thunk" => Some(RUNTIME_ALLOC_THUNK_CALL_SIGNATURE),
         "aos_env_get" => Some(RUNTIME_ENV_GET_CALL_SIGNATURE),
+        "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
+        "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         _ => None,
     }
@@ -1240,13 +1264,15 @@ mod tests {
                 "aos_alloc_string",
                 "aos_alloc_thunk",
                 "aos_env_get",
+                "aos_force",
+                "aos_force_deep",
                 "aos_gc_write_barrier",
             ])
         );
         assert_eq!(
-            runtime_helper_call_signature("aos_force"),
+            runtime_helper_call_signature("aos_blackhole_check"),
             None,
-            "forcing helpers do not have core-owned call signatures yet"
+            "blackhole checking does not have a frozen core-owned call signature yet"
         );
     }
 
@@ -1295,6 +1321,34 @@ mod tests {
             ]
         );
         assert_eq!(raw.return_kind(), RuntimeAbiReturnKind::RawPointer);
+    }
+
+    #[test]
+    fn forcing_helper_call_signatures_pin_whnf_value_boundary() {
+        let force =
+            runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
+        let force_deep = runtime_helper_call_signature("aos_force_deep")
+            .expect("deep-force signature is core-owned");
+
+        for (symbol_name, signature) in [("aos_force", force), ("aos_force_deep", force_deep)] {
+            assert_eq!(
+                signature.callable(),
+                RuntimeCallableKind::Helper {
+                    symbol: RuntimeHelperSymbol::new(
+                        symbol_name,
+                        RuntimeHelperRole::ForcingControl,
+                    ),
+                }
+            );
+            assert_eq!(
+                signature.parameters(),
+                &[
+                    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
+                ]
+            );
+            assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
+        }
     }
 
     #[test]

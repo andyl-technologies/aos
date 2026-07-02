@@ -506,10 +506,11 @@ mod tests {
                 .is_some()
         );
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
+        assert!(preflight.declaration_for_symbol("aos_force").is_some());
         assert!(preflight.artifact_runtime_imports().is_empty());
         assert!(preflight.artifact_runtime_import_gaps().is_empty());
         assert!(matches!(
-            preflight.gap_for_symbol("aos_force"),
+            preflight.gap_for_symbol("aos_blackhole_check"),
             Some(
                 JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
                     role: RuntimeHelperRole::ForcingControl,
@@ -534,7 +535,12 @@ mod tests {
         assert_eq!(preflight.artifact().kind(), JitClifArtifactKind::ThunkBody);
         assert!(preflight.symbol_declarations().len() > 1);
         assert!(preflight.symbol_gaps().len() > 1);
-        assert!(preflight.declaration_for_symbol("aos_force").is_none());
+        assert!(preflight.declaration_for_symbol("aos_force").is_some());
+        assert!(
+            preflight
+                .declaration_for_symbol("aos_blackhole_check")
+                .is_none()
+        );
     }
 
     #[test]

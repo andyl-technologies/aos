@@ -1,5 +1,7 @@
 use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind};
-use ratchet_jit::jit_runtime_symbol_registration_preflight_with_candidates;
+use ratchet_jit::{
+    JitRuntimeSymbolRegistrationGap, jit_runtime_symbol_registration_preflight_with_candidates,
+};
 
 use super::*;
 
@@ -198,7 +200,13 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
             .gap_for_symbol("aos_gc_write_barrier")
             .is_none()
     );
-    assert!(registration.gap_for_symbol("aos_force").is_some());
+    assert!(matches!(
+        registration.gap_for_symbol("aos_force"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+            ..
+        })
+    ));
     assert!(!registration.is_complete());
     assert_eq!(
         registration.registration_preflight().bindings().len(),
@@ -274,7 +282,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     );
     assert!(missing_count > 0);
     assert!(!preflight.is_complete());
-    assert!(preflight.gap_for_symbol("aos_force").is_some());
+    assert!(matches!(
+        preflight.gap_for_symbol("aos_force"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+            ..
+        })
+    ));
     assert!(
         preflight
             .binding_for_symbol("aos_env_get")
