@@ -6648,6 +6648,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       address is registered, no `JITBuilder::symbol` call is made, no CLIF body
       is defined in the module, no executable memory is finalized, and no native
       code pointer is produced or called.
+- [x] Current Cranelift artifact-definition precursor:
+      `ratchet-jit::cranelift::jit_cranelift_artifact_definition_preflight_for_artifact()`
+      consumes one verified CLIF artifact, declares a deterministic exported
+      module symbol for the artifact body, and passes that body through
+      Cranelift's `JITModule::define_function` API while preserving callable
+      builtin imports and the current helper/value-only builtin gaps. Tests pin
+      constant-smoke and Core-IR-root module symbol names, exported linkage,
+      imported callable builtin visibility, representative helper gaps, and
+      encapsulated-module ownership. This compiles into a private `JITModule`
+      and does allocate JIT code memory through Cranelift on successful
+      definition, but it still does not register runtime symbol addresses, call
+      `JITBuilder::symbol`, finalize definitions, expose a code pointer, call
+      native code, lower generic IR, or emit runtime calls.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps

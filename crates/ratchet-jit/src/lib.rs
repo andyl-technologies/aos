@@ -1,26 +1,27 @@
 //! `ratchet-jit` -- the future unsafe execution-tier boundary for RFC-0007.
 //!
 //! This crate is the landing zone for the Cranelift baseline JIT and later
-//! optimized native tiers. It intentionally starts with safe, non-executable
+//! optimized native tiers. It intentionally starts with safe, non-callable
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
 //! `ratchet-core`, [`artifact`] records address-free CLIF artifact metadata,
-//! [`cranelift`] records exact Cranelift crate pins and constructs the first
-//! safe `JITModule` scaffold, [`lower`] builds verified CLIF bodies for the
-//! first literal Core-IR and constant-thunk smoke tests, [`module`] composes
-//! artifacts with runtime-symbol declaration readiness, [`safepoints`] records
-//! the compiled-tier stack-map obligation, [`symbols`] mirrors the stable
-//! runtime symbol manifest from `ratchet-core`, [`tier`] names the first safe
-//! tier-up policy, [`warmup`] keeps the copy-and-patch hedge measurable, and
-//! [`safety`] records the unsafe-boundary discipline.
+//! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
+//! `JITModule` declaration and artifact-definition preflights, [`lower`] builds
+//! verified CLIF bodies for the first literal Core-IR and constant-thunk smoke
+//! tests, [`module`] composes artifacts with runtime-symbol declaration
+//! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
+//! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`,
+//! [`tier`] names the first safe tier-up policy, [`warmup`] keeps the
+//! copy-and-patch hedge measurable, and [`safety`] records the unsafe-boundary
+//! discipline.
 //! Runtime-symbol candidate reports currently remain in `ratchet-oracle`; a
 //! later shared metadata layer can move them below both crates without making
 //! the JIT crate depend on the safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
-//! function definition/finalization, and `JITBuilder::symbol` registration are
-//! future work inside this crate. Unsafe blocks are allowed only behind the
-//! crate-level `unsafe_op_in_unsafe_fn` discipline and must carry local
-//! `// SAFETY:` invariants when those later slices land.
+//! finalization, and `JITBuilder::symbol` registration are future work inside
+//! this crate. Unsafe blocks are allowed only behind the crate-level
+//! `unsafe_op_in_unsafe_fn` discipline and must carry local `// SAFETY:`
+//! invariants when those later slices land.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -42,10 +43,12 @@ pub use abi::{
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 pub use cranelift::{
     ACTIVE_CRANELIFT_CODEGEN_VERSION, ACTIVE_CRANELIFT_JIT_VERSION,
-    ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION, JitCraneliftDependencyPin,
-    JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
-    JitCraneliftModuleSetupError, PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
-    PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION, jit_cranelift_dependency_pin,
+    ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
+    JitCraneliftArtifactDefinitionPreflight, JitCraneliftDefinedFunction,
+    JitCraneliftDependencyPin, JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight,
+    JitCraneliftModuleSetup, JitCraneliftModuleSetupError, PINNED_CRANELIFT_CODEGEN_VERSION,
+    PINNED_CRANELIFT_JIT_VERSION, PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
+    jit_cranelift_artifact_definition_preflight_for_artifact, jit_cranelift_dependency_pin,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
 };
