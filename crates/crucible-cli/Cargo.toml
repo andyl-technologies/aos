@@ -14,8 +14,10 @@ workspace = true
 [dependencies]
 clap = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-api = { path = "../crucible-api" }
 crucible-session = { path = "../crucible-session" }
 crucible-shmem = { path = "../crucible-shmem" }
+tokio = { workspace = true }
 
 [dev-dependencies]
 crucible-harness = { path = "../crucible-harness" }

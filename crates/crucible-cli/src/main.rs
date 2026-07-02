@@ -16,12 +16,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use crucible::DagStore;
-use crucible_session::{SessionCommand, SessionCommandKind};
+use crucible_api::{
+    AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
+    InProcessLifecycleClient, LifecycleControlPlane, QuiescentLifecycleLoop, RpcControlClient,
+    RpcEndpoint, serve_lifecycle_http2,
+};
+use crucible_session::{LiveStateKind, OutcomeKind, SessionCommand, SessionCommandKind};
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -157,9 +163,64 @@ enum Commands {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct RunArgs {
+    /// Scenario file or content hash.
+    #[arg(value_name = "SCENARIO")]
+    scenario: Option<String>,
+    /// Stop at this terminal condition.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "quiescence|virtual-time|property|stopped",
+        default_value_t = RunUntilArg::Quiescence
+    )]
+    until: RunUntilArg,
+    /// Stop past this virtual time.
+    #[arg(long, value_name = "dur")]
+    max_virtual_time: Option<String>,
+    /// Stop past this many scheduler quanta.
+    #[arg(long, value_name = "n")]
+    max_quanta: Option<u64>,
+    /// Pause at genesis for control commands.
+    #[arg(long, action = ArgAction::SetTrue)]
+    interactive: bool,
+    /// Savepoint policy at outcome.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "fail|always|never",
+        default_value_t = RunSaveOnArg::Never
+    )]
+    save_on: RunSaveOnArg,
+    /// Stream live status.
+    #[arg(long, action = ArgAction::SetTrue)]
+    watch: bool,
     /// Emit a mock failure artifact for gate testing.
     #[arg(long, hide = true, action = ArgAction::SetTrue)]
     emit_mock_failure_artifact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RunUntilArg {
+    /// Stop at scheduler quiescence.
+    #[default]
+    Quiescence,
+    /// Stop at a virtual-time budget.
+    VirtualTime,
+    /// Stop at a property verdict.
+    Property,
+    /// Stop only on an explicit stopped state.
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RunSaveOnArg {
+    /// Save only on failure.
+    Fail,
+    /// Always save at outcome.
+    Always,
+    /// Do not save at outcome.
+    #[default]
+    Never,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -349,8 +410,12 @@ impl DebugStepGrainArg {
     }
 }
 
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-struct ServeArgs {}
+#[derive(Args, Debug, PartialEq, Eq)]
+struct ServeArgs {
+    /// Bind daemon listener.
+    #[arg(long, value_name = "addr", default_value = "127.0.0.1:9000")]
+    listen: String,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct CompletionsArgs {}
@@ -951,6 +1016,299 @@ struct FailureArtifactRule {
     self_contained_artifact: bool,
     replay_command_copy_pasteable: bool,
     debug_command_copy_pasteable: bool,
+}
+
+const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 = crucible_api::STREAMING_COMMAND_MAX_ACTOR_YIELDS;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunInvocationPlan {
+    scenario: RunScenarioRef,
+    terminal_condition: RunTerminalCondition,
+    max_virtual_time: Option<String>,
+    max_virtual_time_ticks: Option<u64>,
+    max_quanta: Option<u64>,
+    execution_mode: RunExecutionMode,
+    save_policy: RunSavePolicy,
+    watch_streams_live_status: bool,
+    startup_commands: Vec<SessionCommandKind>,
+    initial_control_commands: Vec<SessionCommandKind>,
+    accepted_interactive_commands: Vec<SessionCommandKind>,
+    bounded_ack_quanta: u64,
+    outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
+    invalid_scenario_exit_code: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RunScenarioRef {
+    File {
+        path: PathBuf,
+        scenario: crucible::ScenarioDef,
+    },
+    Stored {
+        reference: crucible::ContentHash,
+        scenario: crucible::ScenarioDef,
+    },
+}
+
+impl RunScenarioRef {
+    #[cfg(test)]
+    fn label(&self) -> String {
+        match self {
+            Self::File { path, .. } => path.display().to_string(),
+            Self::Stored { reference, .. } => format_content_hash_ref(*reference),
+        }
+    }
+
+    fn scenario_id(&self) -> crucible::ContentHash {
+        match self {
+            Self::File { scenario, .. } | Self::Stored { scenario, .. } => scenario.id(),
+        }
+    }
+
+    fn scenario_def(&self) -> &crucible::ScenarioDef {
+        match self {
+            Self::File { scenario, .. } | Self::Stored { scenario, .. } => scenario,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RunTerminalCondition {
+    Quiescence,
+    VirtualTime,
+    Property,
+    Stopped,
+}
+
+impl RunTerminalCondition {
+    fn from_arg(arg: RunUntilArg) -> Self {
+        match arg {
+            RunUntilArg::Quiescence => Self::Quiescence,
+            RunUntilArg::VirtualTime => Self::VirtualTime,
+            RunUntilArg::Property => Self::Property,
+            RunUntilArg::Stopped => Self::Stopped,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RunExecutionMode {
+    ToCompletion,
+    Interactive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RunSavePolicy {
+    OnFail,
+    Always,
+    Never,
+}
+
+impl RunSavePolicy {
+    fn from_arg(arg: RunSaveOnArg) -> Self {
+        match arg {
+            RunSaveOnArg::Fail => Self::OnFail,
+            RunSaveOnArg::Always => Self::Always,
+            RunSaveOnArg::Never => Self::Never,
+        }
+    }
+}
+
+fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocationPlan, CliError> {
+    let scenario = resolve_run_scenario(args.scenario.as_deref(), store_root)?;
+    if args.max_quanta == Some(0) {
+        return Err(usage_error("--max-quanta must be greater than zero"));
+    }
+    if let Some(duration) = &args.max_virtual_time {
+        if parse_run_duration_budget_ticks(duration).is_none() {
+            return Err(usage_error(
+                "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
+            ));
+        }
+    }
+    let terminal_condition = RunTerminalCondition::from_arg(args.until);
+    if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
+        return Err(usage_error(
+            "--until virtual-time requires --max-virtual-time",
+        ));
+    }
+    let execution_mode = if args.interactive {
+        RunExecutionMode::Interactive
+    } else {
+        RunExecutionMode::ToCompletion
+    };
+    let startup_commands = match execution_mode {
+        RunExecutionMode::ToCompletion => {
+            vec![SessionCommandKind::Start, SessionCommandKind::Continue]
+        }
+        RunExecutionMode::Interactive => vec![SessionCommandKind::Start],
+    };
+    let initial_control_commands = vec![SessionCommandKind::Query];
+    let accepted_interactive_commands = if args.interactive {
+        run_interactive_session_command_set()
+    } else {
+        Vec::new()
+    };
+
+    Ok(RunInvocationPlan {
+        scenario,
+        terminal_condition,
+        max_virtual_time: args.max_virtual_time.clone(),
+        max_virtual_time_ticks: args
+            .max_virtual_time
+            .as_deref()
+            .and_then(parse_run_duration_budget_ticks),
+        max_quanta: args.max_quanta,
+        execution_mode,
+        save_policy: RunSavePolicy::from_arg(args.save_on),
+        watch_streams_live_status: args.watch,
+        startup_commands,
+        initial_control_commands,
+        accepted_interactive_commands,
+        bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        outcome_exit_codes: vec![
+            (
+                BackendCommandStatus::Passed,
+                CliError::Outcome(BackendCommandStatus::Passed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Failed,
+                CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Timeout,
+                CliError::Outcome(BackendCommandStatus::Timeout).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Crashed,
+                CliError::Outcome(BackendCommandStatus::Crashed).exit_code(),
+            ),
+        ],
+        invalid_scenario_exit_code: CliError::InvalidScenario(String::new()).exit_code(),
+    })
+}
+
+fn resolve_run_scenario(
+    scenario: Option<&str>,
+    store_root: &Path,
+) -> Result<RunScenarioRef, CliError> {
+    let Some(raw) = scenario else {
+        return Err(usage_error("run requires a SCENARIO argument"));
+    };
+    let value = raw.trim();
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(invalid_scenario(
+            "scenario reference must not be empty or multiline",
+        ));
+    }
+
+    if value.starts_with(CONTENT_ADDRESS_PREFIX) {
+        return Err(invalid_scenario(format!(
+            "scenario content hash `{value}` is not a DAG-store `blake3:<hash>` reference",
+        )));
+    }
+    if value.starts_with("blake3:") {
+        let reference =
+            crucible::ContentAddressedBlobRef::parse("scenario", value).map_err(|error| {
+                invalid_scenario(format!(
+                    "scenario content hash `{value}` is malformed: {error}"
+                ))
+            })?;
+        let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+        let bytes = store.get(&reference.hash()).map_err(|error| {
+            invalid_scenario(format!(
+                "scenario content hash `{value}` could not be loaded from {}: {error}",
+                store.root().display()
+            ))
+        })?;
+        let scenario = parse_run_scenario_bytes(value, &bytes)?;
+        return Ok(RunScenarioRef::Stored {
+            reference: reference.hash(),
+            scenario,
+        });
+    }
+
+    let path = Path::new(value);
+    if !path.exists() {
+        return Err(invalid_scenario(format!(
+            "scenario `{value}` does not exist"
+        )));
+    }
+    if !path.is_file() {
+        return Err(invalid_scenario(format!(
+            "scenario `{value}` is not a regular file"
+        )));
+    }
+    let bytes = fs::read(path).map_err(|error| {
+        invalid_scenario(format!("scenario `{value}` could not be read: {error}"))
+    })?;
+    let scenario = parse_run_scenario_bytes(value, &bytes)?;
+    Ok(RunScenarioRef::File {
+        path: path.to_path_buf(),
+        scenario,
+    })
+}
+
+fn parse_run_scenario_bytes(label: &str, bytes: &[u8]) -> Result<crucible::ScenarioDef, CliError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        invalid_scenario(format!(
+            "scenario `{label}` is not UTF-8 canonical TOML: {error}"
+        ))
+    })?;
+    let form = crucible::ScenarioDefForm::from_canonical_toml(text).map_err(|error| {
+        invalid_scenario(format!(
+            "scenario `{label}` failed canonical TOML build/validation: {error}"
+        ))
+    })?;
+    Ok(form.scenario_def())
+}
+
+fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
+    let trimmed = duration.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let digit_len = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_len == 0 {
+        return None;
+    }
+    let value = trimmed[..digit_len].parse::<u64>().ok()?;
+    if value == 0 {
+        return None;
+    }
+    let suffix = &trimmed[digit_len..];
+    let multiplier = match suffix {
+        "" | "tick" | "ticks" => 1,
+        "ns" => 1,
+        "us" => 1_000,
+        "ms" => 1_000_000,
+        "s" => 1_000_000_000,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)
+}
+
+fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {
+    vec![
+        SessionCommandKind::Continue,
+        SessionCommandKind::Pause,
+        SessionCommandKind::StepQuantum,
+        SessionCommandKind::StepEvent,
+        SessionCommandKind::StepAssertion,
+        SessionCommandKind::StepTimer,
+        SessionCommandKind::StepDuration,
+        SessionCommandKind::Inject,
+        SessionCommandKind::InjectFault,
+        SessionCommandKind::HealFault,
+        SessionCommandKind::CreateSavepoint,
+        SessionCommandKind::Fork,
+        SessionCommandKind::Query,
+        SessionCommandKind::Stop,
+    ]
 }
 
 trait SeedEnvironment {
@@ -2129,6 +2487,10 @@ enum BackendCommandStatus {
 }
 
 impl BackendCommandStatus {
+    fn exit_code(self) -> i32 {
+        CliError::Outcome(self).exit_code()
+    }
+
     fn non_passing_variants() -> [Self; 3] {
         [Self::Failed, Self::Crashed, Self::Timeout]
     }
@@ -2166,6 +2528,7 @@ trait BackendCommandRunner {
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+        run_plan: Option<&RunInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 
     fn run_remote(
@@ -2174,6 +2537,7 @@ trait BackendCommandRunner {
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+        run_plan: Option<&RunInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 }
 
@@ -2183,11 +2547,22 @@ struct NullBackendCommandRunner;
 impl BackendCommandRunner for NullBackendCommandRunner {
     fn run_local(
         &mut self,
-        _backend: &ResolvedLocalBackend,
+        backend: &ResolvedLocalBackend,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+        run_plan: Option<&RunInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
+        if matches!(backend, ResolvedLocalBackend::Double) {
+            if let Some(run_plan) = run_plan {
+                return run_local_double_workflow(
+                    thin_plan,
+                    backend_plan,
+                    ergonomics_plan,
+                    run_plan,
+                );
+            }
+        }
         Ok(backend_command_outcome(
             thin_plan,
             backend_plan,
@@ -2197,11 +2572,15 @@ impl BackendCommandRunner for NullBackendCommandRunner {
 
     fn run_remote(
         &mut self,
-        _daemon: &str,
+        daemon: &str,
         thin_plan: &CliThinWrapperPlan,
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+        run_plan: Option<&RunInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
+        if let Some(run_plan) = run_plan {
+            return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
+        }
         Ok(backend_command_outcome(
             thin_plan,
             backend_plan,
@@ -2214,6 +2593,7 @@ fn execute_backend_routed_command(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: Option<&RunInvocationPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
     if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
@@ -2233,15 +2613,824 @@ fn execute_backend_routed_command(
         &backend_plan.daemon,
     ) {
         (BackendExecutionTarget::Local, Some(backend), None) => {
-            runner.run_local(backend, thin_plan, backend_plan, ergonomics_plan)
+            runner.run_local(backend, thin_plan, backend_plan, ergonomics_plan, run_plan)
         }
         (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => {
-            runner.run_remote(daemon, thin_plan, backend_plan, ergonomics_plan)
+            runner.run_remote(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan)
         }
         _ => Err(CliError::Backend(
             "CLI backend route is internally inconsistent".to_string(),
         )),
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunWorkflowReport {
+    status: BackendCommandStatus,
+    created_state: String,
+    final_state: String,
+    outcome: Option<OutcomeKind>,
+    terminal_savepoint: Option<crucible::ContentHash>,
+    final_frontier_ticks: u64,
+    final_quanta: u64,
+    budget_timed_out: bool,
+    state_updates: Vec<String>,
+    streamed_events: Vec<String>,
+    acknowledged_commands: Vec<SessionCommandKind>,
+    watch_statuses: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunObservation {
+    final_state: String,
+    outcome: Option<OutcomeKind>,
+    terminal_savepoint: Option<crucible::ContentHash>,
+    frontier_ticks: u64,
+    quanta: u64,
+    budget_timed_out: bool,
+    watch_statuses: Vec<String>,
+}
+
+fn run_local_double_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
+        runtime.block_on(run_local_double_workflow_stdin_async(
+            run_plan,
+            ergonomics_plan,
+        ))?
+    } else {
+        runtime.block_on(run_local_double_workflow_async(
+            run_plan,
+            ergonomics_plan,
+            &[],
+        ))?
+    };
+    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
+}
+
+fn run_remote_workflow(
+    daemon: &str,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
+        .map_err(control_client_error)?;
+    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
+        runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
+    } else {
+        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
+    };
+    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
+}
+
+fn daemon_rpc_endpoint(daemon: &str) -> String {
+    if daemon.contains("://") {
+        daemon.to_string()
+    } else {
+        format!("http://{daemon}")
+    }
+}
+
+fn finish_run_workflow_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+    report: RunWorkflowReport,
+) -> Result<BackendCommandOutcome, CliError> {
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    outcome.status = report.status;
+    outcome.exit_code = report.status.exit_code();
+    if outcome.status.is_non_passing() {
+        let artifact_seed = ergonomics_plan.map(|plan| plan.seed.value).unwrap_or(0);
+        let artifact = mock_failure_reproduction_artifact_bytes_for_backend(
+            artifact_seed,
+            backend_plan.resolved_backend.as_ref(),
+        )?;
+        outcome.artifact_digest = content_address_bytes(&artifact);
+        outcome.reproduction_artifact = Some(artifact);
+    }
+    outcome.stdout.push(format!(
+        "run-session\tcreated={}\tfinal={}\toutcome={}\tsavepoint={}\tfrontier_ticks={}\tquanta={}\tevents={}\tacks={}",
+        report.created_state,
+        report.final_state,
+        terminal_outcome_label(report.outcome),
+        report
+            .terminal_savepoint
+            .map(format_content_hash_ref)
+            .unwrap_or_else(|| String::from("none")),
+        report.final_frontier_ticks,
+        report.final_quanta,
+        report.streamed_events.len(),
+        report.acknowledged_commands.len()
+    ));
+    for status in &report.watch_statuses {
+        outcome.stdout.push(format!("run-watch\t{status}"));
+    }
+    append_local_double_run_entries(&mut outcome, run_plan, &report);
+    if let Some(savepoint) = run_terminal_savepoint_for_policy(run_plan, &report)? {
+        let savepoint = format_content_hash_ref(savepoint);
+        outcome.stdout.push(format!(
+            "run-savepoint\tpolicy={}\tcheckpoint={}\tfinal={}\toutcome={}",
+            run_save_policy_label(run_plan.save_policy),
+            savepoint,
+            report.final_state,
+            terminal_outcome_label(report.outcome)
+        ));
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("session"),
+            kind: String::from("run_savepoint"),
+            summary: format!(
+                "policy={} checkpoint={} outcome={}",
+                run_save_policy_label(run_plan.save_policy),
+                savepoint,
+                terminal_outcome_label(report.outcome)
+            ),
+        });
+        outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    }
+    Ok(outcome)
+}
+
+async fn run_local_double_workflow_async(
+    run_plan: &RunInvocationPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    interactive_commands: &[SessionCommandKind],
+) -> Result<RunWorkflowReport, CliError> {
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-double",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    run_control_client_workflow_async(&client, run_plan, interactive_commands).await
+}
+
+async fn run_local_double_workflow_stdin_async(
+    run_plan: &RunInvocationPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+) -> Result<RunWorkflowReport, CliError> {
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-double",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    run_control_client_workflow_stdin_async(&client, run_plan).await
+}
+
+fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
+    if cli.daemon.is_some() {
+        return Err(usage_error(
+            "serve hosts the daemon and cannot itself use --daemon",
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind(&args.listen).await?;
+        let address = listener.local_addr()?;
+        if !cli.quiet {
+            println!("crucible: serving API daemon at http://{address}");
+        }
+        let control_plane = LifecycleControlPlane::new(
+            "crucible-cli-daemon",
+            Vec::new(),
+            |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+        );
+        serve_lifecycle_http2(listener, control_plane).await?;
+        Ok(())
+    })
+}
+
+async fn run_control_client_workflow_async<C>(
+    client: &C,
+    run_plan: &RunInvocationPlan,
+    interactive_commands: &[SessionCommandKind],
+) -> Result<RunWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    run_control_client_workflow_with_interactive_driver(
+        client,
+        run_plan,
+        InteractiveCommandDriver::Preparsed(interactive_commands),
+    )
+    .await
+}
+
+fn run_save_policy_label(policy: RunSavePolicy) -> &'static str {
+    match policy {
+        RunSavePolicy::OnFail => "fail",
+        RunSavePolicy::Always => "always",
+        RunSavePolicy::Never => "never",
+    }
+}
+
+fn run_terminal_savepoint_for_policy(
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+) -> Result<Option<crucible::ContentHash>, CliError> {
+    let should_save = match run_plan.save_policy {
+        RunSavePolicy::Always => true,
+        RunSavePolicy::OnFail => report.status.is_non_passing(),
+        RunSavePolicy::Never => false,
+    };
+    if !should_save {
+        return Ok(None);
+    }
+    report.terminal_savepoint.map(Some).ok_or_else(|| {
+        backend_error(format!(
+            "run save policy `{}` required an outcome savepoint, but the session did not materialize one",
+            run_save_policy_label(run_plan.save_policy)
+        ))
+    })
+}
+
+async fn run_control_client_workflow_stdin_async<C>(
+    client: &C,
+    run_plan: &RunInvocationPlan,
+) -> Result<RunWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    run_control_client_workflow_with_interactive_driver(
+        client,
+        run_plan,
+        InteractiveCommandDriver::Stdin,
+    )
+    .await
+}
+
+enum InteractiveCommandDriver<'a> {
+    Preparsed(&'a [SessionCommandKind]),
+    Stdin,
+}
+
+async fn run_control_client_workflow_with_interactive_driver<C>(
+    client: &C,
+    run_plan: &RunInvocationPlan,
+    interactive_driver: InteractiveCommandDriver<'_>,
+) -> Result<RunWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let seed = run_plan.scenario.scenario_def().seed();
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
+        .with_start_paused(true);
+    let created = client
+        .create_session(request)
+        .await
+        .map_err(control_client_error)?;
+    let mut control = client
+        .control_attach(
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_client_name("crucible-cli-run"),
+        )
+        .await
+        .map_err(control_client_error)?;
+
+    let mut acknowledged_commands = Vec::new();
+    let mut command_id = 1;
+    acknowledge_stream_command(
+        &control,
+        &mut command_id,
+        SessionCommandKind::Query,
+        &mut acknowledged_commands,
+    )
+    .await?;
+
+    match run_plan.execution_mode {
+        RunExecutionMode::ToCompletion => {
+            acknowledge_stream_command(
+                &control,
+                &mut command_id,
+                SessionCommandKind::Continue,
+                &mut acknowledged_commands,
+            )
+            .await?;
+        }
+        RunExecutionMode::Interactive => match interactive_driver {
+            InteractiveCommandDriver::Preparsed(commands) => {
+                for command in commands {
+                    acknowledge_stream_command(
+                        &control,
+                        &mut command_id,
+                        *command,
+                        &mut acknowledged_commands,
+                    )
+                    .await?;
+                }
+            }
+            InteractiveCommandDriver::Stdin => {
+                drive_interactive_stdin_commands(
+                    &control,
+                    &mut command_id,
+                    &mut acknowledged_commands,
+                )
+                .await?;
+            }
+        },
+    }
+
+    let mut state_updates = Vec::new();
+    let mut streamed_events = Vec::new();
+    let observation = observe_run_final_state(
+        client,
+        &mut control,
+        run_plan,
+        &mut command_id,
+        &mut acknowledged_commands,
+        &mut state_updates,
+        &mut streamed_events,
+    )
+    .await?;
+    if state_updates.last() != Some(&observation.final_state) {
+        state_updates.push(observation.final_state.clone());
+    }
+    let status = run_status_from_observation(run_plan, &observation);
+
+    Ok(RunWorkflowReport {
+        status,
+        created_state: format!("{:?}", created.state).to_ascii_lowercase(),
+        final_state: observation.final_state,
+        outcome: observation.outcome,
+        terminal_savepoint: observation.terminal_savepoint,
+        final_frontier_ticks: observation.frontier_ticks,
+        final_quanta: observation.quanta,
+        budget_timed_out: observation.budget_timed_out,
+        state_updates,
+        streamed_events,
+        acknowledged_commands,
+        watch_statuses: observation.watch_statuses,
+    })
+}
+
+async fn drive_interactive_stdin_commands(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    drive_interactive_command_reader(
+        control,
+        command_id,
+        acknowledged_commands,
+        stdin.lock(),
+        &mut stdout,
+    )
+    .await
+}
+
+async fn drive_interactive_command_reader<R, W>(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    reader: R,
+    writer: &mut W,
+) -> Result<(), CliError>
+where
+    R: BufRead,
+    W: Write,
+{
+    for line in reader.lines() {
+        let line = line?;
+        let Some(command) = parse_interactive_session_command_line(&line)? else {
+            continue;
+        };
+        acknowledge_stream_command(control, command_id, command, acknowledged_commands).await?;
+        writeln!(
+            writer,
+            "interactive-ack\tcommand={}\tstatus=accepted",
+            session_command_name(command)
+        )?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+async fn acknowledge_stream_command(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    command: SessionCommandKind,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError> {
+    let model_command = command.representative_command().ok_or_else(|| {
+        backend_error(format!(
+            "session command `{}` is not supported",
+            session_command_name(command)
+        ))
+    })?;
+    let response = control
+        .send_command(*command_id, model_command)
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    match response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(command);
+            Ok(())
+        }
+        CommandResultStatus::Rejected { reason } => Err(backend_error(format!(
+            "session command `{}` was rejected: {reason:?}",
+            session_command_name(command)
+        ))),
+    }
+}
+
+async fn observe_run_final_state<C>(
+    client: &C,
+    control: &mut crucible_api::ClientControlStream,
+    run_plan: &RunInvocationPlan,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+    streamed_events: &mut Vec<String>,
+) -> Result<RunObservation, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let max_yields = run_plan
+        .max_quanta
+        .unwrap_or(RUN_INTERACTIVE_ACK_QUANTA_BOUND);
+    let mut last_frontier_ticks = 0;
+    let mut last_quanta = 0;
+    let mut last_session = None;
+    let mut watch_statuses = Vec::new();
+    for _ in 0..max_yields {
+        match tokio::time::timeout(Duration::from_millis(1), control.recv_event()).await {
+            Ok(Ok(Some(frame))) => {
+                streamed_events.push(frame.event.payload.kind);
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(error)) => return Err(control_client_error(error)),
+            Err(_) => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(10), control.recv_state_update()).await {
+            Ok(Ok(Some(frame))) => {
+                state_updates.push(format!("{:?}", frame.update.state).to_ascii_lowercase());
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(error)) => return Err(control_client_error(error)),
+            Err(_) => {}
+        }
+        let sessions = client.list_sessions().await.map_err(control_client_error)?;
+        let Some(session) = sessions.sessions.first() else {
+            return Ok(RunObservation {
+                final_state: terminal_final_state(run_plan, None),
+                outcome: None,
+                terminal_savepoint: None,
+                frontier_ticks: last_frontier_ticks,
+                quanta: last_quanta,
+                budget_timed_out: false,
+                watch_statuses,
+            });
+        };
+        let state = format!("{:?}", session.state).to_ascii_lowercase();
+        last_session = Some(session.clone());
+        last_frontier_ticks = session.frontier.ticks;
+        last_quanta = session.quanta_stepped;
+        if run_plan.watch_streams_live_status {
+            watch_statuses.push(run_watch_status(session));
+        }
+        let virtual_time_timed_out = run_plan
+            .max_virtual_time_ticks
+            .is_some_and(|budget| session.frontier.ticks >= budget);
+        let quantum_timed_out = run_plan
+            .max_quanta
+            .is_some_and(|budget| session.quanta_stepped >= budget && state != "stopped");
+        if virtual_time_timed_out {
+            return stop_budget_timed_out_session(
+                client,
+                control,
+                command_id,
+                acknowledged_commands,
+                String::from("virtual-time"),
+                session.clone(),
+                watch_statuses,
+                run_plan.watch_streams_live_status,
+            )
+            .await;
+        }
+        if quantum_timed_out {
+            return stop_budget_timed_out_session(
+                client,
+                control,
+                command_id,
+                acknowledged_commands,
+                String::from("timeout"),
+                session.clone(),
+                watch_statuses,
+                run_plan.watch_streams_live_status,
+            )
+            .await;
+        }
+        if state == "stopped" {
+            return Ok(RunObservation {
+                final_state: terminal_final_state(run_plan, session.outcome),
+                outcome: session.outcome,
+                terminal_savepoint: session.terminal_savepoint,
+                frontier_ticks: session.frontier.ticks,
+                quanta: session.quanta_stepped,
+                budget_timed_out: false,
+                watch_statuses,
+            });
+        }
+        tokio::task::yield_now().await;
+    }
+    if let Some(session) = last_session {
+        return stop_budget_timed_out_session(
+            client,
+            control,
+            command_id,
+            acknowledged_commands,
+            String::from("timeout"),
+            session,
+            watch_statuses,
+            run_plan.watch_streams_live_status,
+        )
+        .await;
+    }
+    Ok(RunObservation {
+        final_state: String::from("timeout"),
+        outcome: Some(OutcomeKind::Timeout),
+        terminal_savepoint: None,
+        frontier_ticks: last_frontier_ticks,
+        quanta: last_quanta,
+        budget_timed_out: true,
+        watch_statuses,
+    })
+}
+
+async fn stop_budget_timed_out_session<C>(
+    client: &C,
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    final_state: String,
+    initial: crucible_api::SessionSummary,
+    mut watch_statuses: Vec<String>,
+    watch_streams_live_status: bool,
+) -> Result<RunObservation, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let stopped = if initial.state == LiveStateKind::Stopped {
+        initial
+    } else {
+        acknowledge_stream_command(
+            control,
+            command_id,
+            SessionCommandKind::Stop,
+            acknowledged_commands,
+        )
+        .await?;
+        let mut stopped = initial;
+        for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+            let sessions = client.list_sessions().await.map_err(control_client_error)?;
+            let Some(session) = sessions.sessions.first() else {
+                break;
+            };
+            stopped = session.clone();
+            if watch_streams_live_status {
+                watch_statuses.push(run_watch_status(session));
+            }
+            if session.state == LiveStateKind::Stopped {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        stopped
+    };
+
+    Ok(RunObservation {
+        final_state,
+        outcome: Some(OutcomeKind::Timeout),
+        terminal_savepoint: stopped.terminal_savepoint,
+        frontier_ticks: stopped.frontier.ticks,
+        quanta: stopped.quanta_stepped,
+        budget_timed_out: true,
+        watch_statuses,
+    })
+}
+
+fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
+    format!(
+        "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
+        format!("{:?}", session.state).to_ascii_lowercase(),
+        session.frontier.ticks,
+        session.quanta_stepped,
+        terminal_outcome_label(session.outcome),
+        session
+            .terminal_savepoint
+            .map(format_content_hash_ref)
+            .unwrap_or_else(|| String::from("none"))
+    )
+}
+
+fn terminal_final_state(run_plan: &RunInvocationPlan, outcome: Option<OutcomeKind>) -> String {
+    match run_plan.terminal_condition {
+        RunTerminalCondition::Quiescence => match outcome {
+            Some(OutcomeKind::Passed) => String::from("quiescent"),
+            _ => terminal_outcome_label(outcome).to_string(),
+        },
+        RunTerminalCondition::VirtualTime => match outcome {
+            Some(OutcomeKind::Passed) => String::from("stopped-before-virtual-time"),
+            _ => terminal_outcome_label(outcome).to_string(),
+        },
+        RunTerminalCondition::Stopped => match outcome {
+            Some(OutcomeKind::Passed) => String::from("stopped-passed"),
+            _ => terminal_outcome_label(outcome).to_string(),
+        },
+        RunTerminalCondition::Property => match outcome {
+            Some(OutcomeKind::Failed) => String::from("property-failed"),
+            Some(OutcomeKind::Passed) | None => String::from("property-missing"),
+            _ => terminal_outcome_label(outcome).to_string(),
+        },
+    }
+}
+
+fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static str {
+    match outcome {
+        Some(OutcomeKind::Passed) => "passed",
+        Some(OutcomeKind::Failed) => "failed",
+        Some(OutcomeKind::Timeout) => "timeout",
+        Some(OutcomeKind::Crashed) => "crashed",
+        Some(OutcomeKind::Stopped) => "stopped",
+        None => "unknown",
+    }
+}
+
+fn run_status_from_observation(
+    run_plan: &RunInvocationPlan,
+    observation: &RunObservation,
+) -> BackendCommandStatus {
+    if observation.budget_timed_out {
+        return BackendCommandStatus::Timeout;
+    }
+    if run_plan.terminal_condition == RunTerminalCondition::Property
+        && matches!(observation.outcome, Some(OutcomeKind::Passed) | None)
+    {
+        return BackendCommandStatus::Failed;
+    }
+    status_from_outcome(observation.outcome)
+}
+
+fn status_from_outcome(outcome: Option<OutcomeKind>) -> BackendCommandStatus {
+    match outcome {
+        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => BackendCommandStatus::Passed,
+        Some(OutcomeKind::Failed) => BackendCommandStatus::Failed,
+        Some(OutcomeKind::Timeout) | None => BackendCommandStatus::Timeout,
+        Some(OutcomeKind::Crashed) => BackendCommandStatus::Crashed,
+    }
+}
+
+#[cfg(test)]
+fn parse_interactive_session_commands(input: &str) -> Result<Vec<SessionCommandKind>, CliError> {
+    input
+        .lines()
+        .filter_map(|line| parse_interactive_session_command_line(line).transpose())
+        .collect()
+}
+
+fn parse_interactive_session_command_line(
+    line: &str,
+) -> Result<Option<SessionCommandKind>, CliError> {
+    let command = line.split('#').next().unwrap_or("").trim();
+    if command.is_empty() {
+        Ok(None)
+    } else {
+        parse_interactive_session_command(command).map(Some)
+    }
+}
+
+fn parse_interactive_session_command(command: &str) -> Result<SessionCommandKind, CliError> {
+    match command {
+        "continue" => Ok(SessionCommandKind::Continue),
+        "pause" => Ok(SessionCommandKind::Pause),
+        "step" | "step-quantum" => Ok(SessionCommandKind::StepQuantum),
+        "step-event" => Ok(SessionCommandKind::StepEvent),
+        "step-assertion" => Ok(SessionCommandKind::StepAssertion),
+        "step-timer" => Ok(SessionCommandKind::StepTimer),
+        "step-duration" => Ok(SessionCommandKind::StepDuration),
+        "inject" => Ok(SessionCommandKind::Inject),
+        "inject-fault" => Ok(SessionCommandKind::InjectFault),
+        "heal" | "heal-fault" => Ok(SessionCommandKind::HealFault),
+        "save" | "create-savepoint" => Ok(SessionCommandKind::CreateSavepoint),
+        "fork" => Ok(SessionCommandKind::Fork),
+        "query" => Ok(SessionCommandKind::Query),
+        "stop" => Ok(SessionCommandKind::Stop),
+        _ => Err(usage_error(format!(
+            "unknown interactive session command `{command}`"
+        ))),
+    }
+}
+
+fn append_local_double_run_entries(
+    outcome: &mut BackendCommandOutcome,
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+) {
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("scenario"),
+        kind: String::from("run_scenario"),
+        summary: format!("id={}", run_plan.scenario.scenario_id().to_hex()),
+    });
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("session"),
+        kind: String::from("run_terminal_condition"),
+        summary: format!("{:?}", run_plan.terminal_condition),
+    });
+    for state in &report.state_updates {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("session"),
+            kind: String::from("run_state_update"),
+            summary: state.clone(),
+        });
+    }
+    for event in &report.streamed_events {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("event-log"),
+            kind: String::from("run_stream_event"),
+            summary: event.clone(),
+        });
+    }
+    for command in &report.acknowledged_commands {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("control"),
+            kind: String::from("interactive_ack"),
+            summary: session_command_name(*command).to_string(),
+        });
+    }
+    for status in &report.watch_statuses {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("session"),
+            kind: String::from("run_watch_status"),
+            summary: status.clone(),
+        });
+    }
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+}
+
+fn session_command_name(command: SessionCommandKind) -> &'static str {
+    match command {
+        SessionCommandKind::Start => "start",
+        SessionCommandKind::Continue => "continue",
+        SessionCommandKind::Pause => "pause",
+        SessionCommandKind::StepQuantum => "step-quantum",
+        SessionCommandKind::StepEvent => "step-event",
+        SessionCommandKind::StepAssertion => "step-assertion",
+        SessionCommandKind::StepTimer => "step-timer",
+        SessionCommandKind::StepDuration => "step-duration",
+        SessionCommandKind::Inject => "inject",
+        SessionCommandKind::InjectFault => "inject-fault",
+        SessionCommandKind::HealFault => "heal-fault",
+        SessionCommandKind::SetBreakpoint => "set-breakpoint",
+        SessionCommandKind::RemoveBreakpoint => "remove-breakpoint",
+        SessionCommandKind::CreateSavepoint => "create-savepoint",
+        SessionCommandKind::Fork => "fork",
+        SessionCommandKind::Query => "query",
+        SessionCommandKind::Stop => "stop",
+        SessionCommandKind::Snapshot => "snapshot",
+        SessionCommandKind::AttachGdb => "attach-gdb",
+        SessionCommandKind::DebugGoto => "debug-goto",
+        SessionCommandKind::DebugReverseStep => "debug-reverse-step",
+        SessionCommandKind::DebugReverseContinue => "debug-reverse-continue",
+        SessionCommandKind::DebugForkNonCanonical => "debug-fork-non-canonical",
+    }
+}
+
+fn control_client_error(error: crucible_api::ControlClientError) -> CliError {
+    backend_error(format!("control API error: {error}"))
 }
 
 fn backend_command_outcome(
@@ -2362,11 +3551,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
+    let run_store_root = default_run_store_root(cli);
+    let run_plan = match &cli.command {
+        Commands::Run(args) => Some(plan_run_invocation(args, &run_store_root)?),
+        _ => None,
+    };
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
         if !cli.quiet {
             println!("{}", plan.seed_announcement());
         }
+    }
+    if let Commands::Serve(args) = &cli.command {
+        return run_serve_invocation(cli, args);
     }
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
@@ -2374,12 +3571,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &thin_plan,
             &backend_plan,
             ergonomics_plan.as_ref(),
+            run_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
         if matches!(
             &cli.command,
             Commands::Run(RunArgs {
-                emit_mock_failure_artifact: true
+                emit_mock_failure_artifact: true,
+                ..
             })
         ) {
             mark_mock_failure_outcome(cli, &backend_plan, &mut outcome, ergonomics_plan.as_ref())?;
@@ -2475,6 +3674,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
 }
 
+fn default_run_store_root(cli: &Cli) -> PathBuf {
+    cli.store
+        .clone()
+        .unwrap_or_else(|| cli.artifact_dir.join("store"))
+}
+
 fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
@@ -2525,6 +3730,11 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
         cli.trace.as_deref(),
         !cli.quiet,
     )?;
+    if !cli.quiet {
+        for line in &outcome.stdout {
+            println!("{line}");
+        }
+    }
     if outcome.status.is_non_passing() {
         let Some(artifact) = &outcome.reproduction_artifact else {
             return Err(CliError::Artifact(format!(
@@ -3954,6 +5164,10 @@ fn artifact_error(reason: impl Into<String>) -> CliError {
     CliError::Artifact(reason.into())
 }
 
+fn invalid_scenario(reason: impl Into<String>) -> CliError {
+    CliError::InvalidScenario(reason.into())
+}
+
 #[derive(Debug)]
 struct ReplayArtifactReport {
     path: PathBuf,
@@ -4442,6 +5656,7 @@ enum CliError {
     Backend(String),
     Identity(String),
     Outcome(BackendCommandStatus),
+    InvalidScenario(String),
     Triage(String),
     Selftest(crucible::ExampleCorpusError),
 }
@@ -4459,6 +5674,7 @@ impl CliError {
             Self::Outcome(BackendCommandStatus::Failed) => 1,
             Self::Outcome(BackendCommandStatus::Timeout) => 2,
             Self::Outcome(BackendCommandStatus::Crashed) => 3,
+            Self::InvalidScenario(_) => 5,
             Self::Triage(_) => 1,
             Self::Selftest(_) => 1,
         }
@@ -4475,6 +5691,7 @@ impl fmt::Display for CliError {
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
+            Self::InvalidScenario(error) => write!(formatter, "{error}"),
             Self::Triage(error) => write!(formatter, "{error}"),
             Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
         }
@@ -4491,6 +5708,7 @@ impl Error for CliError {
             Self::Backend(_) => None,
             Self::Identity(_) => None,
             Self::Outcome(_) => None,
+            Self::InvalidScenario(_) => None,
             Self::Triage(_) => None,
             Self::Selftest(error) => Some(error),
         }
@@ -4505,6 +5723,10 @@ impl From<io::Error> for CliError {
 
 fn usage_error(reason: impl Into<String>) -> CliError {
     CliError::Usage(reason.into())
+}
+
+fn backend_error(reason: impl Into<String>) -> CliError {
+    CliError::Backend(reason.into())
 }
 
 #[cfg(test)]
@@ -4578,6 +5800,7 @@ mod tests {
             thin_plan: &CliThinWrapperPlan,
             backend_plan: &BackendSelectionPlan,
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+            _run_plan: Option<&RunInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.local_runs.push(backend.clone());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -4591,6 +5814,7 @@ mod tests {
             thin_plan: &CliThinWrapperPlan,
             backend_plan: &BackendSelectionPlan,
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+            _run_plan: Option<&RunInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.remote_runs.push(daemon.to_string());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -4618,6 +5842,41 @@ mod tests {
         fn record_failure_artifact_rule(&mut self, rule: &FailureArtifactRule) {
             self.failure_rules.push(rule.clone());
         }
+    }
+
+    fn write_valid_run_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let fixture = crucible::happy_path_scenario()?;
+        let path = temp.path().join("scenario.toml");
+        fs::write(&path, fixture.scenario.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Error>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => return,
+            };
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(_) => return,
+                };
+                let control_plane = LifecycleControlPlane::new(
+                    "crucible-cli-test-daemon",
+                    Vec::new(),
+                    |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+                );
+                let _server = serve_lifecycle_http2(listener, control_plane).await;
+            });
+        });
+        Ok(address.to_string())
     }
 
     #[derive(Default)]
@@ -4848,7 +6107,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Run(RunArgs {
-                emit_mock_failure_artifact: false
+                emit_mock_failure_artifact: false,
+                ..
             })
         ));
     }
@@ -5390,6 +6650,633 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_workflow_plans_start_continue_stream_and_budgets() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--watch"),
+            String::from("--max-quanta"),
+            String::from("7"),
+            String::from("--save-on"),
+            String::from("fail"),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, temp.path())?;
+
+        assert_eq!(plan.scenario.label(), scenario.display().to_string());
+        assert!(matches!(plan.scenario, RunScenarioRef::File { .. }));
+        assert_eq!(plan.execution_mode, RunExecutionMode::ToCompletion);
+        assert_eq!(plan.save_policy, RunSavePolicy::OnFail);
+        assert_eq!(plan.max_quanta, Some(7));
+        assert!(plan.watch_streams_live_status);
+        assert_eq!(
+            plan.startup_commands,
+            vec![SessionCommandKind::Start, SessionCommandKind::Continue]
+        );
+        assert_eq!(
+            plan.initial_control_commands,
+            vec![SessionCommandKind::Query]
+        );
+        assert!(plan.accepted_interactive_commands.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("10ms"),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, temp.path())?;
+
+        assert_eq!(plan.terminal_condition, RunTerminalCondition::VirtualTime);
+        assert_eq!(plan.max_virtual_time.as_deref(), Some("10ms"));
+        assert_eq!(plan.max_virtual_time_ticks, Some(10_000_000));
+        assert_eq!(
+            plan.startup_commands,
+            vec![SessionCommandKind::Start, SessionCommandKind::Continue]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session_commands()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--interactive"),
+            String::from("--until"),
+            String::from("stopped"),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, temp.path())?;
+
+        assert_eq!(plan.execution_mode, RunExecutionMode::Interactive);
+        assert_eq!(plan.startup_commands, vec![SessionCommandKind::Start]);
+        assert_eq!(
+            plan.initial_control_commands,
+            vec![SessionCommandKind::Query]
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::Continue)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::Pause)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::StepQuantum)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::InjectFault)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::HealFault)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::CreateSavepoint)
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::Fork)
+        );
+        assert!(plan.bounded_ack_quanta <= RUN_INTERACTIVE_ACK_QUANTA_BOUND);
+        assert_eq!(
+            plan.accepted_interactive_commands,
+            run_interactive_session_command_set()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(String::from("bad\nscenario")),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("multiline scenario reference must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::InvalidScenario(_)));
+        assert_eq!(error.exit_code(), 5);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(temp.path().to_string_lossy().into_owned()),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("directory scenario reference must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::InvalidScenario(_)));
+        assert_eq!(error.exit_code(), 5);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(temp.path().join("missing.toml").display().to_string()),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("missing scenario file must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::InvalidScenario(_)));
+        assert_eq!(error.exit_code(), 5);
+
+        let malformed = temp.path().join("malformed.toml");
+        fs::write(&malformed, "not = \"a scenario\"")?;
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(malformed.display().to_string()),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("malformed scenario TOML must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::InvalidScenario(_)));
+        assert_eq!(error.exit_code(), 5);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("missing scenario argument must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let scenario = write_valid_run_scenario(&temp)?;
+        let scenario_ref = scenario.display().to_string();
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(scenario_ref.clone()),
+                max_virtual_time: Some(String::from("soon")),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("malformed virtual-time budget must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(scenario_ref.clone()),
+                max_virtual_time: Some(String::from("0ticks")),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("zero virtual-time budget must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(scenario_ref.clone()),
+                max_quanta: Some(0),
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("zero max quanta must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let error = match plan_run_invocation(
+            &RunArgs {
+                scenario: Some(scenario_ref),
+                until: RunUntilArg::VirtualTime,
+                ..RunArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("virtual-time terminal condition requires a budget"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let scenario_bytes = fs::read(&scenario)?;
+        let store = crucible::LocalDagStore::new(temp.path().join("store"));
+        let key = store.put(&scenario_bytes)?;
+        let reference = format_content_hash_ref(key);
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("run"),
+            reference.clone(),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, store.root())?;
+
+        assert_eq!(plan.scenario.label(), reference);
+        assert!(matches!(plan.scenario, RunScenarioRef::Stored { .. }));
+        assert_eq!(
+            plan.outcome_exit_codes,
+            vec![
+                (BackendCommandStatus::Passed, 0),
+                (BackendCommandStatus::Failed, 1),
+                (BackendCommandStatus::Timeout, 2),
+                (BackendCommandStatus::Crashed, 3),
+            ]
+        );
+        assert_eq!(plan.invalid_scenario_exit_code, 5);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_executes_local_double_session_and_timeout_budget()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let pass_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("1"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--watch"),
+        ]);
+        let Commands::Run(pass_args) = &pass_cli.command else {
+            panic!("expected run command");
+        };
+        let pass_run = plan_run_invocation(pass_args, temp.path())?;
+        let pass_seed = plan_determinism_ergonomics(
+            &pass_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("run should resolve a seed");
+        let pass_outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&pass_cli),
+            &plan_backend_selection(&pass_cli)?.expect("run should require backend selection"),
+            Some(&pass_seed),
+            Some(&pass_run),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert_eq!(pass_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(pass_outcome.exit_code, 0);
+        assert!(
+            pass_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_scenario")
+        );
+        assert!(
+            pass_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_state_update" && entry.summary == "quiescent")
+        );
+        assert!(
+            pass_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_stream_event"
+                    && entry.summary == "crucible.event.diagnostic")
+        );
+        assert!(
+            pass_outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("run-watch\t"))
+        );
+        assert!(
+            pass_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_watch_status")
+        );
+
+        let timeout_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("2"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("1ticks"),
+            String::from("--save-on"),
+            String::from("fail"),
+        ]);
+        let Commands::Run(timeout_args) = &timeout_cli.command else {
+            panic!("expected run command");
+        };
+        let timeout_run = plan_run_invocation(timeout_args, temp.path())?;
+        let timeout_seed = plan_determinism_ergonomics(
+            &timeout_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("run should resolve a seed");
+        let timeout_outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&timeout_cli),
+            &plan_backend_selection(&timeout_cli)?.expect("run should require backend selection"),
+            Some(&timeout_seed),
+            Some(&timeout_run),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert_eq!(timeout_outcome.status, BackendCommandStatus::Timeout);
+        assert_eq!(timeout_outcome.exit_code, 2);
+        assert!(timeout_outcome.reproduction_artifact.is_some());
+        assert!(
+            timeout_outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
+        );
+
+        let property_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("4"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--until"),
+            String::from("property"),
+            String::from("--save-on"),
+            String::from("fail"),
+        ]);
+        let Commands::Run(property_args) = &property_cli.command else {
+            panic!("expected run command");
+        };
+        let property_run = plan_run_invocation(property_args, temp.path())?;
+        let property_seed = plan_determinism_ergonomics(
+            &property_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("run should resolve a seed");
+        let property_outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&property_cli),
+            &plan_backend_selection(&property_cli)?.expect("run should require backend selection"),
+            Some(&property_seed),
+            Some(&property_run),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert_eq!(property_outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(property_outcome.exit_code, 1);
+        assert!(property_outcome.reproduction_artifact.is_some());
+        assert!(property_outcome.stdout.iter().any(|line| {
+            line.starts_with("run-session\t") && line.contains("final=property-missing")
+        }));
+        assert!(
+            property_outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
+        );
+
+        let dispatch_artifacts = temp.path().join("dispatch-timeout-artifacts");
+        let dispatch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("3"),
+            String::from("--artifact-dir"),
+            dispatch_artifacts.display().to_string(),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("1ticks"),
+        ]);
+        let error = match dispatch(&dispatch_cli) {
+            Ok(_) => panic!("timeout dispatch must propagate outcome exit code"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CliError::Outcome(BackendCommandStatus::Timeout)
+        ));
+        assert_eq!(error.exit_code(), 2);
+        assert_eq!(
+            fs::read_dir(&dispatch_artifacts)?
+                .collect::<Result<Vec<_>, _>>()?
+                .len(),
+            1
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let daemon = spawn_production_lifecycle_server()?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon,
+            String::from("--seed"),
+            String::from("7"),
+            String::from("run"),
+            scenario.display().to_string(),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let run_plan = plan_run_invocation(args, temp.path())?;
+        let ergonomics_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("run should resolve a seed");
+        let backend_plan = plan_backend_selection(&cli)?.expect("remote run should route daemon");
+        assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            Some(&ergonomics_plan),
+            Some(&run_plan),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("run-session\t")
+                && line.contains("created=paused")
+                && line.contains("final=quiescent")
+                && !line.contains("events=0")
+        }));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "run_stream_event"
+                    && entry.summary == "crucible.event.diagnostic")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
+        let commands = parse_interactive_session_commands(
+            "\n# comment\nquery\nstep\ninject-fault\nheal\nsave\nfork\nstop\n",
+        )?;
+
+        assert_eq!(
+            commands,
+            vec![
+                SessionCommandKind::Query,
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::InjectFault,
+                SessionCommandKind::HealFault,
+                SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Fork,
+                SessionCommandKind::Stop,
+            ]
+        );
+
+        let error = match parse_interactive_session_commands("invented\n") {
+            Ok(_) => panic!("unknown interactive command must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cli_run_workflow_acknowledges_interactive_reader_commands()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("5"),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--interactive"),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let run_plan = plan_run_invocation(args, temp.path())?;
+        let control_plane = LifecycleControlPlane::new(
+            "crucible-cli-reader-test",
+            Vec::new(),
+            |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+        );
+        let client = InProcessLifecycleClient::new(control_plane);
+        let request = CreateSessionRequest::inline(
+            run_plan.scenario.scenario_def().clone(),
+            run_plan.scenario.scenario_def().seed(),
+        )
+        .with_start_paused(true);
+        let created = client.create_session(request).await?;
+        let control = client
+            .control_attach(
+                AttachRequest::new(created.session)
+                    .with_expected_epoch(created.session.epoch)
+                    .with_client_name("crucible-cli-reader-test"),
+            )
+            .await?;
+
+        let mut command_id = 1;
+        let mut acknowledged = Vec::new();
+        let mut output = Vec::new();
+        drive_interactive_command_reader(
+            &control,
+            &mut command_id,
+            &mut acknowledged,
+            io::Cursor::new("query\n# ignored\n\n"),
+            &mut output,
+        )
+        .await?;
+
+        assert_eq!(acknowledged, vec![SessionCommandKind::Query]);
+        assert_eq!(command_id, 2);
+        assert_eq!(
+            String::from_utf8(output)?,
+            "interactive-ack\tcommand=query\tstatus=accepted\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_backend_selection_covers_every_backend_routed_subcommand() -> Result<(), Box<dyn Error>>
     {
         let temp = TempDir::new()?;
@@ -5532,7 +7419,8 @@ mod tests {
         );
         assert!(recorder.local_backends.is_empty());
         let mut runner = RecordingBackendCommandRunner::default();
-        let outcome = execute_backend_routed_command(&thin_plan, &backend_plan, None, &mut runner)?;
+        let outcome =
+            execute_backend_routed_command(&thin_plan, &backend_plan, None, None, &mut runner)?;
         assert_eq!(runner.remote_runs, vec![String::from("127.0.0.1:9000")]);
         assert!(runner.local_runs.is_empty());
         assert_eq!(outcome.exit_code, 0);
@@ -5561,11 +7449,17 @@ mod tests {
             plan_backend_selection(&remote_cli)?.expect("run should require backend selection");
         let mut local_runner = RecordingBackendCommandRunner::default();
         let mut remote_runner = RecordingBackendCommandRunner::default();
-        let local_outcome =
-            execute_backend_routed_command(&local_thin, &local_backend, None, &mut local_runner)?;
+        let local_outcome = execute_backend_routed_command(
+            &local_thin,
+            &local_backend,
+            None,
+            None,
+            &mut local_runner,
+        )?;
         let remote_outcome = execute_backend_routed_command(
             &remote_thin,
             &remote_backend,
+            None,
             None,
             &mut remote_runner,
         )?;
@@ -5815,18 +7709,21 @@ mod tests {
             &local_thin,
             &local_backend,
             Some(&seed_one),
+            None,
             &mut local_runner,
         )?;
         let remote = execute_backend_routed_command(
             &remote_thin,
             &remote_backend,
             Some(&remote_seed_one),
+            None,
             &mut remote_runner,
         )?;
         let different_seed = execute_backend_routed_command(
             &different_seed_thin,
             &different_seed_backend,
             Some(&seed_two),
+            None,
             &mut different_seed_runner,
         )?;
 
@@ -5908,7 +7805,7 @@ mod tests {
         let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
         let mut runner = RecordingBackendCommandRunner::default();
         let mut outcome =
-            execute_backend_routed_command(&thin, &backend, Some(&plan), &mut runner)?;
+            execute_backend_routed_command(&thin, &backend, Some(&plan), None, &mut runner)?;
         mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan))?;
 
         emit_backend_command_output(&cli, &outcome)?;
@@ -5939,15 +7836,17 @@ mod tests {
         );
 
         let dispatch_artifacts = temp.path().join("dispatch-artifacts");
+        let scenario = write_valid_run_scenario(&temp)?;
         let dispatch_cli = Cli::parse_from([
-            "crucible",
-            "--quiet",
-            "--seed",
-            "0x55",
-            "--artifact-dir",
-            dispatch_artifacts.to_str().unwrap_or("."),
-            "run",
-            "--emit-mock-failure-artifact",
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--seed"),
+            String::from("0x55"),
+            String::from("--artifact-dir"),
+            dispatch_artifacts.display().to_string(),
+            String::from("run"),
+            scenario.display().to_string(),
+            String::from("--emit-mock-failure-artifact"),
         ]);
         let error = match dispatch(&dispatch_cli) {
             Ok(_) => panic!("non-passing dispatch must propagate the outcome exit code"),

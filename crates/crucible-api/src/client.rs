@@ -11,8 +11,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crucible::{EventLevel, Seed, VirtualTime};
-use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand, SessionCommandKind};
+use crucible::{ContentHash, EventLevel, Seed, VirtualTime};
+use crucible_session::{
+    LiveSnapshot, LiveStateKind, OutcomeKind, SessionCommand, SessionCommandKind,
+};
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use thiserror::Error;
@@ -1341,13 +1343,24 @@ fn decode_list_sessions_response(body: &[u8]) -> Result<ListSessionsResponse, Co
         let seed = parse_seed_field(fields.next(), "session seed")?;
         let state = parse_state_field(fields.next(), "session state")?;
         let event_log_len = parse_u64_field(fields.next(), "event log length")?;
+        let frontier_ticks = parse_u64_field(fields.next(), "session frontier ticks")?;
+        let quanta_stepped = parse_u64_field(fields.next(), "session quanta stepped")?;
+        let outcome = parse_outcome_field(fields.next(), "session outcome")?;
+        let terminal_savepoint =
+            parse_content_hash_field(fields.next(), "session terminal savepoint")?;
         if fields.next().is_some() {
             return Err(rpc_decode("unexpected extra session summary fields"));
         }
         sessions.push(SessionSummary {
             session: SessionRef::new(SessionId::new(id), epoch, seed),
             state,
+            outcome,
+            terminal_savepoint,
+            frontier: VirtualTime {
+                ticks: frontier_ticks,
+            },
             event_log_len,
+            quanta_stepped,
         });
     }
     Ok(ListSessionsResponse { sessions })
@@ -1853,6 +1866,40 @@ fn parse_state_field(
         "paused" => Ok(LiveStateKind::Paused),
         "stopped" => Ok(LiveStateKind::Stopped),
         value => Err(rpc_decode(format!("invalid {label} `{value}`"))),
+    }
+}
+
+fn parse_outcome_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<Option<OutcomeKind>, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode(format!("missing {label}")))? {
+        "none" => Ok(None),
+        "passed" => Ok(Some(OutcomeKind::Passed)),
+        "failed" => Ok(Some(OutcomeKind::Failed)),
+        "timeout" => Ok(Some(OutcomeKind::Timeout)),
+        "crashed" => Ok(Some(OutcomeKind::Crashed)),
+        "stopped" => Ok(Some(OutcomeKind::Stopped)),
+        value => Err(rpc_decode(format!("invalid {label} `{value}`"))),
+    }
+}
+
+fn parse_content_hash_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<Option<ContentHash>, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode(format!("missing {label}")))? {
+        "none" => Ok(None),
+        value => {
+            let bytes = parse_hex_bytes(value)?;
+            let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+                rpc_decode(format!(
+                    "invalid {label} hex length {}, expected 32 bytes",
+                    bytes.len()
+                ))
+            })?;
+            Ok(Some(ContentHash { bytes }))
+        }
     }
 }
 

@@ -13,8 +13,9 @@
 //! [`event_log_stream`] owns the cursor-backed live event-log subscription facade;
 //! [`session_mapping`] owns the API-to-session thin-wrapper contract; [`lifecycle`]
 //! owns the unary discovery and lifecycle API; [`streaming`] owns the typed
-//! `Control` and `Watch`+`Send` attach-and-command facade; [`open_set`] owns the
-//! dotted-kind plus typed-attribute payload model.
+//! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
+//! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
+//! typed-attribute payload model.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -26,6 +27,7 @@ pub mod event_log_stream;
 pub mod lifecycle;
 pub mod open_set;
 pub mod rpc_abi;
+pub mod server;
 pub mod session_mapping;
 pub mod streaming;
 
@@ -51,9 +53,10 @@ pub use lifecycle::{
     DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ScenarioCatalogEntry,
-    ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
+    ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
+    ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef,
+    SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
@@ -74,6 +77,7 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
+pub use server::serve_lifecycle_http2;
 pub use session_mapping::{
     API_COMMAND_MAPPINGS, API_METHOD_MAPPINGS, ApiCommandMapping, ApiDispatch, ApiMappingError,
     ApiMethod, ApiMethodMapping, ApiRequestShape, CommandDispatchCardinality,

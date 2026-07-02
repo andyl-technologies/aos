@@ -992,9 +992,19 @@ branch on the verdict without parsing output:
   that host `$PATH` QEMU is never used. Resolved QEMU backends carry the pinned
   QEMU build identity and plugin ABI into replay identity checks and failure
   reproduction artifacts.
-- [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
+- [x] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.
+  Completed by `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
+  scenario files and `blake3:` store references, validates malformed scenarios
+  as exit 5, starts lifecycle-owned sessions through the API, drives local
+  in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
+  control-client workflow, streams non-empty scheduler event/state frames,
+  derives terminal status from session `OutcomeKind`, enforces
+  virtual-time/quanta budgets from live counters, emits user-visible `--watch`
+  status, materializes real terminal savepoint handles for `--save-on`, maps
+  non-passing outcomes to reproduction artifacts and exit codes, and provides
+  incremental stdin acknowledgements for interactive commands.
 - [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.

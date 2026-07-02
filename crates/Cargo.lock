@@ -1574,10 +1574,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "crucible",
+ "crucible-api",
  "crucible-harness",
  "crucible-session",
  "crucible-shmem",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

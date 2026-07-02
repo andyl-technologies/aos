@@ -1470,6 +1470,17 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliRunWorkflow = import ./phase5-cli-run-workflow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliRunWorkflow";
+      taskIds = ["T-CLI-6"];
+      dependencies = [
+        phase5.cliHermeticDiscovery
+        phase4.gates.replayOracle.rawGate
+        phase4.gates.e2eDeterminism.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {
