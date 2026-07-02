@@ -14,7 +14,10 @@ use crucible::{
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
     TemporalGraph, VirtualTime, compare_event_log_determinism, step,
 };
-use crucible_session::{Engine, EventLogCursor, LiveStateKind, SessionActor, SessionCommand};
+use crucible_session::{
+    Engine, EngineState, EventLogCursor, LiveQueryKind, LiveQueryResult, LiveStateKind, Outcome,
+    PauseReason, SessionActor, SessionCommand,
+};
 use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "current_thread")]
@@ -62,16 +65,21 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     let inject_acknowledged =
         acknowledge_operation(&sender, &live, SessionCommand::Inject, "inject").await;
     assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
-    let query_acknowledged =
-        acknowledge_operation(&sender, &live, SessionCommand::query_snapshot(), "query").await;
-    assert_eq!(query_acknowledged.state_kind, LiveStateKind::Running);
+    assert_eq!(
+        live.query(LiveQueryKind::Status),
+        LiveQueryResult::Status(inject_acknowledged)
+    );
+    assert_eq!(
+        live.query(LiveQueryKind::State),
+        LiveQueryResult::State(crucible_session::LifecycleStateKind::Running)
+    );
+    assert_eq!(
+        live.query(LiveQueryKind::EventLogLength),
+        LiveQueryResult::EventLogLength(inject_acknowledged.event_log_len)
+    );
     assert_eq!(
         observed_control_operations(&observed_control),
-        vec![
-            ControlOperationKind::Snapshot,
-            ControlOperationKind::Inject,
-            ControlOperationKind::Query,
-        ]
+        vec![ControlOperationKind::Snapshot, ControlOperationKind::Inject,]
     );
 
     let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
@@ -180,6 +188,44 @@ async fn gate_control_responsive_accepts_typed_fault_control_commands() {
         Err(error) => panic!("actor task should join cleanly: {error}"),
     };
     assert!(report.quanta >= heal_acknowledged.quanta_stepped);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn gate_control_responsive_acknowledges_query_command_within_quantum_bound() {
+    let scenario = generated_scenario(39);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let observed_control = Arc::new(Mutex::new(Vec::new()));
+    let engine = Engine::new(
+        config,
+        graph,
+        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+    );
+    let (sender, receiver) = mpsc::channel(8);
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+    let actor_task = tokio::spawn(async move { actor.run().await });
+
+    send_command(&sender, SessionCommand::Start).await;
+    send_command(&sender, SessionCommand::Continue).await;
+    wait_until_running(&live).await;
+
+    let query_acknowledged =
+        acknowledge_operation(&sender, &live, SessionCommand::query_snapshot(), "query").await;
+    assert_eq!(query_acknowledged.state_kind, LiveStateKind::Running);
+    assert_eq!(
+        observed_control_operations(&observed_control),
+        vec![ControlOperationKind::Query]
+    );
+
+    send_command(&sender, SessionCommand::Stop).await;
+    match actor_task.await {
+        Ok(Ok(report)) => {
+            assert!(report.quanta >= query_acknowledged.quanta_stepped);
+        }
+        Ok(Err(error)) => panic!("actor should stop cleanly: {error}"),
+        Err(error) => panic!("actor task should join cleanly: {error}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -295,6 +341,102 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn gate_control_plane_streams_state_transitions_without_mailbox_roundtrip() {
+    let scenario = generated_scenario(43);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let observed_control = Arc::new(Mutex::new(Vec::new()));
+    let engine = Engine::new(
+        config,
+        graph,
+        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+    );
+    let (sender, receiver) = mpsc::channel(8);
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+    let state_transitions = actor.state_transition_bus();
+    let mut stream = state_transitions.subscribe();
+    let actor_task = tokio::spawn(async move { actor.run().await });
+
+    send_command(&sender, SessionCommand::Start).await;
+    let started = receive_state_transition(&mut stream).await;
+    assert_eq!(started.sequence, 1);
+    assert_eq!(started.from_state, EngineState::Loaded);
+    assert_eq!(
+        started.to_state,
+        EngineState::Paused {
+            reason: PauseReason::Instantiated,
+        }
+    );
+    assert_eq!(started.from.state_kind, LiveStateKind::Loaded);
+    assert_eq!(started.to.state_kind, LiveStateKind::Paused);
+
+    send_command(&sender, SessionCommand::Continue).await;
+    let continued = receive_state_transition(&mut stream).await;
+    assert_eq!(continued.sequence, 2);
+    assert_eq!(
+        continued.from_state,
+        EngineState::Paused {
+            reason: PauseReason::Instantiated,
+        }
+    );
+    assert_eq!(continued.to_state, EngineState::Running);
+    assert_eq!(continued.from.state_kind, LiveStateKind::Paused);
+    assert_eq!(continued.to.state_kind, LiveStateKind::Running);
+    wait_until_running(&live).await;
+
+    send_command(&sender, SessionCommand::Pause).await;
+    let paused = receive_state_transition(&mut stream).await;
+    assert_eq!(paused.sequence, 3);
+    assert_eq!(paused.from_state, EngineState::Running);
+    assert_eq!(
+        paused.to_state,
+        EngineState::Paused {
+            reason: PauseReason::UserRequested,
+        }
+    );
+    assert_eq!(paused.from.state_kind, LiveStateKind::Running);
+    assert_eq!(paused.to.state_kind, LiveStateKind::Paused);
+    wait_until_paused(&live).await;
+
+    let before_observation = live.read();
+    let observation_only = state_transitions.subscribe();
+    drop(observation_only);
+    assert_eq!(live.read(), before_observation);
+
+    send_command(&sender, SessionCommand::Stop).await;
+    let stopped = receive_state_transition(&mut stream).await;
+    assert_eq!(stopped.sequence, 4);
+    assert_eq!(
+        stopped.from_state,
+        EngineState::Paused {
+            reason: PauseReason::UserRequested,
+        }
+    );
+    assert_eq!(
+        stopped.to_state,
+        EngineState::Stopped {
+            outcome: Outcome::Stopped,
+        }
+    );
+    assert_eq!(stopped.from.state_kind, LiveStateKind::Paused);
+    assert_eq!(stopped.to.state_kind, LiveStateKind::Stopped);
+
+    match actor_task.await {
+        Ok(Ok(report)) => {
+            assert_eq!(
+                report.final_snapshot.state,
+                EngineState::Stopped {
+                    outcome: Outcome::Stopped,
+                },
+            );
+        }
+        Ok(Err(error)) => panic!("actor should stop cleanly: {error}"),
+        Err(error) => panic!("actor task should join cleanly: {error}"),
+    }
+}
+
 async fn send_command(sender: &mpsc::Sender<SessionCommand>, command: SessionCommand) {
     if let Err(error) = sender.send(command).await {
         panic!("session command should enqueue: {error}");
@@ -372,6 +514,16 @@ async fn acknowledge_boundary_operation(
     }
 
     panic!("{operation} boundary command should be acknowledged within bounded actor yields");
+}
+
+async fn receive_state_transition(
+    stream: &mut crucible_session::SessionStateTransitionStream,
+) -> crucible_session::SessionStateTransitionFrame {
+    match stream.recv().await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => panic!("state-transition stream should remain open while actor runs"),
+        Err(error) => panic!("state-transition stream should not lag: {error}"),
+    }
 }
 
 #[derive(Default)]

@@ -41,6 +41,9 @@ pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
 /// Maximum number of retained event-log frames cloned by one stream receive.
 pub const SESSION_EVENT_LOG_REPLAY_BATCH_SIZE: usize = 64;
 
+/// Number of live state-transition frames retained by the broadcast tail.
+pub const SESSION_STATE_BROADCAST_CAPACITY: usize = 256;
+
 /// Default mailbox capacity for a newly forked child session actor.
 pub const SESSION_FORK_MAILBOX_CAPACITY: usize = 8;
 
@@ -811,6 +814,28 @@ pub enum QueryResult {
     State(LifecycleStateKind),
     /// Canonical event-log length.
     EventLogLength(usize),
+}
+
+/// Read-only query kind served directly from the lock-free live snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LiveQueryKind {
+    /// Return the complete atomic status view.
+    Status,
+    /// Return the compact lifecycle state.
+    State,
+    /// Return the canonical event-log length mirrored by the actor.
+    EventLogLength,
+}
+
+/// Result returned by a lock-free live query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveQueryResult {
+    /// Complete atomic status view.
+    Status(LiveSnapshotView),
+    /// Compact lifecycle state.
+    State(LifecycleStateKind),
+    /// Canonical event-log length mirrored by the actor.
+    EventLogLength(u64),
 }
 
 /// A control command consumed by the session actor.
@@ -1638,6 +1663,19 @@ pub struct LiveSnapshotView {
     pub control_acknowledgements: u64,
 }
 
+impl LiveSnapshotView {
+    /// Returns the lifecycle state kind represented by this live view.
+    #[must_use]
+    pub const fn lifecycle_state(&self) -> LifecycleStateKind {
+        match self.state_kind {
+            LiveStateKind::Loaded => LifecycleStateKind::Loaded,
+            LiveStateKind::Running => LifecycleStateKind::Running,
+            LiveStateKind::Paused => LifecycleStateKind::Paused,
+            LiveStateKind::Stopped => LifecycleStateKind::Stopped,
+        }
+    }
+}
+
 impl LiveSnapshot {
     /// Builds a live snapshot initialized from an engine boundary snapshot.
     #[must_use]
@@ -1687,6 +1725,20 @@ impl LiveSnapshot {
             }
 
             std::hint::spin_loop();
+        }
+    }
+
+    /// Answers a point-in-time status query from the lock-free mirror.
+    ///
+    /// This method performs only the atomic loads used by [`LiveSnapshot::read`].
+    /// It does not enter the session actor mailbox or read the owned engine.
+    #[must_use]
+    pub fn query(&self, kind: LiveQueryKind) -> LiveQueryResult {
+        let view = self.read();
+        match kind {
+            LiveQueryKind::Status => LiveQueryResult::Status(view),
+            LiveQueryKind::State => LiveQueryResult::State(view.lifecycle_state()),
+            LiveQueryKind::EventLogLength => LiveQueryResult::EventLogLength(view.event_log_len),
         }
     }
 
@@ -1982,6 +2034,94 @@ impl SessionEventLogStream {
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     return Err(SessionEventLogStreamError::Lagged { skipped });
                 }
+            }
+        }
+    }
+}
+
+/// One run-state transition delivered to a control-plane subscriber.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionStateTransitionFrame {
+    /// Monotone actor-local transition sequence.
+    pub sequence: u64,
+    /// Full actor state observed before the transition was published.
+    pub from_state: EngineState,
+    /// Full actor state observed after the transition was published.
+    pub to_state: EngineState,
+    /// Lock-free snapshot observed before the transition was published.
+    pub from: LiveSnapshotView,
+    /// Lock-free snapshot observed after the transition was published.
+    pub to: LiveSnapshotView,
+}
+
+/// Error returned while reading a live state-transition stream.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SessionStateTransitionStreamError {
+    /// The subscriber lagged behind the bounded live tail.
+    #[error("session state-transition stream skipped {skipped} frames")]
+    Lagged {
+        /// Number of skipped broadcast frames reported by the live tail.
+        skipped: u64,
+    },
+}
+
+/// Session-owned state-transition hub used by the control plane.
+#[derive(Clone, Debug)]
+pub struct SessionStateTransitionBus {
+    tail: broadcast::Sender<SessionStateTransitionFrame>,
+}
+
+impl SessionStateTransitionBus {
+    /// Builds an empty state-transition bus.
+    #[must_use]
+    pub fn new() -> Self {
+        let (tail, _) = broadcast::channel(SESSION_STATE_BROADCAST_CAPACITY);
+        Self { tail }
+    }
+
+    /// Subscribes to future state transitions.
+    ///
+    /// Subscribing clones only a broadcast receiver. It does not enqueue a
+    /// session command, take an engine lock, or await the scheduler.
+    #[must_use]
+    pub fn subscribe(&self) -> SessionStateTransitionStream {
+        SessionStateTransitionStream {
+            receiver: self.tail.subscribe(),
+        }
+    }
+
+    fn publish(&self, frame: SessionStateTransitionFrame) {
+        let _ = self.tail.send(frame);
+    }
+}
+
+impl Default for SessionStateTransitionBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Live state-transition stream for one subscriber.
+#[derive(Debug)]
+pub struct SessionStateTransitionStream {
+    receiver: broadcast::Receiver<SessionStateTransitionFrame>,
+}
+
+impl SessionStateTransitionStream {
+    /// Receives the next state-transition frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionStateTransitionStreamError::Lagged`] when this
+    /// subscriber falls behind the bounded live broadcast tail.
+    pub async fn recv(
+        &mut self,
+    ) -> Result<Option<SessionStateTransitionFrame>, SessionStateTransitionStreamError> {
+        match self.receiver.recv().await {
+            Ok(frame) => Ok(Some(frame)),
+            Err(broadcast::error::RecvError::Closed) => Ok(None),
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                Err(SessionStateTransitionStreamError::Lagged { skipped })
             }
         }
     }
@@ -3340,11 +3480,14 @@ pub struct SessionActor<L> {
     mailbox: mpsc::Receiver<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: SessionEventLog,
+    state_transitions: SessionStateTransitionBus,
+    last_published_state: EngineState,
     fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     condition_event_log: Vec<SchedulerEventLogEntry>,
     commands_applied: u64,
     yielded_after_quanta: u64,
     control_acknowledgements: u64,
+    state_transition_sequence: u64,
 }
 
 impl<L> SessionActor<L> {
@@ -3376,17 +3519,21 @@ impl<L> SessionActor<L> {
         mailbox: mpsc::Receiver<SessionCommand>,
         fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     ) -> Self {
+        let last_published_state = engine.state().clone();
         let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
         Self {
             engine,
             mailbox,
             live,
             event_log: SessionEventLog::new(),
+            state_transitions: SessionStateTransitionBus::new(),
+            last_published_state,
             fork_loop_factory,
             condition_event_log: Vec::new(),
             commands_applied: 0,
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
+            state_transition_sequence: 0,
         }
     }
 
@@ -3402,6 +3549,12 @@ impl<L> SessionActor<L> {
         Arc::clone(&self.live)
     }
 
+    /// Reads the actor's lock-free live status mirror.
+    #[must_use]
+    pub fn live_status(&self) -> LiveSnapshotView {
+        self.live.read()
+    }
+
     /// Returns a cloneable event-log hub for cursor subscribers.
     #[must_use]
     pub fn event_log(&self) -> SessionEventLog {
@@ -3412,6 +3565,18 @@ impl<L> SessionActor<L> {
     #[must_use]
     pub fn event_log_stream(&self, cursor: EventLogCursor) -> SessionEventLogStream {
         self.event_log.subscribe(cursor)
+    }
+
+    /// Returns a cloneable state-transition bus for subscribers.
+    #[must_use]
+    pub fn state_transition_bus(&self) -> SessionStateTransitionBus {
+        self.state_transitions.clone()
+    }
+
+    /// Subscribes to future state transitions.
+    #[must_use]
+    pub fn state_transition_stream(&self) -> SessionStateTransitionStream {
+        self.state_transitions.subscribe()
     }
 
     /// Returns the number of commands applied by the actor.
@@ -3441,9 +3606,24 @@ impl<L> SessionActor<L> {
         }
     }
 
-    fn publish_live_snapshot(&self) {
-        self.live
-            .publish(&self.engine.snapshot(), self.control_acknowledgements);
+    fn publish_live_snapshot(&mut self) {
+        let before_state = self.last_published_state.clone();
+        let before = self.live.read();
+        let snapshot = self.engine.snapshot();
+        self.live.publish(&snapshot, self.control_acknowledgements);
+        let after = self.live.read();
+        let after_state = snapshot.state.clone();
+        if before_state != after_state {
+            self.state_transition_sequence = self.state_transition_sequence.saturating_add(1);
+            self.state_transitions.publish(SessionStateTransitionFrame {
+                sequence: self.state_transition_sequence,
+                from_state: before_state,
+                to_state: after_state.clone(),
+                from: before,
+                to: after,
+            });
+        }
+        self.last_published_state = after_state;
     }
 
     fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
@@ -5997,6 +6177,16 @@ mod tests {
         }
     }
 
+    async fn receive_state_transition(
+        stream: &mut SessionStateTransitionStream,
+    ) -> SessionStateTransitionFrame {
+        match stream.recv().await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => panic!("state-transition stream should remain open"),
+            Err(error) => panic!("state-transition stream should not lag: {error}"),
+        }
+    }
+
     fn assert_boundary_log_entry(
         entry: &SessionControlLogEntry,
         sequence: u64,
@@ -6714,8 +6904,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_actor_live_snapshot_publishes_monotone_progress() {
+    async fn session_actor_live_query_reads_atomic_mirror_without_mailbox_query() {
         let scenario = generated_scenario(18);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, AppendingLoop::default());
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let initial = actor.live_status();
+        assert_eq!(initial, actor.live_snapshot().read());
+        assert_eq!(
+            actor.live_snapshot().query(LiveQueryKind::Status),
+            LiveQueryResult::Status(initial)
+        );
+        assert_eq!(
+            actor.live_snapshot().query(LiveQueryKind::State),
+            LiveQueryResult::State(LifecycleStateKind::Loaded)
+        );
+        assert_eq!(initial.state_kind, LiveStateKind::Loaded);
+
+        if let Err(error) = sender.send(SessionCommand::Start).await {
+            panic!("start command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("start command should publish live status: {error}");
+        }
+
+        let after_start = actor.live_status();
+        assert_eq!(after_start, actor.live_snapshot().read());
+        assert_eq!(
+            actor.live_snapshot().query(LiveQueryKind::State),
+            LiveQueryResult::State(LifecycleStateKind::Paused)
+        );
+        assert_eq!(
+            actor.live_snapshot().query(LiveQueryKind::EventLogLength),
+            LiveQueryResult::EventLogLength(0)
+        );
+        assert_eq!(after_start.state_kind, LiveStateKind::Paused);
+        assert_eq!(after_start.quanta_stepped, 0);
+    }
+
+    #[tokio::test]
+    async fn session_actor_live_snapshot_publishes_monotone_progress() {
+        let scenario = generated_scenario(19);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
         let mut engine = Engine::new(config, graph, AppendingLoop::default());
@@ -6742,9 +6974,151 @@ mod tests {
         assert!(after.virtual_time >= before.virtual_time);
     }
 
+    #[tokio::test]
+    async fn session_actor_state_transition_bus_broadcasts_actor_owned_transitions() {
+        let scenario = generated_scenario(20);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, AppendingLoop::default());
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+        let mut transitions = actor.state_transition_stream();
+
+        if let Err(error) = sender.send(SessionCommand::Start).await {
+            panic!("start command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("start command should run: {error}");
+        }
+        let started = receive_state_transition(&mut transitions).await;
+        assert_eq!(started.sequence, 1);
+        assert_eq!(started.from_state, EngineState::Loaded);
+        assert_eq!(
+            started.to_state,
+            EngineState::Paused {
+                reason: PauseReason::Instantiated,
+            }
+        );
+        assert_eq!(started.from.state_kind, LiveStateKind::Loaded);
+        assert_eq!(started.to.state_kind, LiveStateKind::Paused);
+
+        if let Err(error) = sender.send(SessionCommand::Pause).await {
+            panic!("paused pause command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("paused pause command should run: {error}");
+        }
+        let repaused = receive_state_transition(&mut transitions).await;
+        assert_eq!(repaused.sequence, 2);
+        assert_eq!(
+            repaused.from_state,
+            EngineState::Paused {
+                reason: PauseReason::Instantiated,
+            }
+        );
+        assert_eq!(
+            repaused.to_state,
+            EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            }
+        );
+        assert_eq!(repaused.from.state_kind, LiveStateKind::Paused);
+        assert_eq!(repaused.to.state_kind, LiveStateKind::Paused);
+
+        if let Err(error) = sender.send(SessionCommand::Continue).await {
+            panic!("continue command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("continue command should run: {error}");
+        }
+        let continued = receive_state_transition(&mut transitions).await;
+        assert_eq!(continued.sequence, 3);
+        assert_eq!(
+            continued.from_state,
+            EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            }
+        );
+        assert_eq!(continued.to_state, EngineState::Running);
+        assert_eq!(continued.from.state_kind, LiveStateKind::Paused);
+        assert_eq!(continued.to.state_kind, LiveStateKind::Running);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("running quantum should not block state stream: {error}");
+        }
+        if let Err(error) = sender.send(SessionCommand::Pause).await {
+            panic!("pause command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("pause command should run: {error}");
+        }
+        let paused = receive_state_transition(&mut transitions).await;
+        assert_eq!(paused.sequence, 4);
+        assert_eq!(paused.from_state, EngineState::Running);
+        assert_eq!(
+            paused.to_state,
+            EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            }
+        );
+        assert_eq!(paused.from.state_kind, LiveStateKind::Running);
+        assert_eq!(paused.to.state_kind, LiveStateKind::Paused);
+
+        if let Err(error) = sender.send(SessionCommand::Stop).await {
+            panic!("stop command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("stop command should run: {error}");
+        }
+        let stopped = receive_state_transition(&mut transitions).await;
+        assert_eq!(stopped.sequence, 5);
+        assert_eq!(
+            stopped.from_state,
+            EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            }
+        );
+        assert_eq!(
+            stopped.to_state,
+            EngineState::Stopped {
+                outcome: Outcome::Stopped,
+            }
+        );
+        assert_eq!(stopped.from.state_kind, LiveStateKind::Paused);
+        assert_eq!(stopped.to.state_kind, LiveStateKind::Stopped);
+    }
+
+    #[tokio::test]
+    async fn session_state_transition_stream_reports_lag_without_backpressure() {
+        let bus = SessionStateTransitionBus::new();
+        let mut stream = bus.subscribe();
+        let view = LiveSnapshotView {
+            state_kind: LiveStateKind::Loaded,
+            virtual_time: VirtualTime { ticks: 0 },
+            event_log_len: 0,
+            quanta_stepped: 0,
+            control_acknowledgements: 0,
+        };
+
+        for sequence in 0..=usize_to_u64(SESSION_STATE_BROADCAST_CAPACITY) {
+            bus.publish(SessionStateTransitionFrame {
+                sequence,
+                from_state: EngineState::Loaded,
+                to_state: EngineState::Loaded,
+                from: view,
+                to: view,
+            });
+        }
+
+        match stream.recv().await {
+            Err(SessionStateTransitionStreamError::Lagged { skipped }) => assert!(skipped > 0),
+            Ok(frame) => panic!("lagged state stream should not deliver frame {frame:?}"),
+        }
+    }
+
     #[test]
     fn engine_rejects_event_log_offset_mismatch() {
-        let scenario = generated_scenario(19);
+        let scenario = generated_scenario(21);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
         let mut engine = Engine::new(config, graph, InvalidEventLogLoop);
@@ -6771,7 +7145,7 @@ mod tests {
 
     #[test]
     fn engine_rejects_event_log_offset_regression() {
-        let scenario = generated_scenario(20);
+        let scenario = generated_scenario(22);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
         let mut engine = Engine::new(config, graph, RegressingEventLogLoop::default());
