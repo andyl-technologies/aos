@@ -20,3 +20,4 @@ tokio = { workspace = true }
 axum = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-protocol = { path = "../crucible-protocol" }
+crucible-qemu = { path = "../crucible-qemu" }

@@ -1376,6 +1376,28 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiReferenceClientConformance = import ./phase5-api-reference-client-conformance.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiReferenceClientConformance";
+      taskIds = ["T-API-13"];
+      dependencies = [
+        phase5.apiCommandStatusTaxonomy
+        phase5.apiReproductionContext
+        phase5.apiEpochGuards
+        phase5.apiStateUpdateStream
+        phase5.apiStreamingCursor
+        phase5.apiOpenSetPayload
+        phase5.apiStreamingEquivalence
+        phase5.apiLifecycleUnary
+        phase5.sessionSimulationBackend
+        phase5.sessionControlDeterminism
+        phase5.sessionLockFreeObservation
+        phase5.sessionLifecycle
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

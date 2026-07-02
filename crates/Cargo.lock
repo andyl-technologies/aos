@@ -1553,6 +1553,7 @@ dependencies = [
  "bytes",
  "crucible",
  "crucible-protocol",
+ "crucible-qemu",
  "crucible-session",
  "futures-util",
  "reqwest",

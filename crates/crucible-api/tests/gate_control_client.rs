@@ -11,23 +11,27 @@ use crucible::{
     EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, GdbAttachInfo,
     GdbListen, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, RngDecision,
     RngStreamId, ScenarioDef, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    Seed, TemporalGraph, VirtualTime,
+    Seed, SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
 };
 use crucible_api::{
-    API_COMMAND_MAPPINGS, AttachRequest, Attached, CommandRejectionKind, CommandResultStatus,
-    ControlClient, ControlClientError, ControlPlaneEventLog, ControlStream, ControlTransportKind,
+    API_COMMAND_MAPPINGS, AttachRequest, AttachSnapshot, Attached, ClientControlStream,
+    ClientWatchStream, CommandRejectionKind, CommandResult, CommandResultStatus, ControlClient,
+    ControlClientError, ControlPlaneEventLog, ControlStream, ControlTransportKind,
     ControlWireModel, CreateSessionRequest, CreateSessionResponse, DestroySessionRequest,
     DestroySessionResponse, EventLogCursor, GOLDEN_RPC_VECTORS, GetReproductionRequest,
-    GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessStreamingSession,
-    LifecycleApiError, LifecycleControlPlane, ListScenariosResponse, ListSessionsResponse,
-    OpenSetAttributeValue, OpenSetEventSource, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
-    ReproductionCommandRecord, ReproductionCommandResult, RpcControlClient, RpcEndpoint,
-    RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest, SendResponse,
-    SessionId, SessionRef, StateUpdate, StreamingApiError, StreamingEventFrame, StreamingFrame,
+    GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessLifecycleClient,
+    InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, ListScenariosResponse,
+    ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource,
+    OpenSetEventTime, OpenSetPayload, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
+    ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
+    RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry,
+    ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef, SessionSummary, StateUpdate,
+    StreamingApiError, StreamingCapabilitySet, StreamingEventFrame, StreamingFrame,
     StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model, encode_rpc_hello_request,
     encode_rpc_hello_response, open_set_command_kind, rpc_status_code_wire_name,
     session_command_for_open_set_command_kind,
 };
+use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
     CheckpointRef, CommandReply, Engine, LiveStateKind, SessionActor, SessionCommand,
@@ -811,6 +815,308 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
 }
 
 #[test]
+fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() {
+    let session = SessionRef::new(SessionId::new(42), 7, Seed::from_u64(42));
+    let seed_hex = session.seed.to_hex();
+    let inline_id = ContentHash { bytes: [0x11; 32] };
+    let inline_seed = Seed::from_u64(77);
+    let inline =
+        ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(inline_id, inline_seed, 5);
+    let reproduction = ReproductionCommandRecord {
+        sequence: 1,
+        payload: ReproductionCommandPayload {
+            command: SessionCommandKind::Pause,
+            command_payload: String::from("payload=command-kind\ncommand=Pause\n"),
+            scheduler_batch: 0,
+            scheduler_control: None,
+        },
+        virtual_time: VirtualTime { ticks: 5 },
+        quanta: 4,
+        at_sequence: 3,
+        result: ReproductionCommandResult::Accepted,
+        observational_order: 1,
+    };
+
+    let hello = String::from_utf8(encode_rpc_hello_request(
+        "contract-client",
+        RPC_PROTOCOL_VERSION,
+    ))
+    .unwrap_or_else(|error| panic!("hello request should be UTF-8: {error}"));
+    assert_rpc_snapshot(
+        "hello-request",
+        &hello,
+        "crucible.rpc/hello-request\nversion=1.2.0+crucible-rpc-abi-v1\nclient=contract-client\n",
+    );
+    assert_rpc_snapshot(
+        "list-scenarios-request",
+        "crucible.rpc/list-scenarios-request\n",
+        "crucible.rpc/list-scenarios-request\n",
+    );
+
+    let create_ref = format!(
+        "crucible.rpc/create-session-request\nsource=scenario-ref\nname=contract-scenario\nseed={seed_hex}\nstart-paused=false\n"
+    );
+    assert_eq!(
+        parse_create_session_request(create_ref.as_bytes())
+            .unwrap_or_else(|error| panic!("scenario-ref request should parse: {error}")),
+        CreateSessionRequest::scenario_ref("contract-scenario", session.seed)
+            .with_start_paused(false),
+    );
+    assert_rpc_snapshot("create-session-ref-request", &create_ref, &create_ref);
+
+    let create_inline = format!(
+        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap=5\nseed={seed_hex}\nstart-paused=true\n",
+        inline_id.to_hex(),
+        inline_seed.to_hex(),
+    );
+    assert_eq!(
+        parse_create_session_request(create_inline.as_bytes())
+            .unwrap_or_else(|error| panic!("inline request should parse: {error}")),
+        CreateSessionRequest::inline(inline, session.seed),
+    );
+    assert_rpc_snapshot(
+        "create-session-inline-request",
+        &create_inline,
+        &create_inline,
+    );
+
+    assert_rpc_snapshot(
+        "list-sessions-request",
+        "crucible.rpc/list-sessions-request\n",
+        "crucible.rpc/list-sessions-request\n",
+    );
+    let destroy = format!(
+        "crucible.rpc/destroy-session-request\nsession-id=42\nepoch=7\nseed={seed_hex}\nexpected-epoch=7\n"
+    );
+    assert_eq!(
+        parse_destroy_session_request(destroy.as_bytes())
+            .unwrap_or_else(|error| panic!("destroy request should parse: {error}")),
+        DestroySessionRequest::new(session).with_expected_epoch(7),
+    );
+    assert_rpc_snapshot("destroy-session-request", &destroy, &destroy);
+
+    let get_reproduction = format!(
+        "crucible.rpc/get-reproduction-request\nsession-id=42\nepoch=7\nseed={seed_hex}\nexpected-epoch=7\n"
+    );
+    assert_eq!(
+        parse_get_reproduction_request(get_reproduction.as_bytes())
+            .unwrap_or_else(|error| panic!("get-reproduction request should parse: {error}")),
+        GetReproductionRequest::new(session).with_expected_epoch(7),
+    );
+    assert_rpc_snapshot(
+        "get-reproduction-request",
+        &get_reproduction,
+        &get_reproduction,
+    );
+
+    let attach = format!(
+        "crucible.rpc/attach-request\nsession-id=42\nepoch=7\nseed={seed_hex}\nexpected-epoch=7\nfrom-seq=3\nclient-name=contract-watch\n"
+    );
+    assert_eq!(
+        parse_attach_request(attach.as_bytes())
+            .unwrap_or_else(|error| panic!("attach request should parse: {error}")),
+        AttachRequest::new(session)
+            .with_expected_epoch(7)
+            .with_cursor(EventLogCursor::new(3))
+            .with_client_name("contract-watch"),
+    );
+    assert_rpc_snapshot("attach-request", &attach, &attach);
+
+    let send = format!(
+        "crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed={seed_hex}\nexpected-epoch=7\ncommand-id=99\ncommand=crucible.cmd.pause\n"
+    );
+    assert_eq!(
+        parse_send_request(send.as_bytes())
+            .unwrap_or_else(|error| panic!("send request should parse: {error}")),
+        SendRequest::new(session, 99, SessionCommand::Pause).with_expected_epoch(7),
+    );
+    assert_rpc_snapshot("send-request", &send, &send);
+
+    let hello_response = String::from_utf8(encode_rpc_hello_response(
+        "contract-server",
+        RPC_PROTOCOL_VERSION,
+        RPC_OPEN_SET_PAYLOAD_KINDS,
+    ))
+    .unwrap_or_else(|error| panic!("hello response should be UTF-8: {error}"));
+    assert_rpc_snapshot(
+        "hello-response",
+        &hello_response,
+        "crucible.rpc/hello-response\nversion=1.2.0+crucible-rpc-abi-v1\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+    );
+    assert_rpc_snapshot(
+        "list-scenarios-response",
+        &encode_list_scenarios_response(&ListScenariosResponse {
+            scenarios: vec![ScenarioSummary {
+                name: String::from("contract-scenario"),
+                description: String::from("Contract scenario"),
+                source_id: String::from("test://contract"),
+            }],
+        }),
+        "crucible.rpc/list-scenarios-response\nscenario=contract-scenario|Contract scenario|test://contract\n",
+    );
+    assert_rpc_snapshot(
+        "create-session-response",
+        &encode_create_session_response(&CreateSessionResponse {
+            session,
+            state: LiveStateKind::Paused,
+        }),
+        &format!(
+            "crucible.rpc/create-session-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nstate=paused\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "list-sessions-response",
+        &encode_list_sessions_response(&ListSessionsResponse {
+            sessions: vec![SessionSummary {
+                session,
+                state: LiveStateKind::Running,
+                event_log_len: 12,
+            }],
+        }),
+        &format!("crucible.rpc/list-sessions-response\nsession=42|7|{seed_hex}|running|12\n"),
+    );
+    assert_rpc_snapshot(
+        "destroy-session-response",
+        &encode_destroy_session_response(&DestroySessionResponse {
+            session,
+            already_absent: false,
+            stopped: true,
+        }),
+        &format!(
+            "crucible.rpc/destroy-session-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nalready-absent=false\nstopped=true\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "get-reproduction-response",
+        &encode_get_reproduction_response(&GetReproductionResponse {
+            session,
+            commands: vec![reproduction.clone()],
+        }),
+        &format!(
+            "crucible.rpc/get-reproduction-response\nsession-id=42\nepoch=7\nseed={seed_hex}\ncommand=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "attached-response",
+        &encode_attached_response(&Attached {
+            session,
+            event_log_len: 9,
+            state: LiveStateKind::Paused,
+            version: RPC_PROTOCOL_VERSION,
+            capabilities: StreamingCapabilitySet {
+                commands: Vec::new(),
+                snapshot_on_attach: true,
+            },
+            snapshot: Some(AttachSnapshot {
+                through: EventLogCursor::new(9),
+                event_count: 2,
+                causal_event_count: 1,
+                observational_event_count: 1,
+                last_sequence: Some(8),
+                reproduction: vec![reproduction],
+            }),
+        }),
+        &format!(
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=1.2.0+crucible-rpc-abi-v1\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "send-response-accepted",
+        &encode_send_response(&SendResponse {
+            result: CommandResult {
+                command_id: 99,
+                command_kind: SessionCommandKind::Pause,
+                status: CommandResultStatus::Accepted,
+            },
+            state_update: Some(StateUpdate {
+                session,
+                state: LiveStateKind::Paused,
+            }),
+        }),
+        &format!(
+            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "send-response-rejected",
+        &encode_send_response(&SendResponse {
+            result: CommandResult {
+                command_id: 100,
+                command_kind: SessionCommandKind::RemoveBreakpoint,
+                status: CommandResultStatus::Rejected {
+                    reason: CommandRejectionKind::NotFound,
+                },
+            },
+            state_update: None,
+        }),
+        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\n",
+    );
+
+    let mut attributes = BTreeMap::new();
+    attributes.insert(String::from("ok"), OpenSetAttributeValue::Bool(true));
+    assert_rpc_snapshot(
+        "event-frame",
+        &encode_streaming_frame(&StreamingFrame::Event(StreamingEventFrame {
+            generation: 2,
+            cursor: EventLogCursor::new(3),
+            next_cursor: EventLogCursor::new(4),
+            event: OpenSetEventEnvelope {
+                sequence: 3,
+                at: OpenSetEventTime {
+                    virtual_time_ticks: 5,
+                    icount_retired: 6,
+                    icount_node: Some(String::from("node-a")),
+                },
+                source: OpenSetEventSource::Command { command_id: 99 },
+                level: EventLevel::Info,
+                observational: false,
+                payload: OpenSetPayload::new("crucible.event.contract", attributes),
+            },
+        })),
+        "crucible.rpc/event-frame\ngeneration=2\ncursor=3\nnext-cursor=4\nsequence=3\nvirtual-time-ticks=5\nicount-retired=6\nicount-node=6e6f64652d61\nsource=command|99\nlevel=info\nobservational=false\nkind=crucible.event.contract\nattribute=6f6b|bool|true\n",
+    );
+    assert_rpc_snapshot(
+        "state-update-frame",
+        &encode_streaming_frame(&StreamingFrame::StateUpdate(StreamingStateUpdateFrame {
+            sequence: 11,
+            update: StateUpdate {
+                session,
+                state: LiveStateKind::Running,
+            },
+        })),
+        &format!(
+            "crucible.rpc/state-update-frame\nsequence=11\nstate-update=42|7|{seed_hex}|running\n"
+        ),
+    );
+    assert_rpc_snapshot(
+        "rpc-error",
+        "crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
+        "crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend()
+ {
+    assert_qemu_node_implements_simulation_backend_contract();
+
+    let sim_double_client = InProcessLifecycleClient::new(reference_lifecycle_control_plane(
+        "crucible-reference-simdouble",
+        |_scenario, _seed| ReferenceSimDoubleLoop::new(),
+    ));
+    let rpc_server = spawn_http2_lifecycle_server().await;
+    let rpc_client = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
+        .unwrap_or_else(|error| panic!("reference RPC client should build: {error}"));
+
+    let sim_double = run_reference_client_conformance(&sim_double_client, "SimDouble").await;
+    let rpc = run_reference_client_conformance(&rpc_client, "HTTP2-RPC").await;
+
+    assert_reference_conformance_equivalent(&sim_double, &rpc);
+    assert_eq!(sim_double.transport, ControlTransportKind::InProcess);
+    assert_eq!(rpc.transport, ControlTransportKind::Http2Rpc);
+}
+
+#[test]
 fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
     let (in_process, _actor) = in_process_client_fixture();
     let rpc = RpcControlClient::new(RpcEndpoint::http2("http://127.0.0.1:65535"))
@@ -840,6 +1146,398 @@ fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
 
 fn assert_control_client_trait<C: ControlClient>(client: &C) {
     assert_eq!(client.wire_model(), ControlWireModel::current());
+}
+
+fn assert_rpc_snapshot(name: &str, actual: &str, expected: &str) {
+    assert_eq!(actual, expected, "RPC wire snapshot `{name}` drifted");
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReferenceClientConformanceReport {
+    backend: &'static str,
+    transport: ControlTransportKind,
+    command_statuses: Vec<CommandResultStatus>,
+    state_updates: Vec<LiveStateKind>,
+    reproduction_commands: Vec<SessionCommandKind>,
+    lifecycle: Vec<&'static str>,
+}
+
+impl ReferenceClientConformanceReport {
+    fn normalized(&self) -> ReferenceClientConformanceProjection {
+        ReferenceClientConformanceProjection {
+            command_statuses: self.command_statuses.clone(),
+            state_updates: self.state_updates.clone(),
+            reproduction_commands: self.reproduction_commands.clone(),
+            lifecycle: self.lifecycle.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReferenceClientConformanceProjection {
+    command_statuses: Vec<CommandResultStatus>,
+    state_updates: Vec<LiveStateKind>,
+    reproduction_commands: Vec<SessionCommandKind>,
+    lifecycle: Vec<&'static str>,
+}
+
+async fn run_reference_client_conformance<C>(
+    client: &C,
+    backend: &'static str,
+) -> ReferenceClientConformanceReport
+where
+    C: ControlClient,
+{
+    let mut report = ReferenceClientConformanceReport {
+        backend,
+        transport: client.transport(),
+        command_statuses: Vec::new(),
+        state_updates: Vec::new(),
+        reproduction_commands: Vec::new(),
+        lifecycle: Vec::new(),
+    };
+
+    let hello = client
+        .hello(HelloRequest::new(
+            "api-control-client-test",
+            RPC_PROTOCOL_VERSION,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Hello should succeed: {error}"));
+    assert_eq!(hello.version, RPC_PROTOCOL_VERSION);
+    assert_eq!(hello.payload_kinds, RPC_OPEN_SET_PAYLOAD_KINDS);
+    report.lifecycle.push("hello");
+
+    let scenarios = client
+        .list_scenarios()
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: ListScenarios should succeed: {error}"));
+    let scenario = scenarios
+        .scenarios
+        .first()
+        .unwrap_or_else(|| panic!("{backend}: scenario catalog should not be empty"));
+    report.lifecycle.push("list-scenarios");
+
+    let seed = Seed::from_u64(13_013);
+    let created = client
+        .create_session(CreateSessionRequest::scenario_ref(&scenario.name, seed))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: CreateSession should succeed: {error}"));
+    assert_eq!(created.state, LiveStateKind::Paused);
+    let session = created.session;
+    report.lifecycle.push("create-session-ref");
+
+    let sessions = client
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: ListSessions should succeed: {error}"));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, session);
+    assert_eq!(sessions.sessions[0].state, LiveStateKind::Paused);
+    report.lifecycle.push("list-sessions");
+
+    let mut control = client
+        .control_attach(
+            AttachRequest::new(session)
+                .with_expected_epoch(session.epoch)
+                .with_client_name(format!("reference-control-{backend}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Control attach should succeed: {error}"));
+    assert_eq!(control.attached().session, session);
+    assert_eq!(control.attached().state, LiveStateKind::Paused);
+    assert!(control.attached().snapshot.is_some());
+    report.lifecycle.push("control-attach");
+
+    let mut watch = client
+        .watch_attach(
+            AttachRequest::new(session)
+                .with_expected_epoch(session.epoch)
+                .with_client_name(format!("reference-watch-{backend}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Watch attach should succeed: {error}"));
+    assert_eq!(watch.attached().session, session);
+    assert_eq!(watch.attached().state, LiveStateKind::Paused);
+    assert_eq!(
+        watch.attached().capabilities,
+        control.attached().capabilities,
+    );
+    report.lifecycle.push("watch-attach");
+
+    let continued = control
+        .send_command(1, SessionCommand::Continue)
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Control Continue should succeed: {error}"));
+    record_accepted_command(&mut report, &continued, Some(LiveStateKind::Running));
+    report
+        .state_updates
+        .push(recv_control_state_update(&mut control, LiveStateKind::Running).await);
+    report
+        .state_updates
+        .push(recv_watch_state_update(&mut watch, LiveStateKind::Running).await);
+
+    let paused = client
+        .send_command(SendRequest::new(session, 2, SessionCommand::Pause))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Send Pause should succeed: {error}"));
+    record_accepted_command(&mut report, &paused, Some(LiveStateKind::Paused));
+    report
+        .state_updates
+        .push(recv_control_state_update(&mut control, LiveStateKind::Paused).await);
+    report
+        .state_updates
+        .push(recv_watch_state_update(&mut watch, LiveStateKind::Paused).await);
+
+    let step = client
+        .send_command(SendRequest::new(
+            session,
+            3,
+            representative_command(SessionCommandKind::StepQuantum),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Send StepQuantum should succeed: {error}"));
+    record_accepted_command(&mut report, &step, Some(LiveStateKind::Running));
+
+    let settle = control
+        .send_command(4, SessionCommand::Pause)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{backend}: Control Pause after Step should succeed: {error}")
+        });
+    record_accepted_command(&mut report, &settle, None);
+
+    let running = client
+        .send_command(SendRequest::new(session, 5, SessionCommand::Continue))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{backend}: Continue before controls should succeed: {error}")
+        });
+    record_accepted_command(&mut report, &running, Some(LiveStateKind::Running));
+
+    for (command_id, command_kind) in [
+        (6, SessionCommandKind::SetBreakpoint),
+        (7, SessionCommandKind::RemoveBreakpoint),
+        (8, SessionCommandKind::CreateSavepoint),
+        (9, SessionCommandKind::Query),
+    ] {
+        let response = client
+            .send_command(SendRequest::new(
+                session,
+                command_id,
+                representative_command(command_kind),
+            ))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{backend}: Send {command_kind:?} should succeed: {error}")
+            });
+        record_accepted_command(&mut report, &response, None);
+    }
+
+    let fork = client
+        .send_command(SendRequest::new(
+            session,
+            10,
+            representative_command(SessionCommandKind::Fork),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: Send Fork should succeed: {error}"));
+    record_accepted_command(&mut report, &fork, Some(LiveStateKind::Paused));
+
+    for (command_id, command_kind) in [
+        (11, SessionCommandKind::InjectFault),
+        (12, SessionCommandKind::HealFault),
+    ] {
+        let response = client
+            .send_command(SendRequest::new(
+                session,
+                command_id,
+                representative_command(command_kind),
+            ))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{backend}: Send {command_kind:?} should succeed: {error}")
+            });
+        record_accepted_command(&mut report, &response, None);
+    }
+
+    let reproduction = client
+        .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: GetReproduction should succeed: {error}"));
+    report.reproduction_commands = reproduction
+        .commands
+        .iter()
+        .map(|record| record.payload.command)
+        .collect();
+    for required in [
+        SessionCommandKind::Pause,
+        SessionCommandKind::SetBreakpoint,
+        SessionCommandKind::RemoveBreakpoint,
+        SessionCommandKind::CreateSavepoint,
+        SessionCommandKind::Fork,
+        SessionCommandKind::InjectFault,
+        SessionCommandKind::HealFault,
+    ] {
+        assert!(
+            report.reproduction_commands.contains(&required),
+            "{backend}: reproduction context should contain {required:?}"
+        );
+    }
+    for excluded in [
+        SessionCommandKind::Continue,
+        SessionCommandKind::StepQuantum,
+        SessionCommandKind::Query,
+    ] {
+        assert!(
+            !report.reproduction_commands.contains(&excluded),
+            "{backend}: reproduction context should exclude non-boundary/read-only {excluded:?}"
+        );
+    }
+    report.lifecycle.push("get-reproduction");
+
+    let stale_epoch = session.epoch.saturating_add(1);
+    let stale_error = client
+        .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(stale_epoch))
+        .await
+        .expect_err("stale reproduction epoch should reject");
+    assert!(matches!(
+        stale_error,
+        ControlClientError::Lifecycle {
+            source: LifecycleApiError::EpochMismatch { .. }
+        }
+    ));
+    report.lifecycle.push("epoch-guard-rejection");
+
+    let inline = generated_scenario(13_014);
+    let inline_created = client
+        .create_session(CreateSessionRequest::inline(inline.clone(), inline.seed()))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: inline CreateSession should succeed: {error}"));
+    assert_eq!(inline_created.state, LiveStateKind::Paused);
+    let inline_destroyed = client
+        .destroy_session(
+            DestroySessionRequest::new(inline_created.session)
+                .with_expected_epoch(inline_created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: inline DestroySession should succeed: {error}"));
+    assert!(inline_destroyed.stopped);
+    report.lifecycle.push("create-session-inline");
+
+    drop(control);
+    drop(watch);
+
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(session).with_expected_epoch(session.epoch))
+        .await
+        .unwrap_or_else(|error| panic!("{backend}: DestroySession should succeed: {error}"));
+    assert_eq!(destroyed.session, session);
+    assert!(destroyed.stopped || destroyed.already_absent);
+    report.lifecycle.push("destroy-session");
+
+    let absent_destroy = client
+        .destroy_session(DestroySessionRequest::new(session))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{backend}: idempotent DestroySession should succeed: {error}")
+        });
+    assert!(absent_destroy.already_absent);
+    report.lifecycle.push("destroy-session-idempotent");
+
+    report
+}
+
+fn record_accepted_command(
+    report: &mut ReferenceClientConformanceReport,
+    response: &SendResponse,
+    expected_update: Option<LiveStateKind>,
+) {
+    assert_eq!(response.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        response.state_update.map(|update| update.state),
+        expected_update
+    );
+    report.command_statuses.push(response.result.status);
+}
+
+fn representative_command(command: SessionCommandKind) -> SessionCommand {
+    command
+        .representative_command()
+        .unwrap_or_else(|| panic!("{command:?} should have a representative command"))
+}
+
+async fn recv_control_state_update(
+    stream: &mut ClientControlStream,
+    expected: LiveStateKind,
+) -> LiveStateKind {
+    for _ in 0..8 {
+        let frame = tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())
+            .await
+            .unwrap_or_else(|_| panic!("Control state update {expected:?} should arrive"))
+            .unwrap_or_else(|error| panic!("Control state update should decode: {error}"))
+            .unwrap_or_else(|| panic!("Control state-update stream should remain open"));
+        if frame.update.state == expected {
+            return frame.update.state;
+        }
+    }
+    panic!("Control state-update stream did not report {expected:?}");
+}
+
+async fn recv_watch_state_update(
+    stream: &mut ClientWatchStream,
+    expected: LiveStateKind,
+) -> LiveStateKind {
+    for _ in 0..8 {
+        let frame = tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())
+            .await
+            .unwrap_or_else(|_| panic!("Watch state update {expected:?} should arrive"))
+            .unwrap_or_else(|error| panic!("Watch state update should decode: {error}"))
+            .unwrap_or_else(|| panic!("Watch state-update stream should remain open"));
+        if frame.update.state == expected {
+            return frame.update.state;
+        }
+    }
+    panic!("Watch state-update stream did not report {expected:?}");
+}
+
+fn assert_reference_conformance_equivalent(
+    left: &ReferenceClientConformanceReport,
+    right: &ReferenceClientConformanceReport,
+) {
+    assert_eq!(
+        left.normalized(),
+        right.normalized(),
+        "reference-client conformance diverged between {} and {}",
+        left.backend,
+        right.backend,
+    );
+}
+
+fn reference_lifecycle_control_plane<L, F>(
+    server_name: &'static str,
+    loop_factory: F,
+) -> LifecycleControlPlane<L, F>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Seed) -> L,
+{
+    LifecycleControlPlane::new(
+        server_name,
+        vec![ScenarioCatalogEntry::from_canonical_material(
+            "api-reference-conformance",
+            "Reference client conformance scenario",
+            "test://api-reference-conformance",
+            "crucible.api.reference-conformance.scenario",
+            "scenario=api-reference-conformance",
+        )],
+        loop_factory,
+    )
+}
+
+fn assert_qemu_node_implements_simulation_backend_contract() {
+    fn assert_backend<T: SimulationBackend>() {}
+    assert_backend::<crucible_qemu::QemuNode>();
 }
 
 fn assert_command_rejection_taxonomy_is_closed() {
@@ -2497,6 +3195,95 @@ impl QuantumLoop for ServerQuantumLoop {
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
         })
+    }
+}
+
+struct ReferenceSimDoubleLoop {
+    backend: SimDouble,
+    quanta: u64,
+    event_log_events: u64,
+}
+
+impl ReferenceSimDoubleLoop {
+    fn new() -> Self {
+        Self {
+            backend: ready_reference_sim_double(),
+            quanta: 0,
+            event_log_events: 0,
+        }
+    }
+}
+
+impl QuantumLoop for ReferenceSimDoubleLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        let observation =
+            SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
+        assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: observation.reached,
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: self.reference_event_log_entries(),
+            event_log_segment_bytes: vec![b's'],
+            event_log_segment_text: String::from("simdouble-reference"),
+            event_log_segment_hash: Some(ContentHash::from_bytes(b"simdouble-reference")),
+            event_log_offset: EventLogOffset::new(Default::default(), 0, self.event_log_events),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        SimulationBackend::shutdown(&mut self.backend).map_err(Into::into)
+    }
+}
+
+impl ReferenceSimDoubleLoop {
+    fn reference_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+        let base = self.event_log_events;
+        let entries = vec![condition_payload_entry_for_test(
+            base,
+            VirtualTime { ticks: self.quanta },
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "api.reference.conformance.simdouble",
+                EventLevel::Debug,
+                BTreeMap::new(),
+            )),
+        )];
+        self.event_log_events = self
+            .event_log_events
+            .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
+        entries
+    }
+}
+
+fn ready_reference_sim_double() -> SimDouble {
+    let mut backend = SimDouble::new(SimDoubleConfig::default())
+        .unwrap_or_else(|error| panic!("reference SimDouble backend should build: {error}"));
+    complete_reference_sim_double_setup(&mut backend);
+    backend
+}
+
+fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
+    let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: backend.shmem_header_snapshot().abi_version,
+        slot_index: 0,
+        node_count: backend.shmem_layout().node_count,
+    });
+    if let Err(error) = backend.accept_host_control_frame(&hello_ack) {
+        panic!("reference SimDouble hello acknowledgement should succeed: {error}");
+    }
+
+    let setup = control_encode_host_msg(&HostMsg::Setup {
+        region_len: backend.shmem_layout().region_size,
+    });
+    match backend.accept_host_control_frame(&setup) {
+        Ok(Some(_setup_ack)) => {}
+        Ok(None) => panic!("reference SimDouble setup should return a setup acknowledgement"),
+        Err(error) => panic!("reference SimDouble setup should succeed: {error}"),
     }
 }
 
