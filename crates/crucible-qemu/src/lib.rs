@@ -79,7 +79,7 @@ pub use determinism_boundary::{
 };
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
-    QemuGdbstubProxySessionReport,
+    QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,

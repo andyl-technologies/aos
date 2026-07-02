@@ -7,6 +7,7 @@
 
 use std::any::Any;
 use std::fmt;
+use std::net::SocketAddr;
 use std::process::Child;
 use std::time::Duration;
 
@@ -25,8 +26,8 @@ use crate::shutdown::{
 use crate::{
     QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverPolicy,
     QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
-    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostIoRuntime,
-    QemuNodeRunStatus, run_bounded_qemu_node_step,
+    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuGdbstubProxy,
+    QemuGdbstubProxyServer, QemuHostIoRuntime, QemuNodeRunStatus, run_bounded_qemu_node_step,
 };
 
 /// The role assigned to one QEMU node channel.
@@ -127,6 +128,14 @@ pub enum QemuNodeError {
         /// Shutdown escalation report.
         shutdown: Box<QemuShutdownReport>,
     },
+    /// The mediated gdbstub proxy failed.
+    #[error("gdbstub proxy operation {operation} failed: {message}")]
+    GdbstubProxy {
+        /// Proxy operation being attempted.
+        operation: &'static str,
+        /// Deterministic failure detail.
+        message: String,
+    },
 }
 
 impl QemuNodeError {
@@ -150,6 +159,15 @@ impl QemuNodeError {
     #[must_use]
     pub const fn from_async_driver(source: QemuAsyncDriverError) -> Self {
         Self::AsyncDriver { source }
+    }
+
+    /// Attaches scheduler-node context to a gdbstub proxy failure.
+    #[must_use]
+    pub fn from_gdbstub_proxy(operation: &'static str, message: impl Into<String>) -> Self {
+        Self::GdbstubProxy {
+            operation,
+            message: message.into(),
+        }
     }
 }
 
@@ -457,6 +475,7 @@ pub struct QemuNode {
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     last_observed_time: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
+    active_gdbstub: Option<QemuGdbstubProxyServer>,
 }
 
 impl QemuNode {
@@ -480,6 +499,7 @@ impl QemuNode {
             host_io_runtime: Box::new(host_io_runtime),
             last_observed_time: VirtualTime::default(),
             gdbstub: None,
+            active_gdbstub: None,
         }
     }
 
@@ -494,6 +514,14 @@ impl QemuNode {
     #[must_use]
     pub const fn gdbstub_channel(&self) -> Option<&QemuGdbstubChannelConfig> {
         self.gdbstub.as_ref()
+    }
+
+    /// Returns the active operator-facing gdbstub listener, when attached.
+    #[must_use]
+    pub fn active_gdbstub_listener(&self) -> Option<SocketAddr> {
+        self.active_gdbstub
+            .as_ref()
+            .map(QemuGdbstubProxyServer::local_addr)
     }
 
     /// Returns the wrapper's current lifecycle state.
@@ -656,6 +684,9 @@ impl QemuNode {
     /// policy's final reap deadline or when the child cannot be signaled,
     /// queried, or reaped.
     pub fn shutdown_child(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
+        if let Some(active_gdbstub) = self.active_gdbstub.take() {
+            active_gdbstub.request_shutdown();
+        }
         shutdown_node_child(
             &mut self.child,
             &mut self.channels,
@@ -841,6 +872,11 @@ impl SimulationBackend for QemuNode {
         node: NodeId,
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, BackendError> {
+        if self.active_gdbstub.is_some() {
+            return Err(BackendError::Rejected {
+                message: String::from("qemu gdbstub proxy is already active"),
+            });
+        }
         let Some(gdbstub) = self.gdbstub.as_ref() else {
             return Err(BackendError::Unsupported {
                 capability: "open_gdbstub",
@@ -855,7 +891,20 @@ impl SimulationBackend for QemuNode {
                 ),
             });
         }
-        GdbAttachInfo::new(node, gdbstub.qemu_endpoint().to_owned(), listen)
+        let proxy = QemuGdbstubProxy::new(gdbstub).map_err(|error| BackendError::Rejected {
+            message: error.to_string(),
+        })?;
+        let server = proxy.spawn_one().map_err(|error| BackendError::Rejected {
+            message: error.to_string(),
+        })?;
+        let actual_listen = GdbListen::new(server.local_addr().to_string()).map_err(|error| {
+            BackendError::Rejected {
+                message: error.to_string(),
+            }
+        })?;
+        let info = GdbAttachInfo::new(node, gdbstub.qemu_endpoint().to_owned(), actual_listen)?;
+        self.active_gdbstub = Some(server);
+        Ok(info)
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
@@ -926,6 +975,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::error::Error;
+    use std::net::TcpListener;
     use std::process::Command;
     use std::rc::Rc;
     use std::time::Duration;
@@ -1359,19 +1409,35 @@ mod tests {
         )?
         .with_gdbstub(QemuGdbstubChannelConfig::new(
             "tcp:127.0.0.1:9001",
-            "127.0.0.1:9000",
+            "127.0.0.1:0",
         )?);
 
         let info = SimulationBackend::open_gdbstub(
             &mut node,
             node_id("vm-a"),
-            GdbListen::new("127.0.0.1:9000")?,
+            GdbListen::new("127.0.0.1:0")?,
         )?;
 
         assert_eq!(info.node, node_id("vm-a"));
         assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-        assert_eq!(info.operator_listen.as_str(), "127.0.0.1:9000");
+        let active_listener = node
+            .active_gdbstub_listener()
+            .expect("open_gdbstub should bind an operator listener");
+        assert_ne!(active_listener.port(), 0);
+        assert_eq!(info.operator_listen.as_str(), active_listener.to_string());
+        assert!(
+            TcpListener::bind(active_listener).is_err(),
+            "gdbstub attach should keep the operator listener bound"
+        );
         assert!(info.is_out_of_band_debug_proxy());
+        assert!(matches!(
+            SimulationBackend::open_gdbstub(
+                &mut node,
+                node_id("vm-a"),
+                GdbListen::new("127.0.0.1:0")?,
+            ),
+            Err(BackendError::Rejected { message }) if message.contains("already active")
+        ));
         assert_eq!(recorded(&log), Vec::<ChannelCall>::new());
         assert!(node.shutdown_child()?.reaped);
 

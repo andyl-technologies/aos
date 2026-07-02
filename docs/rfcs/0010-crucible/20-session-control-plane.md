@@ -1240,7 +1240,7 @@ pub enum SessionError {
   checkpoint-restore + deterministic replay, excluded from the schedule like
   query/pause, with mutating/forward-from-attach forking a clearly-marked
   NON-CANONICAL debug branch; add the optional `open_gdbstub` backend capability
-  (QEMU reports configured mediated endpoints; SimDouble/mock reject). — satisfies [SESS-33], [SESS-32];
+  (QEMU binds a mediated listener; SimDouble/mock reject). — satisfies [SESS-33], [SESS-32];
   spec §4.4, §10; cross-ref [`36-time-travel-debugging.md`](36-time-travel-debugging.md).
   - Completed by `checks.crucible.phase5.sessionDebugTimeTravel`: the session
     command enum now exposes `AttachGdb`, `DebugGoto`, `DebugReverseStep`,
@@ -1248,6 +1248,8 @@ pub enum SessionError {
     delegates to `TemporalGraph::debug_goto` / reverse helpers, updates the
     session boundary mirror without appending scheduler control-log entries, and
     blocks forward/mutating commands until `DebugForkNonCanonical` records a
-    marked debug branch. The backend traits expose optional `open_gdbstub`;
-    `QemuNode` reports configured mediated endpoints while `SimDouble` and
-    `MockSimulationBackend` return typed `Unsupported` errors.
+    marked debug branch and appends its fork marker to the actor event-log
+    stream. The backend traits expose optional `open_gdbstub`; `BackendQuantumLoop`
+    routes that capability to a wrapped live backend, `QemuNode` binds and
+    retains a mediated listener, and `SimDouble`/`MockSimulationBackend` return
+    typed `Unsupported` errors.

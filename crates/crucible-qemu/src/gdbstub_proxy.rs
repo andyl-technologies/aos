@@ -7,7 +7,9 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -48,6 +50,15 @@ pub enum QemuGdbstubProxyError {
     /// The operator-facing listener could not report its bound address.
     #[error("failed to inspect gdbstub proxy listener address: {source}")]
     LocalAddr {
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// The operator-facing listener could not be switched to non-blocking mode.
+    #[error("failed to configure non-blocking gdbstub listener at {addr}: {source}")]
+    SetNonblocking {
+        /// Operator-facing listener address.
+        addr: SocketAddr,
         /// Underlying I/O error.
         #[source]
         source: io::Error,
@@ -208,6 +219,19 @@ impl QemuGdbstubProxy {
             breakpoint_policy: self.breakpoint_policy,
         })
     }
+
+    /// Binds and starts a cancellable one-session proxy server.
+    ///
+    /// The returned handle owns the bound operator listener. Dropping it requests
+    /// shutdown before an operator connects.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuGdbstubProxyError`] when the listener cannot be bound or
+    /// prepared for background serving.
+    pub fn spawn_one(self) -> Result<QemuGdbstubProxyServer, QemuGdbstubProxyError> {
+        self.bind()?.spawn_one()
+    }
 }
 
 /// A bound operator-facing gdbstub proxy listener.
@@ -258,6 +282,79 @@ impl QemuGdbstubProxyListener {
         })?;
         proxy_tcp_pair(operator, qemu, self.breakpoint_policy)
     }
+
+    /// Starts this listener on a background thread for one operator session.
+    ///
+    /// The thread waits for either an operator connection or a shutdown request
+    /// from the returned handle. Once an operator connects, normal gdbstub byte
+    /// forwarding runs until the operator or QEMU closes the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuGdbstubProxyError::SetNonblocking`] when the listener cannot
+    /// be prepared for cancellable background accept.
+    pub fn spawn_one(self) -> Result<QemuGdbstubProxyServer, QemuGdbstubProxyError> {
+        self.listener.set_nonblocking(true).map_err(|source| {
+            QemuGdbstubProxyError::SetNonblocking {
+                addr: self.local_addr,
+                source,
+            }
+        })?;
+        let local_addr = self.local_addr;
+        let (shutdown, shutdown_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            serve_one_until_shutdown(
+                self.listener,
+                self.qemu_addr,
+                self.local_addr,
+                self.breakpoint_policy,
+                shutdown_rx,
+            )
+        });
+        Ok(QemuGdbstubProxyServer {
+            local_addr,
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+}
+
+/// Background handle for one bound gdbstub proxy listener.
+#[derive(Debug)]
+pub struct QemuGdbstubProxyServer {
+    local_addr: SocketAddr,
+    shutdown: mpsc::Sender<()>,
+    handle: Option<
+        thread::JoinHandle<Result<Option<QemuGdbstubProxySessionReport>, QemuGdbstubProxyError>>,
+    >,
+}
+
+impl QemuGdbstubProxyServer {
+    /// Returns the actual operator-facing listen address.
+    #[must_use]
+    pub const fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    /// Requests shutdown and detaches the background server thread.
+    ///
+    /// If no operator has connected, the server notices the request and exits.
+    /// If a debugger is already attached, forwarding continues until either side
+    /// closes the TCP streams.
+    pub fn request_shutdown(mut self) {
+        self.request_shutdown_ref();
+    }
+
+    fn request_shutdown_ref(&mut self) {
+        let _ = self.shutdown.send(());
+        let _ = self.handle.take();
+    }
+}
+
+impl Drop for QemuGdbstubProxyServer {
+    fn drop(&mut self) {
+        self.request_shutdown_ref();
+    }
 }
 
 /// Byte counts for one proxied gdbstub session.
@@ -273,6 +370,41 @@ pub struct QemuGdbstubProxySessionReport {
     pub software_breakpoints_refused: u64,
     /// Client acknowledgments consumed for locally generated refusal responses.
     pub local_response_acks_consumed: u64,
+}
+
+fn serve_one_until_shutdown(
+    listener: TcpListener,
+    qemu_addr: SocketAddr,
+    local_addr: SocketAddr,
+    breakpoint_policy: QemuGdbstubBreakpointPolicy,
+    shutdown: mpsc::Receiver<()>,
+) -> Result<Option<QemuGdbstubProxySessionReport>, QemuGdbstubProxyError> {
+    loop {
+        match shutdown.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(None),
+            Err(TryRecvError::Empty) => {}
+        }
+        match listener.accept() {
+            Ok((operator, _)) => {
+                let qemu = TcpStream::connect(qemu_addr).map_err(|source| {
+                    QemuGdbstubProxyError::ConnectQemu {
+                        addr: qemu_addr,
+                        source,
+                    }
+                })?;
+                return proxy_tcp_pair(operator, qemu, breakpoint_policy).map(Some);
+            }
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(source) => {
+                return Err(QemuGdbstubProxyError::Accept {
+                    addr: local_addr,
+                    source,
+                });
+            }
+        }
+    }
 }
 
 fn parse_qemu_tcp_endpoint(value: &str) -> Result<SocketAddr, QemuGdbstubProxyError> {
