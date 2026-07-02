@@ -141,9 +141,17 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
     pub fn allocation_address_candidates(
         &self,
     ) -> impl Iterator<Item = &JitRuntimeSymbolAddressCandidate> {
-        self.address_candidates.iter().filter(|candidate| {
-            candidate.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
-        })
+        self.helper_role_address_candidates(RuntimeHelperRole::Allocation)
+    }
+
+    /// Returns helper address candidates for `role` in runtime symbol-manifest order.
+    pub fn helper_role_address_candidates(
+        &self,
+        role: RuntimeHelperRole,
+    ) -> impl Iterator<Item = &JitRuntimeSymbolAddressCandidate> {
+        self.address_candidates
+            .iter()
+            .filter(move |candidate| candidate.kind() == RuntimeSymbolKind::Helper(role))
     }
 
     /// Returns runtime symbols that still lack Rust-callable address metadata.

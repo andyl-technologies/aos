@@ -5296,13 +5296,15 @@ and helps the oracle directly.
       helper addresses for currently covered allocation, environment-access, and
       write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
       carrying oracle missing bindings for unbound helpers and builtins. The
-      bridge now exposes allocation-helper candidates as an allocation-filtered
-      manifest-order subset. Tests feed only those seven allocation candidates
-      through JIT registration and still cover registered env-slot tier-1
-      promotion for `aos_env_get`. This is safe integration preflight plumbing
-      only: it does not export C ABI wrappers, make addresses serializable or
-      relinkable, cast finalized code pointers, dereference registered
-      addresses, call native code, or complete runtime-symbol registration.
+      bridge now exposes helper-role filtered candidate views, including the
+      allocation-helper manifest-order subset. Tests pin allocation,
+      environment-access, and write-barrier role filtering, feed only those
+      seven allocation candidates through JIT registration, and still cover
+      registered env-slot tier-1 promotion for `aos_env_get`. This is safe
+      integration preflight plumbing only: it does not export C ABI wrappers,
+      make addresses serializable or relinkable, cast finalized code pointers,
+      dereference registered addresses, call native code, or complete
+      runtime-symbol registration.
 - [x] Current `aos-nix` runtime-symbol registration preflight bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_registration_preflight()`
       builds the oracle-derived address-candidate preflight and immediately

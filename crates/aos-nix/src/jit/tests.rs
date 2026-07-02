@@ -21,6 +21,9 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
     "aos_alloc_thunk",
 ];
 
+const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
+const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
+
 #[test]
 fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_addresses() {
     let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
@@ -64,6 +67,49 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_allocation_helpers() 
                 .missing_binding_for(candidate.symbol_name())
                 .is_none()
         );
+    }
+}
+
+#[test]
+fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
+    let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let allocation_symbols = preflight
+        .helper_role_address_candidates(RuntimeHelperRole::Allocation)
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
+    let allocation_convenience_symbols = preflight
+        .allocation_address_candidates()
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
+    let env_access_symbols = preflight
+        .helper_role_address_candidates(RuntimeHelperRole::EnvironmentAccess)
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
+    let write_barrier_symbols = preflight
+        .helper_role_address_candidates(RuntimeHelperRole::WriteBarrier)
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
+    let forcing_symbols = preflight
+        .helper_role_address_candidates(RuntimeHelperRole::ForcingControl)
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
+
+    assert_eq!(allocation_symbols, EXPECTED_ALLOCATION_SYMBOLS);
+    assert_eq!(allocation_convenience_symbols, allocation_symbols);
+    assert_eq!(env_access_symbols, EXPECTED_ENV_ACCESS_SYMBOLS);
+    assert_eq!(write_barrier_symbols, EXPECTED_WRITE_BARRIER_SYMBOLS);
+    assert!(forcing_symbols.is_empty());
+    assert!(preflight.missing_binding_for("aos_force").is_some());
+    for symbol_name in EXPECTED_ENV_ACCESS_SYMBOLS
+        .iter()
+        .chain(EXPECTED_WRITE_BARRIER_SYMBOLS)
+    {
+        let candidate = preflight
+            .address_candidate_for(symbol_name)
+            .expect("role-filtered candidate exists");
+        assert_ne!(candidate.address().as_nonzero_usize().get(), 0);
+        assert!(preflight.missing_binding_for(symbol_name).is_none());
     }
 }
 
