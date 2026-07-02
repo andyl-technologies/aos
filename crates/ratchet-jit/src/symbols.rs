@@ -1032,6 +1032,9 @@ mod tests {
         let allocation_declaration = preflight
             .declaration_for_symbol("aos_alloc_attrs")
             .expect("core-owned allocation helper has a CLIF declaration");
+        let apply_declaration = preflight
+            .declaration_for_symbol("aos_apply")
+            .expect("core-owned apply helper has a CLIF declaration");
         let env_get_declaration = preflight
             .declaration_for_symbol("aos_env_get")
             .expect("core-owned environment helper has a CLIF declaration");
@@ -1049,6 +1052,11 @@ mod tests {
                 .expect("allocation helper signature is core-owned"),
         )
         .expect("allocation helper signature lowers");
+        let expected_apply = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_apply")
+                .expect("apply helper signature is core-owned"),
+        )
+        .expect("apply helper signature lowers");
         let expected_env_get = clif_signature_for_runtime_call(
             runtime_helper_call_signature("aos_env_get")
                 .expect("environment helper signature is core-owned"),
@@ -1076,6 +1084,11 @@ mod tests {
         );
         assert_eq!(allocation_declaration.signature(), &expected_allocation);
         assert_eq!(
+            apply_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
+        );
+        assert_eq!(apply_declaration.signature(), &expected_apply);
+        assert_eq!(
             env_get_declaration.kind(),
             RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
         );
@@ -1099,6 +1112,7 @@ mod tests {
         );
         assert_eq!(force_deep_declaration.signature(), &expected_force_deep);
         assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
+        assert!(preflight.gap_for_symbol("aos_apply").is_none());
         assert!(preflight.gap_for_symbol("aos_env_get").is_none());
         assert!(preflight.gap_for_symbol("aos_gc_write_barrier").is_none());
         assert!(preflight.gap_for_symbol("aos_force").is_none());
@@ -1195,6 +1209,13 @@ mod tests {
             preflight.gap_for_symbol("aos_alloc_attrs"),
             Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
                 kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                ..
+            })
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_apply"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
                 ..
             })
         ));

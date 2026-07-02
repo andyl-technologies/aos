@@ -270,6 +270,11 @@ const FORCE_VALUE_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
 ];
+const APPLY_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("function", RuntimeAbiParameterKind::Value),
+    RuntimeAbiParameter::new("arg", RuntimeAbiParameterKind::Value),
+];
 
 const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
@@ -359,6 +364,14 @@ const RUNTIME_FORCE_DEEP_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSigna
     FORCE_VALUE_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_APPLY_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_apply", RuntimeHelperRole::CallControl),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    APPLY_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 
 /// Frozen helper call signatures for helpers with core-owned ABI shapes today.
 pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
@@ -369,6 +382,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_ALLOC_RAW_CALL_SIGNATURE,
     RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
     RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
+    RUNTIME_APPLY_CALL_SIGNATURE,
     RUNTIME_ENV_GET_CALL_SIGNATURE,
     RUNTIME_FORCE_CALL_SIGNATURE,
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
@@ -410,6 +424,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_alloc_raw" => Some(RUNTIME_ALLOC_RAW_CALL_SIGNATURE),
         "aos_alloc_string" => Some(RUNTIME_ALLOC_STRING_CALL_SIGNATURE),
         "aos_alloc_thunk" => Some(RUNTIME_ALLOC_THUNK_CALL_SIGNATURE),
+        "aos_apply" => Some(RUNTIME_APPLY_CALL_SIGNATURE),
         "aos_env_get" => Some(RUNTIME_ENV_GET_CALL_SIGNATURE),
         "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
@@ -1263,6 +1278,7 @@ mod tests {
                 "aos_alloc_raw",
                 "aos_alloc_string",
                 "aos_alloc_thunk",
+                "aos_apply",
                 "aos_env_get",
                 "aos_force",
                 "aos_force_deep",
@@ -1321,6 +1337,28 @@ mod tests {
             ]
         );
         assert_eq!(raw.return_kind(), RuntimeAbiReturnKind::RawPointer);
+    }
+
+    #[test]
+    fn call_control_helper_call_signature_pins_apply_value_boundary() {
+        let apply =
+            runtime_helper_call_signature("aos_apply").expect("apply signature is core-owned");
+
+        assert_eq!(
+            apply.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_apply", RuntimeHelperRole::CallControl),
+            }
+        );
+        assert_eq!(
+            apply.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("function", RuntimeAbiParameterKind::Value),
+                RuntimeAbiParameter::new("arg", RuntimeAbiParameterKind::Value),
+            ]
+        );
+        assert_eq!(apply.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

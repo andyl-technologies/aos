@@ -207,6 +207,13 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
             ..
         })
     ));
+    assert!(matches!(
+        registration.gap_for_symbol("aos_apply"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
+            ..
+        })
+    ));
     assert!(!registration.is_complete());
     assert_eq!(
         registration.registration_preflight().bindings().len(),
@@ -286,6 +293,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
         preflight.gap_for_symbol("aos_force"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
             kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+            ..
+        })
+    ));
+    assert!(matches!(
+        preflight.gap_for_symbol("aos_apply"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
             ..
         })
     ));

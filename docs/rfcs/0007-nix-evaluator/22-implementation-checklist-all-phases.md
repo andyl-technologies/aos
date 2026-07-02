@@ -5368,8 +5368,8 @@ and helps the oracle directly.
       candidates still have Rust-callable rather than exported-wrapper address
       provenance. Tests prove allocation-helper, `aos_env_get`, and
       `aos_gc_write_barrier` binding/address parity, preserve the current
-      `aos_force` missing-native-address registration gap, and prove registered
-      helper addresses still retain missing exported-wrapper blockers plus
+      `aos_apply`/`aos_force` missing-native-address registration gaps, and
+      prove registered helper addresses still retain missing exported-wrapper blockers plus
       Rust-callable provenance gaps. This is safe integration preflight
       metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
@@ -5381,7 +5381,7 @@ and helps the oracle directly.
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a complete
       plan. The current implementation returns a typed incomplete error carrying
-      the owned Nix preflight while the `aos_force` address gap,
+      the owned Nix preflight while the `aos_apply`/`aos_force` address gaps,
       helper/builtin gaps, exported-wrapper blockers, and Rust-callable
       address-provenance gaps remain. This is strict metadata gating only: it
       does not call
@@ -6886,11 +6886,12 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
 - [x] Current uniform runtime-call ABI metadata precursor:
       `ratchet-core::runtime_abi` now owns safe `RuntimeCallSignature`
       descriptors for compiled thunk bodies, compiled lambda bodies, builtin
-      primop wrappers, and the core-owned allocation, environment-access, and
-      write-barrier helper shapes. The descriptors pin the shared `extern "C"`
-      convention, runtime/environment parameter prefix, positional `Value`
-      arguments, helper pointer/scalar parameters, pointer, `Value`, or unit
-      helper returns, and the 16-byte/two-register `Value` layout. Tests cover
+      primop wrappers, and the core-owned allocation, call-control apply,
+      environment-access, force/deep-force, and write-barrier helper shapes. The
+      descriptors pin the shared `extern "C"` convention,
+      runtime/environment parameter prefix, positional `Value` arguments, helper
+      pointer/scalar parameters, pointer, `Value`, or unit helper returns, and
+      the 16-byte/two-register `Value` layout. Tests cover
       thunk/lambda shapes, primop arity descriptors, unsupported-arity rejection,
       parity with the builtin declaration inventory, and representative helper
       signatures. This is metadata only: no `unsafe extern "C"` type aliases,
@@ -6943,10 +6944,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       to `i32`, expands every runtime `Value` argument or return to two `i64`
       ABI slots, and emits no return slots for unit helpers. Tests cover thunk
       and lambda signatures, primop arities 0-3, representative allocation,
-      environment-access, and write-barrier helper signatures, and the layout
-      guard. This signature adapter remains metadata only: it does not construct
-      a `JITModule`,
-      register symbols, lower a CLIF body, allocate an executable buffer, cross a
+      call-control apply, environment-access, force, and write-barrier helper
+      signatures, and the layout guard. This signature adapter remains metadata
+      only: it does not construct a `JITModule`, register symbols, lower a CLIF
+      body, allocate an executable buffer, cross a
       raw pointer call boundary, or export a native wrapper.
 - [x] Current artifact runtime-import readiness precursor:
       `ratchet-jit::module::JitModuleReadinessPreflight` inspects each verified
@@ -6974,18 +6975,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
 - [x] Current JIT symbol-declaration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` joins
       the stable runtime symbol manifest with callable builtin ABI metadata and
-      core-owned allocation, environment-access, write-barrier, and
-      force/deep-force helper ABI metadata, then lowers those runtime signatures
-      to CLIF `Signature` declarations. `aos_env_get` is frozen as
+      core-owned allocation, call-control apply, environment-access,
+      write-barrier, and force/deep-force helper ABI metadata, then lowers those
+      runtime signatures to CLIF `Signature` declarations. `aos_env_get` is frozen as
       `(env, slot) -> Value` and lowers to a host-pointer environment parameter,
       an `i32` slot parameter, and two `i64` return slots;
-      `aos_force`/`aos_force_deep` are frozen as `(rt, Value) -> Value`.
+      `aos_force`/`aos_force_deep` are frozen as `(rt, Value) -> Value`;
+      `aos_apply` is frozen as `(rt, Value function, Value arg) -> Value`.
       Unshaped helpers such as `aos_blackhole_check` and value-only builtins
       remain explicit declaration gaps. Tests pin a representative callable
-      builtin declaration, allocation, environment-access, write-barrier, and
-      forcing-helper declarations, an unshaped forcing-helper gap, value-only
-      builtin gaps, and exact declaration parity with callable builtins plus
-      core-owned helpers.
+      builtin declaration, allocation, call-control, environment-access,
+      write-barrier, and forcing-helper declarations, an unshaped forcing-helper
+      gap, value-only builtin gaps, and exact declaration parity with callable
+      builtins plus core-owned helpers.
       This is declaration metadata only: no environment layout, runtime helper
       address, `JITModule`, `JITBuilder::symbol`, executable address, exported
       wrapper, relocation, or native call is implemented.
@@ -7022,8 +7024,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       composes a verified CLIF artifact with the address-free JIT runtime-symbol
       declaration preflight and exposes the artifact metadata, callable builtin
       declarations, core-owned allocation, environment-access, write-barrier,
-      and force/deep-force helper declarations, and stable runtime-symbol gaps
-      as one future module-setup handoff. The checked
+      call-control apply, and force/deep-force helper declarations, and stable
+      runtime-symbol gaps as one future module-setup handoff. The checked
       `jit_module_readiness_plan_for_artifact()` gate currently returns an
       incomplete-symbol error while unshaped helpers such as
       `aos_blackhole_check` and value-only builtin declaration gaps remain.
@@ -7037,8 +7039,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
       and declares every currently shape-known callable builtin plus
-      core-owned allocation, environment-access, write-barrier, and
-      force/deep-force helper runtime symbol as a
+      core-owned allocation, call-control apply, environment-access,
+      write-barrier, and force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error

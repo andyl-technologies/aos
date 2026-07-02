@@ -505,6 +505,7 @@ mod tests {
                 .declaration_for_symbol("nix.builtin.derivationStrict")
                 .is_some()
         );
+        assert!(preflight.declaration_for_symbol("aos_apply").is_some());
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
         assert!(preflight.declaration_for_symbol("aos_force").is_some());
         assert!(preflight.artifact_runtime_imports().is_empty());
