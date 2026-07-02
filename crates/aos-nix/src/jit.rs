@@ -9,8 +9,13 @@
 
 use std::num::NonZeroUsize;
 
-use ratchet_core::{RuntimeSymbolKind, RuntimeSymbolNameError};
-use ratchet_jit::{JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate};
+use ratchet_core::{IrArena, IrId, RuntimeSymbolKind, RuntimeSymbolNameError};
+use ratchet_jit::{
+    JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftTier1PromotionError,
+    JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitTieredCodeSlot, TierUpDecision,
+    TierUpDemandHint, TierUpPolicy,
+    jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
+};
 use ratchet_oracle::runtime::helpers::{
     RuntimeHelperRustCallableBinding, RuntimeSymbolMissingBinding,
     runtime_symbol_rust_callable_preflight,
@@ -35,6 +40,49 @@ pub enum NixJitRuntimeSymbolAddressCandidateError {
 /// Result returned by JIT runtime-symbol address-candidate preflights.
 pub type NixJitPreflightResult =
     Result<NixJitRuntimeSymbolAddressCandidatePreflight, NixJitRuntimeSymbolAddressCandidateError>;
+
+/// A failure while driving a Nix registered tier-1 promotion preflight.
+#[derive(Debug, Error)]
+pub enum NixJitRegisteredTier1PromotionError {
+    /// Oracle runtime helper addresses could not be projected into JIT metadata.
+    #[error(
+        "JIT runtime-symbol address candidate projection failed after a tier-1 promotion decision"
+    )]
+    AddressCandidates {
+        /// The invocation-updated slot observed before candidate projection.
+        slot: JitTieredCodeSlot,
+        /// The policy decision that requested tier-1 promotion.
+        decision: TierUpDecision,
+        /// The underlying address-candidate projection failure.
+        source: NixJitRuntimeSymbolAddressCandidateError,
+    },
+
+    /// Cranelift registered-symbol promotion failed after policy requested tier 1.
+    #[error(transparent)]
+    Cranelift(#[from] JitCraneliftTier1PromotionError),
+}
+
+impl NixJitRegisteredTier1PromotionError {
+    /// Returns the invocation-updated slot from the failed promotion attempt.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        match self {
+            Self::AddressCandidates { slot, .. } => slot,
+            Self::Cranelift(source) => source.slot(),
+        }
+    }
+
+    /// Returns the policy decision that requested tier-1 promotion.
+    pub const fn decision(&self) -> TierUpDecision {
+        match self {
+            Self::AddressCandidates { decision, .. } => *decision,
+            Self::Cranelift(source) => source.decision(),
+        }
+    }
+}
+
+/// Result returned by registered tier-1 promotion preflights.
+pub type NixJitRegisteredTier1PromotionResult =
+    Result<JitCraneliftRegisteredTier1PromotionPreflight, NixJitRegisteredTier1PromotionError>;
 
 /// Process-local JIT address candidates derived from oracle helper callables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +164,87 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
     ))
 }
 
+/// Drives registered tier-1 promotion using oracle-derived helper addresses.
+///
+/// This is the `aos-nix` integration handoff between the safe oracle runtime
+/// metadata and the JIT crate. It derives process-local helper address
+/// candidates, then delegates to the registered-symbol tier-1 promotion
+/// preflight. The returned preflight owns only safe tier metadata and Cranelift
+/// module ownership; it does not publish into evaluator thunk state, cast or
+/// call compiled code pointers, or call registered runtime helper addresses.
+/// Candidate projection runs only after the policy decision requests tier 1, so
+/// a cold attempt can record its invocation and stay in tier 0 without requiring
+/// helper-address metadata.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
+/// oracle helper addresses cannot be projected into JIT registration metadata.
+/// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
+/// requests tier-1 promotion but lowering, registration, finalization, or slot
+/// installation fails.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates`]
+/// when policy requests promotion.
+pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitRegisteredTier1PromotionResult {
+    nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+        slot,
+        policy,
+        demand_hint,
+        arena,
+        root,
+        nix_jit_runtime_symbol_address_candidate_preflight,
+    )
+}
+
+fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+    candidate_source: impl FnOnce() -> NixJitPreflightResult,
+) -> NixJitRegisteredTier1PromotionResult {
+    let mut observed_slot = slot.clone();
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(
+            JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier {
+                slot: observed_slot,
+                decision,
+            },
+        );
+    }
+
+    let candidates = candidate_source().map_err(|source| {
+        NixJitRegisteredTier1PromotionError::AddressCandidates {
+            slot: observed_slot,
+            decision,
+            source,
+        }
+    })?;
+
+    Ok(
+        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+            slot,
+            policy,
+            demand_hint,
+            arena,
+            root,
+            candidates.address_candidates(),
+        )?,
+    )
+}
+
 fn jit_address_candidate_for_helper_callable(
     binding: RuntimeHelperRustCallableBinding,
 ) -> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
@@ -148,9 +277,7 @@ mod tests {
     };
     use ratchet_jit::{
         DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, JitTieredCodeSlot, TierUpCounter,
-        TierUpDemandHint, TierUpPolicy,
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
-        jit_runtime_symbol_registration_preflight_with_candidates,
+        TierUpDemandHint, TierUpPolicy, jit_runtime_symbol_registration_preflight_with_candidates,
     };
 
     use super::*;
@@ -223,6 +350,160 @@ mod tests {
                 candidate_preflight.address_candidates(),
             )
             .expect("registered env promotion accepts oracle helper address candidates");
+
+        assert!(promotion.did_compile());
+        assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = promotion
+            .promoted_preflight()
+            .expect("promotion owns registered preflight");
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_env_get")
+                        .expect("env candidate exists")
+                        .address())
+        );
+        assert!(promotion.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn nix_jit_registered_tier1_promotion_preflight_records_cold_invocation_without_lowering() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+
+        let promotion = nix_jit_registered_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("cold unsupported root does not lower");
+
+        assert!(!promotion.did_compile());
+        assert_eq!(promotion.slot().invocation_counter().invocations(), 1);
+        assert_eq!(promotion.slot().current_tier(), JitTier::Tier0Oracle);
+        assert!(promotion.promoted_preflight().is_none());
+        assert!(!promotion.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn nix_jit_registered_tier1_promotion_preflight_keeps_cold_path_before_candidates() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+
+        let promotion =
+            nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+                JitTieredCodeSlot::new(),
+                TierUpPolicy::default(),
+                TierUpDemandHint::NoMultiUseEvidence,
+                &arena,
+                IrId::new(0),
+                || {
+                    Err(
+                        NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                            symbol_name: "aos_env_get",
+                        },
+                    )
+                },
+            )
+            .expect("cold attempt returns before address candidates are needed");
+
+        assert!(!promotion.did_compile());
+        assert_eq!(promotion.slot().invocation_counter().invocations(), 1);
+        assert_eq!(promotion.slot().current_tier(), JitTier::Tier0Oracle);
+    }
+
+    #[test]
+    fn nix_jit_registered_tier1_promotion_preflight_reports_candidate_failure_after_promotion() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Local { slot: 2 },
+            )],
+            Vec::new(),
+        );
+
+        let result = nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+            || {
+                Err(
+                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                        symbol_name: "aos_env_get",
+                    },
+                )
+            },
+        );
+
+        let Err(error) = result else {
+            panic!("promotion should require address candidates");
+        };
+        assert!(error.decision().should_promote());
+        assert_eq!(
+            error.slot().invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+        let NixJitRegisteredTier1PromotionError::AddressCandidates { source, .. } = error else {
+            panic!("expected address candidate failure");
+        };
+        assert!(matches!(
+            source,
+            NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                symbol_name: "aos_env_get"
+            }
+        ));
+    }
+
+    #[test]
+    fn nix_jit_registered_tier1_promotion_preflight_uses_oracle_candidates() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Local { slot: 2 },
+            )],
+            Vec::new(),
+        );
+
+        let promotion = nix_jit_registered_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("aos-nix wrapper promotes env slot with oracle candidates");
 
         assert!(promotion.did_compile());
         assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);

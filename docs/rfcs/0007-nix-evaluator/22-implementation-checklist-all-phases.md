@@ -5302,6 +5302,19 @@ and helps the oracle directly.
       serializable or relinkable, cast finalized code pointers, dereference
       registered addresses, call native code, or complete runtime-symbol
       registration.
+- [x] Current `aos-nix` registered tier-1 promotion bridge:
+      `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
+      derives oracle helper address candidates and drives the registered-symbol
+      Cranelift tier-1 promotion preflight from the top-level integration crate.
+      Candidate projection runs only after policy requests tier 1. Tests cover
+      cold no-lowering/no-candidate behavior, candidate failure after a
+      promotion decision, and threshold env-slot promotion using the
+      oracle-derived `aos_env_get` candidate. This keeps
+      `ratchet-jit` free of an oracle dependency while giving `aos-nix` a single
+      safe promotion handoff. It does not mutate evaluator heap thunks, perform
+      atomic thunk-state CAS, cast or call finalized code pointers, dereference
+      registered addresses, call native code, or complete runtime-symbol
+      registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

@@ -1335,6 +1335,18 @@ harness, never cut for scope.
       preflight plumbing only: the addresses are not exported C ABI wrappers, not
       serialized or relinkable native targets, and no finalized code pointer or
       registered helper address is cast, dereferenced, or called.
+- [x] Current `aos-nix` registered tier-1 promotion bridge:
+      `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
+      derives oracle helper address candidates and delegates to the
+      registered-symbol Cranelift tier-1 promotion preflight, so env-slot roots
+      can promote through the real integration boundary without hand-wired test
+      candidates. Candidate projection runs only after the policy decision
+      requests tier 1. Tests pin cold no-lowering/no-candidate behavior,
+      candidate failure after a promotion decision, and threshold promotion of
+      `aos_env_get` through oracle-derived candidates. This remains safe
+      preflight assembly only: no evaluator heap thunk is mutated, no atomic
+      thunk-state CAS runs, no finalized code pointer is cast or called, and no
+      registered helper address is dereferenced or called.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the
