@@ -1171,6 +1171,12 @@ in rec {
       taskIds = ["T-SESS-7"];
       dependencies = [phase5.sessionBoundaryControl];
     };
+    sessionSaveResumeFork = import ./phase5-session-save-resume-fork.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionSaveResumeFork";
+      taskIds = ["T-SESS-8"];
+      dependencies = [phase5.sessionBreakpoints];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

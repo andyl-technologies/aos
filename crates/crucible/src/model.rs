@@ -15639,6 +15639,54 @@ impl TemporalGraph {
         self.checkpoint_nodes.get(&checkpoint)
     }
 
+    /// Returns a recorded checkpoint DAG node or exact cached snapshot by id.
+    #[must_use]
+    pub fn checkpoint_record(&self, checkpoint: ContentHash) -> Option<&Checkpoint> {
+        self.checkpoint_nodes
+            .get(&checkpoint)
+            .or_else(|| self.cached_snapshots.get(&checkpoint))
+    }
+
+    /// Returns the recorded configuration denoted by a checkpoint id.
+    #[must_use]
+    pub fn checkpoint_configuration(&self, checkpoint: ContentHash) -> Option<&Configuration> {
+        self.checkpoint_record(checkpoint)
+            .and_then(|node| self.recorded_configurations.get(&node.configuration))
+    }
+
+    /// Resumes the recorded configuration denoted by `checkpoint`.
+    ///
+    /// This is the checkpoint-addressed form of [`Self::resume`]. It resolves the
+    /// checkpoint back to its recorded configuration, then realizes that
+    /// configuration through the same graph-backed [`instantiate`] path. A recorded
+    /// thin checkpoint delegates to [`Self::resume`]; a standalone exact cached
+    /// snapshot can instantiate directly because it has no thin closure to record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointNotRecorded`] when `checkpoint` or its
+    /// configuration is absent from the graph. Returns other [`EngineError`]
+    /// variants from [`Self::resume`] when realization fails.
+    pub fn resume_checkpoint(
+        &mut self,
+        checkpoint: ContentHash,
+    ) -> Result<TemporalGraphRuntime, EngineError> {
+        let configuration = self
+            .checkpoint_configuration(checkpoint)
+            .cloned()
+            .ok_or(EngineError::CheckpointNotRecorded { checkpoint })?;
+        if self.checkpoint_node(checkpoint).is_some() {
+            self.resume(&configuration)
+        } else {
+            let runtime = instantiate(self, &configuration)?;
+            Ok(TemporalGraphRuntime {
+                configuration: configuration.id(),
+                checkpoint,
+                runtime,
+            })
+        }
+    }
+
     /// Returns the symmetry-reduction key for a recorded configuration.
     ///
     /// Exact cached snapshots are preferred because they carry the richest

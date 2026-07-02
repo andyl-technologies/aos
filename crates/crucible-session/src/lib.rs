@@ -27,7 +27,7 @@ use crucible::{
     FaultTag, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
     Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SimDuration,
-    TemporalGraph, VirtualTime, instantiate,
+    TemporalGraph, VirtualTime,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -690,14 +690,95 @@ pub enum CheckpointRef {
     Checkpoint(ContentHash),
 }
 
+/// Cloneable transport for an independently forked child session.
+#[derive(Clone)]
+pub struct SessionChildHandle {
+    /// Command sender for the child session actor.
+    pub sender: mpsc::Sender<SessionCommand>,
+    /// Lock-free live mirror published by the child session actor.
+    pub live: Arc<LiveSnapshot>,
+}
+
+impl fmt::Debug for SessionChildHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionChildHandle")
+            .field("live", &self.live.read())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Handle returned for a forked session request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct SessionHandle {
     /// Deterministic handle id for the child session request.
     pub id: ContentHash,
     /// Checkpoint used as the fork base.
     pub checkpoint: ContentHash,
+    /// Configuration denoted by the fork checkpoint.
+    pub configuration: ContentHash,
+    /// Live child transport when the command path spawned an actor.
+    pub child: Option<SessionChildHandle>,
 }
+
+impl SessionHandle {
+    fn new(parent: ContentHash, checkpoint: &Checkpoint) -> Self {
+        Self {
+            id: fork_session_handle_id(parent, checkpoint.id),
+            checkpoint: checkpoint.id,
+            configuration: checkpoint.configuration,
+            child: None,
+        }
+    }
+
+    fn with_child(mut self, child: SessionChildHandle) -> Self {
+        self.child = Some(child);
+        self
+    }
+
+    /// Returns the child actor command sender, when the fork command spawned one.
+    #[must_use]
+    pub fn child_sender(&self) -> Option<mpsc::Sender<SessionCommand>> {
+        self.child.as_ref().map(|child| child.sender.clone())
+    }
+
+    /// Returns the child actor live mirror, when the fork command spawned one.
+    #[must_use]
+    pub fn child_live_snapshot(&self) -> Option<Arc<LiveSnapshot>> {
+        self.child.as_ref().map(|child| Arc::clone(&child.live))
+    }
+}
+
+impl PartialEq for SessionHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.checkpoint == other.checkpoint
+            && self.configuration == other.configuration
+    }
+}
+
+impl Eq for SessionHandle {}
+
+impl Hash for SessionHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.checkpoint.hash(state);
+        self.configuration.hash(state);
+    }
+}
+
+/// Input supplied to a session actor's fork-loop factory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionForkRequest {
+    /// Deterministic child session handle id.
+    pub id: ContentHash,
+    /// Checkpoint selected as the fork source.
+    pub checkpoint: ContentHash,
+    /// Recorded configuration denoted by `checkpoint`.
+    pub configuration: ContentHash,
+}
+
+type SessionForkLoopFactory<L> = Arc<dyn Fn(SessionForkRequest) -> L + Send + Sync>;
 
 /// Information returned after materializing a savepoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1492,6 +1573,25 @@ pub struct SessionFork<L> {
     pub child_actor: SessionActor<L>,
 }
 
+/// Result of resuming an independent session from a recorded checkpoint.
+///
+/// The actor is an ordinary session actor already landed at
+/// [`PauseReason::Instantiated`]. Continuing it advances the supplied
+/// [`QuantumLoop`] from the checkpoint's recorded configuration; no restored
+/// session state or fork-specific realization path is introduced.
+pub struct SessionResume<L> {
+    /// Checkpoint used as the resume source.
+    pub checkpoint: ContentHash,
+    /// Recorded configuration denoted by `checkpoint`.
+    pub configuration: Configuration,
+    /// Runtime realized through [`TemporalGraph::resume_checkpoint`].
+    pub runtime: RuntimeState,
+    /// Command sender for the independent resumed session actor.
+    pub session_sender: mpsc::Sender<SessionCommand>,
+    /// Independent session actor resumed from `checkpoint`.
+    pub session_actor: SessionActor<L>,
+}
+
 /// Lock-free mirror of live session state.
 ///
 /// The session actor is the only writer. Observers clone an [`Arc`] handle and
@@ -1930,6 +2030,38 @@ impl<L> Engine<L> {
         }
     }
 
+    fn from_realized_checkpoint(
+        configuration: Configuration,
+        graph: TemporalGraph,
+        quantum_loop: L,
+        runtime: RuntimeState,
+        checkpoint: &Checkpoint,
+    ) -> Self {
+        Self {
+            configuration,
+            runtime: Some(runtime.clone()),
+            runtime_instantiated: true,
+            state: EngineState::Paused {
+                reason: PauseReason::Instantiated,
+            },
+            active_step: None,
+            graph,
+            breakpoints: BreakpointSet::new(),
+            quantum_loop,
+            frontier: checkpoint.virtual_time,
+            event_log_len: u64_to_usize(runtime.event_log.events),
+            quanta: 0,
+            pending_control: Vec::new(),
+            pending_event_log_entries: Vec::new(),
+            next_control_sequence: 0,
+            boundary_control_log: Vec::new(),
+            next_boundary_control_sequence: 0,
+            scheduler_quiescence: None,
+            breakpoint_firings: Vec::new(),
+            next_breakpoint_firing_sequence: 0,
+        }
+    }
+
     /// Returns the current engine state.
     #[must_use]
     pub fn state(&self) -> &EngineState {
@@ -2032,6 +2164,136 @@ impl<L> Engine<L> {
             branch_configuration.clone(),
             child_graph,
             child_quantum_loop,
+        );
+        let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
+        let child_actor = SessionActor::new(child_engine, receiver);
+
+        Ok(SessionFork {
+            parent_state,
+            base_configuration: fork.base.configuration,
+            branch_configuration,
+            branch_checkpoint,
+            record,
+            child_sender,
+            child_actor,
+        })
+    }
+
+    /// Resumes an independent session actor from a recorded graph checkpoint.
+    ///
+    /// The checkpoint is resolved to its recorded [`Configuration`] and realized
+    /// through [`TemporalGraph::resume_checkpoint`]. The returned actor is a
+    /// normal paused session with its own mailbox and live mirror; continuing it
+    /// advances from the resumed configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Engine`] when the checkpoint or its configuration
+    /// is not recorded, or when temporal-graph resume cannot instantiate it.
+    pub fn resume_session_from_checkpoint<C>(
+        &mut self,
+        checkpoint: ContentHash,
+        session_quantum_loop: C,
+    ) -> Result<SessionResume<C>, SessionError> {
+        let checkpoint_record =
+            self.graph
+                .checkpoint_record(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                }))?;
+        let configuration = self
+            .graph
+            .checkpoint_configuration(checkpoint)
+            .cloned()
+            .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                checkpoint,
+            }))?;
+        let resumed = self.graph.resume_checkpoint(checkpoint)?;
+        let runtime = resumed.runtime;
+        let session_graph = self.graph.clone();
+        let session_engine = Engine::from_realized_checkpoint(
+            configuration.clone(),
+            session_graph,
+            session_quantum_loop,
+            runtime.clone(),
+            &checkpoint_record,
+        );
+        let (session_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
+        let session_actor = SessionActor::new(session_engine, receiver);
+
+        Ok(SessionResume {
+            checkpoint: resumed.checkpoint,
+            configuration,
+            runtime,
+            session_sender,
+            session_actor,
+        })
+    }
+
+    /// Forks an independent child actor from a recorded checkpoint prefix.
+    ///
+    /// The parent must already be at a forkable boundary. `from` is resolved to a
+    /// checkpoint-backed prefix, then recorded through [`TemporalGraph::fork`]
+    /// with an empty decision delta. The returned child actor is independently
+    /// paused at [`PauseReason::Instantiated`] and can diverge through subsequent
+    /// scheduler decisions without mutating the parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidEngineState`] when called while the parent
+    /// is loaded or running. A running parent must first pause at a quantum
+    /// boundary. Returns [`SessionError::Engine`] when the checkpoint cannot be
+    /// resolved or the graph cannot instantiate the prefix.
+    pub fn fork_child_from_checkpoint<C>(
+        &mut self,
+        from: CheckpointRef,
+        child_quantum_loop: C,
+    ) -> Result<SessionFork<C>, SessionError> {
+        let parent_state = self.state.clone();
+        if !matches!(
+            parent_state,
+            EngineState::Paused { .. } | EngineState::Stopped { .. }
+        ) {
+            return Err(SessionError::InvalidEngineState {
+                state: parent_state,
+                operation: "fork_child_from_checkpoint",
+            });
+        }
+
+        let checkpoint = self.resolve_fork_checkpoint(from)?;
+        self.build_checkpoint_child(parent_state, checkpoint.id, child_quantum_loop)
+    }
+
+    fn build_checkpoint_child<C>(
+        &mut self,
+        parent_state: EngineState,
+        checkpoint: ContentHash,
+        child_quantum_loop: C,
+    ) -> Result<SessionFork<C>, SessionError> {
+        let base = self
+            .graph
+            .checkpoint_configuration(checkpoint)
+            .cloned()
+            .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                checkpoint,
+            }))?;
+        let fork = self.graph.fork(&base, std::iter::empty::<Decision>())?;
+        let child_graph = self.graph.clone();
+        let branch_configuration = fork.branch.clone();
+        let branch_checkpoint = fork.branch_checkpoint.clone();
+        let runtime = fork.base.runtime;
+        let record = SessionForkRecord {
+            from_checkpoint: fork.base.checkpoint,
+            branch_checkpoint: branch_checkpoint.id,
+            schedule_delta: Schedule::empty(),
+        };
+        let child_engine = Engine::from_realized_checkpoint(
+            branch_configuration.clone(),
+            child_graph,
+            child_quantum_loop,
+            runtime,
+            &branch_checkpoint,
         );
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let child_actor = SessionActor::new(child_engine, receiver);
@@ -2392,7 +2654,7 @@ impl<L: QuantumLoop> Engine<L> {
             return Err(self.invalid_engine_state("instantiate_runtime"));
         }
 
-        let runtime = instantiate(&self.graph, &self.configuration)?;
+        let runtime = self.graph.resume(&self.configuration)?.runtime;
         self.runtime = Some(runtime);
         self.runtime_instantiated = true;
         self.state = EngineState::Paused {
@@ -2424,7 +2686,7 @@ impl<L: QuantumLoop> Engine<L> {
             return Err(self.invalid_engine_state("reinstantiate_runtime_cache"));
         }
 
-        let runtime = instantiate(&self.graph, &self.configuration)?;
+        let runtime = self.graph.resume(&self.configuration)?.runtime;
         self.runtime = Some(runtime);
         Ok(self.snapshot())
     }
@@ -2442,7 +2704,7 @@ impl<L: QuantumLoop> Engine<L> {
             return Err(self.invalid_engine_state("refresh_runtime_cache"));
         }
 
-        let runtime = instantiate(&self.graph, &self.configuration)?;
+        let runtime = self.graph.resume(&self.configuration)?.runtime;
         self.runtime = None;
         self.runtime = Some(runtime);
         Ok(self.snapshot())
@@ -2517,10 +2779,7 @@ impl<L: QuantumLoop> Engine<L> {
                             reason: PauseReason::UserRequested,
                         };
                     }
-                    let handle = SessionHandle {
-                        id: fork_session_handle_id(self.configuration.id(), checkpoint.id),
-                        checkpoint: checkpoint.id,
-                    };
+                    let handle = SessionHandle::new(self.configuration.id(), &checkpoint);
                     reply.complete(Ok(handle));
                     Ok(self.snapshot())
                 }
@@ -2698,7 +2957,7 @@ impl<L: QuantumLoop> Engine<L> {
         } else {
             None
         };
-        let runtime = instantiate(&self.graph, &outcome.configuration)?;
+        let runtime = self.graph.resume(&outcome.configuration)?.runtime;
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime);
@@ -2845,6 +3104,7 @@ pub struct SessionActor<L> {
     mailbox: mpsc::Receiver<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: SessionEventLog,
+    fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     condition_event_log: Vec<SchedulerEventLogEntry>,
     commands_applied: u64,
     yielded_after_quanta: u64,
@@ -2855,12 +3115,38 @@ impl<L> SessionActor<L> {
     /// Creates a session actor from an engine and command mailbox.
     #[must_use]
     pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self {
+        Self::new_with_optional_fork_loop_factory(engine, mailbox, None)
+    }
+
+    /// Creates a session actor with a child-loop factory for fork commands.
+    ///
+    /// The factory is called only after the fork source checkpoint has been
+    /// resolved. It must return the [`QuantumLoop`] that the independently spawned
+    /// child actor should use.
+    #[must_use]
+    pub fn new_with_fork_loop_factory<F>(
+        engine: Engine<L>,
+        mailbox: mpsc::Receiver<SessionCommand>,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(SessionForkRequest) -> L + Send + Sync + 'static,
+    {
+        Self::new_with_optional_fork_loop_factory(engine, mailbox, Some(Arc::new(factory)))
+    }
+
+    fn new_with_optional_fork_loop_factory(
+        engine: Engine<L>,
+        mailbox: mpsc::Receiver<SessionCommand>,
+        fork_loop_factory: Option<SessionForkLoopFactory<L>>,
+    ) -> Self {
         let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
         Self {
             engine,
             mailbox,
             live,
             event_log: SessionEventLog::new(),
+            fork_loop_factory,
             condition_event_log: Vec::new(),
             commands_applied: 0,
             yielded_after_quanta: 0,
@@ -2930,7 +3216,10 @@ impl<L> SessionActor<L> {
     }
 }
 
-impl<L: QuantumLoop> SessionActor<L> {
+impl<L> SessionActor<L>
+where
+    L: QuantumLoop + Send + 'static,
+{
     /// Runs the actor until it reaches [`EngineState::Stopped`].
     ///
     /// # Errors
@@ -2945,6 +3234,17 @@ impl<L: QuantumLoop> SessionActor<L> {
                 return Ok(self.report());
             }
             self.run_once().await?;
+        }
+    }
+
+    async fn run_detached_child(mut self) -> Result<SessionRunReport, SessionError> {
+        loop {
+            if matches!(self.engine.state(), EngineState::Stopped { .. }) {
+                self.drain_terminal_commands_without_spawning_forks()
+                    .await?;
+                return Ok(self.report());
+            }
+            self.run_once_without_spawning_forks().await?;
         }
     }
 
@@ -2988,6 +3288,47 @@ impl<L: QuantumLoop> SessionActor<L> {
         }
     }
 
+    async fn run_once_without_spawning_forks(&mut self) -> Result<(), SessionError> {
+        match self.engine.state().clone() {
+            EngineState::Running => {
+                if let Some(command) = self.next_boundary_command()? {
+                    self.apply_command_without_spawning_forks(command).await?;
+                    return Ok(());
+                }
+
+                let pending_control = self.engine.pending_control_len() as u64;
+                let _outcome = self.engine.step_quantum()?;
+                let entries = self.engine.drain_event_log_entries();
+                let emitted_event_log_entries = entries.len();
+                self.append_event_log_entries(&entries);
+                self.engine
+                    .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                let breakpoint_entries = self.engine.drain_event_log_entries();
+                self.append_event_log_entries(&breakpoint_entries);
+                self.control_acknowledgements = self
+                    .control_acknowledgements
+                    .saturating_add(pending_control);
+                self.publish_live_snapshot();
+                self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
+                tokio::task::yield_now().await;
+                Ok(())
+            }
+            EngineState::Loaded | EngineState::Paused { .. } => {
+                let command = self
+                    .mailbox
+                    .recv()
+                    .await
+                    .ok_or(SessionError::ChannelClosed)?;
+                self.apply_command_without_spawning_forks(command).await
+            }
+            EngineState::Stopped { .. } => {
+                self.drain_terminal_commands_without_spawning_forks()
+                    .await?;
+                Ok(())
+            }
+        }
+    }
+
     fn next_boundary_command(&mut self) -> Result<Option<SessionCommand>, SessionError> {
         match self.mailbox.try_recv() {
             Ok(command) => Ok(Some(command)),
@@ -2997,6 +3338,17 @@ impl<L: QuantumLoop> SessionActor<L> {
     }
 
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
+        if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
+            return self.apply_spawned_fork_command(command).await;
+        }
+
+        self.apply_command_without_spawning_forks(command).await
+    }
+
+    async fn apply_command_without_spawning_forks(
+        &mut self,
+        command: SessionCommand,
+    ) -> Result<(), SessionError> {
         let quanta_before = self.engine.quanta();
         let pending_control_before = self.engine.pending_control_len() as u64;
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
@@ -3028,11 +3380,100 @@ impl<L: QuantumLoop> SessionActor<L> {
         Ok(())
     }
 
+    async fn apply_spawned_fork_command(
+        &mut self,
+        command: SessionCommand,
+    ) -> Result<(), SessionError> {
+        let SessionCommand::Fork { from, reply } = command.clone() else {
+            return Err(self.engine.invalid_transition(command));
+        };
+        let Some(factory) = self.fork_loop_factory.clone() else {
+            let error = self.engine.invalid_transition(command);
+            reply.complete(Err(error.clone()));
+            return Err(error);
+        };
+
+        let parent_state = self.engine.state.clone();
+        let checkpoint = match parent_state {
+            EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
+                match self.engine.resolve_fork_checkpoint(from) {
+                    Ok(checkpoint) => checkpoint,
+                    Err(error) => {
+                        reply.complete(Err(error.clone()));
+                        return Err(error);
+                    }
+                }
+            }
+            EngineState::Loaded => {
+                let error = self.engine.invalid_transition(command.clone());
+                command.complete_error(error.clone());
+                return Err(error);
+            }
+        };
+        let mut handle = SessionHandle::new(self.engine.configuration.id(), &checkpoint);
+        let request = SessionForkRequest {
+            id: handle.id,
+            checkpoint: checkpoint.id,
+            configuration: checkpoint.configuration,
+        };
+        let child_quantum_loop = factory(request);
+        let fork = match self.engine.build_checkpoint_child(
+            parent_state.clone(),
+            checkpoint.id,
+            child_quantum_loop,
+        ) {
+            Ok(fork) => fork,
+            Err(error) => {
+                reply.complete(Err(error.clone()));
+                return Err(error);
+            }
+        };
+
+        if matches!(parent_state, EngineState::Running) {
+            self.engine.record_boundary_control(&command, None);
+            self.engine.active_step = None;
+            self.engine.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+
+        let child_live = fork.child_actor.live_snapshot();
+        let child_sender = fork.child_sender.clone();
+        std::mem::drop(tokio::spawn(async move {
+            let _ = fork.child_actor.run_detached_child().await;
+        }));
+        handle = handle.with_child(SessionChildHandle {
+            sender: child_sender,
+            live: child_live,
+        });
+        reply.complete(Ok(handle));
+        self.publish_live_snapshot();
+        self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
+        self.commands_applied = self.commands_applied.saturating_add(1);
+        tokio::task::yield_now().await;
+        Ok(())
+    }
+
     async fn drain_terminal_commands(&mut self) -> Result<(), SessionError> {
         loop {
             match self.mailbox.try_recv() {
                 Ok(command) if command.is_terminal_accepted() => {
                     self.apply_command(command).await?;
+                }
+                Ok(command) => {
+                    let error = self.engine.invalid_transition(command.clone());
+                    command.complete_error(error);
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+    }
+
+    async fn drain_terminal_commands_without_spawning_forks(&mut self) -> Result<(), SessionError> {
+        loop {
+            match self.mailbox.try_recv() {
+                Ok(command) if command.is_terminal_accepted() => {
+                    self.apply_command_without_spawning_forks(command).await?;
                 }
                 Ok(command) => {
                     let error = self.engine.invalid_transition(command.clone());
@@ -3545,6 +3986,7 @@ mod tests {
         }
         let fork = receive_reply(fork_receiver).await;
         assert_eq!(fork.checkpoint, engine.configuration().id());
+        assert_eq!(fork.configuration, engine.configuration().id());
     }
 
     #[tokio::test]
@@ -3621,6 +4063,7 @@ mod tests {
 
         let fork = receive_reply(fork_receiver).await;
         assert_eq!(fork.checkpoint, report.final_snapshot.configuration.id());
+        assert_eq!(fork.configuration, report.final_snapshot.configuration.id());
         let error = receive_reply_error::<BreakpointId>(set_receiver).await;
         assert_rejection_names_state_and_command(
             error,
@@ -3845,6 +4288,7 @@ mod tests {
         }
         let fork = receive_reply(fork_receiver).await;
         assert_eq!(fork.checkpoint, actor.engine().configuration().id());
+        assert_eq!(fork.configuration, actor.engine().configuration().id());
 
         let log = actor.engine().boundary_control_log();
         assert_eq!(log.len(), 7);
@@ -4845,11 +5289,11 @@ mod tests {
         let actor_impl = source_section(
             source,
             "impl<L> SessionActor<L> {",
-            "\nimpl<L: QuantumLoop> SessionActor<L>",
+            "\nimpl<L> SessionActor<L>\nwhere",
         );
         let actor_quantum_impl = source_section(
             source,
-            "impl<L: QuantumLoop> SessionActor<L> {",
+            "impl<L> SessionActor<L>\nwhere\n    L: QuantumLoop + Send + 'static,\n{",
             "\n#[cfg(test)]",
         );
         let actor_engine_field = ["engine", ": Engine<L>"].concat();

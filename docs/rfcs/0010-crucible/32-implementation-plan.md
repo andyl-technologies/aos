@@ -233,6 +233,13 @@ long-held locks.
   scheduler controls, and evaluates step stop points through one-shot breakpoint
   conditions. Host-oracle `Named` predicates and metadata-backed white-box/symbol
   leaves remain dependent on a session-visible host metadata/oracle surface.
+  `T-SESS-8` is green through `checks.crucible.phase5.sessionSaveResumeFork`,
+  which keeps save/resume/fork on the temporal graph: savepoint materialization
+  uses `save_checkpoint`, checkpoint resume resolves the recorded configuration
+  through `resume_checkpoint`, session runtime realization goes through
+  `TemporalGraph::resume`, fork commands can spawn independent children through
+  an actor fork-loop factory, and fork-from-checkpoint creates an independent
+  paused child actor without mutating the parent snapshot.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
