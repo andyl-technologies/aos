@@ -23,11 +23,11 @@ use crate::heap::{
     HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport,
     MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
     MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocationDestination,
-    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
-    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
-    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcOldFieldRescanPlan, MinorGcOldObjectFields,
+    MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
+    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
+    MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
+    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
     record_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier_with_card_table,
 };
@@ -43,6 +43,8 @@ const MINOR_GC_ROOTS_TABLE: &str = "minor-GC roots";
 const MINOR_GC_NURSERY_OBJECTS_TABLE: &str = "minor-GC nursery objects";
 const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
+const MINOR_GC_OLD_FIELDS_TABLE: &str = "minor-GC old fields";
+const MINOR_GC_OLD_FIELD_VALUES_TABLE: &str = "minor-GC old field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 const MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE: &str = "minor-GC object byte-copy requests";
@@ -931,6 +933,82 @@ impl AllocationCollectorPollNurseryField {
     }
 }
 
+/// Owned precise field metadata for one old or permanent object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollOldFields {
+    address: GcHeapAddress,
+    generation: HeapGeneration,
+    fields: Vec<AllocationCollectorPollOldField>,
+    field_values: Vec<ResolvedValueGeneration>,
+}
+
+impl AllocationCollectorPollOldFields {
+    fn new(
+        address: GcHeapAddress,
+        generation: HeapGeneration,
+        fields: Vec<AllocationCollectorPollOldField>,
+    ) -> Result<Self, EvalHeapError> {
+        let mut field_values = Vec::new();
+        field_values.try_reserve_exact(fields.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_OLD_FIELD_VALUES_TABLE,
+                entries: fields.len(),
+            }
+        })?;
+        for field in &fields {
+            field_values.push(field.value());
+        }
+        Ok(Self {
+            address,
+            generation,
+            fields,
+            field_values,
+        })
+    }
+
+    /// Returns the old or permanent object whose fields were scanned.
+    pub const fn address(&self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the generation that owns this object.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the object's precise outgoing fields.
+    pub fn fields(&self) -> &[AllocationCollectorPollOldField] {
+        &self.fields
+    }
+
+    fn field_values(&self) -> &[ResolvedValueGeneration] {
+        &self.field_values
+    }
+}
+
+/// One precise outgoing field copied from an old or permanent object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollOldField {
+    source: HeapEdgeSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollOldField {
+    fn new(source: HeapEdgeSource, value: ResolvedValueGeneration) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the object-field label from the typed heap scanner.
+    pub const fn source(&self) -> &HeapEdgeSource {
+        &self.source
+    }
+
+    /// Returns the heap value copied from the field.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
+    }
+}
+
 /// The copied root or field location represented by a collector-poll reference slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AllocationCollectorPollReferenceSource {
@@ -999,9 +1077,11 @@ pub struct AllocationCollectorPollMinorGcPlan {
     allocation_safepoints: AllocationSafepointState,
     permanent_allocation_safepoints: AllocationSafepointState,
     remembered_set: RememberedSet,
+    card_table: Option<GcCardTable>,
     roots: Vec<ResolvedValueGeneration>,
     nursery_objects: Vec<NurseryObjectAge>,
     nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+    old_fields: Vec<AllocationCollectorPollOldFields>,
     reference_slots: Vec<AllocationCollectorPollReferenceSlot>,
     plan: MinorGcPlan,
 }
@@ -1015,9 +1095,11 @@ impl AllocationCollectorPollMinorGcPlan {
         allocation_safepoints: AllocationSafepointState,
         permanent_allocation_safepoints: AllocationSafepointState,
         remembered_set: RememberedSet,
+        card_table: Option<GcCardTable>,
         roots: Vec<ResolvedValueGeneration>,
         nursery_objects: Vec<NurseryObjectAge>,
         nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+        old_fields: Vec<AllocationCollectorPollOldFields>,
         reference_slots: Vec<AllocationCollectorPollReferenceSlot>,
         plan: MinorGcPlan,
     ) -> Self {
@@ -1029,9 +1111,11 @@ impl AllocationCollectorPollMinorGcPlan {
             allocation_safepoints,
             permanent_allocation_safepoints,
             remembered_set,
+            card_table,
             roots,
             nursery_objects,
             nursery_fields,
+            old_fields,
             reference_slots,
             plan,
         }
@@ -1060,9 +1144,11 @@ impl AllocationCollectorPollMinorGcPlan {
             allocation_safepoints,
             permanent_allocation_safepoints,
             remembered_set,
+            None,
             roots,
             nursery_objects,
             nursery_fields,
+            Vec::new(),
             reference_slots,
             plan,
         )
@@ -1103,6 +1189,11 @@ impl AllocationCollectorPollMinorGcPlan {
         &self.remembered_set
     }
 
+    /// Returns the owned dirty-card snapshot captured by card-table-aware planning.
+    pub const fn card_table(&self) -> Option<&GcCardTable> {
+        self.card_table.as_ref()
+    }
+
     /// Returns the root values supplied to the minor-GC planner.
     pub fn roots(&self) -> &[ResolvedValueGeneration] {
         &self.roots
@@ -1116,6 +1207,11 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns generated field metadata for current young oracle-heap objects.
     pub fn nursery_fields(&self) -> &[AllocationCollectorPollNurseryFields] {
         &self.nursery_fields
+    }
+
+    /// Returns generated field metadata for current old/permanent oracle objects.
+    pub fn old_fields(&self) -> &[AllocationCollectorPollOldFields] {
+        &self.old_fields
     }
 
     /// Returns the copied root and field references in rewrite-slot order.
@@ -1183,15 +1279,18 @@ impl AllocationCollectorPollMinorGcPlan {
     /// the validated lower-level commit plan and the allocation-state snapshot
     /// used by later heap-backed buffer derivation. It still does not own mutable
     /// evaluator roots, object fields, object bytes, forwarding slots, or
-    /// remembered-set storage. The destination wrapper must preserve this poll
-    /// plan's survivor count, source order, and copy/promote actions.
+    /// remembered-set storage. For card-table-aware plans, dirty old/permanent
+    /// field rescans are folded into the precomputed next remembered set. The
+    /// destination wrapper must preserve this poll plan's survivor count, source
+    /// order, and copy/promote actions.
     ///
     /// # Errors
     ///
     /// Returns [`GenerationalGcError`] if destination placements or relocation
     /// destinations do not match this poll plan, if any subplan cannot reserve
-    /// storage or detects byte-size overflow, if the remembered-set refresh
-    /// cannot be built, or if the subplans are not mutually consistent.
+    /// storage or detects byte-size overflow, if the remembered-set refresh or
+    /// dirty old-field rescan cannot be built, or if the subplans are not
+    /// mutually consistent.
     pub fn commit_plan(
         &self,
         relocation_destinations: &AllocationCollectorPollMinorGcRelocationDestinations,
@@ -1214,12 +1313,29 @@ impl AllocationCollectorPollMinorGcPlan {
             self.remembered_set.snapshot(),
             &relocation_plan,
         )?;
-        let commit_plan = MinorGcCommitPlan::from_parts(
-            object_copies,
-            forwarding_pointers,
-            reference_rewrites,
-            remembered_set_refresh,
-        )?;
+        let commit_plan = match &self.card_table {
+            Some(card_table) => {
+                let old_field_views = old_field_views(&self.old_fields)?;
+                let old_field_rescan = MinorGcOldFieldRescanPlan::from_dirty_cards(
+                    card_table.snapshot(),
+                    &old_field_views,
+                    &relocation_plan,
+                )?;
+                MinorGcCommitPlan::from_parts_with_old_field_rescan(
+                    object_copies,
+                    forwarding_pointers,
+                    reference_rewrites,
+                    remembered_set_refresh,
+                    &old_field_rescan,
+                )?
+            }
+            None => MinorGcCommitPlan::from_parts(
+                object_copies,
+                forwarding_pointers,
+                reference_rewrites,
+                remembered_set_refresh,
+            )?,
+        };
         Ok(AllocationCollectorPollMinorGcCommitPlan {
             reference_slots: &self.reference_slots,
             heap_records: self.heap_records,
@@ -2546,20 +2662,26 @@ impl EvalHeap {
         )
     }
 
-    /// Converts a collector-poll heap graph snapshot into a card-table-checked
+    /// Converts a collector-poll heap graph snapshot into a card-table-aware
     /// minor-GC plan.
     ///
     /// This performs the same planning work as [`Self::plan_collector_poll_minor_gc`]
     /// and additionally verifies that every remembered edge's source object is
-    /// covered by the supplied dirty-card snapshot. The check is conservative at
-    /// card granularity: a dirty card may cover more than one source object.
+    /// covered by the supplied dirty-card snapshot. It also captures an owned
+    /// dirty-card snapshot and current old/permanent field metadata for later
+    /// commit-plan old-field rescanning. A current permanent-to-young edge may be
+    /// absent from the remembered-set snapshot only when its source card is dirty
+    /// and the target is already in the planned survivor frontier through another
+    /// root or remembered edge.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] under the same conditions as
     /// [`Self::plan_collector_poll_minor_gc`]. Also returns
     /// [`EvalHeapError::MissingCollectorPollDirtyCard`] when a remembered edge
-    /// is not covered by the dirty-card snapshot.
+    /// is not covered by the dirty-card snapshot, or
+    /// [`EvalHeapError::MissingCollectorPollRememberedEdge`] when an unremembered
+    /// permanent-to-young edge cannot be safely recovered by dirty-card rescanning.
     pub fn plan_collector_poll_minor_gc_with_card_table(
         &self,
         poll_scan: &AllocationCollectorPollScan,
@@ -2591,11 +2713,10 @@ impl EvalHeap {
         if let Some(card_table) = card_table {
             self.validate_card_table_snapshot(remembered_set, card_table)?;
         }
-        self.validate_current_permanent_edges_are_remembered(remembered_set)?;
-
         let roots = self.minor_gc_roots_for_poll_scan(poll_scan)?;
         let nursery_objects = self.current_nursery_objects()?;
         let nursery_fields = self.current_nursery_fields()?;
+        let old_fields = self.current_old_fields()?;
         let nursery_field_views = nursery_field_views(&nursery_fields)?;
         let plan = MinorGcPlan::from_roots_remembered_and_fields(
             roots.iter().copied(),
@@ -2605,12 +2726,25 @@ impl EvalHeap {
             &nursery_field_views,
             promotion_policy,
         )?;
+        match card_table {
+            Some(card_table) => self
+                .validate_current_permanent_edges_are_remembered_or_dirty_survivors(
+                    remembered_set,
+                    card_table,
+                    &plan,
+                )?,
+            None => self.validate_current_permanent_edges_are_remembered(remembered_set)?,
+        }
         let reference_slots = self.minor_gc_reference_slots_for_plan(
             poll_scan,
             remembered_set,
             &plan,
             &nursery_fields,
         )?;
+        let card_table = match card_table {
+            Some(card_table) => Some(owned_card_table_from_snapshot(card_table)?),
+            None => None,
+        };
 
         Ok(AllocationCollectorPollMinorGcPlan::new(
             poll_scan.poll(),
@@ -2620,9 +2754,11 @@ impl EvalHeap {
             poll_scan.allocation_safepoints(),
             poll_scan.permanent_allocation_safepoints(),
             remembered_set_from_snapshot(remembered_set)?,
+            card_table,
             roots,
             nursery_objects,
             nursery_fields,
+            old_fields,
             reference_slots,
             plan,
         ))
@@ -3122,6 +3258,49 @@ impl EvalHeap {
         Ok(())
     }
 
+    fn validate_current_permanent_edges_are_remembered_or_dirty_survivors(
+        &self,
+        remembered_set: RememberedSetSnapshot<'_>,
+        card_table: GcCardTableSnapshot<'_>,
+        plan: &MinorGcPlan,
+    ) -> Result<(), EvalHeapError> {
+        for record in &self.records {
+            if generation_for_record(record) != HeapGeneration::Permanent {
+                continue;
+            }
+            let source = gc_address_for_record(record)?;
+            let edges = self.scan_record_edges(record)?;
+
+            for edge in edges {
+                let target = self.resolved_generation_for_value(edge.value())?;
+                let ResolvedValueGeneration::Heap {
+                    address: target,
+                    generation: HeapGeneration::Young,
+                } = target
+                else {
+                    continue;
+                };
+                let remembered_edge = RememberedEdge::new(source, target);
+                if remembered_set.edges().contains(&remembered_edge) {
+                    continue;
+                }
+                if card_table.covers_source(source)
+                    && plan
+                        .survivors()
+                        .iter()
+                        .any(|survivor| survivor.address() == target)
+                {
+                    continue;
+                }
+                return Err(EvalHeapError::MissingCollectorPollRememberedEdge {
+                    source_address: source,
+                    target_address: target,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn validate_card_table_snapshot(
         &self,
         remembered_set: RememberedSetSnapshot<'_>,
@@ -3215,6 +3394,49 @@ impl EvalHeap {
             nursery_fields.push(AllocationCollectorPollNurseryFields::new(address, fields)?);
         }
         Ok(nursery_fields)
+    }
+
+    fn current_old_fields(&self) -> Result<Vec<AllocationCollectorPollOldFields>, EvalHeapError> {
+        let mut old_fields = Vec::new();
+        for record in &self.records {
+            let generation = generation_for_record(record);
+            if !matches!(generation, HeapGeneration::Old | HeapGeneration::Permanent) {
+                continue;
+            }
+            let address = gc_address_for_record(record)?;
+            let edges = self.scan_record_edges(record)?;
+            let mut fields = Vec::new();
+            fields.try_reserve_exact(edges.len()).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_OLD_FIELD_VALUES_TABLE,
+                    entries: edges.len(),
+                }
+            })?;
+            for edge in edges {
+                fields.push(AllocationCollectorPollOldField::new(
+                    edge.source().clone(),
+                    self.resolved_generation_for_value(edge.value())?,
+                ));
+            }
+
+            let entries =
+                old_fields
+                    .len()
+                    .checked_add(1)
+                    .ok_or(EvalHeapError::RootScanLengthOverflow {
+                        table: MINOR_GC_OLD_FIELDS_TABLE,
+                    })?;
+            old_fields.try_reserve_exact(1).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_OLD_FIELDS_TABLE,
+                    entries,
+                }
+            })?;
+            old_fields.push(AllocationCollectorPollOldFields::new(
+                address, generation, fields,
+            )?);
+        }
+        Ok(old_fields)
     }
 
     fn nursery_layouts_for_minor_gc_plan(
@@ -3564,6 +3786,25 @@ fn nursery_field_views(
     Ok(views)
 }
 
+fn old_field_views(
+    old_fields: &[AllocationCollectorPollOldFields],
+) -> Result<Vec<MinorGcOldObjectFields<'_>>, GenerationalGcError> {
+    let mut views = Vec::new();
+    views.try_reserve_exact(old_fields.len()).map_err(|_| {
+        GenerationalGcError::MinorGcOldFieldRescanAllocationFailed {
+            rescans: old_fields.len(),
+        }
+    })?;
+    for object in old_fields {
+        views.push(MinorGcOldObjectFields::new(
+            object.address(),
+            object.generation(),
+            object.field_values(),
+        ));
+    }
+    Ok(views)
+}
+
 fn nursery_fields_for_survivor(
     nursery_fields: &[AllocationCollectorPollNurseryFields],
     address: GcHeapAddress,
@@ -3584,6 +3825,16 @@ fn remembered_set_from_snapshot(
         remembered_set.record(*edge)?;
     }
     Ok(remembered_set)
+}
+
+fn owned_card_table_from_snapshot(
+    snapshot: GcCardTableSnapshot<'_>,
+) -> Result<GcCardTable, GenerationalGcError> {
+    let mut card_table = GcCardTable::new(snapshot.card_size_bytes())?;
+    for card in snapshot.dirty_cards() {
+        card_table.mark_source(card.source())?;
+    }
+    Ok(card_table)
 }
 
 fn heap_field_writeback_source<'a>(

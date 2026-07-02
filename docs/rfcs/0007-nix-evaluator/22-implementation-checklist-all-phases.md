@@ -5608,9 +5608,28 @@ and helps the oracle directly.
       participates in the dry-run collector path. Tests cover low-level snapshot
       coverage, direct and boundary-level missing dirty-card rejection,
       dirty-card success, and the existing boundary remembered-edge dry-run.
-      This remains validation metadata only; dirty-card rescanning, card-table
-      clearing against the live daemon table, object-generation mutation, and
-      Tier-B collector installation remain open.
+      This remains validation metadata only; card-table clearing against the
+      live daemon table, object-generation mutation, and Tier-B collector
+      installation remain open.
+- [x] Current allocation-poll dirty old-field rescan bridge precursor:
+      card-table-aware `AllocationCollectorPollMinorGcPlan`s now capture an
+      owned dirty-card snapshot plus current old/permanent field metadata.
+      `EvalHeap::plan_collector_poll_minor_gc_with_card_table` still fails
+      closed for unremembered permanent-to-young edges, but admits an absent edge
+      when the source card is dirty and the young target is already in the
+      survivor frontier through another root or remembered edge.
+      `AllocationCollectorPollMinorGcPlan::commit_plan` then builds a
+      `MinorGcOldFieldRescanPlan` from the captured card/field metadata and
+      composes it through `MinorGcCommitPlan::from_parts_with_old_field_rescan`,
+      so the precomputed next remembered set can include deduplicated dirty-card
+      rescan edges while publication still validates only the source remembered
+      snapshot. Unit tests cover dirty remembered-edge success, dirty
+      unremembered non-survivor rejection, old-field metadata capture, and rescan
+      publication of an already-surviving unremembered target. This remains a
+      planning bridge only; dirty old-field targets do not yet expand the
+      survivor frontier by themselves, and live root/field mutation, live
+      card-table clearing, semispace ownership, and collector dispatch remain
+      open.
 - [x] Current allocation-poll card-table commit-buffer precursor:
       boundary commit preflights now carry an owned fallible clone of the
       daemon-wide card-table snapshot, and
@@ -5625,8 +5644,8 @@ and helps the oracle directly.
       buffers, boundary remembered-edge dry-run clearing of the owned card
       table, and sibling boundary preflights clearing independent daemon-wide
       copies. This is still an owned-buffer dry-run only; mutating the live
-      evaluator/daemon card table, rescanning dirty old cards, and installing
-      the Tier-B collector remain open.
+      evaluator/daemon card table, letting dirty old fields expand the survivor
+      frontier, and installing the Tier-B collector remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
