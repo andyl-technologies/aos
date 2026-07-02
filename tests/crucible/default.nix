@@ -1183,6 +1183,12 @@ in rec {
       taskIds = ["T-SESS-9"];
       dependencies = [phase5.sessionSaveResumeFork];
     };
+    sessionLockFreeObservation = import ./phase5-session-lock-free-observation.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionLockFreeObservation";
+      taskIds = ["T-SESS-10"];
+      dependencies = [phase5.sessionControlDeterminism];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

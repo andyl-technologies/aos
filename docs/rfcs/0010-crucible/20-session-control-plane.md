@@ -1201,11 +1201,22 @@ pub enum SessionError {
     control-sensitive scheduler state to the same final configuration/frontier,
     and rejection of artifacts whose recorded boundary or final snapshot has
     drifted.
-- [ ] **T-SESS-10** Implement lock-free observation: the atomics live snapshot
+- [x] **T-SESS-10** Implement lock-free observation: the atomics live snapshot
   (state kind, virtual time, log length, quanta counter) written by the actor at
   quantum boundaries and read lock-free; broadcast buses for event-log entries
   and state transitions with lag-or-drop, no back-pressure. — satisfies
   [SESS-23], [SESS-24], [SESS-25]; spec §9; cross-ref 05 [EXEC-29].
+  - Completed by `checks.crucible.phase5.sessionLockFreeObservation`:
+    `LiveSnapshot` remains actor-written and atomically read through
+    `LiveSnapshot::read`, `LiveSnapshot::query`, and
+    `SessionActor::live_status`, while the session actor publishes every
+    appended event-log entry through the cursor-backed bounded `SessionEventLog`
+    broadcast tail and every full `EngineState` transition through
+    `SessionStateTransitionBus`. Slow event-log and state-transition subscribers
+    report `Lagged` rather than exerting back-pressure, and focused crate plus
+    `gate_control_responsive` tests cover lock-free status reads, mirror-backed
+    state/event-log-length queries, event-log cursor streams, state-transition
+    streams, and observation-only subscriptions.
 - [ ] **T-SESS-11** Define and implement the pluggable `SimulationBackend` trait
   (step_to/apply/snapshot/restore/now/fingerprint/shutdown) with the QEMU
   backend, the `SimDouble`, and a mock satisfying it interchangeably; keep the

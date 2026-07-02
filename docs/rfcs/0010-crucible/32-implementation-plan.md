@@ -246,6 +246,14 @@ long-held locks.
   frontier/quanta plus scheduler-control batch, and replays them with
   boundary/final-snapshot mismatch guards so scheduler-owned state is reproduced
   without wall-clock timing as an input.
+  `T-SESS-10` is green through `checks.crucible.phase5.sessionLockFreeObservation`,
+  which keeps the live status mirror in actor-written atomics, exposes
+  lock-free `LiveSnapshot::read`, `LiveSnapshot::query`, and
+  `SessionActor::live_status` observation, streams retained and live event-log
+  entries through the bounded cursor-backed `SessionEventLog` broadcast tail,
+  and streams actor-owned full `EngineState` transitions through
+  `SessionStateTransitionBus` with lag-or-drop behavior instead of subscriber
+  back-pressure.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
