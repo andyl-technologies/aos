@@ -14,7 +14,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -149,6 +149,36 @@ pub enum PauseReason {
         /// The completed step mode.
         mode: StepMode,
     },
+}
+
+/// Actor-owned breakpoint registry for a live session.
+///
+/// This type is intentionally only a registry at the T-SESS-1 layer. Later
+/// command tasks define how breakpoint specifications are added, removed, and
+/// evaluated at deterministic event-log boundaries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BreakpointSet {
+    ids: BTreeSet<u64>,
+}
+
+impl BreakpointSet {
+    /// Creates an empty breakpoint set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns whether the set contains no breakpoints.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Returns the number of actor-owned breakpoint handles.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
 }
 
 /// Terminal outcome for an engine run.
@@ -933,14 +963,20 @@ impl SessionEventLogStream {
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
-/// cache, the temporal graph used for instantiation and checkpoints, and the
-/// single [`QuantumLoop`] boundary that performs virtual-time advancement.
+/// cache, the temporal graph used for instantiation and checkpoints, the
+/// breakpoint registry, and the single [`QuantumLoop`] boundary that performs
+/// virtual-time advancement.
+///
+/// `Engine` is a lower-level state-machine value. Once it is moved into a
+/// [`SessionActor`], the actor's private field ownership prevents external
+/// mutable access; live session interaction goes through the actor mailbox.
 pub struct Engine<L> {
     configuration: Configuration,
     runtime: Option<RuntimeState>,
     runtime_instantiated: bool,
     state: EngineState,
     graph: TemporalGraph,
+    breakpoints: BreakpointSet,
     quantum_loop: L,
     frontier: VirtualTime,
     event_log_len: usize,
@@ -960,6 +996,7 @@ impl<L> Engine<L> {
             runtime_instantiated: false,
             state: EngineState::Loaded,
             graph,
+            breakpoints: BreakpointSet::new(),
             quantum_loop,
             frontier: VirtualTime::default(),
             event_log_len: 0,
@@ -986,6 +1023,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn runtime(&self) -> Option<&RuntimeState> {
         self.runtime.as_ref()
+    }
+
+    /// Returns the actor-owned breakpoint registry.
+    #[must_use]
+    pub fn breakpoints(&self) -> &BreakpointSet {
+        &self.breakpoints
     }
 
     /// Returns the current scheduler frontier.
@@ -1448,7 +1491,6 @@ pub struct SessionRunReport {
 pub struct SessionActor<L> {
     engine: Engine<L>,
     mailbox: mpsc::Receiver<SessionCommand>,
-    deferred: VecDeque<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: SessionEventLog,
     commands_applied: u64,
@@ -1464,7 +1506,6 @@ impl<L> SessionActor<L> {
         Self {
             engine,
             mailbox,
-            deferred: VecDeque::new(),
             live,
             event_log: SessionEventLog::new(),
             commands_applied: 0,
@@ -1495,11 +1536,6 @@ impl<L> SessionActor<L> {
     #[must_use]
     pub fn event_log_stream(&self, cursor: EventLogCursor) -> SessionEventLogStream {
         self.event_log.subscribe(cursor)
-    }
-
-    /// Queues a command to be applied before the next running quantum.
-    pub fn defer_boundary_command(&mut self, command: SessionCommand) {
-        self.deferred.push_back(command);
     }
 
     /// Returns the number of commands applied by the actor.
@@ -1588,10 +1624,6 @@ impl<L: QuantumLoop> SessionActor<L> {
     }
 
     fn next_boundary_command(&mut self) -> Result<Option<SessionCommand>, SessionError> {
-        if let Some(command) = self.deferred.pop_front() {
-            return Ok(Some(command));
-        }
-
         match self.mailbox.try_recv() {
             Ok(command) => Ok(Some(command)),
             Err(TryRecvError::Empty) => Ok(None),
@@ -1722,6 +1754,106 @@ mod tests {
             engine.runtime().map(|runtime| runtime.configuration),
             Some(config.id())
         );
+    }
+
+    #[test]
+    fn session_actor_owns_breakpoint_set_with_runtime_state() {
+        let scenario = generated_scenario(10);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, StubLoop);
+        let (_sender, receiver) = mpsc::channel(4);
+        let actor = SessionActor::new(engine, receiver);
+
+        assert!(actor.engine().breakpoints().is_empty());
+        assert_eq!(actor.engine().breakpoints().len(), 0);
+    }
+
+    #[test]
+    fn session_actor_source_does_not_lock_engine_across_run() {
+        let source = include_str!("lib.rs");
+        let actor_struct = source_section(
+            source,
+            "pub struct SessionActor<L> {",
+            "\n}\n\nimpl<L> SessionActor<L>",
+        );
+        let actor_impl = source_section(
+            source,
+            "impl<L> SessionActor<L> {",
+            "\nimpl<L: QuantumLoop> SessionActor<L>",
+        );
+        let actor_quantum_impl = source_section(
+            source,
+            "impl<L: QuantumLoop> SessionActor<L> {",
+            "\n#[cfg(test)]",
+        );
+        let actor_engine_field = ["engine", ": Engine<L>"].concat();
+        let actor_mailbox_field = ["mailbox", ": mpsc::Receiver<SessionCommand>"].concat();
+        let actor_event_log_field = ["event_log", ": SessionEventLog"].concat();
+        assert!(actor_struct.contains(&actor_engine_field));
+        assert!(actor_struct.contains(&actor_mailbox_field));
+        assert!(actor_struct.contains(&actor_event_log_field));
+        let Some((_, actor_fields)) = actor_struct.split_once('{') else {
+            panic!("SessionActor source should contain a field body");
+        };
+        assert!(!actor_fields.contains("pub "));
+
+        for forbidden in [
+            ["engine", ": Arc<"].concat(),
+            ["engine", ": std::sync::Arc<"].concat(),
+            ["engine", ": Mutex<"].concat(),
+            ["engine", ": std::sync::Mutex<"].concat(),
+            ["engine", ": RwLock<"].concat(),
+            ["engine", ": std::sync::RwLock<"].concat(),
+            ["Arc<", "Mutex<", "Engine"].concat(),
+            ["Arc<", "std::sync::Mutex<", "Engine"].concat(),
+            ["Arc<", "RwLock<", "Engine"].concat(),
+            ["Arc<", "std::sync::RwLock<", "Engine"].concat(),
+            ["tokio::sync::", "Mutex"].concat(),
+            ["tokio::sync::", "RwLock"].concat(),
+            ["parking_lot::", "Mutex"].concat(),
+            ["parking_lot::", "RwLock"].concat(),
+        ] {
+            assert!(
+                !actor_struct.contains(&forbidden),
+                "session-owned engine state must remain actor-owned by value, not locked: {forbidden}"
+            );
+        }
+
+        for forbidden in [
+            ["pub fn ", "engine_mut"].concat(),
+            ["pub fn ", "defer_boundary_command"].concat(),
+            ["pub fn ", "run_once"].concat(),
+        ] {
+            assert!(
+                !actor_impl.contains(&forbidden),
+                "live session actor must not expose direct mutation outside the mailbox: {forbidden}"
+            );
+        }
+
+        for forbidden in [
+            ["pub fn ", "apply_command"].concat(),
+            ["pub fn ", "step_quantum"].concat(),
+            ["pub fn ", "run_once"].concat(),
+            ["pub fn ", "next_boundary_command"].concat(),
+            ["pub fn ", "drain_read_only_commands"].concat(),
+        ] {
+            assert!(
+                !actor_quantum_impl.contains(&forbidden),
+                "live session actor must not expose direct mutation outside the mailbox: {forbidden}"
+            );
+        }
+    }
+
+    fn source_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let Some(start_index) = source.find(start) else {
+            panic!("source should contain section start {start}");
+        };
+        let tail = &source[start_index..];
+        let Some(end_index) = tail.find(end) else {
+            panic!("source should contain section end {end}");
+        };
+        &tail[..end_index]
     }
 
     #[test]
