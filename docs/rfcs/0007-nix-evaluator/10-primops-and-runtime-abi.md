@@ -876,15 +876,16 @@ harness, never cut for scope.
 - [x] Current runtime symbol native-export readiness gate:
       `runtime_symbol_native_export_preflight()` runs after address-free target
       candidacy and records current helper candidates as missing exported C ABI
-      wrappers. For allocation helpers it carries the exact
-      `runtime_allocation_native_export_preflight()` blockers: missing
-      `unsafe extern "C"` wrapper, runtime-context ABI decoding, evaluator trap
-      transfer, typed pointer return materialization, and semantic-payload
-      initialization for `aos_alloc_cons`, `aos_alloc_lambda`, and
-      `aos_alloc_thunk`. `runtime_symbol_native_export_plan()` still rejects as
-      incomplete. This is safe readiness metadata only; no function is exported,
-      no Rust callable becomes ABI-callable, no `JITBuilder::symbol` call runs,
-      and no compiled artifact is relinked.
+      wrappers. It preserves family-specific blockers from allocation,
+      environment-access, and write-barrier native-export preflights: missing
+      `unsafe extern "C"` wrappers, runtime-context/environment-frame decoding,
+      evaluator trap transfer, typed/native return materialization, allocation
+      semantic-payload initialization, write-barrier GC-state extraction, and
+      dispatch into the safe before-publish barrier path.
+      `runtime_symbol_native_export_plan()` still rejects as incomplete. This is
+      safe readiness metadata only; no function is exported, no Rust callable
+      becomes ABI-callable, no `JITBuilder::symbol` call runs, and no compiled
+      artifact is relinked.
 - [x] Current `ratchet-jit` ABI-boundary precursor:
       `ratchet-jit::abi` provides a JIT-side, address-free
       `JitRuntimeAbiInventory` copied from the `ratchet-core` runtime-call

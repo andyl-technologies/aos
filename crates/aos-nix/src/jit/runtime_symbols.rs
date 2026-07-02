@@ -12,7 +12,8 @@ use ratchet_jit::{
 };
 use ratchet_oracle::runtime::helpers::{
     RuntimeHelperRustCallableBinding, RuntimeSymbolMissingBinding,
-    runtime_symbol_rust_callable_preflight,
+    RuntimeSymbolNativeExportMissingBinding, RuntimeSymbolNativeExportPreflight,
+    runtime_symbol_native_export_preflight, runtime_symbol_rust_callable_preflight,
 };
 use thiserror::Error;
 
@@ -42,6 +43,14 @@ pub enum NixJitRuntimeSymbolRegistrationError {
     #[error("JIT runtime-symbol address candidate projection failed")]
     AddressCandidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
 
+    /// Oracle native-export readiness metadata could not be built.
+    #[error("JIT runtime-symbol native-export preflight failed")]
+    NativeExport {
+        /// The underlying native-export metadata failure.
+        #[source]
+        source: RuntimeSymbolNameError,
+    },
+
     /// JIT runtime-symbol registration metadata could not be built.
     #[error("JIT runtime-symbol registration preflight failed")]
     Registration(#[from] JitRuntimeSymbolRegistrationError),
@@ -58,16 +67,24 @@ pub enum NixJitRuntimeSymbolRegistrationPlanError {
     #[error("JIT runtime-symbol address candidate projection failed")]
     AddressCandidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
 
+    /// Oracle native-export readiness metadata could not be built.
+    #[error("JIT runtime-symbol native-export preflight failed")]
+    NativeExport {
+        /// The underlying native-export metadata failure.
+        #[source]
+        source: RuntimeSymbolNameError,
+    },
+
     /// JIT runtime-symbol registration metadata could not be built.
     #[error("JIT runtime-symbol registration preflight failed")]
     Registration(#[from] JitRuntimeSymbolRegistrationError),
 
-    /// Some runtime symbols cannot yet be registered with native addresses.
+    /// Some runtime-symbol registration gates are not yet complete.
     #[error(
-        "Nix JIT runtime-symbol registration metadata is incomplete: {missing_count} symbol(s) missing"
+        "Nix JIT runtime-symbol registration metadata is incomplete: {missing_count} gate(s) open"
     )]
     Incomplete {
-        /// The number of runtime symbols still missing registration metadata.
+        /// The number of incomplete registration, native-export, and address-provenance gates.
         missing_count: usize,
         /// The preserved Nix preflight report, including oracle address candidates.
         preflight: NixJitRuntimeSymbolRegistrationPreflight,
@@ -80,6 +97,9 @@ impl From<NixJitRuntimeSymbolRegistrationError> for NixJitRuntimeSymbolRegistrat
             NixJitRuntimeSymbolRegistrationError::AddressCandidates(source) => {
                 Self::AddressCandidates(source)
             }
+            NixJitRuntimeSymbolRegistrationError::NativeExport { source } => {
+                Self::NativeExport { source }
+            }
             NixJitRuntimeSymbolRegistrationError::Registration(source) => {
                 Self::Registration(source)
             }
@@ -91,25 +111,69 @@ impl From<NixJitRuntimeSymbolRegistrationError> for NixJitRuntimeSymbolRegistrat
 pub type NixJitRuntimeSymbolRegistrationPlanResult =
     Result<NixJitRuntimeSymbolRegistrationPlan, NixJitRuntimeSymbolRegistrationPlanError>;
 
+/// An address candidate that is not yet a final exported native ABI address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NixJitRuntimeSymbolAddressProvenanceGap {
+    /// The candidate points at a process-local Rust helper wrapper.
+    RustCallableHelper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The runtime symbol family served by the address candidate.
+        kind: RuntimeSymbolKind,
+    },
+}
+
+impl NixJitRuntimeSymbolAddressProvenanceGap {
+    fn rust_callable_helper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
+        Self::RustCallableHelper {
+            symbol_name: candidate.symbol_name().to_owned(),
+            kind: candidate.kind(),
+        }
+    }
+
+    /// Returns the stable runtime symbol name for this provenance gap.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::RustCallableHelper { symbol_name, .. } => symbol_name,
+        }
+    }
+
+    /// Returns the runtime symbol family blocked by this provenance gap.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        match self {
+            Self::RustCallableHelper { kind, .. } => *kind,
+        }
+    }
+}
+
 /// Nix runtime-symbol registration readiness assembled from oracle helper addresses.
 ///
 /// This report owns the address-candidate preflight that fed the JIT
-/// registration preflight, so callers can compare bound JIT addresses with the
-/// oracle-derived source metadata. It still does not call `JITBuilder::symbol`,
-/// export C ABI wrappers, dereference registered addresses, or call native code.
+/// registration preflight, plus the oracle native-export preflight and
+/// address-provenance gaps that keep those candidates from being final exported
+/// ABI targets. Callers can compare bound JIT addresses with the oracle-derived
+/// source metadata while still inspecting exported-wrapper blockers and
+/// address-provenance gaps. It still does not call `JITBuilder::symbol`, export
+/// C ABI wrappers, dereference registered addresses, or call native code.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NixJitRuntimeSymbolRegistrationPreflight {
     address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+    native_export_preflight: RuntimeSymbolNativeExportPreflight,
+    address_provenance_gaps: Vec<NixJitRuntimeSymbolAddressProvenanceGap>,
     registration_preflight: JitRuntimeSymbolRegistrationPreflight,
 }
 
 impl NixJitRuntimeSymbolRegistrationPreflight {
     fn new(
         address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+        native_export_preflight: RuntimeSymbolNativeExportPreflight,
+        address_provenance_gaps: Vec<NixJitRuntimeSymbolAddressProvenanceGap>,
         registration_preflight: JitRuntimeSymbolRegistrationPreflight,
     ) -> Self {
         Self {
             address_candidate_preflight,
+            native_export_preflight,
+            address_provenance_gaps,
             registration_preflight,
         }
     }
@@ -119,6 +183,11 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
         &self,
     ) -> &NixJitRuntimeSymbolAddressCandidatePreflight {
         &self.address_candidate_preflight
+    }
+
+    /// Returns the oracle native-export readiness preflight.
+    pub const fn native_export_preflight(&self) -> &RuntimeSymbolNativeExportPreflight {
+        &self.native_export_preflight
     }
 
     /// Returns the JIT runtime-symbol registration preflight.
@@ -136,9 +205,21 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
         self.registration_preflight.gaps()
     }
 
-    /// Returns true when every stable runtime symbol has registration metadata.
+    /// Returns native-export gaps in runtime symbol-manifest order.
+    pub fn native_export_missing_bindings(&self) -> &[RuntimeSymbolNativeExportMissingBinding] {
+        self.native_export_preflight.missing_bindings()
+    }
+
+    /// Returns address candidates that are not yet exported native ABI addresses.
+    pub fn address_provenance_gaps(&self) -> &[NixJitRuntimeSymbolAddressProvenanceGap] {
+        &self.address_provenance_gaps
+    }
+
+    /// Returns true when every runtime symbol has registration, export, and exported-address provenance.
     pub fn is_complete(&self) -> bool {
         self.registration_preflight.is_complete()
+            && self.native_export_preflight.is_complete()
+            && self.address_provenance_gaps.is_empty()
     }
 
     /// Returns the registration binding for `symbol_name`, when present.
@@ -154,14 +235,45 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
         self.registration_preflight.gap_for_symbol(symbol_name)
     }
 
+    /// Returns the native-export gap for `symbol_name`, when present.
+    pub fn native_export_gap_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&RuntimeSymbolNativeExportMissingBinding> {
+        self.native_export_preflight
+            .missing_bindings()
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    /// Returns the address-provenance gap for `symbol_name`, when present.
+    pub fn address_provenance_gap_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&NixJitRuntimeSymbolAddressProvenanceGap> {
+        self.address_provenance_gaps
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    fn missing_gate_count(&self) -> usize {
+        self.registration_preflight.gaps().len()
+            + self.native_export_preflight.missing_bindings().len()
+            + self.address_provenance_gaps.len()
+    }
+
     fn into_parts(
         self,
     ) -> (
         NixJitRuntimeSymbolAddressCandidatePreflight,
+        RuntimeSymbolNativeExportPreflight,
+        Vec<NixJitRuntimeSymbolAddressProvenanceGap>,
         JitRuntimeSymbolRegistrationPreflight,
     ) {
         (
             self.address_candidate_preflight,
+            self.native_export_preflight,
+            self.address_provenance_gaps,
             self.registration_preflight,
         )
     }
@@ -170,22 +282,27 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
 /// Complete Nix runtime-symbol registration metadata assembled from oracle addresses.
 ///
 /// This plan owns the address-candidate preflight that fed the JIT registration
-/// plan. It is still metadata for a future `JITBuilder::symbol` pass: it does
-/// not export C ABI wrappers, finalize code, dereference helper addresses, or
-/// call native code.
+/// plan and the complete oracle native-export preflight required for a final
+/// ABI handoff. It can only be built after address candidates have no remaining
+/// Rust-callable provenance gaps. It is still metadata for a future
+/// `JITBuilder::symbol` pass: it does not export C ABI wrappers, finalize code,
+/// dereference helper addresses, or call native code.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NixJitRuntimeSymbolRegistrationPlan {
     address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+    native_export_preflight: RuntimeSymbolNativeExportPreflight,
     registration_plan: JitRuntimeSymbolRegistrationPlan,
 }
 
 impl NixJitRuntimeSymbolRegistrationPlan {
     fn new(
         address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+        native_export_preflight: RuntimeSymbolNativeExportPreflight,
         registration_plan: JitRuntimeSymbolRegistrationPlan,
     ) -> Self {
         Self {
             address_candidate_preflight,
+            native_export_preflight,
             registration_plan,
         }
     }
@@ -195,6 +312,11 @@ impl NixJitRuntimeSymbolRegistrationPlan {
         &self,
     ) -> &NixJitRuntimeSymbolAddressCandidatePreflight {
         &self.address_candidate_preflight
+    }
+
+    /// Returns the complete oracle native-export readiness preflight.
+    pub const fn native_export_preflight(&self) -> &RuntimeSymbolNativeExportPreflight {
+        &self.native_export_preflight
     }
 
     /// Returns the complete JIT runtime-symbol registration plan.
@@ -326,15 +448,23 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
 ///
 /// Returns [`NixJitRuntimeSymbolRegistrationError::AddressCandidates`] when
 /// oracle helper addresses cannot be projected into JIT candidate metadata.
+/// Returns [`NixJitRuntimeSymbolRegistrationError::NativeExport`] when oracle
+/// native-export readiness metadata cannot be built.
 /// Returns [`NixJitRuntimeSymbolRegistrationError::Registration`] when JIT
 /// registration metadata cannot be built from the candidate set.
 pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolRegistrationResult {
     let address_candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
+    let native_export_preflight = runtime_symbol_native_export_preflight()
+        .map_err(|source| NixJitRuntimeSymbolRegistrationError::NativeExport { source })?;
+    let address_provenance_gaps =
+        address_provenance_gaps_for_candidates(address_candidate_preflight.address_candidates());
     let registration_preflight = jit_runtime_symbol_registration_preflight_with_candidates(
         address_candidate_preflight.address_candidates(),
     )?;
     Ok(NixJitRuntimeSymbolRegistrationPreflight::new(
         address_candidate_preflight,
+        native_export_preflight,
+        address_provenance_gaps,
         registration_preflight,
     ))
 }
@@ -342,24 +472,30 @@ pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolReg
 /// Builds complete JIT runtime-symbol registration metadata from oracle helper addresses.
 ///
 /// This strict gate derives process-local oracle helper address candidates,
-/// builds the JIT registration preflight, and succeeds only once every stable
-/// runtime symbol has both declaration and address metadata. While helper and
-/// builtin gaps remain, the incomplete error carries the owned Nix preflight so
-/// callers can inspect both the oracle address candidates and JIT registration
-/// gaps. It still does not call `JITBuilder::symbol`, export C ABI wrappers,
-/// finalize code, dereference helper addresses, or call native code.
+/// builds the JIT registration preflight, carries the oracle native-export
+/// readiness preflight, and succeeds only once every stable runtime symbol has
+/// declaration/address metadata, native-export metadata, and exported-address
+/// provenance. While helper, builtin, exported-wrapper, or Rust-callable
+/// provenance gaps remain, the incomplete error carries the owned Nix preflight
+/// so callers can inspect the oracle address candidates, exported-wrapper
+/// blockers, address-provenance gaps, and JIT registration gaps. It still does
+/// not call `JITBuilder::symbol`, export C ABI wrappers, finalize code,
+/// dereference helper addresses, or call native code.
 ///
 /// # Errors
 ///
 /// Returns [`NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates`] when
 /// oracle helper addresses cannot be projected into JIT candidate metadata.
+/// Returns [`NixJitRuntimeSymbolRegistrationPlanError::NativeExport`] when
+/// oracle native-export readiness metadata cannot be built.
 /// Returns [`NixJitRuntimeSymbolRegistrationPlanError::Registration`] when JIT
 /// registration metadata cannot be built from the candidate set. Returns
 /// [`NixJitRuntimeSymbolRegistrationPlanError::Incomplete`] while any stable
-/// runtime symbol still lacks registration metadata.
+/// runtime-symbol registration, native-export, or address-provenance gate
+/// remains incomplete.
 pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistrationPlanResult {
     let preflight = nix_jit_runtime_symbol_registration_preflight()?;
-    let missing_count = preflight.gaps().len();
+    let missing_count = preflight.missing_gate_count();
     if missing_count != 0 {
         return Err(NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
             missing_count,
@@ -367,7 +503,12 @@ pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistra
         });
     }
 
-    let (address_candidate_preflight, registration_preflight) = preflight.into_parts();
+    let (
+        address_candidate_preflight,
+        native_export_preflight,
+        address_provenance_gaps,
+        registration_preflight,
+    ) = preflight.into_parts();
     let registration_plan = match registration_preflight.into_registration_plan() {
         Ok(registration_plan) => registration_plan,
         Err(JitRuntimeSymbolRegistrationPlanError::Registration(error)) => {
@@ -379,10 +520,15 @@ pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistra
             missing_count,
             preflight,
         }) => {
+            let missing_count = missing_count
+                + native_export_preflight.missing_bindings().len()
+                + address_provenance_gaps.len();
             return Err(NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
                 missing_count,
                 preflight: NixJitRuntimeSymbolRegistrationPreflight::new(
                     address_candidate_preflight,
+                    native_export_preflight,
+                    address_provenance_gaps,
                     preflight,
                 ),
             });
@@ -391,8 +537,18 @@ pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistra
 
     Ok(NixJitRuntimeSymbolRegistrationPlan::new(
         address_candidate_preflight,
+        native_export_preflight,
         registration_plan,
     ))
+}
+
+fn address_provenance_gaps_for_candidates(
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Vec<NixJitRuntimeSymbolAddressProvenanceGap> {
+    candidates
+        .iter()
+        .map(NixJitRuntimeSymbolAddressProvenanceGap::rust_callable_helper)
+        .collect()
 }
 
 fn jit_address_candidate_for_helper_callable(

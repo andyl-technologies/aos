@@ -1186,14 +1186,16 @@ harness, never cut for scope.
 - [x] Current runtime symbol native-export readiness gate:
       `runtime_symbol_native_export_preflight()` is the checked safe boundary
       after address-free target candidacy. It reports current helper candidates
-      as missing exported C ABI wrappers and carries allocation-specific blockers
-      from `runtime_allocation_native_export_preflight()`: missing
-      `unsafe extern "C"` wrapper, runtime-context ABI decoding, evaluator trap
-      transfer, typed pointer return materialization, and semantic-payload
-      initialization for `aos_alloc_cons`, `aos_alloc_lambda`, and
-      `aos_alloc_thunk`. `runtime_symbol_native_export_plan()` still rejects as
-      incomplete. This exports no functions, treats no Rust callable as ABI
-      callable, lowers no Cranelift IR, and calls no `JITBuilder::symbol`.
+      as missing exported C ABI wrappers and preserves the family-specific
+      blockers from allocation, environment-access, and write-barrier native
+      export preflights: missing `unsafe extern "C"` wrappers,
+      runtime-context/environment-frame decoding, evaluator trap transfer,
+      typed/native return materialization, allocation semantic-payload
+      initialization, write-barrier GC-state extraction, and dispatch into the
+      safe before-publish barrier path. `runtime_symbol_native_export_plan()`
+      still rejects as incomplete. This exports no functions, treats no Rust
+      callable as ABI-callable, lowers no Cranelift IR, and calls no
+      `JITBuilder::symbol`.
 - [x] Current `ratchet-jit` crate-boundary precursor:
       `ratchet-jit` is now a workspace crate with
       `#![deny(unsafe_op_in_unsafe_fn)]`, crate-level docs for the future unsafe
@@ -1352,21 +1354,28 @@ harness, never cut for scope.
       dereferenced, or called.
 - [x] Current `aos-nix` runtime-symbol registration preflight bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_registration_preflight()`
-      owns the oracle-derived address-candidate preflight beside the
-      `ratchet-jit` registration preflight built from those candidates. Tests pin
-      allocation-helper, `aos_env_get`, and `aos_gc_write_barrier`
-      binding/address parity and the current `aos_force` gap. This is still
-      readiness metadata only: it does not call `JITBuilder::symbol`, export C
-      ABI wrappers, finalize code, dereference helper addresses, or call native
-      code.
+      owns the oracle-derived address-candidate preflight and the oracle
+      native-export preflight beside the `ratchet-jit` registration preflight
+      built from those candidates, while separately reporting that the current
+      candidates still have Rust-callable rather than exported-wrapper address
+      provenance. Tests pin allocation-helper, `aos_env_get`, and
+      `aos_gc_write_barrier` binding/address parity, preserve the current
+      `aos_force` registration gap, and prove registered helper addresses still
+      carry missing exported-wrapper blockers plus Rust-callable provenance gaps.
+      This is still readiness metadata only: it does not call
+      `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
+      helper addresses, or call native code.
 - [x] Current `aos-nix` runtime-symbol registration plan gate:
       `aos_nix::jit::nix_jit_runtime_symbol_registration_plan()` derives
-      oracle address candidates and requires the JIT registration preflight to
-      be complete before returning a plan. Today it returns a typed incomplete
-      error carrying the owned Nix preflight while helper and builtin gaps such
-      as `aos_force` remain. This is still strict metadata gating only: no
-      `JITBuilder::symbol` registration, exported C ABI wrapper, code
-      finalization, helper-address dereference, or native call is performed.
+      oracle address candidates, carries oracle native-export readiness, and
+      requires the JIT registration preflight, native-export preflight, and
+      exported-address provenance gate to be complete before returning a plan.
+      Today it returns a typed incomplete error carrying the owned Nix preflight
+      while helper/builtin gaps such as `aos_force`, exported-wrapper blockers,
+      and Rust-callable address-provenance gaps remain. This is still strict
+      metadata gating only: no `JITBuilder::symbol` registration, exported C ABI
+      wrapper, code finalization, helper-address dereference, or native call is
+      performed.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and delegates to the

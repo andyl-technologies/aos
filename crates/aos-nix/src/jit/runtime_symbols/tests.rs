@@ -159,6 +159,7 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
     let registration = nix_jit_runtime_symbol_registration_preflight()
         .expect("Nix JIT registration preflight builds");
     let candidates = registration.address_candidate_preflight();
+    let native_export = registration.native_export_preflight();
 
     for symbol_name in EXPECTED_ALLOCATION_SYMBOLS {
         assert!(
@@ -203,6 +204,53 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
         registration.registration_preflight().bindings().len(),
         registration.bindings().len()
     );
+    assert_eq!(
+        native_export.missing_bindings(),
+        registration.native_export_missing_bindings()
+    );
+    assert!(!native_export.is_complete());
+    assert_eq!(
+        registration.address_provenance_gaps().len(),
+        candidates.address_candidates().len()
+    );
+    assert!(
+        registration
+            .address_provenance_gap_for_symbol("aos_env_get")
+            .is_some_and(
+                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
+            )
+    );
+    assert!(
+        registration
+            .native_export_gap_for_symbol("aos_alloc_attrs")
+            .is_some_and(|gap| {
+                gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::Allocation)
+                    && gap
+                        .missing_exported_allocation_blockers()
+                        .is_some_and(|blockers| !blockers.is_empty())
+            })
+    );
+    assert!(
+        registration
+            .native_export_gap_for_symbol("aos_env_get")
+            .is_some_and(|gap| {
+                gap.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::EnvironmentAccess)
+                    && gap
+                        .missing_exported_env_access_blockers()
+                        .is_some_and(|blockers| !blockers.is_empty())
+            })
+    );
+    assert!(
+        registration
+            .native_export_gap_for_symbol("aos_gc_write_barrier")
+            .is_some_and(|gap| {
+                gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::WriteBarrier)
+                    && gap
+                        .missing_exported_write_barrier_blockers()
+                        .is_some_and(|blockers| !blockers.is_empty())
+            })
+    );
 }
 
 #[test]
@@ -218,7 +266,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
         panic!("expected incomplete registration plan");
     };
 
-    assert_eq!(missing_count, preflight.gaps().len());
+    assert_eq!(
+        missing_count,
+        preflight.gaps().len()
+            + preflight.native_export_missing_bindings().len()
+            + preflight.address_provenance_gaps().len()
+    );
     assert!(missing_count > 0);
     assert!(!preflight.is_complete());
     assert!(preflight.gap_for_symbol("aos_force").is_some());
@@ -237,5 +290,18 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
             .address_candidate_preflight()
             .missing_binding_for("aos_force")
             .is_some()
+    );
+    assert!(
+        preflight
+            .native_export_gap_for_symbol("aos_env_get")
+            .is_some_and(|gap| gap.missing_exported_c_abi_wrapper_role()
+                == Some(RuntimeHelperRole::EnvironmentAccess))
+    );
+    assert!(
+        preflight
+            .address_provenance_gap_for_symbol("aos_env_get")
+            .is_some_and(
+                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
+            )
     );
 }
