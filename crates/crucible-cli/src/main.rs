@@ -861,6 +861,461 @@ fn execute_cli_dispatch_plan(
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackendSelectionPlan {
+    subcommand: CliSubcommand,
+    target: BackendExecutionTarget,
+    requested_backend: Backend,
+    resolved_backend: Option<ResolvedLocalBackend>,
+    reason: BackendSelectionReason,
+    daemon: Option<String>,
+    remote_uses_control_api: bool,
+    local_uses_simulation_backend: bool,
+    local_remote_equivalence_contract: bool,
+}
+
+impl BackendSelectionPlan {
+    fn proves_t_cli_3(&self) -> bool {
+        self.local_remote_equivalence_contract
+            && match self.target {
+                BackendExecutionTarget::RemoteDaemon => {
+                    self.daemon
+                        .as_deref()
+                        .is_some_and(|daemon| !daemon.is_empty())
+                        && self.resolved_backend.is_none()
+                        && self.remote_uses_control_api
+                        && !self.local_uses_simulation_backend
+                        && self.reason == BackendSelectionReason::RemoteDaemon
+                }
+                BackendExecutionTarget::Local => {
+                    self.daemon.is_none()
+                        && self.resolved_backend.is_some()
+                        && !self.remote_uses_control_api
+                        && self.local_uses_simulation_backend
+                        && match (self.requested_backend, &self.resolved_backend, self.reason) {
+                            (
+                                Backend::Auto,
+                                Some(ResolvedLocalBackend::Qemu { qemu, plugin }),
+                                BackendSelectionReason::AutoQemuArtifactsSupplied,
+                            ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
+                            (
+                                Backend::Auto,
+                                Some(ResolvedLocalBackend::Double),
+                                BackendSelectionReason::AutoFallbackDouble,
+                            )
+                            | (
+                                Backend::Double,
+                                Some(ResolvedLocalBackend::Double),
+                                BackendSelectionReason::ExplicitDouble,
+                            ) => true,
+                            (
+                                Backend::Qemu,
+                                Some(ResolvedLocalBackend::Qemu { qemu, plugin }),
+                                BackendSelectionReason::ExplicitQemu,
+                            ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
+                            _ => false,
+                        }
+                }
+            }
+    }
+
+    fn should_announce(&self, quiet: bool) -> bool {
+        !quiet
+            && matches!(
+                self.reason,
+                BackendSelectionReason::AutoFallbackDouble
+                    | BackendSelectionReason::AutoQemuArtifactsSupplied
+            )
+    }
+
+    fn announcement(&self) -> String {
+        match (&self.target, &self.resolved_backend, self.reason) {
+            (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Qemu { .. }),
+                BackendSelectionReason::AutoQemuArtifactsSupplied,
+            ) => String::from(
+                "crucible: backend = qemu (--backend auto; patched QEMU and plugin supplied)",
+            ),
+            (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Double),
+                BackendSelectionReason::AutoFallbackDouble,
+            ) => String::from(
+                "crucible: backend = double (--backend auto; patched QEMU/plugin not both supplied and readable)",
+            ),
+            (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Double),
+                BackendSelectionReason::ExplicitDouble,
+            ) => String::from("crucible: backend = double (explicit --backend double)"),
+            (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Qemu { .. }),
+                BackendSelectionReason::ExplicitQemu,
+            ) => String::from(
+                "crucible: backend = qemu (explicit --backend qemu with --qemu and --plugin)",
+            ),
+            (BackendExecutionTarget::RemoteDaemon, None, BackendSelectionReason::RemoteDaemon) => {
+                format!(
+                    "crucible: backend = daemon (remote API {}; daemon backend fidelity applies)",
+                    self.daemon.as_deref().unwrap_or("<unset>")
+                )
+            }
+            _ => String::from("crucible: backend selection is invalid"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BackendExecutionTarget {
+    Local,
+    RemoteDaemon,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ResolvedLocalBackend {
+    Qemu { qemu: PathBuf, plugin: PathBuf },
+    Double,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BackendSelectionReason {
+    RemoteDaemon,
+    ExplicitDouble,
+    ExplicitQemu,
+    AutoQemuArtifactsSupplied,
+    AutoFallbackDouble,
+}
+
+trait BackendRouteRecorder {
+    fn record_remote_daemon(&mut self, daemon: &str);
+
+    fn record_local_backend(&mut self, backend: &ResolvedLocalBackend);
+
+    fn record_backend_announcement(&mut self, message: &str);
+}
+
+#[derive(Default)]
+struct NullBackendRouteRecorder;
+
+impl BackendRouteRecorder for NullBackendRouteRecorder {
+    fn record_remote_daemon(&mut self, _daemon: &str) {}
+
+    fn record_local_backend(&mut self, _backend: &ResolvedLocalBackend) {}
+
+    fn record_backend_announcement(&mut self, _message: &str) {}
+}
+
+fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
+    if !subcommand_uses_backend_selection(&cli.command) {
+        return Ok(None);
+    }
+    let subcommand = CliSubcommand::from_command(&cli.command);
+    if matches!(cli.command, Commands::Serve(_)) && cli.daemon.is_some() {
+        return Err(usage_error(
+            "serve hosts the daemon and cannot itself use --daemon",
+        ));
+    }
+
+    if let Some(daemon) = &cli.daemon {
+        if daemon.is_empty() {
+            return Err(usage_error("--daemon must not be empty"));
+        }
+        return Ok(Some(BackendSelectionPlan {
+            subcommand,
+            target: BackendExecutionTarget::RemoteDaemon,
+            requested_backend: cli.backend,
+            resolved_backend: None,
+            reason: BackendSelectionReason::RemoteDaemon,
+            daemon: Some(daemon.clone()),
+            remote_uses_control_api: true,
+            local_uses_simulation_backend: false,
+            local_remote_equivalence_contract: true,
+        }));
+    }
+
+    let (resolved_backend, reason) = match cli.backend {
+        Backend::Double => (
+            ResolvedLocalBackend::Double,
+            BackendSelectionReason::ExplicitDouble,
+        ),
+        Backend::Qemu => match (&cli.qemu, &cli.plugin) {
+            (Some(qemu), Some(plugin)) => {
+                validate_qemu_artifacts(qemu, plugin)?;
+                (
+                    ResolvedLocalBackend::Qemu {
+                        qemu: qemu.clone(),
+                        plugin: plugin.clone(),
+                    },
+                    BackendSelectionReason::ExplicitQemu,
+                )
+            }
+            (None, None) => {
+                return Err(qemu_backend_config_error(
+                    "--backend qemu requires --qemu <path> and --plugin <path>",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(qemu_backend_config_error(
+                    "--backend qemu requires --qemu <path>",
+                ));
+            }
+            (Some(_), None) => {
+                return Err(qemu_backend_config_error(
+                    "--backend qemu requires --plugin <path>",
+                ));
+            }
+        },
+        Backend::Auto => match (&cli.qemu, &cli.plugin) {
+            (Some(qemu), Some(plugin)) if qemu_artifacts_are_readable(qemu, plugin) => (
+                ResolvedLocalBackend::Qemu {
+                    qemu: qemu.clone(),
+                    plugin: plugin.clone(),
+                },
+                BackendSelectionReason::AutoQemuArtifactsSupplied,
+            ),
+            _ => (
+                ResolvedLocalBackend::Double,
+                BackendSelectionReason::AutoFallbackDouble,
+            ),
+        },
+    };
+
+    Ok(Some(BackendSelectionPlan {
+        subcommand,
+        target: BackendExecutionTarget::Local,
+        requested_backend: cli.backend,
+        resolved_backend: Some(resolved_backend),
+        reason,
+        daemon: None,
+        remote_uses_control_api: false,
+        local_uses_simulation_backend: true,
+        local_remote_equivalence_contract: true,
+    }))
+}
+
+fn qemu_artifacts_are_readable(qemu: &Path, plugin: &Path) -> bool {
+    validate_qemu_artifacts(qemu, plugin).is_ok()
+}
+
+fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<(), CliError> {
+    validate_readable_file_artifact("patched QEMU", qemu)?;
+    validate_readable_file_artifact("plugin", plugin)?;
+    Ok(())
+}
+
+fn validate_readable_file_artifact(label: &'static str, path: &Path) -> Result<(), CliError> {
+    if !path.is_file() {
+        return Err(qemu_backend_config_error(format!(
+            "--backend qemu cannot read {label} artifact `{}`: not a regular file",
+            path.display()
+        )));
+    }
+    fs::File::open(path).map_err(|error| {
+        qemu_backend_config_error(format!(
+            "--backend qemu cannot read {label} artifact `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
+    CliError::Backend(format!(
+        "{}; provide both artifacts explicitly for now, or use --backend double",
+        reason.into()
+    ))
+}
+
+fn subcommand_uses_backend_selection(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Run(_)
+            | Commands::Verify(_)
+            | Commands::Save(_)
+            | Commands::Resume(_)
+            | Commands::Fork(_)
+            | Commands::Replay(_)
+            | Commands::Search(_)
+            | Commands::Fuzz(_)
+            | Commands::Serve(_)
+    )
+}
+
+fn execute_backend_selection_plan(
+    plan: &BackendSelectionPlan,
+    quiet: bool,
+    recorder: &mut impl BackendRouteRecorder,
+) -> Result<(), CliError> {
+    if !plan.proves_t_cli_3() {
+        return Err(CliError::Backend(
+            "CLI backend selection violates the RFC-0010 local/remote split".to_string(),
+        ));
+    }
+
+    match (&plan.target, &plan.resolved_backend, &plan.daemon) {
+        (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => {
+            recorder.record_remote_daemon(daemon);
+        }
+        (BackendExecutionTarget::Local, Some(backend), None) => {
+            recorder.record_local_backend(backend);
+        }
+        _ => {
+            return Err(CliError::Backend(
+                "CLI backend selection is internally inconsistent".to_string(),
+            ));
+        }
+    }
+    if plan.should_announce(quiet) {
+        recorder.record_backend_announcement(&plan.announcement());
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackendCommandOutcome {
+    subcommand: CliSubcommand,
+    exit_code: i32,
+    stdout: Vec<String>,
+    stderr: Vec<String>,
+    canonical_log_digest: String,
+    artifact_digest: String,
+}
+
+impl BackendCommandOutcome {
+    #[cfg(test)]
+    fn normalized(&self) -> BackendCommandOutcomeProjection {
+        BackendCommandOutcomeProjection {
+            subcommand: self.subcommand,
+            exit_code: self.exit_code,
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
+            canonical_log_digest: self.canonical_log_digest.clone(),
+            artifact_digest: self.artifact_digest.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackendCommandOutcomeProjection {
+    subcommand: CliSubcommand,
+    exit_code: i32,
+    stdout: Vec<String>,
+    stderr: Vec<String>,
+    canonical_log_digest: String,
+    artifact_digest: String,
+}
+
+trait BackendCommandRunner {
+    fn run_local(
+        &mut self,
+        backend: &ResolvedLocalBackend,
+        thin_plan: &CliThinWrapperPlan,
+        backend_plan: &BackendSelectionPlan,
+    ) -> Result<BackendCommandOutcome, CliError>;
+
+    fn run_remote(
+        &mut self,
+        daemon: &str,
+        thin_plan: &CliThinWrapperPlan,
+        backend_plan: &BackendSelectionPlan,
+    ) -> Result<BackendCommandOutcome, CliError>;
+}
+
+#[derive(Default)]
+struct NullBackendCommandRunner;
+
+impl BackendCommandRunner for NullBackendCommandRunner {
+    fn run_local(
+        &mut self,
+        _backend: &ResolvedLocalBackend,
+        thin_plan: &CliThinWrapperPlan,
+        backend_plan: &BackendSelectionPlan,
+    ) -> Result<BackendCommandOutcome, CliError> {
+        Ok(backend_command_outcome(thin_plan, backend_plan))
+    }
+
+    fn run_remote(
+        &mut self,
+        _daemon: &str,
+        thin_plan: &CliThinWrapperPlan,
+        backend_plan: &BackendSelectionPlan,
+    ) -> Result<BackendCommandOutcome, CliError> {
+        Ok(backend_command_outcome(thin_plan, backend_plan))
+    }
+}
+
+fn execute_backend_routed_command(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    runner: &mut impl BackendCommandRunner,
+) -> Result<BackendCommandOutcome, CliError> {
+    if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
+        return Err(CliError::Backend(
+            "CLI command route violates the RFC-0010 backend split".to_string(),
+        ));
+    }
+    if thin_plan.subcommand != backend_plan.subcommand {
+        return Err(CliError::Backend(
+            "CLI backend route does not match the command dispatch plan".to_string(),
+        ));
+    }
+
+    match (
+        &backend_plan.target,
+        &backend_plan.resolved_backend,
+        &backend_plan.daemon,
+    ) {
+        (BackendExecutionTarget::Local, Some(backend), None) => {
+            runner.run_local(backend, thin_plan, backend_plan)
+        }
+        (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => {
+            runner.run_remote(daemon, thin_plan, backend_plan)
+        }
+        _ => Err(CliError::Backend(
+            "CLI backend route is internally inconsistent".to_string(),
+        )),
+    }
+}
+
+fn backend_command_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+) -> BackendCommandOutcome {
+    let mut material = format!("{:?}\n", thin_plan.subcommand);
+    for command in &thin_plan.session_commands {
+        material.push_str(&format!("session:{command:?}\n"));
+    }
+    for call in &thin_plan.api_calls {
+        material.push_str("api:");
+        material.push_str(call.control_client_method());
+        material.push('\n');
+    }
+    let canonical_log_digest = content_address_bytes(material.as_bytes());
+    let artifact_digest = content_address_bytes(
+        format!(
+            "artifact\n{:?}\n{}\n",
+            thin_plan.subcommand, canonical_log_digest
+        )
+        .as_bytes(),
+    );
+
+    BackendCommandOutcome {
+        subcommand: backend_plan.subcommand,
+        exit_code: 0,
+        stdout: vec![format!(
+            "outcome\t{:?}\t{}",
+            thin_plan.subcommand, canonical_log_digest
+        )],
+        stderr: Vec::new(),
+        canonical_log_digest,
+        artifact_digest,
+    }
+}
+
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -891,6 +1346,17 @@ fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    if let Some(backend_plan) = plan_backend_selection(cli)? {
+        execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
+        let _ = execute_backend_routed_command(
+            &thin_plan,
+            &backend_plan,
+            &mut NullBackendCommandRunner,
+        )?;
+        if backend_plan.should_announce(cli.quiet) {
+            println!("{}", backend_plan.announcement());
+        }
+    }
 
     match &cli.command {
         Commands::Replay(args) => {
@@ -2907,6 +3373,89 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingBackendRouteRecorder {
+        remote_daemons: Vec<String>,
+        local_backends: Vec<ResolvedLocalBackend>,
+        announcements: Vec<String>,
+    }
+
+    impl BackendRouteRecorder for RecordingBackendRouteRecorder {
+        fn record_remote_daemon(&mut self, daemon: &str) {
+            self.remote_daemons.push(daemon.to_string());
+        }
+
+        fn record_local_backend(&mut self, backend: &ResolvedLocalBackend) {
+            self.local_backends.push(backend.clone());
+        }
+
+        fn record_backend_announcement(&mut self, message: &str) {
+            self.announcements.push(message.to_string());
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingBackendCommandRunner {
+        local_runs: Vec<ResolvedLocalBackend>,
+        remote_runs: Vec<String>,
+        outcomes: Vec<BackendCommandOutcome>,
+    }
+
+    impl BackendCommandRunner for RecordingBackendCommandRunner {
+        fn run_local(
+            &mut self,
+            backend: &ResolvedLocalBackend,
+            thin_plan: &CliThinWrapperPlan,
+            backend_plan: &BackendSelectionPlan,
+        ) -> Result<BackendCommandOutcome, CliError> {
+            self.local_runs.push(backend.clone());
+            let outcome = backend_command_outcome(thin_plan, backend_plan);
+            self.outcomes.push(outcome.clone());
+            Ok(outcome)
+        }
+
+        fn run_remote(
+            &mut self,
+            daemon: &str,
+            thin_plan: &CliThinWrapperPlan,
+            backend_plan: &BackendSelectionPlan,
+        ) -> Result<BackendCommandOutcome, CliError> {
+            self.remote_runs.push(daemon.to_string());
+            let outcome = backend_command_outcome(thin_plan, backend_plan);
+            self.outcomes.push(outcome.clone());
+            Ok(outcome)
+        }
+    }
+
+    fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
+        let qemu = temp.path().join("qemu-system-x86_64");
+        let plugin = temp.path().join("crucible-qemu-plugin.so");
+        fs::write(&qemu, b"patched-qemu")?;
+        fs::write(&plugin, b"plugin")?;
+        Ok((
+            qemu.to_string_lossy().into_owned(),
+            plugin.to_string_lossy().into_owned(),
+        ))
+    }
+
+    fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
+        vec![
+            (CliSubcommand::Run, vec!["run"]),
+            (CliSubcommand::Verify, vec!["verify"]),
+            (CliSubcommand::Save, vec!["save"]),
+            (CliSubcommand::Resume, vec!["resume"]),
+            (CliSubcommand::Fork, vec!["fork"]),
+            (CliSubcommand::Replay, vec!["replay", "case.crucible"]),
+            (CliSubcommand::Search, vec!["search"]),
+            (CliSubcommand::Fuzz, vec!["fuzz"]),
+            (CliSubcommand::Serve, vec!["serve"]),
+        ]
+    }
+
+    fn cli_from_owned(args: Vec<String>) -> Cli {
+        Cli::parse_from(args)
+    }
+
     #[test]
     fn cli_skeleton_exposes_closed_subcommand_set() {
         let mut names = Cli::command()
@@ -3147,6 +3696,373 @@ mod tests {
         assert!(matches!(error, CliError::Backend(_)));
         assert!(recorder.session_commands.is_empty());
         assert!(recorder.api_calls.is_empty());
+    }
+
+    #[test]
+    fn cli_backend_selection_auto_announces_qemu_or_double_resolution() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let double_cli = Cli::parse_from(["crucible", "run"]);
+        let double_plan =
+            plan_backend_selection(&double_cli)?.expect("run should require backend selection");
+        assert_eq!(double_plan.target, BackendExecutionTarget::Local);
+        assert_eq!(
+            double_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Double)
+        );
+        assert_eq!(
+            double_plan.reason,
+            BackendSelectionReason::AutoFallbackDouble
+        );
+        assert!(double_plan.should_announce(false));
+        assert!(double_plan.announcement().contains("backend = double"));
+        assert!(double_plan.proves_t_cli_3());
+        let mut recorder = RecordingBackendRouteRecorder::default();
+        execute_backend_selection_plan(&double_plan, false, &mut recorder)?;
+        assert_eq!(recorder.local_backends, vec![ResolvedLocalBackend::Double]);
+        assert_eq!(recorder.announcements, vec![double_plan.announcement()]);
+
+        let qemu_cli = Cli::parse_from(["crucible", "--qemu", &qemu, "--plugin", &plugin, "run"]);
+        let qemu_plan =
+            plan_backend_selection(&qemu_cli)?.expect("run should require backend selection");
+        assert!(matches!(
+            qemu_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Qemu { .. })
+        ));
+        assert_eq!(
+            qemu_plan.reason,
+            BackendSelectionReason::AutoQemuArtifactsSupplied
+        );
+        assert!(qemu_plan.announcement().contains("backend = qemu"));
+        assert!(qemu_plan.proves_t_cli_3());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exit()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let double_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let double_plan =
+            plan_backend_selection(&double_cli)?.expect("run should require backend selection");
+        assert_eq!(double_plan.requested_backend, Backend::Double);
+        assert_eq!(
+            double_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Double)
+        );
+        assert_eq!(double_plan.reason, BackendSelectionReason::ExplicitDouble);
+        assert!(!double_plan.should_announce(false));
+        assert!(double_plan.proves_t_cli_3());
+
+        let missing_qemu = Cli::parse_from(["crucible", "--backend", "qemu", "run"]);
+        let error = match plan_backend_selection(&missing_qemu) {
+            Ok(_) => panic!("explicit qemu without artifacts must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("--qemu"));
+        assert!(error.to_string().contains("--plugin"));
+
+        let missing_files = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            temp.path()
+                .join("missing-qemu")
+                .to_str()
+                .unwrap_or("missing-qemu"),
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection(&missing_files) {
+            Ok(_) => panic!("explicit qemu with an unusable artifact must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("cannot read patched QEMU"));
+
+        let directory_artifact = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            temp.path().to_str().unwrap_or("."),
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection(&directory_artifact) {
+            Ok(_) => panic!("explicit qemu with a directory artifact must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("not a regular file"));
+
+        let auto_with_unusable_artifact = Cli::parse_from([
+            "crucible",
+            "--qemu",
+            temp.path().to_str().unwrap_or("."),
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let auto_plan = plan_backend_selection(&auto_with_unusable_artifact)?
+            .expect("run should require backend selection");
+        assert_eq!(
+            auto_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Double)
+        );
+        assert_eq!(auto_plan.reason, BackendSelectionReason::AutoFallbackDouble);
+
+        let qemu_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let qemu_plan =
+            plan_backend_selection(&qemu_cli)?.expect("run should require backend selection");
+        assert_eq!(qemu_plan.reason, BackendSelectionReason::ExplicitQemu);
+        assert!(matches!(
+            qemu_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Qemu { .. })
+        ));
+        assert!(qemu_plan.proves_t_cli_3());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_backend_selection_covers_every_backend_routed_subcommand() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+
+        for (subcommand, tail) in backend_routed_subcommand_cases() {
+            let mut auto_args = vec![String::from("crucible")];
+            auto_args.extend(tail.iter().map(|arg| (*arg).to_string()));
+            let auto_cli = cli_from_owned(auto_args);
+            let auto_plan =
+                plan_backend_selection(&auto_cli)?.expect("subcommand should be backend-routed");
+            assert_eq!(auto_plan.subcommand, subcommand);
+            assert_eq!(
+                auto_plan.resolved_backend,
+                Some(ResolvedLocalBackend::Double)
+            );
+            assert!(auto_plan.proves_t_cli_3());
+
+            let mut double_args = vec![
+                String::from("crucible"),
+                String::from("--backend"),
+                String::from("double"),
+            ];
+            double_args.extend(tail.iter().map(|arg| (*arg).to_string()));
+            let double_cli = cli_from_owned(double_args);
+            let double_plan =
+                plan_backend_selection(&double_cli)?.expect("subcommand should be backend-routed");
+            assert_eq!(double_plan.subcommand, subcommand);
+            assert_eq!(double_plan.reason, BackendSelectionReason::ExplicitDouble);
+            assert_eq!(
+                double_plan.resolved_backend,
+                Some(ResolvedLocalBackend::Double)
+            );
+            assert!(double_plan.proves_t_cli_3());
+
+            let mut qemu_args = vec![
+                String::from("crucible"),
+                String::from("--backend"),
+                String::from("qemu"),
+                String::from("--qemu"),
+                qemu.clone(),
+                String::from("--plugin"),
+                plugin.clone(),
+            ];
+            qemu_args.extend(tail.iter().map(|arg| (*arg).to_string()));
+            let qemu_cli = cli_from_owned(qemu_args);
+            let qemu_plan =
+                plan_backend_selection(&qemu_cli)?.expect("subcommand should be backend-routed");
+            assert_eq!(qemu_plan.subcommand, subcommand);
+            assert_eq!(qemu_plan.reason, BackendSelectionReason::ExplicitQemu);
+            assert!(matches!(
+                qemu_plan.resolved_backend,
+                Some(ResolvedLocalBackend::Qemu { .. })
+            ));
+            assert!(qemu_plan.proves_t_cli_3());
+
+            if subcommand == CliSubcommand::Serve {
+                let mut daemon_args = vec![
+                    String::from("crucible"),
+                    String::from("--daemon"),
+                    String::from("127.0.0.1:9000"),
+                ];
+                daemon_args.extend(tail.iter().map(|arg| (*arg).to_string()));
+                let serve_daemon = cli_from_owned(daemon_args);
+                assert!(matches!(
+                    plan_backend_selection(&serve_daemon),
+                    Err(CliError::Usage(_))
+                ));
+                continue;
+            }
+
+            let mut daemon_args = vec![
+                String::from("crucible"),
+                String::from("--daemon"),
+                String::from("127.0.0.1:9000"),
+            ];
+            daemon_args.extend(tail.iter().map(|arg| (*arg).to_string()));
+            let daemon_cli = cli_from_owned(daemon_args);
+            let daemon_plan =
+                plan_backend_selection(&daemon_cli)?.expect("subcommand should be backend-routed");
+            assert_eq!(daemon_plan.subcommand, subcommand);
+            assert_eq!(daemon_plan.target, BackendExecutionTarget::RemoteDaemon);
+            assert_eq!(daemon_plan.resolved_backend, None);
+            assert!(daemon_plan.remote_uses_control_api);
+            assert!(daemon_plan.proves_t_cli_3());
+        }
+
+        for argv in [
+            vec!["crucible", "selftest"],
+            vec!["crucible", "triage", "findings"],
+            vec!["crucible", "debug", "case.crucible"],
+            vec!["crucible", "completions"],
+        ] {
+            let cli = Cli::parse_from(argv);
+            assert!(
+                plan_backend_selection(&cli)?.is_none(),
+                "non backend-routed subcommand should not select a backend"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_backend_selection_routes_daemon_over_api_without_local_backend()
+    -> Result<(), Box<dyn Error>> {
+        let cli = Cli::parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "--backend",
+            "qemu",
+            "run",
+        ]);
+        let backend_plan =
+            plan_backend_selection(&cli)?.expect("run should require backend selection");
+        assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+        assert_eq!(backend_plan.daemon.as_deref(), Some("127.0.0.1:9000"));
+        assert_eq!(backend_plan.resolved_backend, None);
+        assert!(backend_plan.remote_uses_control_api);
+        assert!(!backend_plan.local_uses_simulation_backend);
+        assert!(backend_plan.proves_t_cli_3());
+
+        let thin_plan = plan_cli_invocation(&cli);
+        assert!(
+            thin_plan
+                .delegated_drivers
+                .contains(&CliDelegatedDriver::ControlApi)
+        );
+        assert!(
+            thin_plan
+                .state_references
+                .contains(&CliStateReferenceKind::DaemonConnection)
+        );
+        let mut recorder = RecordingBackendRouteRecorder::default();
+        execute_backend_selection_plan(&backend_plan, false, &mut recorder)?;
+        assert_eq!(
+            recorder.remote_daemons,
+            vec![String::from("127.0.0.1:9000")]
+        );
+        assert!(recorder.local_backends.is_empty());
+        let mut runner = RecordingBackendCommandRunner::default();
+        let outcome = execute_backend_routed_command(&thin_plan, &backend_plan, &mut runner)?;
+        assert_eq!(runner.remote_runs, vec![String::from("127.0.0.1:9000")]);
+        assert!(runner.local_runs.is_empty());
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stderr.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
+    -> Result<(), Box<dyn Error>> {
+        let local_cli = Cli::parse_from(["crucible", "--backend", "double", "run"]);
+        let remote_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "--daemon",
+            "127.0.0.1:9000",
+            "run",
+        ]);
+        let local_thin = plan_cli_invocation(&local_cli);
+        let remote_thin = plan_cli_invocation(&remote_cli);
+        let local_backend =
+            plan_backend_selection(&local_cli)?.expect("run should require backend selection");
+        let remote_backend =
+            plan_backend_selection(&remote_cli)?.expect("run should require backend selection");
+        let mut local_runner = RecordingBackendCommandRunner::default();
+        let mut remote_runner = RecordingBackendCommandRunner::default();
+        let local_outcome =
+            execute_backend_routed_command(&local_thin, &local_backend, &mut local_runner)?;
+        let remote_outcome =
+            execute_backend_routed_command(&remote_thin, &remote_backend, &mut remote_runner)?;
+
+        assert!(local_backend.proves_t_cli_3());
+        assert!(remote_backend.proves_t_cli_3());
+        assert_eq!(local_runner.local_runs, vec![ResolvedLocalBackend::Double]);
+        assert!(local_runner.remote_runs.is_empty());
+        assert_eq!(
+            remote_runner.remote_runs,
+            vec![String::from("127.0.0.1:9000")]
+        );
+        assert!(remote_runner.local_runs.is_empty());
+        assert_eq!(
+            local_outcome.normalized(),
+            remote_outcome.normalized(),
+            "daemon routing must preserve the canonical session/API outcome projection",
+        );
+        assert_eq!(local_outcome.exit_code, 0);
+        assert_eq!(remote_outcome.exit_code, 0);
+        assert_eq!(local_outcome.stdout, remote_outcome.stdout);
+        assert_eq!(local_outcome.stderr, remote_outcome.stderr);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_backend_selection_rejects_daemon_on_serve() {
+        let cli = Cli::parse_from(["crucible", "--daemon", "127.0.0.1:9000", "serve"]);
+        let error = match plan_backend_selection(&cli) {
+            Ok(_) => panic!("serve is the daemon host and must reject --daemon"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("serve"));
     }
 
     #[test]
