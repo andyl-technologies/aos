@@ -1013,6 +1013,16 @@ harness, never cut for scope.
       representative address-free helper candidates, representative gaps, and a
       synthetic complete conversion. This does not attach executable addresses,
       export wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
+- [x] Current `ratchet-jit` crate-boundary precursor:
+      `ratchet-jit` is now a workspace crate with
+      `#![deny(unsafe_op_in_unsafe_fn)]`, crate-level docs for the future unsafe
+      execution-tier boundary, and a safe `abi` module. `abi` mirrors
+      the frozen thunk, lambda, and primop `RuntimeCallSignature` metadata from
+      `ratchet-core`, while runtime-symbol candidate gates remain in
+      `ratchet-oracle` until a lower shared metadata layer exists. Tests prove ABI
+      metadata parity and callable-kind coverage. This adds no oracle dependency,
+      Cranelift dependency, exported wrappers, raw function-pointer calls,
+      executable addresses, or `JITBuilder::symbol` registration.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the

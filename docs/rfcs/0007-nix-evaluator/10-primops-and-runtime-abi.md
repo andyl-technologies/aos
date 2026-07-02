@@ -871,6 +871,15 @@ harness, never cut for scope.
       This is metadata gating only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
+- [x] Current `ratchet-jit` ABI-boundary precursor:
+      `ratchet-jit::abi` provides a JIT-side, address-free
+      `JitRuntimeAbiInventory` copied from the `ratchet-core` runtime-call
+      metadata source of truth. Runtime-symbol candidate gates stay in
+      `ratchet-oracle` for now rather than making the JIT crate depend on the
+      oracle stack. Tests pin thunk, lambda, and primop signature parity plus
+      callable-kind coverage. This is a crate boundary and metadata adapter only;
+      no `unsafe extern "C"` aliases, exported wrappers, raw-pointer calls,
+      Cranelift lowering, or `JITBuilder::symbol` registration are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata

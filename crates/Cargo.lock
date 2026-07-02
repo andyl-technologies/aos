@@ -3726,6 +3726,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratchet-jit"
+version = "0.1.0"
+dependencies = [
+ "ratchet-core",
+]
+
+[[package]]
 name = "ratchet-oracle"
 version = "0.1.0"
 dependencies = [

@@ -6514,6 +6514,16 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       validates builtin names before rendering string-keyed symbol names, but
       does not export unsafe ABI functions or register a Cranelift symbol
       table.
+- [x] Current `ratchet-jit` crate-boundary precursor:
+      `ratchet-jit` is now a workspace crate with
+      `#![deny(unsafe_op_in_unsafe_fn)]`, crate-level docs for the future unsafe
+      execution-tier boundary, and a safe `abi` module. `abi` mirrors
+      the frozen thunk, lambda, and primop `RuntimeCallSignature` metadata from
+      `ratchet-core`, while runtime-symbol candidate gates remain in
+      `ratchet-oracle` until a lower shared metadata layer exists. Tests prove ABI
+      metadata parity and callable-kind coverage. This adds no oracle dependency,
+      Cranelift dependency, exported wrappers, raw function-pointer calls,
+      executable addresses, or `JITBuilder::symbol` registration.
 - [ ] `jit/tier.rs` — tier-up policy (hot-thunk detection) into tier 1.
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the

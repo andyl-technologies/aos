@@ -10,6 +10,7 @@ members = [
     "ratchet-core",
     "ratchet-dialect",
     "ratchet-cache",
+    "ratchet-jit",
     "aos-nix-dialect",
     "ratchet-value",
     "ratchet-oracle",
@@ -125,6 +126,7 @@ aos-nix-harness = { path = "aos-nix-harness" }
 ratchet-core = { path = "ratchet-core" }
 ratchet-dialect = { path = "ratchet-dialect" }
 ratchet-cache = { path = "ratchet-cache" }
+ratchet-jit = { path = "ratchet-jit" }
 aos-nix-dialect = { path = "aos-nix-dialect" }
 ratchet-value = { path = "ratchet-value" }
 ratchet-oracle = { path = "ratchet-oracle" }

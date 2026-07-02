@@ -1,0 +1,10 @@
+[package]
+name = "ratchet-jit"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+
+[dependencies]
+ratchet-core = { workspace = true }
