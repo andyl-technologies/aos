@@ -15,6 +15,7 @@ workspace = true
 clap = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-session = { path = "../crucible-session" }
+crucible-shmem = { path = "../crucible-shmem" }
 
 [dev-dependencies]
 crucible-harness = { path = "../crucible-harness" }

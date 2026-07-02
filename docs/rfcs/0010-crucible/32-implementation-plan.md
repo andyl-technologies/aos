@@ -363,10 +363,10 @@ long-held locks.
   `T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`, which
   records a backend-selection route for each backend-routed subcommand, sends
   `--daemon` invocations over a fakeable API command runner without local
-  backend selection, resolves local `auto` to QEMU only when explicit QEMU/plugin
-  artifacts are both supplied and readable and otherwise to the in-process double
-  with an announcement, fails explicit QEMU without readable artifacts with exit
-  4, proves explicit double never resolves to QEMU, and compares recorded
+  backend selection, resolves local `auto` through hermetic QEMU/plugin
+  discovery when a valid pair is available and otherwise to the in-process
+  double with an announcement, fails explicit QEMU discovery/configuration
+  errors with exit 4, proves explicit double never resolves to QEMU, and compares recorded
   local/remote stdout/stderr, exit-code, canonical-log, and artifact projections.
   `T-CLI-4` is green through `checks.crucible.phase5.cliDeterminismErgonomics`,
   which resolves seed sources in explicit flag, `CRUCIBLE_SEED`, generated order
@@ -379,6 +379,16 @@ long-held locks.
   for canonical event-log traces, propagates non-passing outcomes through the
   process exit-code path after writing artifacts, and gates CLI/model/session
   canonical paths against wall-clock APIs.
+  `T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`,
+  which resolves QEMU/plugin candidates in explicit flag,
+  `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN`, then AOS package-set order, rejects host
+  `$PATH` discovery, requires the patched-QEMU sim-capability marker and matched
+  plugin ABI/QEMU-build metadata, derives that plugin ABI from
+  `crucible_shmem::ABI_VERSION`, fails explicit absence or mismatched candidate
+  pairs with exit 4 and actionable discovery guidance, wires the packaged CLI
+  with compile-time AOS store-path hints for `qemu-crucible` and
+  `crucible-qemu-plugin`, and pins the selected QEMU build identity plus plugin
+  ABI into replay identity checks and failure reproduction artifacts.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

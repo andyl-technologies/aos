@@ -946,14 +946,14 @@ branch on the verdict without parsing output:
   Completed by `checks.crucible.phase5.cliBackendSelection`: the CLI now builds
   and executes a `BackendSelectionPlan` for every backend-routed subcommand,
   routes `--daemon` invocations to a fakeable remote API command runner without
-  selecting a local backend, resolves local `--backend auto` to QEMU only when
-  both `--qemu` and `--plugin` are supplied and readable and otherwise to the
+  selecting a local backend, resolves local `--backend auto` through the
+  hermetic discovery contract completed by T-CLI-5 and otherwise to the
   in-process double, and announces the auto-selected backend unless `--quiet` is
-  set. Explicit `--backend qemu` fails with exit code 4 until both artifacts are
-  supplied and readable, while `--backend double` never resolves to QEMU. The
-  focused tests record local and remote command-runner invocations and compare
-  stdout/stderr, exit code, canonical-log digest, and artifact digest
-  projections; full flag/env/AOS package-set discovery remains T-CLI-5.
+  set. Explicit `--backend qemu` fails with exit code 4 when hermetic discovery
+  cannot produce a valid patched-QEMU/plugin pair, while `--backend double`
+  never resolves to QEMU. The focused tests record local and remote
+  command-runner invocations and compare stdout/stderr, exit code,
+  canonical-log digest, and artifact digest projections.
 - [x] **T-CLI-4** Implement determinism ergonomics: seed resolution
   (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
   artifact + copy-pasteable repro command, and the three trace formats
@@ -975,10 +975,23 @@ branch on the verdict without parsing output:
   `markdown` for event-log traces, and propagates non-passing outcomes through
   the process exit-code path after writing artifacts. The gate scans the CLI plus
   canonical model/session sources for wall-clock APIs on canonical paths.
-- [ ] **T-CLI-5** Implement hermetic QEMU/plugin discovery
+- [x] **T-CLI-5** Implement hermetic QEMU/plugin discovery
   (flag → env → AOS package set, no host `$PATH`), clear fail-with-exit-4 on
   absence/mismatch, and pinning the AOS QEMU build identity + plugin ABI version
   into the artifact. — satisfies [CLI-13], [CLI-14], [CLI-15]; spec §5.
+  Completed by `checks.crucible.phase5.cliHermeticDiscovery`: the CLI now
+  resolves QEMU and plugin candidates independently in flag, environment
+  (`CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN`), then AOS package-set order, with the
+  packaged CLI receiving compile-time AOS store-path hints for
+  `qemu-crucible` and `crucible-qemu-plugin`. A complete candidate pair must
+  have readable artifacts, a patched-QEMU sim-capability marker with plugins
+  enabled and a build identity, and plugin build metadata whose ABI is derived
+  from `crucible_shmem::ABI_VERSION` and whose QEMU build identity matches the
+  selected QEMU marker. Explicit QEMU absence or any mismatched candidate pair
+  fails with exit code 4 and a message listing the discovery order and stating
+  that host `$PATH` QEMU is never used. Resolved QEMU backends carry the pinned
+  QEMU build identity and plugin ABI into replay identity checks and failure
+  reproduction artifacts.
 - [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.

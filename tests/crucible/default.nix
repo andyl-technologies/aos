@@ -1459,6 +1459,17 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliHermeticDiscovery = import ./phase5-cli-hermetic-discovery.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliHermeticDiscovery";
+      taskIds = ["T-CLI-5"];
+      dependencies = [
+        phase5.cliDeterminismErgonomics
+        phase4.gates.replayOracle.rawGate
+        phase4.gates.e2eDeterminism.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

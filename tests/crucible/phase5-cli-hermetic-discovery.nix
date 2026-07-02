@@ -1,0 +1,366 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase5.cliHermeticDiscovery",
+  taskIds ? ["T-CLI-5"],
+  dependencies ? [],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
+  };
+
+  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
+  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  defaultChecks = builtins.readFile ./default.nix;
+  cruciblePkg = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  pluginPkg = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
+
+  taskList = builtins.concatStringsSep "," taskIds;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
+      {
+        label = "T-CLI-5 checked off";
+        needle = "- [x] **T-CLI-5**";
+      }
+      {
+        label = "T-CLI-5 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliHermeticDiscovery`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
+      {
+        label = "phase5 CLI hermetic discovery status note";
+        needle = "`T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "QEMU env constant";
+        needle = "const CRUCIBLE_QEMU_ENV: &str = \"CRUCIBLE_QEMU\";";
+      }
+      {
+        label = "plugin env constant";
+        needle = "const CRUCIBLE_PLUGIN_ENV: &str = \"CRUCIBLE_PLUGIN\";";
+      }
+      {
+        label = "AOS package QEMU hint";
+        needle = "option_env!(\"CRUCIBLE_AOS_QEMU\")";
+      }
+      {
+        label = "AOS package plugin hint";
+        needle = "option_env!(\"CRUCIBLE_AOS_PLUGIN\")";
+      }
+      {
+        label = "plugin ABI prefix";
+        needle = "const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX";
+      }
+      {
+        label = "plugin ABI derives from shmem";
+        needle = "crucible_shmem::ABI_VERSION";
+      }
+      {
+        label = "required plugin ABI helper";
+        needle = "fn required_qemu_plugin_abi";
+      }
+      {
+        label = "discovery source enum";
+        needle = "enum QemuDiscoverySource";
+      }
+      {
+        label = "QEMU discovery environment seam";
+        needle = "trait QemuDiscoveryEnvironment";
+      }
+      {
+        label = "AOS package-set seam";
+        needle = "trait AosQemuPackageSet";
+      }
+      {
+        label = "discovery planner";
+        needle = "fn discover_qemu_artifacts";
+      }
+      {
+        label = "explicit qemu requirement";
+        needle = "fn require_qemu_artifacts";
+      }
+      {
+        label = "discovery precedence";
+        needle = "QemuDiscoverySource::Flag";
+      }
+      {
+        label = "environment discovery source";
+        needle = "QemuDiscoverySource::Environment";
+      }
+      {
+        label = "AOS package-set discovery source";
+        needle = "QemuDiscoverySource::AosPackageSet";
+      }
+      {
+        label = "marker validation";
+        needle = "fn read_qemu_build_marker";
+      }
+      {
+        label = "plugin marker validation";
+        needle = "fn read_plugin_build_marker";
+      }
+      {
+        label = "patched QEMU marker check";
+        needle = "qemu_crucible_patches_applied";
+      }
+      {
+        label = "plugin support marker check";
+        needle = "qemu_plugins_enabled";
+      }
+      {
+        label = "plugin ABI mismatch check";
+        needle = "plugin_marker.plugin_abi != required_plugin_abi";
+      }
+      {
+        label = "QEMU build identity mismatch check";
+        needle = "plugin_marker.qemu_build_id != qemu_marker.raw_build_id";
+      }
+      {
+        label = "artifact identity from resolved backend";
+        needle = "fn expected_replay_identity_for_backend";
+      }
+      {
+        label = "resolved backend carries QEMU build ID";
+        needle = "qemu_build_id: String";
+      }
+      {
+        label = "resolved backend carries plugin ABI";
+        needle = "plugin_abi: String";
+      }
+      {
+        label = "T-CLI-5 proof predicate";
+        needle = "fn proves_t_cli_5";
+      }
+      {
+        label = "host PATH never used message";
+        needle = "host $PATH QEMU is never used";
+      }
+      {
+        label = "discovery precedence test";
+        needle = "cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set";
+      }
+      {
+        label = "compile-time AOS hint test";
+        needle = "cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints";
+      }
+      {
+        label = "absence and mismatch exit test";
+        needle = "cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4";
+      }
+      {
+        label = "artifact identity pinning test";
+        needle = "cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+      {
+        label = "CLI depends on shmem ABI source";
+        needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
+      }
+    ]
+    ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
+      {
+        label = "QEMU package argument";
+        needle = "qemu-crucible";
+      }
+      {
+        label = "plugin package argument";
+        needle = "crucible-qemu-plugin";
+      }
+      {
+        label = "compile-time QEMU hint";
+        needle = "CRUCIBLE_AOS_QEMU";
+      }
+      {
+        label = "compile-time plugin hint";
+        needle = "CRUCIBLE_AOS_PLUGIN";
+      }
+      {
+        label = "runtime QEMU closure";
+        needle = "runtimeDeps = [qemu-crucible crucible-qemu-plugin]";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
+      {
+        label = "plugin build-info reads shmem source";
+        needle = "done < crucible-shmem/src/lib.rs";
+      }
+      {
+        label = "plugin build-info ABI prefix";
+        needle = "plugin_abi=crucible-shmem-abi-v$shmem_abi_version";
+      }
+      {
+        label = "plugin build-info QEMU identity";
+        needle = "qemu_build_id=\${qemu-crucible.qemuBuildIdentity}";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase5 exposes CLI hermetic discovery check";
+        needle = "cliHermeticDiscovery = import ./phase5-cli-hermetic-discovery.nix";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "host PATH QEMU discovery";
+        needle = "std::env::var(\"PATH\")";
+      }
+      {
+        label = "host which discovery";
+        needle = "Command::new(\"which\")";
+      }
+      {
+        label = "host PATH QEMU launch";
+        needle = "Command::new(\"qemu";
+      }
+      {
+        label = "shell PATH search";
+        needle = builtins.concatStringsSep " " ["which" "qemu"];
+      }
+    ];
+
+  failureText = builtins.concatStringsSep "\n" failures;
+in
+  pkgs.mkDerivation {
+    pname = "crucible-phase5-cli-hermetic-discovery";
+    version = "0";
+    src = crucibleSrc;
+
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.rust
+      pkgs.sed
+    ];
+
+    CRUCIBLE_T_CLI_5_FAILURES = failureText;
+    ATTR_PATH = attrPath;
+    TASK_IDS = taskList;
+    DEPENDENCY_COUNT = toString (builtins.length dependencies);
+    DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          set -eu
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          set -eu
+          export CARGO_HOME="$TMPDIR/cargo"
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          mkdir -p "$CARGO_HOME" .cargo
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
+        '';
+      }
+      {
+        name = "run-cli-hermetic-discovery";
+        script = ''
+          set -eu
+
+          if [ -n "$CRUCIBLE_T_CLI_5_FAILURES" ]; then
+            printf '%s\n' "$CRUCIBLE_T_CLI_5_FAILURES" >&2
+            exit 1
+          fi
+
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          qemu_fixture="$TMPDIR/aos-package-set/qemu"
+          plugin_fixture="$TMPDIR/aos-package-set/plugin"
+          mkdir -p \
+            "$qemu_fixture/bin" \
+            "$qemu_fixture/share/aos/crucible" \
+            "$plugin_fixture/lib" \
+            "$plugin_fixture/nix-support"
+          printf 'patched-qemu\n' > "$qemu_fixture/bin/qemu-system-x86_64"
+          printf 'plugin\n' > "$plugin_fixture/lib/libcrucible_qemu_plugin.so"
+          {
+            printf 'qemu_plugins_enabled=true\n'
+            printf 'qemu_crucible_patches_applied=true\n'
+            printf 'qemu_build_id=gate-aos-qemu-build\n'
+          } > "$qemu_fixture/share/aos/crucible/qemu-build-identity.env"
+          {
+            printf 'package=crucible-qemu-plugin\n'
+            printf 'qemu_package=qemu-crucible\n'
+            printf 'qemu_build_id=gate-aos-qemu-build\n'
+            printf 'plugin_abi=crucible-shmem-abi-v1\n'
+          } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
+          export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
+          export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"
+
+          cd crates
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-cli-hermetic-discovery-target" \
+            -p crucible-cli \
+            cli_hermetic_qemu_discovery \
+            -- --test-threads=1
+        '';
+      }
+    ];
+
+    meta = {
+      description = "RFC-0010 phase 5 CLI hermetic QEMU discovery gate for ${taskList}";
+      passthru = {
+        inherit attrPath taskIds dependencies;
+        failureText = failureText;
+      };
+    };
+  }

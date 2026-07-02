@@ -152,7 +152,7 @@
       }
       {
         label = "backend announcement message";
-        needle = "crucible: backend = double (--backend auto; patched QEMU/plugin not both supplied and readable)";
+        needle = "crucible: backend = double (--backend auto; patched QEMU/plugin not discoverable)";
       }
       {
         label = "explicit qemu config error";
@@ -161,10 +161,6 @@
       {
         label = "explicit qemu artifact readability check";
         needle = "fn validate_qemu_artifacts";
-      }
-      {
-        label = "auto shares qemu artifact readability check";
-        needle = "fn qemu_artifacts_are_readable";
       }
       {
         label = "qemu artifact open check";
@@ -245,14 +241,6 @@
       {
         label = "host PATH QEMU launch";
         needle = "Command::new(\"qemu";
-      }
-      {
-        label = "host PATH plugin discovery";
-        needle = "CRUCIBLE_QEMU";
-      }
-      {
-        label = "host PATH plugin discovery";
-        needle = "CRUCIBLE_PLUGIN";
       }
     ];
 

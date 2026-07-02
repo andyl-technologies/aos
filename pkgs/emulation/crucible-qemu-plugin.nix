@@ -64,13 +64,26 @@ in
     postInstall = ''
       test -f "$out/lib/libcrucible_qemu_plugin.so"
 
+      shmem_abi_version=
+      while IFS= read -r line; do
+        case "$line" in
+          "pub const ABI_VERSION: u32 = "*";")
+            shmem_abi_version=''${line#pub const ABI_VERSION: u32 = }
+            shmem_abi_version=''${shmem_abi_version%;}
+            ;;
+        esac
+      done < crucible-shmem/src/lib.rs
+      test -n "$shmem_abi_version"
+
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-qemu-plugin-build-info" <<INFO
       package=crucible-qemu-plugin
       build_system=mkCargoPackage
       cargo_deps=fetchCargoDeps
       qemu_package=qemu-crucible
+      qemu_build_id=${qemu-crucible.qemuBuildIdentity}
       qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
+      plugin_abi=crucible-shmem-abi-v$shmem_abi_version
       INFO
     '';
 

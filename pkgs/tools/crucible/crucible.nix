@@ -4,6 +4,8 @@
   mkCargoPackage,
   fetchCargoDeps,
   rust,
+  qemu-crucible,
+  crucible-qemu-plugin,
 }: let
   version = "0.1.0";
   src = import ./_source.nix {inherit lib;};
@@ -28,6 +30,9 @@ in
     cargoTestFlags = packageFlags;
     doCheck = true;
     buildDeps = [rust.dev];
+    runtimeDeps = [qemu-crucible crucible-qemu-plugin];
+    CRUCIBLE_AOS_QEMU = "${qemu-crucible}/bin/qemu-system-x86_64";
+    CRUCIBLE_AOS_PLUGIN = "${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
