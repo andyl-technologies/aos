@@ -1508,6 +1508,17 @@ harness, never cut for scope.
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered helper addresses, call native code, or prove
       tier-1 output parity.
+- [x] Current `aos-nix` force-aware tier-1 conformance-readiness preflight:
+      `aos_nix::jit::nix_jit_force_aware_tier1_conformance_readiness_for_ir_root()`
+      composes the top-level runtime-symbol registration bridge with the
+      force-aware evaluator-thunk install-readiness report. Cold roots preserve
+      the no-code gap, literal roots reach the same runtime-symbol and
+      evaluator-publication blockers as the existing conformance gate, and hot
+      local environment-slot roots surface the missing `aos_force` promotion
+      blocker before a readiness report can publish pointer metadata. This
+      remains a harness gate only: no evaluator heap thunk is mutated, no code
+      pointer is cast or called, and no registered helper address is dereferenced
+      or called.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the
