@@ -1045,6 +1045,16 @@ harness, never cut for scope.
       already-tier-1 no-repeat promotion. This does not store counters beside
       thunks, mutate thunk state or code pointers, lower Cranelift IR, compile
       native code, install OSR, or run tier-1 code.
+- [x] Current `ratchet-jit` unsafe-discipline precursor:
+      `ratchet-jit::safety::jit_unsafe_discipline()` records the JIT crate's
+      unsafe-boundary manifest: `#![deny(unsafe_op_in_unsafe_fn)]`, local
+      `// SAFETY:` invariant comments, second-reviewer requirement, sanitizer-CI
+      requirement, and the innately unsafe code-pointer-transmute call boundary.
+      Tests assert the manifest, prove the crate root declares the lint, and scan
+      current JIT sources for real `unsafe`/`extern`/`transmute` code tokens
+      outside line comments and ordinary strings. This is a precursor only: no
+      unsafe JIT blocks, exported wrappers, executable code calls, CI jobs, or
+      review automation are implemented here.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the

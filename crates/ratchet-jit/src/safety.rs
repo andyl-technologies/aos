@@ -1,0 +1,201 @@
+//! Unsafe-discipline manifest for future JIT code.
+//!
+//! `ratchet-jit` is intentionally an unsafe-capable crate because executable
+//! machine-code entry requires raw function-pointer calls that Rust cannot
+//! validate. This module records the standing review controls for that future
+//! boundary while the current crate still contains only safe metadata and policy
+//! adapters.
+
+/// Crate-level lint required for the JIT unsafe boundary.
+pub const JIT_UNSAFE_CRATE_LINT: &str = "#![deny(unsafe_op_in_unsafe_fn)]";
+
+/// Comment prefix required beside each future unsafe operation.
+pub const JIT_SAFETY_COMMENT_PREFIX: &str = "// SAFETY:";
+
+/// The JIT operation that remains innately unsafe even after validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitInnateUnsafeOperation {
+    /// Transmutes a raw code pointer into the frozen runtime-call ABI and calls it.
+    CodePointerTransmuteCall,
+}
+
+/// Standing controls required before unsafe JIT code can land.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JitUnsafeDiscipline {
+    crate_lint: &'static str,
+    safety_comment_prefix: &'static str,
+    second_reviewer_required: bool,
+    sanitizer_ci_required: bool,
+    innate_unsafe_operation: JitInnateUnsafeOperation,
+}
+
+impl JitUnsafeDiscipline {
+    /// Creates the standing JIT unsafe-discipline manifest.
+    pub const fn new(
+        crate_lint: &'static str,
+        safety_comment_prefix: &'static str,
+        second_reviewer_required: bool,
+        sanitizer_ci_required: bool,
+        innate_unsafe_operation: JitInnateUnsafeOperation,
+    ) -> Self {
+        Self {
+            crate_lint,
+            safety_comment_prefix,
+            second_reviewer_required,
+            sanitizer_ci_required,
+            innate_unsafe_operation,
+        }
+    }
+
+    /// Returns the crate-level lint required by the unsafe fence.
+    pub const fn crate_lint(self) -> &'static str {
+        self.crate_lint
+    }
+
+    /// Returns the required local invariant-comment prefix.
+    pub const fn safety_comment_prefix(self) -> &'static str {
+        self.safety_comment_prefix
+    }
+
+    /// Returns whether a second reviewer is required for new unsafe blocks.
+    pub const fn second_reviewer_required(self) -> bool {
+        self.second_reviewer_required
+    }
+
+    /// Returns whether sanitizer CI must cover unsafe JIT paths once they exist.
+    pub const fn sanitizer_ci_required(self) -> bool {
+        self.sanitizer_ci_required
+    }
+
+    /// Returns the innate unsafe operation that the JIT boundary must isolate.
+    pub const fn innate_unsafe_operation(self) -> JitInnateUnsafeOperation {
+        self.innate_unsafe_operation
+    }
+}
+
+/// Returns the standing unsafe-discipline manifest for `ratchet-jit`.
+pub const fn jit_unsafe_discipline() -> JitUnsafeDiscipline {
+    JitUnsafeDiscipline::new(
+        JIT_UNSAFE_CRATE_LINT,
+        JIT_SAFETY_COMMENT_PREFIX,
+        true,
+        true,
+        JitInnateUnsafeOperation::CodePointerTransmuteCall,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use super::*;
+
+    #[test]
+    fn discipline_manifest_names_required_controls() {
+        let discipline = jit_unsafe_discipline();
+
+        assert_eq!(discipline.crate_lint(), JIT_UNSAFE_CRATE_LINT);
+        assert_eq!(
+            discipline.safety_comment_prefix(),
+            JIT_SAFETY_COMMENT_PREFIX
+        );
+        assert!(discipline.second_reviewer_required());
+        assert!(discipline.sanitizer_ci_required());
+        assert_eq!(
+            discipline.innate_unsafe_operation(),
+            JitInnateUnsafeOperation::CodePointerTransmuteCall
+        );
+    }
+
+    #[test]
+    fn crate_root_declares_unsafe_operation_lint() {
+        let crate_root = include_str!("lib.rs");
+
+        assert!(crate_root.contains(JIT_UNSAFE_CRATE_LINT));
+    }
+
+    #[test]
+    fn current_jit_sources_remain_safe_metadata_only() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut findings = Vec::new();
+
+        for source_path in rust_sources(&source_root) {
+            let source = fs::read_to_string(&source_path).expect("source file is readable");
+            for (line_number, line) in source.lines().enumerate() {
+                let code = code_without_line_comments_or_ordinary_strings(line);
+                for token in code_tokens(&code) {
+                    if matches!(token, "unsafe" | "extern" | "transmute") {
+                        findings.push(format!(
+                            "{}:{} contains `{token}`",
+                            source_path.display(),
+                            line_number + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            findings.is_empty(),
+            "ratchet-jit has not landed executable unsafe code yet:\n{}",
+            findings.join("\n")
+        );
+    }
+
+    fn rust_sources(root: &Path) -> Vec<PathBuf> {
+        let mut sources = Vec::new();
+        collect_rust_sources(root, &mut sources);
+        sources.sort();
+        sources
+    }
+
+    fn collect_rust_sources(path: &Path, sources: &mut Vec<PathBuf>) {
+        if path.is_dir() {
+            for entry in fs::read_dir(path).expect("source directory is readable") {
+                collect_rust_sources(&entry.expect("source entry is readable").path(), sources);
+            }
+            return;
+        }
+
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push(path.to_path_buf());
+        }
+    }
+
+    fn code_without_line_comments_or_ordinary_strings(line: &str) -> String {
+        let mut code = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        let mut in_string = false;
+        let mut escaped = false;
+
+        while let Some(ch) = chars.next() {
+            if !in_string && ch == '/' && chars.peek() == Some(&'/') {
+                break;
+            }
+
+            if ch == '"' && !escaped {
+                in_string = !in_string;
+                code.push(' ');
+            } else if in_string {
+                code.push(' ');
+            } else {
+                code.push(ch);
+            }
+
+            escaped = ch == '\\' && !escaped;
+            if ch != '\\' {
+                escaped = false;
+            }
+        }
+
+        code
+    }
+
+    fn code_tokens(code: &str) -> impl Iterator<Item = &str> {
+        code.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .filter(|token| !token.is_empty())
+    }
+}

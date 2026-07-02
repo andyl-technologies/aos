@@ -6550,6 +6550,16 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the
       `transmute` of code pointers is the documented innate-unsafe call (`S-17`).
+- [x] Current `ratchet-jit` unsafe-discipline precursor:
+      `ratchet-jit::safety::jit_unsafe_discipline()` records the JIT crate's
+      unsafe-boundary manifest: `#![deny(unsafe_op_in_unsafe_fn)]`, local
+      `// SAFETY:` invariant comments, second-reviewer requirement, sanitizer-CI
+      requirement, and the innately unsafe code-pointer-transmute call boundary.
+      Tests assert the manifest, prove the crate root declares the lint, and scan
+      current JIT sources for real `unsafe`/`extern`/`transmute` code tokens
+      outside line comments and ordinary strings. This is a precursor only: no
+      unsafe JIT blocks, exported wrappers, executable code calls, CI jobs, or
+      review automation are implemented here.
 - [ ] Copy-and-patch hedge kept measurable if Cranelift warmup proves too high
       (`M-8`).
 

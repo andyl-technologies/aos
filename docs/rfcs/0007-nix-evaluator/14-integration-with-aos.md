@@ -962,6 +962,16 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
       `#![deny(unsafe_op_in_unsafe_fn)]` and per-block `// SAFETY:`, and wire
       the miri/sanitizer clean trust-core CI (§10.1, §10.2) — discipline held
       every later phase, `S-17`.
+- [x] Current `ratchet-jit` unsafe-discipline precursor:
+      `ratchet-jit::safety::jit_unsafe_discipline()` records the JIT crate's
+      unsafe-boundary manifest: `#![deny(unsafe_op_in_unsafe_fn)]`, local
+      `// SAFETY:` invariant comments, second-reviewer requirement, sanitizer-CI
+      requirement, and the innately unsafe code-pointer-transmute call boundary.
+      Tests assert the manifest, prove the crate root declares the lint, and scan
+      current JIT sources for real `unsafe`/`extern`/`transmute` code tokens
+      outside line comments and ordinary strings. This keeps today's JIT crate
+      metadata-only; actual unsafe JIT blocks, CI jobs, and review automation
+      remain open.
 - [ ] Tooling discipline as standing CI controls: `cargo miri` on the conformance suite, ASan/UBSan, `cargo fuzz` (value decode / GC / ATerm), `loom` (CAS protocol, deques — `R-4`), ThreadSanitizer (parallel binary), two-maintainer review of every new `unsafe` block; `.unwrap()`/`.expect()` ban still applies (§10.3) — **P1**→**P8** as each mechanism lands, `S-17`.
 
 ### Observability and operator controls (§11)
