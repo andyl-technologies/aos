@@ -8,7 +8,8 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
     EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
-    SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime, step,
+    SchedulerError, SchedulerEventLogEntry, SchedulerNodeId, SchedulingNodeKind, Seed,
+    TemporalGraph, VirtualTime, step,
 };
 use crucible_api::{
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
@@ -187,15 +188,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
         let configuration = step(&request.configuration, decision.clone());
-        self.observed_control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(
-                request
-                    .control
-                    .iter()
-                    .map(|operation| operation.kind.clone()),
-            );
+        record_control_operations(&self.observed_control, &request.control);
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },
@@ -209,6 +202,24 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
         })
     }
+
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<crucible::ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        record_control_operations(&self.observed_control, &control);
+        Ok(Vec::new())
+    }
+}
+
+fn record_control_operations(
+    observed_control: &Arc<Mutex<Vec<SchedulerControlOperationKind>>>,
+    control: &[crucible::ControlOperation],
+) {
+    observed_control
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extend(control.iter().map(|operation| operation.kind.clone()));
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {

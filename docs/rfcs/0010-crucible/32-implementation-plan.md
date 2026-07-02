@@ -217,6 +217,11 @@ long-held locks.
   adds engine-owned active-step state for quantum/event/assertion/timer/duration
   forward steps, pauses only at deterministic event-log or virtual-time stop
   points, and verifies pause/stop interruption between bounded quanta.
+  `T-SESS-6` is green through `checks.crucible.phase5.sessionBoundaryControl`,
+  which records accepted running boundary commands in a deterministic
+  frontier/quanta-keyed session control log, verifies scheduler-backed control
+  delivery and stopped-state terminal drain, and checks pause/stop take effect
+  at the boundary without an extra quantum while stop invokes shutdown.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

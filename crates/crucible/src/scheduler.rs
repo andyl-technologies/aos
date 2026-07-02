@@ -69,6 +69,37 @@ pub trait QuantumLoop {
     /// Returns [`SchedulerError`] when the quantum cannot be driven or when the
     /// scheduler detects an invalid boundary condition.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
+
+    /// Applies scheduler-owned control at the current boundary.
+    ///
+    /// This hook is for control operations that must take effect without
+    /// advancing another scheduler quantum, such as interactive fault injection
+    /// acknowledged at a session boundary. Pure model loops can use the default
+    /// implementation when they have no scheduler-owned control state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a control operation cannot be admitted or
+    /// applied at the boundary.
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        let _ = control;
+        Ok(Vec::new())
+    }
+
+    /// Shuts down scheduler/backend resources owned by this quantum loop.
+    ///
+    /// Implementations that own live backends should override this hook and
+    /// perform idempotent cleanup. Pure model loops can use the default no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when shutdown cannot complete cleanly.
+    fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
 }
 
 /// Advances one bounded host-concurrent scheduler round.
@@ -11078,6 +11109,24 @@ impl SchedulerSendAuthorizer for SingleScheduler {
 impl QuantumLoop for SingleScheduler {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.drive_authoritative_quantum(request)
+    }
+
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.admit_control_at_boundary(control);
+        let SchedulerControlDrain {
+            events,
+            applications,
+        } = self.drain_control_events()?;
+        let at = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        let event_log = self.emit_quantum_event_log(&events, &[], &[], at, false)?;
+        self.commit_control_applications(applications);
+        self.yield_to_control_inbox();
+        Ok(event_log.entries)
     }
 }
 

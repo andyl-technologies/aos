@@ -200,9 +200,9 @@ The complete, defined transitions. Every cell not listed is a no-op-with-error
   from \ command   start/instantiate   continue   pause   step    stop    inject/heal   set/rm bp   savepoint   fork    query
   ──────────────   ─────────────────   ────────   ─────   ────    ────    ───────────   ─────────   ─────────   ────    ─────
   Loaded           → Paused(Instan.)   error      error   error   →Stop   error         ok (stays)  error       error   ok
-  Running          error               error*     →Paused →Running† →Stop queued(§5)    queued(§5)  queued(§5)  err**   ok(live)
+  Running          error               error*     →Paused →Running† →Stop queued(§5)    queued(§5)  queued(§5)  →Paused** ok(live)
   Paused           error               →Running   ok      →Running† →Stop ok            ok          ok          ok      ok
-  Stopped          error               error      error   error   error   error         ok(read)    error       ok***   ok
+  Stopped          error               error      error   error   error   error         error       error       ok***   ok
   ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   *   already Running  ** fork requires a pause point; a Running fork first pauses (§7)
   *** fork from a Stopped session is fork-from-its-final-checkpoint (a valid prefix is the tip)
@@ -279,9 +279,14 @@ async fn run_session(mut s: Session, mut mailbox: CommandRx) -> Result<(), Sessi
                 s.apply_command(cmd).await?;
             }
             SessionState::Stopped { .. } => {
-                // Drain remaining queries (read-only) then exit the task.
+                // Drain remaining observation commands plus fork-from-final-checkpoint,
+                // then exit the task.
                 while let Ok(cmd) = mailbox.try_recv() {
-                    if cmd.is_read_only() { s.apply_command(cmd).await?; } else { break; }
+                    if cmd.is_terminal_drain_allowed() {
+                        s.apply_command(cmd).await?;
+                    } else {
+                        break;
+                    }
                 }
                 return Ok(());
             }
@@ -295,7 +300,8 @@ async fn run_session(mut s: Session, mut mailbox: CommandRx) -> Result<(), Sessi
   mailbox *before* each quantum and apply at most one command per iteration, so a
   control operation is never starved by a busy scheduler. In `Loaded`/`Paused` it
   MUST block solely on the mailbox (no spin, no held lock). In `Stopped` it MUST
-  service only read-only commands and then terminate. *Gate:*
+  service only read-only commands plus `fork` from the final checkpoint, then
+  terminate. *Gate:*
   `gate:control-responsive`, `gate:scheduler-liveness`. *Spec:* §3.
 
 - **[SESS-9]** A single quantum MUST be bounded work: one scheduler `STEP` (08
@@ -1081,7 +1087,7 @@ pub enum SessionError {
     a pure `lifecycle_transition` table is total over every state and the full
     §4 command-kind lifecycle model, including set/remove breakpoint and
     create-savepoint kinds. Focused tests prove representative command coverage,
-    RFC table cells such as `Running + Fork = Rejected`, bounded command-sequence
+    RFC table cells such as `Running + Fork = Paused`, bounded command-sequence
     closure, generated command-stream closure, agreement for current
     `Engine::apply_command` pairs, and side-effect-free typed rejection paths
     that name the rejecting state and command. The check depends on
@@ -1115,11 +1121,22 @@ pub enum SessionError {
     requested event-log or virtual-time stop point, and clears active steps when
     `pause` or `stop` interrupts. Focused tests cover event, assertion, timer,
     duration, and interruptible pause/stop behavior.
-- [ ] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
+- [x] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean
   scheduler/backend shutdown. — satisfies [SESS-8], [SESS-13], [SESS-14];
   spec §5, §3.
+  - Completed by `checks.crucible.phase5.sessionBoundaryControl`:
+    `crucible-session` now records accepted running boundary commands in an
+    engine-owned `SessionControlLogEntry` sequence keyed by virtual-time frontier
+    and completed quantum count, including scheduler control payloads for legacy
+    injection and injected/healed faults, plus local boundary effects for
+    breakpoint mutation, savepoint creation, fork, pause, and stop.
+    Focused tests prove the actor applies these commands at nonzero deterministic
+    boundary coordinates, applies scheduler-backed controls synchronously so a
+    later pause/stop/fork cannot drop them, rejects stopped-state mutators during
+    terminal drain, and that `pause`/`stop` take effect at the boundary check
+    without driving an extra quantum while `stop` invokes scheduler shutdown.
 - [ ] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
   vocabulary (§17a.2, including `NodeState` and `AssertionState` leaves and
   `AllOf`/`AnyOf`/`Once`/`Not`) evaluated at the same deterministic evaluation

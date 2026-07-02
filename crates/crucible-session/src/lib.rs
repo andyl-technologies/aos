@@ -746,11 +746,7 @@ impl SessionCommand {
     const fn is_terminal_accepted(&self) -> bool {
         matches!(
             self,
-            Self::Snapshot
-                | Self::Fork { .. }
-                | Self::SetBreakpoint { .. }
-                | Self::RemoveBreakpoint { .. }
-                | Self::Query { .. }
+            Self::Snapshot | Self::Fork { .. } | Self::Query { .. }
         )
     }
 
@@ -771,14 +767,7 @@ impl SessionCommand {
     }
 
     const fn requires_running_quantum_ack(&self) -> bool {
-        matches!(
-            self,
-            Self::Snapshot
-                | Self::Inject
-                | Self::InjectFault { .. }
-                | Self::HealFault { .. }
-                | Self::Query { .. }
-        )
+        matches!(self, Self::Snapshot | Self::Query { .. })
     }
 
     fn complete_error(&self, error: SessionError) {
@@ -1049,19 +1038,15 @@ pub const fn lifecycle_transition(
             | Command::CreateSavepoint
             | Command::Query,
         ) => Accepted { to: State::Running },
-        (State::Running, Command::Start | Command::Continue | Command::Fork) => Rejected,
+        (State::Running, Command::Fork) => Accepted { to: State::Paused },
+        (State::Running, Command::Start | Command::Continue) => Rejected,
 
         (State::Paused, Command::Stop) => Accepted { to: State::Stopped },
         (State::Paused, Command::Start) => Rejected,
 
-        (
-            State::Stopped,
-            Command::SetBreakpoint
-            | Command::RemoveBreakpoint
-            | Command::Snapshot
-            | Command::Fork
-            | Command::Query,
-        ) => Accepted { to: State::Stopped },
+        (State::Stopped, Command::Snapshot | Command::Fork | Command::Query) => {
+            Accepted { to: State::Stopped }
+        }
         (
             State::Stopped,
             Command::Start
@@ -1075,6 +1060,8 @@ pub const fn lifecycle_transition(
             | Command::Inject
             | Command::InjectFault
             | Command::HealFault
+            | Command::SetBreakpoint
+            | Command::RemoveBreakpoint
             | Command::CreateSavepoint
             | Command::Stop,
         ) => Rejected,
@@ -1766,6 +1753,8 @@ pub struct Engine<L> {
     pending_control: Vec<ControlOperation>,
     pending_event_log_entries: Vec<SchedulerEventLogEntry>,
     next_control_sequence: u64,
+    boundary_control_log: Vec<SessionControlLogEntry>,
+    next_boundary_control_sequence: u64,
 }
 
 impl<L> Engine<L> {
@@ -1787,6 +1776,8 @@ impl<L> Engine<L> {
             pending_control: Vec::new(),
             pending_event_log_entries: Vec::new(),
             next_control_sequence: 0,
+            boundary_control_log: Vec::new(),
+            next_boundary_control_sequence: 0,
         }
     }
 
@@ -1824,6 +1815,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn event_log_len(&self) -> usize {
         self.event_log_len
+    }
+
+    /// Returns the deterministic boundary-control log.
+    #[must_use]
+    pub fn boundary_control_log(&self) -> &[SessionControlLogEntry] {
+        &self.boundary_control_log
     }
 
     /// Returns the number of scheduler quanta driven by this engine.
@@ -1932,6 +1929,66 @@ impl<L> Engine<L> {
         self.pending_control.push(ControlOperation {
             sequence: self.next_control_sequence,
             kind,
+        });
+    }
+
+    fn apply_control_operation_at_boundary(
+        &mut self,
+        kind: ControlOperationKind,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.next_control_sequence = self.next_control_sequence.saturating_add(1);
+        let entries = self
+            .quantum_loop
+            .apply_control_at_boundary(vec![ControlOperation {
+                sequence: self.next_control_sequence,
+                kind,
+            }])?;
+        self.append_boundary_event_log_entries(entries)
+    }
+
+    fn append_boundary_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<(), SessionError> {
+        let current_event_log_len = usize_to_u64(self.event_log_len);
+        let emitted_event_log_entries = usize_to_u64(entries.len());
+        let expected_event_log_len = current_event_log_len
+            .checked_add(emitted_event_log_entries)
+            .ok_or(SessionError::EventLogOffsetMismatch {
+                current: current_event_log_len,
+                emitted: emitted_event_log_entries,
+                next: current_event_log_len,
+            })?;
+        for (index, entry) in entries.iter().enumerate() {
+            let expected_sequence = current_event_log_len.saturating_add(usize_to_u64(index));
+            if entry.sequence() != expected_sequence {
+                return Err(SessionError::EventLogOffsetMismatch {
+                    current: current_event_log_len,
+                    emitted: emitted_event_log_entries,
+                    next: entry.sequence(),
+                });
+            }
+        }
+        self.event_log_len = u64_to_usize(expected_event_log_len);
+        self.pending_event_log_entries.extend(entries);
+        Ok(())
+    }
+
+    fn record_boundary_control(
+        &mut self,
+        command: &SessionCommand,
+        scheduler_control: Option<ControlOperationKind>,
+    ) {
+        self.next_boundary_control_sequence = self.next_boundary_control_sequence.saturating_add(1);
+        self.boundary_control_log.push(SessionControlLogEntry {
+            sequence: self.next_boundary_control_sequence,
+            command: SessionCommandKind::from(command),
+            frontier: self.frontier,
+            quanta: self.quanta,
+            scheduler_control,
         });
     }
 
@@ -2056,6 +2113,9 @@ impl<L: QuantumLoop> Engine<L> {
             }
             SessionCommand::Pause => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
                     self.active_step = None;
                     self.state = EngineState::Paused {
                         reason: PauseReason::UserRequested,
@@ -2083,8 +2143,15 @@ impl<L: QuantumLoop> Engine<L> {
                 Ok(self.snapshot())
             }
             SessionCommand::Fork { from, reply } => match self.state {
-                EngineState::Paused { .. } | EngineState::Stopped { .. } => {
+                EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
                     let checkpoint = self.resolve_fork_checkpoint(*from)?;
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                        self.active_step = None;
+                        self.state = EngineState::Paused {
+                            reason: PauseReason::UserRequested,
+                        };
+                    }
                     let handle = SessionHandle {
                         id: fork_session_handle_id(self.configuration.id(), checkpoint.id),
                         checkpoint: checkpoint.id,
@@ -2092,14 +2159,14 @@ impl<L: QuantumLoop> Engine<L> {
                     reply.complete(Ok(handle));
                     Ok(self.snapshot())
                 }
-                EngineState::Running | EngineState::Loaded => {
-                    Err(self.invalid_transition(command.clone()))
-                }
+                EngineState::Loaded => Err(self.invalid_transition(command.clone())),
             },
             SessionCommand::Inject => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
-                        self.admit_control_operation(ControlOperationKind::Inject);
+                        let control = ControlOperationKind::Inject;
+                        self.apply_control_operation_at_boundary(control.clone())?;
+                        self.record_boundary_control(&command, Some(control));
                     }
                     Ok(self.snapshot())
                 }
@@ -2110,10 +2177,12 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::InjectFault { spec, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
-                        self.admit_control_operation(ControlOperationKind::InjectFault {
+                        let control = ControlOperationKind::InjectFault {
                             tag: spec.tag.clone(),
                             fault: spec.fault.clone(),
-                        });
+                        };
+                        self.apply_control_operation_at_boundary(control.clone())?;
+                        self.record_boundary_control(&command, Some(control));
                     }
                     reply.complete(Ok(spec.tag.clone()));
                     Ok(self.snapshot())
@@ -2125,9 +2194,9 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::HealFault { tag, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
-                        self.admit_control_operation(ControlOperationKind::HealFault {
-                            tag: tag.clone(),
-                        });
+                        let control = ControlOperationKind::HealFault { tag: tag.clone() };
+                        self.apply_control_operation_at_boundary(control.clone())?;
+                        self.record_boundary_control(&command, Some(control));
                     }
                     reply.complete(Ok(()));
                     Ok(self.snapshot())
@@ -2136,19 +2205,34 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::SetBreakpoint { spec, reply } => {
-                let id = self.breakpoints.insert(spec.clone());
-                reply.complete(Ok(id));
-                Ok(self.snapshot())
-            }
-            SessionCommand::RemoveBreakpoint { id, reply } => {
-                let removed = self.breakpoints.remove(*id);
-                reply.complete(Ok(removed));
-                Ok(self.snapshot())
-            }
+            SessionCommand::SetBreakpoint { spec, reply } => match self.state {
+                EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
+                    let id = self.breakpoints.insert(spec.clone());
+                    reply.complete(Ok(id));
+                    Ok(self.snapshot())
+                }
+                EngineState::Stopped { .. } => Err(self.invalid_transition(command.clone())),
+            },
+            SessionCommand::RemoveBreakpoint { id, reply } => match self.state {
+                EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
+                    let removed = self.breakpoints.remove(*id);
+                    reply.complete(Ok(removed));
+                    Ok(self.snapshot())
+                }
+                EngineState::Stopped { .. } => Err(self.invalid_transition(command.clone())),
+            },
             SessionCommand::CreateSavepoint { label, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let checkpoint = self.graph.save_checkpoint(&self.configuration)?;
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
                     reply.complete(Ok(SavepointInfo {
                         label: label.clone(),
                         configuration: self.configuration.id(),
@@ -2164,6 +2248,11 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
+                    self.quantum_loop.shutdown()?;
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
+                    self.pending_control.clear();
                     self.active_step = None;
                     self.state = EngineState::Stopped {
                         outcome: Outcome::Stopped,
@@ -2315,6 +2404,21 @@ pub struct SessionRunReport {
     pub quanta: u64,
     /// Number of quanta after which the actor yielded cooperatively.
     pub yielded_after_quanta: u64,
+}
+
+/// Deterministic record of a command applied at a session boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionControlLogEntry {
+    /// Monotone session-local control-log sequence.
+    pub sequence: u64,
+    /// Payload-free command kind applied at the boundary.
+    pub command: SessionCommandKind,
+    /// Virtual-time frontier where the command was applied.
+    pub frontier: VirtualTime,
+    /// Number of scheduler quanta completed before the command was applied.
+    pub quanta: u64,
+    /// Scheduler control payload admitted by this command, when any.
+    pub scheduler_control: Option<ControlOperationKind>,
 }
 
 /// The single owning session actor.
@@ -2747,7 +2851,9 @@ mod tests {
         );
         assert_eq!(
             lifecycle_transition(LifecycleStateKind::Running, SessionCommandKind::Fork),
-            LifecycleTransition::Rejected
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Paused,
+            }
         );
         assert_eq!(
             lifecycle_transition(
@@ -2772,9 +2878,7 @@ mod tests {
                 LifecycleStateKind::Stopped,
                 SessionCommandKind::RemoveBreakpoint
             ),
-            LifecycleTransition::Accepted {
-                to: LifecycleStateKind::Stopped,
-            }
+            LifecycleTransition::Rejected
         );
         assert_eq!(
             lifecycle_transition(
@@ -2924,7 +3028,7 @@ mod tests {
             panic!("inject fault should return its stable tag: {error}");
         }
         assert_eq!(receive_reply(inject_receiver).await, fault_tag);
-        assert_eq!(engine.pending_control_len(), 1);
+        assert_eq!(engine.pending_control_len(), 0);
 
         let (heal_reply, heal_receiver) = CommandReply::channel();
         if let Err(error) = engine.apply_command(SessionCommand::HealFault {
@@ -2934,7 +3038,7 @@ mod tests {
             panic!("heal fault should complete its acknowledgement: {error}");
         }
         receive_reply(heal_receiver).await;
-        assert_eq!(engine.pending_control_len(), 2);
+        assert_eq!(engine.pending_control_len(), 0);
 
         let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
         if let Err(error) = engine.apply_command(SessionCommand::CreateSavepoint {
@@ -2962,7 +3066,7 @@ mod tests {
             receive_reply(query_receiver).await,
             QueryResult::EventLogLength(0)
         );
-        assert_eq!(engine.pending_control_len(), 3);
+        assert_eq!(engine.pending_control_len(), 1);
 
         if let Err(error) = engine.apply_command(SessionCommand::Pause) {
             panic!("pause should return to a forkable boundary: {error}");
@@ -3013,7 +3117,17 @@ mod tests {
         let engine = Engine::new(config, graph, StubLoop);
         let (sender, receiver) = mpsc::channel(8);
         let (fork_reply, fork_receiver) = CommandReply::channel();
+        let (set_reply, set_receiver) = CommandReply::channel();
+        let (remove_reply, remove_receiver) = CommandReply::channel();
         let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
+        let rejected_set = SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::suspend_once(Condition::Quiescent),
+            reply: set_reply,
+        };
+        let rejected_remove = SessionCommand::RemoveBreakpoint {
+            id: 1,
+            reply: remove_reply,
+        };
         let rejected_savepoint = SessionCommand::CreateSavepoint {
             label: String::from("terminal-savepoint"),
             reply: savepoint_reply,
@@ -3026,6 +3140,8 @@ mod tests {
                 from: CheckpointRef::Current,
                 reply: fork_reply,
             },
+            rejected_set.clone(),
+            rejected_remove.clone(),
             rejected_savepoint.clone(),
         ] {
             if let Err(error) = sender.send(command).await {
@@ -3040,6 +3156,18 @@ mod tests {
 
         let fork = receive_reply(fork_receiver).await;
         assert_eq!(fork.checkpoint, report.final_snapshot.configuration.id());
+        let error = receive_reply_error::<BreakpointId>(set_receiver).await;
+        assert_rejection_names_state_and_command(
+            error,
+            report.final_snapshot.state.clone(),
+            rejected_set,
+        );
+        let error = receive_reply_error::<bool>(remove_receiver).await;
+        assert_rejection_names_state_and_command(
+            error,
+            report.final_snapshot.state.clone(),
+            rejected_remove,
+        );
         let error = receive_reply_error::<SavepointInfo>(savepoint_receiver).await;
         assert_rejection_names_state_and_command(
             error,
@@ -3116,6 +3244,324 @@ mod tests {
         assert_eq!(actor.control_acknowledgements(), 3);
         assert_eq!(actor.engine().quanta(), 0);
         assert_eq!(actor.engine().pending_control_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn running_boundary_commands_record_deterministic_control_log() {
+        let scenario = generated_scenario(35);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::new(Arc::clone(&control_batches)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(16);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("initial running iteration should establish a nonzero boundary: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 1);
+
+        if let Err(error) = sender.send(SessionCommand::Inject).await {
+            panic!("legacy inject command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running legacy inject should be applied at a boundary: {error}");
+        }
+
+        let fault_tag = FaultTag::from_name("boundary-log-fault");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let (inject_reply, inject_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::InjectFault {
+                spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
+                reply: inject_reply,
+            })
+            .await
+        {
+            panic!("inject-fault command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running inject-fault should be applied at a boundary: {error}");
+        }
+        assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
+
+        let (heal_reply, heal_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::HealFault {
+                tag: fault_tag.clone(),
+                reply: heal_reply,
+            })
+            .await
+        {
+            panic!("heal-fault command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running heal-fault should be applied at a boundary: {error}");
+        }
+        receive_reply(heal_receiver).await;
+        assert_eq!(actor.engine().pending_control_len(), 0);
+
+        let breakpoint = BreakpointSpec::suspend_once(Condition::Quiescent);
+        let (set_reply, set_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::SetBreakpoint {
+                spec: breakpoint,
+                reply: set_reply,
+            })
+            .await
+        {
+            panic!("set-breakpoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running set-breakpoint should be applied at a boundary: {error}");
+        }
+        let breakpoint_id = receive_reply(set_receiver).await;
+
+        let (remove_reply, remove_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::RemoveBreakpoint {
+                id: breakpoint_id,
+                reply: remove_reply,
+            })
+            .await
+        {
+            panic!("remove-breakpoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running remove-breakpoint should be applied at a boundary: {error}");
+        }
+        assert!(receive_reply(remove_receiver).await);
+
+        let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::CreateSavepoint {
+                label: String::from("boundary-log-savepoint"),
+                reply: savepoint_reply,
+            })
+            .await
+        {
+            panic!("savepoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running savepoint should be applied at a boundary: {error}");
+        }
+        assert_eq!(
+            receive_reply(savepoint_receiver).await.label,
+            "boundary-log-savepoint"
+        );
+
+        let (fork_reply, fork_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::Fork {
+                from: CheckpointRef::Current,
+                reply: fork_reply,
+            })
+            .await
+        {
+            panic!("fork command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running fork should pause and resolve at a boundary: {error}");
+        }
+        let fork = receive_reply(fork_receiver).await;
+        assert_eq!(fork.checkpoint, actor.engine().configuration().id());
+
+        let log = actor.engine().boundary_control_log();
+        assert_eq!(log.len(), 7);
+        assert_boundary_log_entry(
+            &log[0],
+            1,
+            SessionCommandKind::Inject,
+            Some(ControlOperationKind::Inject),
+        );
+        assert_boundary_log_entry(
+            &log[1],
+            2,
+            SessionCommandKind::InjectFault,
+            Some(ControlOperationKind::InjectFault {
+                tag: fault_tag.clone(),
+                fault: fault.clone(),
+            }),
+        );
+        assert_boundary_log_entry(
+            &log[2],
+            3,
+            SessionCommandKind::HealFault,
+            Some(ControlOperationKind::HealFault {
+                tag: fault_tag.clone(),
+            }),
+        );
+        assert_boundary_log_entry(&log[3], 4, SessionCommandKind::SetBreakpoint, None);
+        assert_boundary_log_entry(&log[4], 5, SessionCommandKind::RemoveBreakpoint, None);
+        assert_boundary_log_entry(&log[5], 6, SessionCommandKind::CreateSavepoint, None);
+        assert_boundary_log_entry(&log[6], 7, SessionCommandKind::Fork, None);
+        assert!(
+            log.iter()
+                .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
+            "all commands were applied at nonzero scheduler boundaries"
+        );
+        assert_eq!(log[0].frontier, VirtualTime { ticks: 1 });
+        assert_eq!(log[0].quanta, 1);
+        assert_eq!(log[6].frontier, VirtualTime { ticks: 1 });
+        assert_eq!(log[6].quanta, 1);
+        assert_eq!(
+            recorded_control_batches(&control_batches),
+            vec![
+                Vec::new(),
+                vec![ControlOperationKind::Inject],
+                vec![ControlOperationKind::InjectFault {
+                    tag: fault_tag.clone(),
+                    fault,
+                }],
+                vec![ControlOperationKind::HealFault { tag: fault_tag }],
+            ]
+        );
+        assert_eq!(actor.engine().pending_control_len(), 0);
+        assert_eq!(actor.engine().quanta(), 1);
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Paused {
+                reason: PauseReason::UserRequested
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn pause_and_stop_take_effect_at_boundary_without_extra_quantum() {
+        for command in [SessionCommand::Pause, SessionCommand::Stop] {
+            let scenario = generated_scenario(36);
+            let config = Configuration::genesis(scenario.clone());
+            let graph = graph_with_baked_genesis(&scenario);
+            let shutdowns = Arc::new(AtomicU64::new(0));
+            let mut engine = Engine::new(config, graph, ShutdownLoop::new(Arc::clone(&shutdowns)));
+            if let Err(error) = engine.apply_command(SessionCommand::Start) {
+                panic!("start should instantiate runtime: {error}");
+            }
+            if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+                panic!("continue should enter running state: {error}");
+            }
+            let (sender, receiver) = mpsc::channel(2);
+            let mut actor = SessionActor::new(engine, receiver);
+            if let Err(error) = sender.send(command.clone()).await {
+                panic!("boundary command should enqueue: {error}");
+            }
+
+            if let Err(error) = actor.run_once().await {
+                panic!("{command:?} should be serviced at the next boundary check: {error}");
+            }
+
+            assert_eq!(actor.engine().quanta(), 0);
+            let log = actor.engine().boundary_control_log();
+            assert_eq!(log.len(), 1);
+            assert_boundary_log_entry(&log[0], 1, SessionCommandKind::from(&command), None);
+            let expected_shutdowns = match &command {
+                SessionCommand::Stop => 1,
+                _ => 0,
+            };
+            match &command {
+                SessionCommand::Pause => assert!(matches!(
+                    actor.engine().state(),
+                    EngineState::Paused {
+                        reason: PauseReason::UserRequested
+                    }
+                )),
+                SessionCommand::Stop => assert!(matches!(
+                    actor.engine().state(),
+                    EngineState::Stopped {
+                        outcome: Outcome::Stopped
+                    }
+                )),
+                _ => panic!("test only covers pause and stop"),
+            }
+            assert_eq!(shutdowns.load(Ordering::SeqCst), expected_shutdowns);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_after_scheduler_control_does_not_drop_logged_effect() {
+        let scenario = generated_scenario(37);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let shutdowns = Arc::new(AtomicU64::new(0));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::with_shutdown(Arc::clone(&control_batches), Arc::clone(&shutdowns)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let fault_tag = FaultTag::from_name("stop-after-control");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let (inject_reply, inject_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::InjectFault {
+                spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
+                reply: inject_reply,
+            })
+            .await
+        {
+            panic!("inject-fault command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running inject-fault should be applied at a boundary: {error}");
+        }
+        assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
+        assert_eq!(actor.engine().pending_control_len(), 0);
+
+        if let Err(error) = sender.send(SessionCommand::Stop).await {
+            panic!("stop command should enqueue after scheduler control: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("stop after scheduler control should not drive a quantum: {error}");
+        }
+
+        assert_eq!(actor.engine().quanta(), 0);
+        assert_eq!(
+            recorded_control_batches(&control_batches),
+            vec![vec![ControlOperationKind::InjectFault {
+                tag: fault_tag,
+                fault,
+            }]]
+        );
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+        let log = actor.engine().boundary_control_log();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].command, SessionCommandKind::InjectFault);
+        assert_eq!(log[1].command, SessionCommandKind::Stop);
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Stopped {
+                outcome: Outcome::Stopped
+            }
+        ));
     }
 
     #[test]
@@ -3311,6 +3757,26 @@ mod tests {
             Ok(Ok(value)) => panic!("reply should fail, got {value:?}"),
             Ok(Err(error)) => error,
             Err(error) => panic!("reply sender should complete: {error}"),
+        }
+    }
+
+    fn assert_boundary_log_entry(
+        entry: &SessionControlLogEntry,
+        sequence: u64,
+        command: SessionCommandKind,
+        scheduler_control: Option<ControlOperationKind>,
+    ) {
+        assert_eq!(entry.sequence, sequence);
+        assert_eq!(entry.command, command);
+        assert_eq!(entry.scheduler_control, scheduler_control);
+    }
+
+    fn recorded_control_batches(
+        control_batches: &Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
+    ) -> Vec<Vec<ControlOperationKind>> {
+        match control_batches.lock() {
+            Ok(batches) => batches.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
 
@@ -4140,6 +4606,127 @@ mod tests {
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
             })
+        }
+    }
+
+    struct RecordingLoop {
+        quanta: u64,
+        control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
+        shutdowns: Option<Arc<AtomicU64>>,
+    }
+
+    impl RecordingLoop {
+        fn new(control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>) -> Self {
+            Self {
+                quanta: 0,
+                control_batches,
+                shutdowns: None,
+            }
+        }
+
+        fn with_shutdown(
+            control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
+            shutdowns: Arc<AtomicU64>,
+        ) -> Self {
+            Self {
+                quanta: 0,
+                control_batches,
+                shutdowns: Some(shutdowns),
+            }
+        }
+    }
+
+    impl QuantumLoop for RecordingLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            let control_batch = request
+                .control
+                .iter()
+                .map(|control| control.kind.clone())
+                .collect::<Vec<_>>();
+            match self.control_batches.lock() {
+                Ok(mut batches) => batches.push(control_batch),
+                Err(poisoned) => poisoned.into_inner().push(control_batch),
+            }
+            self.quanta = self.quanta.saturating_add(1);
+            let decision = generated_decision(self.quanta);
+            let configuration = step(&request.configuration, decision.clone());
+            Ok(QuantumOutcome {
+                configuration,
+                frontier: VirtualTime { ticks: self.quanta },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
+                event_log_segment_bytes: vec![b'x'],
+                event_log_segment_text: String::from("x"),
+                event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+            })
+        }
+
+        fn apply_control_at_boundary(
+            &mut self,
+            control: Vec<ControlOperation>,
+        ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+            let control_batch = control
+                .iter()
+                .map(|operation| operation.kind.clone())
+                .collect::<Vec<_>>();
+            match self.control_batches.lock() {
+                Ok(mut batches) => batches.push(control_batch),
+                Err(poisoned) => poisoned.into_inner().push(control_batch),
+            }
+            Ok(Vec::new())
+        }
+
+        fn shutdown(&mut self) -> Result<(), SchedulerError> {
+            if let Some(shutdowns) = &self.shutdowns {
+                shutdowns.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    struct ShutdownLoop {
+        quanta: u64,
+        shutdowns: Arc<AtomicU64>,
+    }
+
+    impl ShutdownLoop {
+        fn new(shutdowns: Arc<AtomicU64>) -> Self {
+            Self {
+                quanta: 0,
+                shutdowns,
+            }
+        }
+    }
+
+    impl QuantumLoop for ShutdownLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            self.quanta = self.quanta.saturating_add(1);
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: self.quanta },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: Default::default(),
+            })
+        }
+
+        fn shutdown(&mut self) -> Result<(), SchedulerError> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
