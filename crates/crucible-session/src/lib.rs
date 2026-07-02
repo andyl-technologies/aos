@@ -1540,6 +1540,22 @@ pub struct EngineSnapshot {
     pub quanta: u64,
 }
 
+/// Session-level replay artifact for deterministic boundary-control operations.
+///
+/// This artifact captures the session's initial configuration, final boundary
+/// snapshot, and deterministic control log. Replaying it applies every recorded
+/// scheduler-control payload at the same virtual-time/quanta boundary, proving
+/// that operator wall-clock timing is not an input to scheduler-owned state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionControlReplayArtifact {
+    /// Configuration from which the interactive session started.
+    pub initial_configuration: Configuration,
+    /// Boundary snapshot reached by the producer run.
+    pub final_snapshot: EngineSnapshot,
+    /// Deterministic control log emitted by the producer run.
+    pub control_log: Vec<SessionControlLogEntry>,
+}
+
 /// Reproducible record for a session-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionForkRecord {
@@ -1998,6 +2014,7 @@ pub struct Engine<L> {
     next_control_sequence: u64,
     boundary_control_log: Vec<SessionControlLogEntry>,
     next_boundary_control_sequence: u64,
+    next_boundary_control_batch: u64,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     breakpoint_firings: Vec<BreakpointFiring>,
     next_breakpoint_firing_sequence: u64,
@@ -2024,6 +2041,7 @@ impl<L> Engine<L> {
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
+            next_boundary_control_batch: 0,
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
@@ -2056,6 +2074,7 @@ impl<L> Engine<L> {
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
+            next_boundary_control_batch: 0,
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
@@ -2102,6 +2121,25 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn boundary_control_log(&self) -> &[SessionControlLogEntry] {
         &self.boundary_control_log
+    }
+
+    /// Captures a replay artifact for deterministic session control operations.
+    ///
+    /// The caller supplies the initial configuration because sessions may start
+    /// from genesis, a resumed checkpoint, or a forked prefix. The captured
+    /// artifact is sufficient to replay the recorded scheduler-control payloads
+    /// at their original virtual-time/quanta boundaries with a fresh
+    /// [`QuantumLoop`].
+    #[must_use]
+    pub fn control_replay_artifact(
+        &self,
+        initial_configuration: Configuration,
+    ) -> SessionControlReplayArtifact {
+        SessionControlReplayArtifact {
+            initial_configuration,
+            final_snapshot: self.snapshot(),
+            control_log: self.boundary_control_log.clone(),
+        }
     }
 
     /// Returns the deterministic breakpoint-firing log.
@@ -2422,14 +2460,34 @@ impl<L> Engine<L> {
         command: SessionCommandKind,
         scheduler_control: Option<ControlOperationKind>,
     ) {
+        let scheduler_batch = if scheduler_control.is_some() {
+            self.next_boundary_control_batch()
+        } else {
+            0
+        };
+        self.record_boundary_control_kind_in_batch(command, scheduler_control, scheduler_batch);
+    }
+
+    fn record_boundary_control_kind_in_batch(
+        &mut self,
+        command: SessionCommandKind,
+        scheduler_control: Option<ControlOperationKind>,
+        scheduler_batch: u64,
+    ) {
         self.next_boundary_control_sequence = self.next_boundary_control_sequence.saturating_add(1);
         self.boundary_control_log.push(SessionControlLogEntry {
             sequence: self.next_boundary_control_sequence,
             command,
             frontier: self.frontier,
             quanta: self.quanta,
+            scheduler_batch,
             scheduler_control,
         });
+    }
+
+    fn next_boundary_control_batch(&mut self) -> u64 {
+        self.next_boundary_control_batch = self.next_boundary_control_batch.saturating_add(1);
+        self.next_boundary_control_batch
     }
 
     fn evaluate_breakpoints(
@@ -2562,9 +2620,18 @@ impl<L> Engine<L> {
     {
         let planned_controls = Self::plan_breakpoint_action(action)?;
         self.apply_control_operations_at_boundary(planned_controls.clone())?;
+        let scheduler_batch = if planned_controls.is_empty() {
+            0
+        } else {
+            self.next_boundary_control_batch()
+        };
         for control in &planned_controls {
             if let Some(command) = control_operation_command_kind(control) {
-                self.record_boundary_control_kind(command, Some(control.clone()));
+                self.record_boundary_control_kind_in_batch(
+                    command,
+                    Some(control.clone()),
+                    scheduler_batch,
+                );
             }
         }
         scheduler_controls.extend(planned_controls);
@@ -2710,6 +2777,145 @@ impl<L: QuantumLoop> Engine<L> {
         Ok(self.snapshot())
     }
 
+    /// Replays deterministic scheduler-control payloads from `artifact`.
+    ///
+    /// The supplied temporal graph and quantum loop must represent the same
+    /// deterministic model used to produce the artifact. Replay starts from the
+    /// artifact's initial configuration, applies every recorded scheduler-owned
+    /// control payload at its recorded quanta/frontier boundary, and advances to
+    /// the final recorded quantum boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidTransition`] if the initial configuration
+    /// cannot be started, [`SessionError::Scheduler`] or [`SessionError::Engine`]
+    /// if the replay loop cannot advance, or a control-replay mismatch error if
+    /// the artifact records a control entry for a boundary not reached by replay.
+    pub fn replay_control_replay_artifact(
+        artifact: &SessionControlReplayArtifact,
+        graph: TemporalGraph,
+        quantum_loop: L,
+    ) -> Result<EngineSnapshot, SessionError> {
+        let mut engine = Self::new(artifact.initial_configuration.clone(), graph, quantum_loop);
+        engine.apply_command(SessionCommand::Start)?;
+        engine.apply_command(SessionCommand::Continue)?;
+
+        let mut log_index = 0;
+        while engine.quanta < artifact.final_snapshot.quanta {
+            engine.replay_controls_at_current_boundary(artifact, &mut log_index)?;
+            let _ = engine.step_quantum()?;
+        }
+        engine.replay_controls_at_current_boundary(artifact, &mut log_index)?;
+        if let Some(entry) = artifact.control_log.get(log_index) {
+            return Err(SessionError::ControlReplayBoundaryMismatch {
+                current_quanta: engine.quanta,
+                recorded_quanta: entry.quanta,
+            });
+        }
+        let replayed = engine.snapshot();
+        if replayed != artifact.final_snapshot {
+            return Err(SessionError::ControlReplayFinalSnapshotMismatch {
+                expected: Box::new(artifact.final_snapshot.clone()),
+                actual: Box::new(replayed),
+            });
+        }
+        Ok(replayed)
+    }
+
+    fn replay_controls_at_current_boundary(
+        &mut self,
+        artifact: &SessionControlReplayArtifact,
+        log_index: &mut usize,
+    ) -> Result<(), SessionError> {
+        while let Some(entry) = artifact.control_log.get(*log_index) {
+            if entry.quanta < self.quanta {
+                return Err(SessionError::ControlReplayBoundaryMismatch {
+                    current_quanta: self.quanta,
+                    recorded_quanta: entry.quanta,
+                });
+            }
+            if entry.quanta != self.quanta {
+                return Ok(());
+            }
+            if entry.frontier != self.frontier {
+                return Err(SessionError::ControlReplayFrontierMismatch {
+                    current: self.frontier,
+                    recorded: entry.frontier,
+                });
+            }
+            if entry.scheduler_control.is_none() {
+                self.replay_non_scheduler_boundary_control(entry.command)?;
+                *log_index += 1;
+                continue;
+            }
+
+            let scheduler_batch = entry.scheduler_batch;
+            if scheduler_batch == 0 {
+                return Err(SessionError::ControlReplayBatchMismatch {
+                    sequence: entry.sequence,
+                    scheduler_batch,
+                });
+            }
+            let mut controls = Vec::new();
+            while let Some(batch_entry) = artifact.control_log.get(*log_index) {
+                if batch_entry.quanta != self.quanta
+                    || batch_entry.frontier != self.frontier
+                    || batch_entry.scheduler_batch != scheduler_batch
+                {
+                    break;
+                }
+                let Some(control) = batch_entry.scheduler_control.clone() else {
+                    return Err(SessionError::ControlReplayBatchMismatch {
+                        sequence: batch_entry.sequence,
+                        scheduler_batch,
+                    });
+                };
+                controls.push(control);
+                *log_index += 1;
+            }
+            self.apply_control_operations_at_boundary(controls)?;
+        }
+        Ok(())
+    }
+
+    fn replay_non_scheduler_boundary_control(
+        &mut self,
+        command: SessionCommandKind,
+    ) -> Result<(), SessionError> {
+        match command {
+            SessionCommandKind::Pause | SessionCommandKind::Fork => {
+                self.active_step = None;
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            SessionCommandKind::Stop => {
+                self.quantum_loop.shutdown()?;
+                self.pending_control.clear();
+                self.active_step = None;
+                self.state = EngineState::Stopped {
+                    outcome: Outcome::Stopped,
+                };
+            }
+            SessionCommandKind::Start
+            | SessionCommandKind::Continue
+            | SessionCommandKind::StepQuantum
+            | SessionCommandKind::StepEvent
+            | SessionCommandKind::StepAssertion
+            | SessionCommandKind::StepTimer
+            | SessionCommandKind::StepDuration
+            | SessionCommandKind::Inject
+            | SessionCommandKind::InjectFault
+            | SessionCommandKind::HealFault
+            | SessionCommandKind::SetBreakpoint
+            | SessionCommandKind::RemoveBreakpoint
+            | SessionCommandKind::CreateSavepoint
+            | SessionCommandKind::Query
+            | SessionCommandKind::Snapshot => {}
+        }
+        Ok(())
+    }
+
     /// Applies one actor-owned command at a state-machine boundary.
     ///
     /// # Errors
@@ -2787,11 +2993,9 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::Inject => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if matches!(self.state, EngineState::Running) {
-                        let control = ControlOperationKind::Inject;
-                        self.apply_control_operation_at_boundary(control.clone())?;
-                        self.record_boundary_control(&command, Some(control));
-                    }
+                    let control = ControlOperationKind::Inject;
+                    self.apply_control_operation_at_boundary(control.clone())?;
+                    self.record_boundary_control(&command, Some(control));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -2800,14 +3004,12 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::InjectFault { spec, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if matches!(self.state, EngineState::Running) {
-                        let control = ControlOperationKind::InjectFault {
-                            tag: spec.tag.clone(),
-                            fault: spec.fault.clone(),
-                        };
-                        self.apply_control_operation_at_boundary(control.clone())?;
-                        self.record_boundary_control(&command, Some(control));
-                    }
+                    let control = ControlOperationKind::InjectFault {
+                        tag: spec.tag.clone(),
+                        fault: spec.fault.clone(),
+                    };
+                    self.apply_control_operation_at_boundary(control.clone())?;
+                    self.record_boundary_control(&command, Some(control));
                     reply.complete(Ok(spec.tag.clone()));
                     Ok(self.snapshot())
                 }
@@ -2817,11 +3019,9 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::HealFault { tag, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if matches!(self.state, EngineState::Running) {
-                        let control = ControlOperationKind::HealFault { tag: tag.clone() };
-                        self.apply_control_operation_at_boundary(control.clone())?;
-                        self.record_boundary_control(&command, Some(control));
-                    }
+                    let control = ControlOperationKind::HealFault { tag: tag.clone() };
+                    self.apply_control_operation_at_boundary(control.clone())?;
+                    self.record_boundary_control(&command, Some(control));
                     reply.complete(Ok(()));
                     Ok(self.snapshot())
                 }
@@ -3025,6 +3225,40 @@ pub enum SessionError {
         /// Event-log entry count returned by the scheduler.
         next: u64,
     },
+    /// A replay artifact named a control boundary before the replay position.
+    #[error(
+        "control replay boundary mismatch: current quanta={current_quanta} recorded quanta={recorded_quanta}"
+    )]
+    ControlReplayBoundaryMismatch {
+        /// Current replay quantum boundary.
+        current_quanta: u64,
+        /// Quantum boundary recorded in the replay artifact.
+        recorded_quanta: u64,
+    },
+    /// A replay artifact control entry did not match the current frontier.
+    #[error("control replay frontier mismatch: current={current:?} recorded={recorded:?}")]
+    ControlReplayFrontierMismatch {
+        /// Current replay virtual-time frontier.
+        current: VirtualTime,
+        /// Virtual-time frontier recorded in the replay artifact.
+        recorded: VirtualTime,
+    },
+    /// A replay artifact has an invalid scheduler-control batch shape.
+    #[error("control replay batch mismatch: sequence={sequence} scheduler_batch={scheduler_batch}")]
+    ControlReplayBatchMismatch {
+        /// Control-log sequence where the invalid batch shape was observed.
+        sequence: u64,
+        /// Scheduler batch identifier recorded on the invalid entry.
+        scheduler_batch: u64,
+    },
+    /// Replay reached a different final boundary snapshot than the artifact recorded.
+    #[error("control replay final snapshot mismatch: expected={expected:?} actual={actual:?}")]
+    ControlReplayFinalSnapshotMismatch {
+        /// Final boundary snapshot recorded in the replay artifact.
+        expected: Box<EngineSnapshot>,
+        /// Final boundary snapshot produced by replay.
+        actual: Box<EngineSnapshot>,
+    },
     /// Breakpoint condition evaluation could not build a checked log prefix.
     #[error("breakpoint condition prefix is invalid: {reason}")]
     BreakpointConditionPrefix {
@@ -3071,6 +3305,8 @@ pub struct SessionControlLogEntry {
     pub frontier: VirtualTime,
     /// Number of scheduler quanta completed before the command was applied.
     pub quanta: u64,
+    /// Scheduler-control batch identifier, or zero when no scheduler payload was applied.
+    pub scheduler_batch: u64,
     /// Scheduler control payload admitted by this command, when any.
     pub scheduler_control: Option<ControlOperationKind>,
 }
@@ -4348,6 +4584,350 @@ mod tests {
                 reason: PauseReason::UserRequested
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn paused_boundary_mutators_apply_and_record_control_log() {
+        let scenario = generated_scenario(43);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::new(Arc::clone(&control_batches)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+
+        if let Err(error) = engine.apply_command(SessionCommand::Inject) {
+            panic!("paused legacy inject should apply at the current boundary: {error}");
+        }
+
+        let fault_tag = FaultTag::from_name("paused-boundary-fault");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let (inject_reply, inject_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::InjectFault {
+            spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
+            reply: inject_reply,
+        }) {
+            panic!("paused inject-fault should apply at the current boundary: {error}");
+        }
+        assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
+
+        let (heal_reply, heal_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::HealFault {
+            tag: fault_tag.clone(),
+            reply: heal_reply,
+        }) {
+            panic!("paused heal-fault should apply at the current boundary: {error}");
+        }
+        receive_reply(heal_receiver).await;
+
+        let log = engine.boundary_control_log();
+        assert_eq!(log.len(), 3);
+        assert_boundary_log_entry(
+            &log[0],
+            1,
+            SessionCommandKind::Inject,
+            Some(ControlOperationKind::Inject),
+        );
+        assert_boundary_log_entry(
+            &log[1],
+            2,
+            SessionCommandKind::InjectFault,
+            Some(ControlOperationKind::InjectFault {
+                tag: fault_tag.clone(),
+                fault: fault.clone(),
+            }),
+        );
+        assert_boundary_log_entry(
+            &log[2],
+            3,
+            SessionCommandKind::HealFault,
+            Some(ControlOperationKind::HealFault {
+                tag: fault_tag.clone(),
+            }),
+        );
+        assert!(
+            log.iter()
+                .all(|entry| entry.frontier == VirtualTime::default() && entry.quanta == 0),
+            "paused mutators should record the existing boundary, not host timing"
+        );
+        assert_eq!(
+            recorded_control_batches(&control_batches),
+            vec![
+                vec![ControlOperationKind::Inject],
+                vec![ControlOperationKind::InjectFault {
+                    tag: fault_tag.clone(),
+                    fault,
+                }],
+                vec![ControlOperationKind::HealFault { tag: fault_tag }],
+            ]
+        );
+        assert_eq!(engine.pending_control_len(), 0);
+        assert!(matches!(
+            engine.state(),
+            EngineState::Paused {
+                reason: PauseReason::Instantiated
+            }
+        ));
+    }
+
+    #[test]
+    fn control_replay_artifact_reproduces_interactive_scheduler_state() {
+        let scenario = generated_scenario(44);
+        let initial = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut interactive = Engine::new(
+            initial.clone(),
+            graph.clone(),
+            ControlSensitiveLoop::default(),
+        );
+        if let Err(error) = interactive.apply_command(SessionCommand::Start) {
+            panic!("interactive replay producer should instantiate: {error}");
+        }
+        if let Err(error) = interactive.apply_command(SessionCommand::Continue) {
+            panic!("interactive replay producer should run: {error}");
+        }
+        if let Err(error) = interactive.step_quantum() {
+            panic!("first producer quantum should establish a control boundary: {error}");
+        }
+
+        let fault_tag = FaultTag::from_name("control-replay-fault");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
+            panic!("producer legacy inject should apply at the current boundary: {error}");
+        }
+        let (inject_reply, inject_receiver) = CommandReply::channel();
+        if let Err(error) = interactive.apply_command(SessionCommand::InjectFault {
+            spec: FaultSpec::new(fault_tag.clone(), fault),
+            reply: inject_reply,
+        }) {
+            panic!("producer inject-fault should apply at the current boundary: {error}");
+        }
+        drop(inject_receiver);
+        if let Err(error) = interactive.step_quantum() {
+            panic!("second producer quantum should observe injected scheduler state: {error}");
+        }
+
+        let (heal_reply, heal_receiver) = CommandReply::channel();
+        if let Err(error) = interactive.apply_command(SessionCommand::HealFault {
+            tag: fault_tag,
+            reply: heal_reply,
+        }) {
+            panic!("producer heal-fault should apply at the current boundary: {error}");
+        }
+        drop(heal_receiver);
+        if let Err(error) = interactive.step_quantum() {
+            panic!("third producer quantum should observe healed scheduler state: {error}");
+        }
+
+        let artifact = interactive.control_replay_artifact(initial);
+        let replay = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
+            &artifact,
+            graph_with_baked_genesis(&scenario),
+            ControlSensitiveLoop::default(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                panic!("control replay artifact should reproduce scheduler state: {error}")
+            }
+        };
+
+        assert_eq!(
+            replay.configuration.id(),
+            artifact.final_snapshot.configuration.id()
+        );
+        assert_eq!(replay.frontier, artifact.final_snapshot.frontier);
+        assert_eq!(replay.event_log_len, artifact.final_snapshot.event_log_len);
+        assert_eq!(replay.quanta, artifact.final_snapshot.quanta);
+        assert_eq!(artifact.control_log.len(), 3);
+        assert!(
+            artifact
+                .control_log
+                .iter()
+                .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
+            "replay controls should be keyed by virtual-time boundaries"
+        );
+        assert_eq!(
+            artifact.control_log[0].quanta,
+            artifact.control_log[1].quanta
+        );
+        assert_ne!(
+            artifact.control_log[0].scheduler_batch, artifact.control_log[1].scheduler_batch,
+            "separate operator commands at the same boundary must remain separate scheduler batches"
+        );
+    }
+
+    #[test]
+    fn control_replay_artifact_rejects_wrong_boundary_frontier() {
+        let scenario = generated_scenario(45);
+        let initial = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut interactive = Engine::new(
+            initial.clone(),
+            graph.clone(),
+            ControlSensitiveLoop::default(),
+        );
+        if let Err(error) = interactive.apply_command(SessionCommand::Start) {
+            panic!("interactive replay producer should instantiate: {error}");
+        }
+        if let Err(error) = interactive.apply_command(SessionCommand::Continue) {
+            panic!("interactive replay producer should run: {error}");
+        }
+        if let Err(error) = interactive.step_quantum() {
+            panic!("producer quantum should establish a replay boundary: {error}");
+        }
+        if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
+            panic!("producer inject should apply at the current boundary: {error}");
+        }
+        let mut artifact = interactive.control_replay_artifact(initial);
+        artifact.control_log[0].frontier = VirtualTime { ticks: 99 };
+
+        let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
+            &artifact,
+            graph_with_baked_genesis(&scenario),
+            ControlSensitiveLoop::default(),
+        ) {
+            Ok(snapshot) => {
+                panic!("frontier-mismatched artifact should reject, got {snapshot:?}")
+            }
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            SessionError::ControlReplayFrontierMismatch {
+                current: VirtualTime { ticks: 1 },
+                recorded: VirtualTime { ticks: 99 },
+            }
+        ));
+    }
+
+    #[test]
+    fn control_replay_artifact_rejects_final_snapshot_mismatch() {
+        let scenario = generated_scenario(46);
+        let initial = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut interactive = Engine::new(initial.clone(), graph, ControlSensitiveLoop::default());
+        if let Err(error) = interactive.apply_command(SessionCommand::Start) {
+            panic!("interactive replay producer should instantiate: {error}");
+        }
+        if let Err(error) = interactive.apply_command(SessionCommand::Continue) {
+            panic!("interactive replay producer should run: {error}");
+        }
+        if let Err(error) = interactive.step_quantum() {
+            panic!("producer quantum should establish a replay boundary: {error}");
+        }
+        let mut artifact = interactive.control_replay_artifact(initial);
+        artifact.final_snapshot.event_log_len = artifact.final_snapshot.event_log_len + 1;
+
+        let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
+            &artifact,
+            graph_with_baked_genesis(&scenario),
+            ControlSensitiveLoop::default(),
+        ) {
+            Ok(snapshot) => {
+                panic!("final-snapshot-mismatched artifact should reject, got {snapshot:?}")
+            }
+            Err(error) => error,
+        };
+
+        let SessionError::ControlReplayFinalSnapshotMismatch { expected, actual } = error else {
+            panic!("expected final snapshot mismatch, got {error:?}");
+        };
+        assert_eq!(expected.event_log_len, actual.event_log_len + 1);
+        assert_eq!(expected.quanta, actual.quanta);
+        assert_eq!(expected.frontier, actual.frontier);
+        assert_eq!(expected.configuration.id(), actual.configuration.id());
+    }
+
+    #[tokio::test]
+    async fn control_replay_artifact_replays_grouped_breakpoint_actions_as_one_batch() {
+        let scenario = generated_scenario(47);
+        let initial = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            initial.clone(),
+            graph.clone(),
+            ControlSensitiveLoop::default(),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("group replay producer should instantiate: {error}");
+        }
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let first_tag = FaultTag::from_name("group-replay-first");
+        let second_tag = FaultTag::from_name("group-replay-second");
+        let action = Action::group(vec![
+            Action::inject_fault(first_tag.clone(), MembershipFault::taxonomy(fault.clone())),
+            Action::inject_fault(second_tag.clone(), MembershipFault::taxonomy(fault)),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(action),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, _receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("group breakpoint should register before continue: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("group replay producer should run: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+        if let Err(error) = actor.run_once().await {
+            panic!("first producer quantum should fire the grouped breakpoint: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("second producer quantum should observe grouped scheduler state: {error}");
+        }
+        let artifact = actor.engine().control_replay_artifact(initial);
+
+        assert_eq!(artifact.control_log.len(), 2);
+        assert_ne!(artifact.control_log[0].scheduler_batch, 0);
+        assert_eq!(
+            artifact.control_log[0].scheduler_batch, artifact.control_log[1].scheduler_batch,
+            "grouped breakpoint controls must share one scheduler batch"
+        );
+        assert!(matches!(
+            &artifact.control_log[0].scheduler_control,
+            Some(ControlOperationKind::InjectFault { tag, .. }) if tag == &first_tag
+        ));
+        assert!(matches!(
+            &artifact.control_log[1].scheduler_control,
+            Some(ControlOperationKind::InjectFault { tag, .. }) if tag == &second_tag
+        ));
+
+        let replay = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
+            &artifact,
+            graph_with_baked_genesis(&scenario),
+            ControlSensitiveLoop::default(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("grouped breakpoint controls should replay as one batch: {error}"),
+        };
+        assert_eq!(replay, artifact.final_snapshot);
     }
 
     #[tokio::test]
@@ -6347,6 +6927,82 @@ mod tests {
                 shutdowns.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct ControlSensitiveLoop {
+        quanta: u64,
+        active_faults: std::collections::BTreeSet<FaultTag>,
+        legacy_injects: u64,
+        control_batches: u64,
+    }
+
+    impl ControlSensitiveLoop {
+        fn apply_control_batch(&mut self, controls: &[ControlOperation]) {
+            if controls.is_empty() {
+                return;
+            }
+            self.control_batches = self.control_batches.saturating_add(1);
+            for control in controls {
+                match &control.kind {
+                    ControlOperationKind::Inject => {
+                        self.legacy_injects = self.legacy_injects.saturating_add(1);
+                    }
+                    ControlOperationKind::InjectFault { tag, .. } => {
+                        self.active_faults.insert(tag.clone());
+                    }
+                    ControlOperationKind::HealFault { tag } => {
+                        self.active_faults.remove(tag);
+                    }
+                    ControlOperationKind::Pause
+                    | ControlOperationKind::Resume
+                    | ControlOperationKind::Step
+                    | ControlOperationKind::Snapshot
+                    | ControlOperationKind::Fork
+                    | ControlOperationKind::Query => {}
+                }
+            }
+        }
+
+        fn decision_seed(&self) -> u64 {
+            self.quanta
+                .saturating_add((self.active_faults.len() as u64).saturating_mul(1_000))
+                .saturating_add(self.legacy_injects.saturating_mul(10_000))
+                .saturating_add(self.control_batches.saturating_mul(100_000))
+        }
+    }
+
+    impl QuantumLoop for ControlSensitiveLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            self.apply_control_batch(&request.control);
+            self.quanta = self.quanta.saturating_add(1);
+            let decision = generated_decision(self.decision_seed());
+            let configuration = step(&request.configuration, decision.clone());
+            Ok(QuantumOutcome {
+                configuration,
+                frontier: VirtualTime { ticks: self.quanta },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
+                event_log_segment_bytes: vec![b'x'],
+                event_log_segment_text: String::from("x"),
+                event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn apply_control_at_boundary(
+            &mut self,
+            control: Vec<ControlOperation>,
+        ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+            self.apply_control_batch(&control);
+            Ok(Vec::new())
         }
     }
 

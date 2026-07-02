@@ -240,6 +240,12 @@ long-held locks.
   `TemporalGraph::resume`, fork commands can spawn independent children through
   an actor fork-loop factory, and fork-from-checkpoint creates an independent
   paused child actor without mutating the parent snapshot.
+  `T-SESS-9` is green through `checks.crucible.phase5.sessionControlDeterminism`,
+  which applies and logs inject/heal controls at running and paused boundaries,
+  captures `SessionControlReplayArtifact` records keyed by virtual
+  frontier/quanta plus scheduler-control batch, and replays them with
+  boundary/final-snapshot mismatch guards so scheduler-owned state is reproduced
+  without wall-clock timing as an input.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
