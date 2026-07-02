@@ -696,7 +696,7 @@ pub enum AllocationGcPollReason {
 pub struct AllocationCollectorPoll {
     sequence: u64,
     tier: RuntimeAllocatorTier,
-    entrypoint: RuntimeAllocationEntryPoint,
+    request: RuntimeAllocationRequest,
     reason: AllocationGcPollReason,
     stats_after: ArenaStats,
 }
@@ -706,7 +706,7 @@ impl AllocationCollectorPoll {
         Self {
             sequence: safepoint.sequence,
             tier: safepoint.tier,
-            entrypoint: safepoint.entrypoint,
+            request: safepoint.request,
             reason,
             stats_after: safepoint.stats_after,
         }
@@ -724,7 +724,12 @@ impl AllocationCollectorPoll {
 
     /// Returns the allocation entry point that requested the poll.
     pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
-        self.entrypoint
+        self.request.entrypoint()
+    }
+
+    /// Returns the typed allocation request that produced the poll.
+    pub const fn request(self) -> RuntimeAllocationRequest {
+        self.request
     }
 
     /// Returns why the collector poll was requested.
@@ -748,7 +753,7 @@ impl AllocationCollectorPoll {
 pub struct AllocationMemoryBudgetDecision {
     sequence: u64,
     tier: RuntimeAllocatorTier,
-    entrypoint: RuntimeAllocationEntryPoint,
+    request: RuntimeAllocationRequest,
     budget: HeapMemoryBudget,
     sample: HeapMemorySample,
     stats_after: ArenaStats,
@@ -764,7 +769,7 @@ impl AllocationMemoryBudgetDecision {
         Self {
             sequence: safepoint.sequence,
             tier: safepoint.tier,
-            entrypoint: safepoint.entrypoint,
+            request: safepoint.request,
             budget,
             sample,
             stats_after: safepoint.stats_after,
@@ -784,7 +789,12 @@ impl AllocationMemoryBudgetDecision {
 
     /// Returns the allocation entry point sampled by this decision.
     pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
-        self.entrypoint
+        self.request.entrypoint()
+    }
+
+    /// Returns the typed allocation request sampled by this decision.
+    pub const fn request(self) -> RuntimeAllocationRequest {
+        self.request
     }
 
     /// Returns the budget used to classify memory pressure.
@@ -831,7 +841,7 @@ impl AllocationMemoryBudgetDecision {
 pub struct AllocationSafepoint {
     sequence: u64,
     tier: RuntimeAllocatorTier,
-    entrypoint: RuntimeAllocationEntryPoint,
+    request: RuntimeAllocationRequest,
     kind: HeapObjectKind,
     requested_size: usize,
     reserved_size: usize,
@@ -843,7 +853,7 @@ impl AllocationSafepoint {
     const fn new(
         sequence: u64,
         tier: RuntimeAllocatorTier,
-        entrypoint: RuntimeAllocationEntryPoint,
+        request: RuntimeAllocationRequest,
         allocation: ArenaAllocation,
         stats_after: ArenaStats,
         gc_poll_reason: Option<AllocationGcPollReason>,
@@ -851,7 +861,7 @@ impl AllocationSafepoint {
         Self {
             sequence,
             tier,
-            entrypoint,
+            request,
             kind: allocation.kind,
             requested_size: allocation.requested_size,
             reserved_size: allocation.reserved_size,
@@ -872,7 +882,12 @@ impl AllocationSafepoint {
 
     /// Returns the centralized allocation entry point.
     pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
-        self.entrypoint
+        self.request.entrypoint()
+    }
+
+    /// Returns the typed allocation request that produced this safepoint.
+    pub const fn request(self) -> RuntimeAllocationRequest {
+        self.request
     }
 
     /// Returns the logical heap-object kind requested by the caller.
@@ -1004,7 +1019,7 @@ impl AllocationSafepointState {
     fn record(
         &mut self,
         tier: RuntimeAllocatorTier,
-        entrypoint: RuntimeAllocationEntryPoint,
+        request: RuntimeAllocationRequest,
         allocation: ArenaAllocation,
         stats_after: ArenaStats,
         gc_stress_policy: GcStressPolicy,
@@ -1015,7 +1030,7 @@ impl AllocationSafepointState {
         self.last = Some(AllocationSafepoint::new(
             sequence,
             tier,
-            entrypoint,
+            request,
             allocation,
             stats_after,
             gc_poll_reason,
@@ -1284,26 +1299,26 @@ impl RuntimeAllocator {
 
     fn record_allocation_safepoint(
         &mut self,
-        entrypoint: RuntimeAllocationEntryPoint,
+        request: RuntimeAllocationRequest,
         allocation: ArenaAllocation,
     ) {
         let tier = self.tier();
         let stats = self.stats();
         let gc_stress_policy = self.gc_stress_policy;
         self.safepoints
-            .record(tier, entrypoint, allocation, stats, gc_stress_policy);
+            .record(tier, request, allocation, stats, gc_stress_policy);
     }
 }
 
 fn tier_a_alloc_thunk(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_thunk()?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocThunk, allocation);
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::Thunk, allocation);
     Ok(allocation)
 }
 
 fn tier_a_alloc_lambda(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_lambda()?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocLambda, allocation);
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::Lambda, allocation);
     Ok(allocation)
 }
 
@@ -1313,13 +1328,14 @@ fn tier_a_alloc_attrs(
     slots: u32,
 ) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_attrs(shape, slots)?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocAttrs, allocation);
+    allocator
+        .record_allocation_safepoint(RuntimeAllocationRequest::Attrs { shape, slots }, allocation);
     Ok(allocation)
 }
 
 fn tier_a_alloc_cons(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_cons()?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocCons, allocation);
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::Cons, allocation);
     Ok(allocation)
 }
 
@@ -1328,7 +1344,7 @@ fn tier_a_alloc_list(
     len: usize,
 ) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_list(len)?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocList, allocation);
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
     Ok(allocation)
 }
 
@@ -1337,7 +1353,7 @@ fn tier_a_alloc_string(
     len: usize,
 ) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_string(len)?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocString, allocation);
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
     Ok(allocation)
 }
 
@@ -1348,7 +1364,14 @@ fn tier_a_alloc_raw(
     type_tag: u32,
 ) -> Result<ArenaAllocation, ArenaError> {
     let allocation = allocator.arena_mut().aos_alloc_raw(size, align, type_tag)?;
-    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocRaw, allocation);
+    allocator.record_allocation_safepoint(
+        RuntimeAllocationRequest::Raw {
+            size,
+            align,
+            type_tag,
+        },
+        allocation,
+    );
     Ok(allocation)
 }
 
@@ -1444,7 +1467,10 @@ impl PermanentSharedAllocator {
         slots: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
         let allocation = self.arena.aos_alloc_attrs(shape, slots)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocAttrs, allocation);
+        self.record_allocation_safepoint(
+            RuntimeAllocationRequest::Attrs { shape, slots },
+            allocation,
+        );
         Ok(allocation)
     }
 
@@ -1455,7 +1481,7 @@ impl PermanentSharedAllocator {
     /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
     pub(crate) fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
         let allocation = self.arena.aos_alloc_list(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocList, allocation);
+        self.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
         Ok(allocation)
     }
 
@@ -1466,20 +1492,20 @@ impl PermanentSharedAllocator {
     /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
     pub(crate) fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
         let allocation = self.arena.aos_alloc_string(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocString, allocation);
+        self.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
         Ok(allocation)
     }
 
     fn record_allocation_safepoint(
         &mut self,
-        entrypoint: RuntimeAllocationEntryPoint,
+        request: RuntimeAllocationRequest,
         allocation: ArenaAllocation,
     ) {
         let tier = self.tier();
         let stats = self.stats();
         let gc_stress_policy = self.gc_stress_policy;
         self.safepoints
-            .record(tier, entrypoint, allocation, stats, gc_stress_policy);
+            .record(tier, request, allocation, stats, gc_stress_policy);
     }
 }
 
@@ -1505,6 +1531,7 @@ mod tests {
         assert_eq!(event.sequence(), sequence);
         assert_eq!(event.tier(), tier);
         assert_eq!(event.entrypoint(), entrypoint);
+        assert_eq!(event.request().entrypoint(), entrypoint);
         assert_eq!(event.kind(), allocation.kind);
         assert_eq!(event.requested_size(), allocation.requested_size);
         assert_eq!(event.reserved_size(), allocation.reserved_size);
@@ -1679,6 +1706,14 @@ mod tests {
                 allocation,
                 allocator.stats(),
             );
+            assert_eq!(
+                allocator
+                    .allocation_safepoints()
+                    .last()
+                    .expect("safepoint records")
+                    .request(),
+                request
+            );
         }
     }
 
@@ -1753,6 +1788,8 @@ mod tests {
             continue_decision.entrypoint(),
             RuntimeAllocationEntryPoint::AosAllocThunk
         );
+        assert_eq!(safepoint.request(), RuntimeAllocationRequest::Thunk);
+        assert_eq!(continue_decision.request(), RuntimeAllocationRequest::Thunk);
         assert_eq!(continue_decision.budget(), loose_budget);
         assert_eq!(
             continue_decision.sample(),
@@ -1774,6 +1811,7 @@ mod tests {
         let spill_decision = state
             .last_memory_budget_decision(spill_budget, spill_reclaim_bytes, 0)
             .expect("last safepoint classifies");
+        assert_eq!(spill_decision.request(), RuntimeAllocationRequest::Thunk);
         assert_eq!(
             spill_decision.sample(),
             HeapMemorySample::new(mapped_bytes, spill_reclaim_bytes, 0)
@@ -1791,6 +1829,7 @@ mod tests {
 
         let tier_b_budget = memory_budget(mapped_bytes / 2);
         let tier_b_decision = safepoint.classify_memory_budget(tier_b_budget, 0, 0);
+        assert_eq!(tier_b_decision.request(), RuntimeAllocationRequest::Thunk);
         assert_eq!(
             tier_b_decision.response(),
             HeapMemoryBudgetResponse::InstallTierB {
@@ -2284,6 +2323,8 @@ mod tests {
         let poll = event.collector_poll().expect("poll request records");
         assert_eq!(poll.sequence(), event.sequence());
         assert_eq!(poll.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert_eq!(event.request(), RuntimeAllocationRequest::Thunk);
+        assert_eq!(poll.request(), RuntimeAllocationRequest::Thunk);
         assert_eq!(
             poll.entrypoint(),
             RuntimeAllocationEntryPoint::AosAllocThunk
@@ -2365,7 +2406,14 @@ mod tests {
     #[test]
     fn enabled_gc_stress_polls_when_safepoint_sequence_saturates() {
         let mut arena = BumpArena::with_initial_chunk_bytes(64).expect("arena creates");
-        let allocation = arena.aos_alloc_thunk().expect("thunk allocates");
+        let request = RuntimeAllocationRequest::Raw {
+            size: 16,
+            align: 8,
+            type_tag: 0x7261_7770,
+        };
+        let allocation = arena
+            .aos_alloc_raw(16, 8, 0x7261_7770)
+            .expect("raw allocation succeeds");
         let mut state = AllocationSafepointState {
             count: u64::MAX - 1,
             last: None,
@@ -2374,42 +2422,42 @@ mod tests {
 
         state.record(
             RuntimeAllocatorTier::TierAOneShot,
-            RuntimeAllocationEntryPoint::AosAllocThunk,
+            request,
             allocation,
             arena.stats(),
             policy,
         );
         let event = state.last().expect("saturated safepoint records");
         assert_eq!(event.sequence(), u64::MAX);
+        assert_eq!(event.request(), request);
         assert_eq!(
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressSequenceSaturated)
         );
+        let poll = event.collector_poll().expect("poll records");
+        assert_eq!(poll.request(), request);
         assert_eq!(
-            event.collector_poll().expect("poll records").reason(),
+            poll.reason(),
             AllocationGcPollReason::GcStressSequenceSaturated
         );
 
         state.record(
             RuntimeAllocatorTier::TierAOneShot,
-            RuntimeAllocationEntryPoint::AosAllocThunk,
+            request,
             allocation,
             arena.stats(),
             policy,
         );
         let event = state.last().expect("post-saturation safepoint records");
         assert_eq!(event.sequence(), u64::MAX);
+        assert_eq!(event.request(), request);
         assert_eq!(
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressSequenceSaturated)
         );
-        assert_eq!(
-            state
-                .last_safepoint_collector_poll()
-                .expect("poll records")
-                .sequence(),
-            u64::MAX
-        );
+        let poll = state.last_safepoint_collector_poll().expect("poll records");
+        assert_eq!(poll.sequence(), u64::MAX);
+        assert_eq!(poll.request(), request);
     }
 
     #[test]
@@ -2435,6 +2483,8 @@ mod tests {
             .expect("permanent poll records");
         assert_eq!(poll.sequence(), event.sequence());
         assert_eq!(poll.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert_eq!(event.request(), RuntimeAllocationRequest::String { len: 5 });
+        assert_eq!(poll.request(), RuntimeAllocationRequest::String { len: 5 });
         assert_eq!(
             poll.entrypoint(),
             RuntimeAllocationEntryPoint::AosAllocString

@@ -877,6 +877,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       does not export native wrappers, initialize semantic ABI payloads such as
       thunk code pointers or cons values, register Cranelift symbols, or install
       a Tier-B collector table.
+- [x] Current allocation-safepoint request-preservation precursor:
+      allocation safepoints, GC-stress collector-poll requests, and high-water
+      memory-budget decisions now retain the full `RuntimeAllocationRequest` and
+      derive the legacy entry-point accessor from that payload. This preserves
+      request details that are lossy in post-allocation object metadata, such as
+      raw allocation alignment, while keeping existing entry-point consumers
+      stable. Tests cover request preservation through typed dispatch,
+      collector-poll requests, permanent-shared polls, sequence-saturation
+      polls, and budget decisions. This remains metadata only: no collector is
+      invoked, no native wrapper receives the payload, and Tier-B routing is
+      still open.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
