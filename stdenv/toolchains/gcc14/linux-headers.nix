@@ -10,7 +10,12 @@
   hostPlatform,
 }: let
   src = builtins.fetchTarball {
-    url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz";
+    # Independent full kernel.org mirror, NOT cdn.kernel.org: the
+    # CDN edge serving some networks can 404 v6.x tarballs that
+    # resolve fine elsewhere, and builtins.fetchTarball takes a
+    # single URL with no fallback. Same bytes, so the unpacked-tree
+    # hash pin is unchanged.
+    url = "https://mirror.csclub.uwaterloo.ca/kernel.org/linux/kernel/v6.x/linux-6.12.tar.xz";
     sha256 = "1dnxa60qxkjb8yqadbb1aglj8p57pqkmmg8ikdmlqxlb4vh7vnz3";
   };
 in
