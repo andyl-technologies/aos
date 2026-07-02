@@ -262,6 +262,10 @@ const GC_WRITE_BARRIER_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("thunk", RuntimeAbiParameterKind::ThunkPointer),
     RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
 ];
+const ENV_GET_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+    RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
+];
 
 const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
@@ -327,6 +331,14 @@ const RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCal
     GC_WRITE_BARRIER_PARAMETERS,
     RuntimeAbiReturnKind::Unit,
 );
+const RUNTIME_ENV_GET_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_env_get", RuntimeHelperRole::EnvironmentAccess),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    ENV_GET_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 
 /// Frozen helper call signatures for helpers with core-owned ABI shapes today.
 pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
@@ -337,6 +349,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_ALLOC_RAW_CALL_SIGNATURE,
     RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
     RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
+    RUNTIME_ENV_GET_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
 ];
 
@@ -375,6 +388,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_alloc_raw" => Some(RUNTIME_ALLOC_RAW_CALL_SIGNATURE),
         "aos_alloc_string" => Some(RUNTIME_ALLOC_STRING_CALL_SIGNATURE),
         "aos_alloc_thunk" => Some(RUNTIME_ALLOC_THUNK_CALL_SIGNATURE),
+        "aos_env_get" => Some(RUNTIME_ENV_GET_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         _ => None,
     }
@@ -1205,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_call_signatures_cover_core_owned_storage_helpers() {
+    fn helper_call_signatures_cover_core_owned_helpers() {
         let helper_signatures = runtime_helper_call_signatures();
         let helper_symbols = helper_signatures
             .iter()
@@ -1225,6 +1239,7 @@ mod tests {
                 "aos_alloc_raw",
                 "aos_alloc_string",
                 "aos_alloc_thunk",
+                "aos_env_get",
                 "aos_gc_write_barrier",
             ])
         );
@@ -1305,6 +1320,30 @@ mod tests {
             ]
         );
         assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Unit);
+    }
+
+    #[test]
+    fn env_get_helper_call_signature_pins_slot_lookup_value_return() {
+        let signature =
+            runtime_helper_call_signature("aos_env_get").expect("env-get signature is core-owned");
+
+        assert_eq!(
+            signature.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new(
+                    "aos_env_get",
+                    RuntimeHelperRole::EnvironmentAccess,
+                ),
+            }
+        );
+        assert_eq!(
+            signature.parameters(),
+            &[
+                RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+                RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
+            ]
+        );
+        assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

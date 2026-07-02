@@ -288,6 +288,7 @@ mod tests {
                 .declaration_for_symbol("nix.builtin.derivationStrict")
                 .is_some()
         );
+        assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
         assert!(matches!(
             preflight.gap_for_symbol("aos_force"),
             Some(

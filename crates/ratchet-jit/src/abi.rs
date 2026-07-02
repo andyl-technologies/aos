@@ -446,6 +446,19 @@ mod tests {
     }
 
     #[test]
+    fn env_get_helper_clif_signature_lowers_env_slot_and_value_return() {
+        let runtime_signature = runtime_helper_call_signature("aos_env_get")
+            .expect("env-get helper signature is core-owned");
+        let signature =
+            clif_signature_for_runtime_call(runtime_signature).expect("env-get signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        assert_eq!(param_types(&signature), vec![pointer_type, types::I32]);
+        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
     fn unsupported_host_calling_convention_reports_error() {
         let wasm_triple = "wasm32-wasi"
             .parse::<Triple>()

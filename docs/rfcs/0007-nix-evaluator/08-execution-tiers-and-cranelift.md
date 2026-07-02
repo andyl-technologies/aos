@@ -901,13 +901,14 @@ harness, never cut for scope.
 - [x] Current uniform runtime-call ABI metadata precursor:
       `ratchet-core::runtime_abi` publishes safe `RuntimeCallSignature`
       descriptors for compiled thunk bodies, compiled lambda bodies,
-      builtin-primop wrappers, and the core-owned allocation/write-barrier
-      helper shapes. The descriptors pin `extern "C"`, the shared `rt` prefix,
-      thunk/lambda/primop `env` and `Value` arguments, helper pointer/scalar
-      parameters, pointer or unit helper returns, `Value` returns, and the
-      16-byte/two-register value layout. Tests cross-check covered primop
-      arities against the builtin declaration inventory and pin representative
-      helper signatures. This is ABI contract metadata only; it is not an
+      builtin-primop wrappers, and the core-owned allocation,
+      environment-access, and write-barrier helper shapes. The descriptors pin
+      `extern "C"`, the shared `rt` prefix, thunk/lambda/primop `env` and
+      `Value` arguments, helper pointer/scalar parameters, pointer, `Value`, or
+      unit helper returns, and the 16-byte/two-register value layout. Tests
+      cross-check covered primop arities against the builtin declaration
+      inventory and pin representative helper signatures. This is ABI contract
+      metadata only; it is not an
       exported `ThunkFn`/`LambdaFn` wrapper, raw-pointer call boundary, Cranelift
       lowering, or `JITBuilder::symbol` registration.
 - [x] Current builtin runtime-call preflight precursor:
@@ -983,10 +984,10 @@ harness, never cut for scope.
       core helper signature exists, callable builtin `RuntimeCallSignature`
       entries are bindable metadata, and unbound helper roles plus value-only
       builtin symbols stay in the gap report. Tests pin helper parity with the
-      safe registration preflight and the core helper signature inventory,
-      builtin parity with the builtin call preflight, exact binding/gap
-      projection order, representative callable builtin metadata, and current
-      helper/value-only gaps. This does not attach executable addresses, export
+      safe registration preflight, core signature coverage for every currently
+      bound helper, builtin parity with the builtin call preflight, exact
+      binding/gap projection order, representative callable builtin metadata,
+      and current helper/value-only gaps. This does not attach executable addresses, export
       wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol ABI-signature plan precursor:
       `runtime_symbol_abi_signature_plan()` is the checked completeness gate for
@@ -1002,9 +1003,10 @@ harness, never cut for scope.
       composes a verified CLIF artifact with the address-free JIT runtime-symbol
       declaration preflight. The checked
       `jit_module_readiness_plan_for_artifact()` gate preserves callable builtin
-      declarations plus core-owned allocation/write-barrier helper declarations,
-      but currently rejects complete setup while unshaped helper and value-only
-      builtin declaration gaps remain. Tests pin artifact metadata, callable
+      declarations plus core-owned allocation, environment-access, and
+      write-barrier helper declarations, but currently rejects complete setup
+      while unshaped helper and value-only builtin declaration gaps remain.
+      Tests pin artifact metadata, callable
       builtin declaration visibility, representative helper gaps, the
       incomplete-plan error, and a synthetic complete conversion. This readiness
       API remains metadata only: it does not construct a `JITModule`, allocate an
@@ -1014,7 +1016,8 @@ harness, never cut for scope.
       `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
       and declares every currently shape-known callable builtin plus
-      core-owned allocation/write-barrier helper runtime symbol as a
+      core-owned allocation, environment-access, and write-barrier helper
+      runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
@@ -1126,9 +1129,10 @@ harness, never cut for scope.
       `env`, code pointers, object pointers, and `usize`; `i32` slots for fixed
       `u32`-sized fields; two `i64` CLIF ABI slots for every by-value `Value`
       argument or return; and no return slots for unit helpers. Tests pin thunk
-      and lambda shapes, primop arities 0-3, representative allocation and
-      write-barrier helper shapes, and the 16-byte/two-8-byte-word `Value`
-      layout guard. This is signature metadata only: it does not construct a
+      and lambda shapes, primop arities 0-3, representative allocation,
+      environment-access, and write-barrier helper shapes, and the
+      16-byte/two-8-byte-word `Value` layout guard. This is signature metadata
+      only: it does not construct a
       `JITModule`, register symbols, lower a CLIF body, allocate an executable
       buffer, cross a raw pointer call boundary, or export a native wrapper.
 - [x] Current `ratchet-jit` runtime-symbol inventory precursor:
@@ -1143,15 +1147,18 @@ harness, never cut for scope.
 - [x] Current JIT symbol-declaration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` combines
       the stable runtime symbol manifest with callable builtin ABI metadata and
-      core-owned allocation/write-barrier helper ABI metadata, then lowers those
-      signatures to CLIF `Signature` declarations. Unshaped helpers and
-      value-only builtins remain explicit gaps. Tests pin a representative
-      callable builtin declaration, allocation and write-barrier helper
-      declarations, an unshaped forcing-helper gap, value-only builtin gaps, and
-      exact declaration parity with callable builtins plus core-owned helpers.
-      This is declaration metadata only: no `JITModule`, `JITBuilder::symbol`,
-      executable address, exported wrapper, relocation, or native call is
-      implemented.
+      core-owned allocation, environment-access, and write-barrier helper ABI
+      metadata, then lowers those signatures to CLIF `Signature` declarations.
+      `aos_env_get` is frozen as `(env, slot) -> Value` and lowers to a
+      host-pointer environment parameter, an `i32` slot parameter, and two `i64`
+      return slots. Unshaped helpers and value-only builtins remain explicit
+      gaps. Tests pin a representative callable builtin declaration, allocation,
+      environment-access, and write-barrier helper declarations, an unshaped
+      forcing-helper gap, value-only builtin gaps, and exact declaration parity
+      with callable builtins plus core-owned helpers. This is declaration
+      metadata only: no environment layout, runtime helper address,
+      `JITModule`, `JITBuilder::symbol`, executable address, exported wrapper,
+      relocation, or native call is implemented.
 - [x] Current JIT symbol-registration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_registration_preflight()`
       consumes the CLIF declaration preflight and joins it with explicit

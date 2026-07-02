@@ -829,11 +829,12 @@ harness, never cut for scope.
       allocation/write-barrier helper ABI metadata with `ratchet-core`'s builtin
       call-shape metadata in stable runtime symbol order. Callable builtin
       symbols now carry their frozen `RuntimeCallSignature` metadata in this
-      preflight, while unbound helper roles and value-only builtin symbols remain
-      missing. Tests prove helper parity with the safe registration preflight,
-      builtin parity with the builtin call preflight, exact binding/gap
-      projection order, representative callable builtin metadata, and current
-      helper/value-only gaps. This is not executable ABI registration: no
+      preflight, while unbound helper roles, including environment access, and
+      value-only builtin symbols remain missing. Tests prove helper parity with
+      the safe registration preflight, builtin parity with the builtin call
+      preflight, exact binding/gap projection order, representative callable
+      builtin metadata, and current helper/value-only gaps. This is not
+      executable ABI registration: no
       addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
       lowering, or compiled artifact relinking are implemented.
 - [x] Current runtime symbol ABI-signature plan precursor:
@@ -841,9 +842,10 @@ harness, never cut for scope.
       into a checked completeness gate: callers receive a
       `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
       signature metadata. Today it returns an incomplete-plan error carrying the
-      preflight because forcing/call/attr/error helpers and value-only builtins
-      remain gaps. Tests pin the missing count, representative helper and
-      value-only builtin gaps, preserved callable builtin metadata, and a
+      preflight because environment/forcing/call/attr/error helpers and
+      value-only builtins remain gaps. Tests pin the missing count,
+      representative helper and value-only builtin gaps, preserved callable
+      builtin metadata, and a
       synthetic complete conversion path. This is metadata gating only; no
       addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
       lowering, or compiled artifact relinking are implemented.
@@ -853,11 +855,11 @@ harness, never cut for scope.
       builtin call-shape metadata into a target-readiness report. Helper symbols
       with allocation/write-barrier callables are address-free symbol/role
       wrapper-generation candidates;
-      forcing/call/attr/error helpers, value-only builtins, and callable builtins
-      without wrapper bodies remain gaps. Tests prove exact projection order,
-      helper-callable parity, representative helper/value-only gaps, all callable
-      builtin wrapper gaps, and the absence of helper-callable gaps today. This
-      is readiness metadata only; no addresses, exported wrappers,
+      environment/forcing/call/attr/error helpers, value-only builtins, and
+      callable builtins without wrapper bodies remain gaps. Tests prove exact
+      projection order, helper-callable parity, representative helper/value-only
+      gaps, all callable builtin wrapper gaps, and the absence of helper-callable
+      gaps today. This is readiness metadata only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
 - [x] Current runtime symbol native-target candidate plan precursor:

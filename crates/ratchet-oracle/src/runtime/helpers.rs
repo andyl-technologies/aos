@@ -1373,7 +1373,24 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(helper_core_signatures, core_signatures);
+        for binding in helper_core_signatures {
+            assert!(
+                core_signatures.contains(&binding),
+                "{} bound helper has matching core runtime-call metadata",
+                binding.0
+            );
+        }
+        assert!(
+            core_signatures
+                .iter()
+                .any(|(symbol_name, _)| *symbol_name == "aos_env_get")
+        );
+        assert!(
+            runtime_helper_bindings()
+                .iter()
+                .all(|binding| binding.symbol_name() != "aos_env_get"),
+            "env-get has core ABI metadata but no Rust-callable binding yet"
+        );
     }
 
     #[test]
