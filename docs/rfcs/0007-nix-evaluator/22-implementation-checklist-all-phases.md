@@ -5615,21 +5615,21 @@ and helps the oracle directly.
       card-table-aware `AllocationCollectorPollMinorGcPlan`s now capture an
       owned dirty-card snapshot plus current old/permanent field metadata.
       `EvalHeap::plan_collector_poll_minor_gc_with_card_table` still fails
-      closed for unremembered permanent-to-young edges, but admits an absent edge
-      when the source card is dirty and the young target is already in the
-      survivor frontier through another root or remembered edge.
+      closed for unremembered permanent-to-young edges whose source card is not
+      dirty, while dirty unremembered fields seed the survivor frontier and
+      receive heap-backed dirty-old-field reference slots for later rewrite
+      metadata.
       `AllocationCollectorPollMinorGcPlan::commit_plan` then builds a
       `MinorGcOldFieldRescanPlan` from the captured card/field metadata and
       composes it through `MinorGcCommitPlan::from_parts_with_old_field_rescan`,
       so the precomputed next remembered set can include deduplicated dirty-card
       rescan edges while publication still validates only the source remembered
       snapshot. Unit tests cover dirty remembered-edge success, dirty
-      unremembered non-survivor rejection, old-field metadata capture, and rescan
-      publication of an already-surviving unremembered target. This remains a
-      planning bridge only; dirty old-field targets do not yet expand the
-      survivor frontier by themselves, and live root/field mutation, live
-      card-table clearing, semispace ownership, and collector dispatch remain
-      open.
+      unremembered survivor expansion, dirty-old-field rewrite/writeback
+      metadata, old-field metadata capture, and rescan publication of
+      unremembered targets. This remains a planning bridge only; live root/field
+      mutation, live card-table clearing, semispace ownership, and collector
+      dispatch remain open.
 - [x] Current allocation-poll card-table commit-buffer precursor:
       boundary commit preflights now carry an owned fallible clone of the
       daemon-wide card-table snapshot, and
@@ -5644,22 +5644,28 @@ and helps the oracle directly.
       buffers, boundary remembered-edge dry-run clearing of the owned card
       table, and sibling boundary preflights clearing independent daemon-wide
       copies. This is still an owned-buffer dry-run only; mutating the live
-      evaluator/daemon card table, letting dirty old fields expand the survivor
-      frontier, and installing the Tier-B collector remain open.
+      evaluator/daemon card table and installing the Tier-B collector remain
+      open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
       the poll scan, remembered-edge source fields in snapshot order, and
-      precise `HeapEdgeSource`-labeled fields of planned young survivors in
-      survivor order. Remembered edges are expanded through current concrete
-      source fields, so duplicate source fields produce distinct rewrite slots
-      and stale remembered entries with no current field are rejected. The
+      dirty old/permanent fields from the card-table-aware rescan, and precise
+      `HeapEdgeSource`-labeled fields of planned young survivors in survivor
+      order. Remembered edges are expanded through current concrete source
+      fields, so duplicate source fields produce distinct rewrite slots and
+      stale remembered entries with no current field are rejected. Dirty
+      old/permanent fields seed the card-table-aware survivor frontier after the
+      remembered-set frontier and receive their own heap-field-backed slots. The
       `reference_rewrite_plan` helper delegates that sequence to
       `MinorGcReferenceRewritePlan` once a relocation map exists, preserving
       slot indices so tests can link rewrites back to copied roots, remembered
-      source fields, and survivor fields. Unit tests cover root and nursery-field
-      rewrites, remembered-edge rewrites, duplicate remembered source fields, and
-      stale remembered-edge rejection. This remains copied slot metadata only;
+      source fields, dirty old/permanent fields, and survivor fields. Unit tests
+      cover root and nursery-field rewrites, remembered-edge rewrites, duplicate
+      remembered source fields, dirty-card unremembered survivor edges, mixed
+      remembered/dirty frontier ordering, clean unremembered source-card
+      rejection, and stale remembered-edge rejection. This remains copied slot
+      metadata only;
       mutable evaluator roots, object-field writeback, remembered-source field
       mutation, and live runtime-state application remain open.
 - [x] Current allocation-poll destination-planning bridge precursor:
@@ -5688,11 +5694,12 @@ and helps the oracle directly.
       frontier, and derives object-copy sizes from the validated placement plan.
       The bridge preserves the poll plan's
       labeled reference slots beside the commit metadata, so tests can connect
-      lower-level rewrites back to copied roots, remembered source fields, and
-      survivor fields. Unit tests cover empty remembered-set commit metadata,
-      retained copied-young remembered edges, and rejection of a destination plan
-      built for a different poll survivor frontier or promotion policy. This
-      remains metadata only; destination storage allocation, binding byte buffers
+      lower-level rewrites back to copied roots, remembered source fields, dirty
+      old/permanent fields, and survivor fields. Unit tests cover empty
+      remembered-set commit metadata, retained copied-young remembered edges, and
+      rejection of a destination plan built for a different poll survivor
+      frontier or promotion policy. This remains metadata only; destination
+      storage allocation, binding byte buffers
       to real objects, forwarding-slot installation, live root/object-field
       mutation, remembered-source field mutation, remembered-set publication, and
       semispace management remain open.
@@ -5705,11 +5712,12 @@ and helps the oracle directly.
       installation, reference rewrites, and remembered-set publication to the
       already validated lower-level `MinorGcCommitPlan`. `EvalHeap` can derive a
       live reference buffer for heap-field-backed slots by re-reading
-      remembered-source and nursery-field labels from the side table while
-      rejecting copied root slots, and can derive heap-field writeback metadata
-      from lower-level rewrites by revalidating each remembered-source or nursery
-      field's label, copied value, and lower-level rewrite source before
-      returning the planned replacement. Remembered fields write back through
+      remembered-source, dirty old/permanent, and nursery-field labels from the
+      side table while rejecting copied root slots, and can derive heap-field
+      writeback metadata from lower-level rewrites by revalidating each
+      remembered-source, dirty old/permanent, or nursery field's label, copied
+      value, and lower-level rewrite source before returning the planned
+      replacement. Remembered and dirty old/permanent fields write back through
       their existing source object, while nursery fields name the relocated
       destination object that would receive the rewritten field. Root rewrites are
       skipped by that heap-field writeback view because their mutable storage
@@ -6101,8 +6109,9 @@ and helps the oracle directly.
       totals, while destination-space sizing continues to come from the
       placement plan's reserved-byte totals so alignment padding stays explicit.
       `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
-      remembered-source and nursery-field slots back to current side-table fields
-      for the reference buffer while rejecting copied root slots, and
+      remembered-source, dirty old/permanent, and nursery-field slots back to
+      current side-table fields for the reference buffer while rejecting copied
+      root slots, and
       `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` filters
       lower-level rewrites to root-backed slots with slot-to-rewrite source
       validation. `AllocationCollectorPollRootWritebackPlan::apply_to_slots`

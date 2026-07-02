@@ -777,7 +777,7 @@ impl PreciseHeapScan {
         Ok(scan)
     }
 
-    /// Returns the explicit roots that seeded this scan.
+    /// Returns the explicit roots supplied by the safepoint scan.
     pub fn roots(&self) -> &[EvalRoot] {
         &self.roots
     }
@@ -1024,6 +1024,15 @@ pub enum AllocationCollectorPollReferenceSource {
         /// The source object's precise field index in scanner order.
         field_index: usize,
         /// The precise source-field label on the remembered edge source object.
+        source: HeapEdgeSource,
+    },
+    /// A copied dirty old/permanent field discovered from the card table.
+    DirtyOldField {
+        /// The dirty old or permanent source object.
+        object: GcHeapAddress,
+        /// The field index in the source object's precise field order.
+        field_index: usize,
+        /// The precise source-field label on the dirty old object.
         source: HeapEdgeSource,
     },
     /// A copied precise field from a planned young survivor.
@@ -1280,9 +1289,10 @@ impl AllocationCollectorPollMinorGcPlan {
     /// used by later heap-backed buffer derivation. It still does not own mutable
     /// evaluator roots, object fields, object bytes, forwarding slots, or
     /// remembered-set storage. For card-table-aware plans, dirty old/permanent
-    /// field rescans are folded into the precomputed next remembered set. The
-    /// destination wrapper must preserve this poll plan's survivor count, source
-    /// order, and copy/promote actions.
+    /// field reference slots participate in reference rewriting and dirty
+    /// old-field rescans are folded into the precomputed next remembered set.
+    /// The destination wrapper must preserve this poll plan's survivor count,
+    /// source order, and copy/promote actions.
     ///
     /// # Errors
     ///
@@ -2133,8 +2143,8 @@ impl AllocationCollectorPollRootReferenceValue {
 
 /// One heap-field-backed reference that must be rewritten after minor GC.
 ///
-/// Remembered-source fields are validated and rewritten in the same
-/// old/permanent object. Nursery fields are validated against the current
+/// Remembered-source and dirty old fields are validated and rewritten in the
+/// same old/permanent object. Nursery fields are validated against the current
 /// from-space object but name the relocated destination object that a mutating
 /// collector would update after copying bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2181,8 +2191,8 @@ impl AllocationCollectorPollHeapFieldWriteback {
 
     /// Returns the object whose field must receive [`Self::replacement`].
     ///
-    /// This matches [`Self::validation_object`] for remembered-source fields and
-    /// names the relocated object for copied nursery fields.
+    /// This matches [`Self::validation_object`] for remembered-source and dirty
+    /// old fields, and names the relocated object for copied nursery fields.
     pub const fn writeback_object(&self) -> GcHeapAddress {
         self.writeback_object
     }
@@ -2668,11 +2678,10 @@ impl EvalHeap {
     /// This performs the same planning work as [`Self::plan_collector_poll_minor_gc`]
     /// and additionally verifies that every remembered edge's source object is
     /// covered by the supplied dirty-card snapshot. It also captures an owned
-    /// dirty-card snapshot and current old/permanent field metadata for later
-    /// commit-plan old-field rescanning. A current permanent-to-young edge may be
-    /// absent from the remembered-set snapshot only when its source card is dirty
-    /// and the target is already in the planned survivor frontier through another
-    /// root or remembered edge.
+    /// dirty-card snapshot and current old/permanent field metadata. Dirty
+    /// old/permanent fields whose edge is absent from the remembered set seed the
+    /// survivor frontier and get heap-backed reference slots for later rewrite
+    /// metadata.
     ///
     /// # Errors
     ///
@@ -2681,7 +2690,7 @@ impl EvalHeap {
     /// [`EvalHeapError::MissingCollectorPollDirtyCard`] when a remembered edge
     /// is not covered by the dirty-card snapshot, or
     /// [`EvalHeapError::MissingCollectorPollRememberedEdge`] when an unremembered
-    /// permanent-to-young edge cannot be safely recovered by dirty-card rescanning.
+    /// permanent-to-young edge is not covered by a dirty source card.
     pub fn plan_collector_poll_minor_gc_with_card_table(
         &self,
         poll_scan: &AllocationCollectorPollScan,
@@ -2717,10 +2726,21 @@ impl EvalHeap {
         let nursery_objects = self.current_nursery_objects()?;
         let nursery_fields = self.current_nursery_fields()?;
         let old_fields = self.current_old_fields()?;
+        let remembered_set_for_plan = match card_table {
+            Some(card_table) => Some(remembered_set_with_dirty_old_field_edges(
+                remembered_set,
+                card_table,
+                &old_fields,
+            )?),
+            None => None,
+        };
+        let frontier_remembered_set = remembered_set_for_plan
+            .as_ref()
+            .map_or(remembered_set, RememberedSet::snapshot);
         let nursery_field_views = nursery_field_views(&nursery_fields)?;
         let plan = MinorGcPlan::from_roots_remembered_and_fields(
             roots.iter().copied(),
-            remembered_set,
+            frontier_remembered_set,
             collection_epoch,
             &nursery_objects,
             &nursery_field_views,
@@ -2738,8 +2758,10 @@ impl EvalHeap {
         let reference_slots = self.minor_gc_reference_slots_for_plan(
             poll_scan,
             remembered_set,
+            card_table,
             &plan,
             &nursery_fields,
+            &old_fields,
         )?;
         let card_table = match card_table {
             Some(card_table) => Some(owned_card_table_from_snapshot(card_table)?),
@@ -2832,11 +2854,11 @@ impl EvalHeap {
 
     /// Derives a reference buffer for heap-field-backed commit slots.
     ///
-    /// This is a live side-table binding precursor for remembered-source fields
-    /// and copied nursery fields. It validates that each saved field index still
-    /// points at the same [`HeapEdgeSource`] label before reading the current
-    /// value. Copied tree-walk/JIT root slots are rejected because [`EvalHeap`]
-    /// does not own their mutable storage.
+    /// This is a live side-table binding precursor for remembered-source fields,
+    /// dirty old fields, and copied nursery fields. It validates that each saved
+    /// field index still points at the same [`HeapEdgeSource`] label before
+    /// reading the current value. Copied tree-walk/JIT root slots are rejected
+    /// because [`EvalHeap`] does not own their mutable storage.
     ///
     /// # Errors
     ///
@@ -2951,12 +2973,13 @@ impl EvalHeap {
 
     /// Derives writeback metadata for heap-field-backed minor-GC rewrites.
     ///
-    /// The returned plan contains only remembered-source and nursery-field slots
-    /// that the lower-level commit plan will rewrite. Root slots are skipped
-    /// because their mutable storage is owned by the active tree-walk/JIT
-    /// safepoint machinery, not by [`EvalHeap`]. Every heap-field slot is
-    /// re-read from the current typed side table before it is admitted so stale
-    /// field labels or changed field values fail before a future mutating writeback.
+    /// The returned plan contains only remembered-source, dirty old-field, and
+    /// nursery-field slots that the lower-level commit plan will rewrite. Root
+    /// slots are skipped because their mutable storage is owned by the active
+    /// tree-walk/JIT safepoint machinery, not by [`EvalHeap`]. Every heap-field
+    /// slot is re-read from the current typed side table before it is admitted
+    /// so stale field labels or changed field values fail before a future
+    /// mutating writeback.
     ///
     /// # Errors
     ///
@@ -3465,8 +3488,10 @@ impl EvalHeap {
         &self,
         poll_scan: &AllocationCollectorPollScan,
         remembered_set: RememberedSetSnapshot<'_>,
+        card_table: Option<GcCardTableSnapshot<'_>>,
         plan: &MinorGcPlan,
         nursery_fields: &[AllocationCollectorPollNurseryFields],
+        old_fields: &[AllocationCollectorPollOldFields],
     ) -> Result<Vec<AllocationCollectorPollReferenceSlot>, EvalHeapError> {
         let mut reference_slots = Vec::new();
         for root in poll_scan.scan().roots() {
@@ -3481,6 +3506,16 @@ impl EvalHeap {
 
         for edge in remembered_set.edges() {
             self.push_remembered_edge_reference_slots(&mut reference_slots, *edge)?;
+        }
+
+        if let Some(card_table) = card_table {
+            push_dirty_old_field_reference_slots(
+                &mut reference_slots,
+                card_table,
+                remembered_set,
+                plan,
+                old_fields,
+            )?;
         }
 
         for survivor in plan.survivors() {
@@ -3569,6 +3604,11 @@ impl EvalHeap {
                 *field_index,
                 source,
             ),
+            AllocationCollectorPollReferenceSource::DirtyOldField {
+                object,
+                field_index,
+                source,
+            } => self.current_heap_field_reference_value_at(index, *object, *field_index, source),
             AllocationCollectorPollReferenceSource::NurseryField {
                 object,
                 field_index,
@@ -3805,6 +3845,76 @@ fn old_field_views(
     Ok(views)
 }
 
+fn remembered_set_with_dirty_old_field_edges(
+    remembered_set: RememberedSetSnapshot<'_>,
+    card_table: GcCardTableSnapshot<'_>,
+    old_fields: &[AllocationCollectorPollOldFields],
+) -> Result<RememberedSet, GenerationalGcError> {
+    let mut frontier = remembered_set_from_snapshot(remembered_set)?;
+    for object in old_fields {
+        if !card_table.covers_source(object.address()) {
+            continue;
+        }
+        for field in object.fields() {
+            let ResolvedValueGeneration::Heap {
+                address: target,
+                generation: HeapGeneration::Young,
+            } = field.value()
+            else {
+                continue;
+            };
+            frontier.record(RememberedEdge::new(object.address(), target))?;
+        }
+    }
+    Ok(frontier)
+}
+
+fn push_dirty_old_field_reference_slots(
+    reference_slots: &mut Vec<AllocationCollectorPollReferenceSlot>,
+    card_table: GcCardTableSnapshot<'_>,
+    remembered_set: RememberedSetSnapshot<'_>,
+    plan: &MinorGcPlan,
+    old_fields: &[AllocationCollectorPollOldFields],
+) -> Result<(), EvalHeapError> {
+    for object in old_fields {
+        if !card_table.covers_source(object.address()) {
+            continue;
+        }
+        for (field_index, field) in object.fields().iter().enumerate() {
+            let ResolvedValueGeneration::Heap {
+                address: target,
+                generation: HeapGeneration::Young,
+            } = field.value()
+            else {
+                continue;
+            };
+            if remembered_set
+                .edges()
+                .contains(&RememberedEdge::new(object.address(), target))
+            {
+                continue;
+            }
+            if !plan
+                .survivors()
+                .iter()
+                .any(|survivor| survivor.address() == target)
+            {
+                continue;
+            }
+            push_reference_slot(
+                reference_slots,
+                AllocationCollectorPollReferenceSource::DirtyOldField {
+                    object: object.address(),
+                    field_index,
+                    source: field.source().clone(),
+                },
+                field.value(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn nursery_fields_for_survivor(
     nursery_fields: &[AllocationCollectorPollNurseryFields],
     address: GcHeapAddress,
@@ -3848,6 +3958,11 @@ fn heap_field_writeback_source<'a>(
             field_index,
             source,
         } => Ok(Some((edge.source(), edge.source(), *field_index, source))),
+        AllocationCollectorPollReferenceSource::DirtyOldField {
+            object,
+            field_index,
+            source,
+        } => Ok(Some((*object, *object, *field_index, source))),
         AllocationCollectorPollReferenceSource::NurseryField {
             object,
             field_index,

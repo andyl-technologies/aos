@@ -4576,7 +4576,7 @@ fn collector_poll_minor_gc_card_table_plan_accepts_dirty_remembered_source_card(
 }
 
 #[test]
-fn collector_poll_minor_gc_card_table_plan_rejects_dirty_unremembered_non_survivor_edge() {
+fn collector_poll_minor_gc_card_table_plan_adds_dirty_unremembered_survivor_edge() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
     let child = heap
@@ -4602,6 +4602,225 @@ fn collector_poll_minor_gc_card_table_plan_rejects_dirty_unremembered_non_surviv
         .mark_source(gc_address(permanent_parent))
         .expect("permanent parent card marks");
 
+    let planned = heap
+        .plan_collector_poll_minor_gc_with_card_table(
+            &scan,
+            remembered_set.snapshot(),
+            card_table.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("dirty unremembered edge enters the survivor frontier");
+
+    assert_eq!(planned.plan().survivors().len(), 1);
+    assert_eq!(planned.plan().survivors()[0].address(), gc_address(child));
+    assert_eq!(planned.reference_slots().len(), 2);
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::DirtyOldField {
+            object: gc_address(permanent_parent),
+            field_index: 0,
+            source: HeapEdgeSource::ListElement { index: 0 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan includes dirty old-field survivor");
+    let child_destination = commit.commit_plan().object_copies().copies()[0].destination();
+
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites().len(),
+        1
+    );
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites()[0].slot(),
+        1
+    );
+    assert_eq!(
+        commit.commit_plan().next_remembered_set().edges(),
+        &[RememberedEdge::new(
+            gc_address(permanent_parent),
+            child_destination,
+        )]
+    );
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("dirty old-field writeback plan derives");
+    assert_eq!(writeback_plan.len(), 1);
+    assert_eq!(writeback_plan.writebacks()[0].slot(), 1);
+    assert_eq!(
+        writeback_plan.writebacks()[0].validation_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        writeback_plan.writebacks()[0].writeback_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(writeback_plan.writebacks()[0].field_index(), 0);
+    assert_eq!(
+        writeback_plan.writebacks()[0].replacement(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_card_table_plan_preserves_remembered_order_before_dirty_edges() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let remembered_child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("remembered child thunk allocates");
+    let dirty_child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("dirty child thunk allocates");
+    let permanent_parent = heap
+        .alloc_list(NixList::new(vec![remembered_child, dirty_child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, permanent_parent)
+        .expect("permanent parent root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_edge =
+        RememberedEdge::new(gc_address(permanent_parent), gc_address(remembered_child));
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(remembered_edge)
+        .expect("remembered edge records");
+    let mut card_table = GcCardTable::default();
+    card_table
+        .mark_source(gc_address(permanent_parent))
+        .expect("permanent parent card marks");
+
+    let planned = heap
+        .plan_collector_poll_minor_gc_with_card_table(
+            &scan,
+            remembered_set.snapshot(),
+            card_table.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("dirty edge appends after remembered frontier");
+
+    assert_eq!(planned.plan().survivors().len(), 2);
+    assert_eq!(
+        planned.plan().survivors()[0].address(),
+        gc_address(remembered_child)
+    );
+    assert_eq!(
+        planned.plan().survivors()[1].address(),
+        gc_address(dirty_child)
+    );
+    assert_eq!(planned.reference_slots().len(), 3);
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::RememberedEdge {
+            edge: remembered_edge,
+            field_index: 0,
+            source: HeapEdgeSource::ListElement { index: 0 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(remembered_child),
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[2].source(),
+        &AllocationCollectorPollReferenceSource::DirtyOldField {
+            object: gc_address(permanent_parent),
+            field_index: 1,
+            source: HeapEdgeSource::ListElement { index: 1 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[2].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(dirty_child),
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan preserves frontier order");
+    let remembered_destination = commit.commit_plan().object_copies().copies()[0].destination();
+    let dirty_destination = commit.commit_plan().object_copies().copies()[1].destination();
+    let rewrites = commit.commit_plan().reference_rewrites().rewrites();
+
+    assert_eq!(rewrites.len(), 2);
+    assert_eq!(rewrites[0].slot(), 1);
+    assert_eq!(rewrites[1].slot(), 2);
+    assert_eq!(
+        commit.commit_plan().next_remembered_set().edges(),
+        &[
+            RememberedEdge::new(gc_address(permanent_parent), remembered_destination),
+            RememberedEdge::new(gc_address(permanent_parent), dirty_destination),
+        ]
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_card_table_plan_rejects_clean_unremembered_source_card() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let permanent_parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, permanent_parent)
+        .expect("permanent parent root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let card_table = GcCardTable::default();
+
     let error = heap
         .plan_collector_poll_minor_gc_with_card_table(
             &scan,
@@ -4610,7 +4829,7 @@ fn collector_poll_minor_gc_card_table_plan_rejects_dirty_unremembered_non_surviv
             remembered_set.epoch(),
             MinorGcPromotionPolicy::new(2),
         )
-        .expect_err("dirty unremembered non-survivor edge is rejected");
+        .expect_err("clean unremembered source card is rejected");
 
     assert_eq!(
         error,
@@ -4686,7 +4905,7 @@ fn collector_poll_minor_gc_card_table_rescan_publishes_dirty_survivor_edge() {
     );
     assert_eq!(planned.plan().survivors().len(), 1);
     assert_eq!(planned.plan().survivors()[0].address(), gc_address(child));
-    assert_eq!(planned.reference_slots().len(), 1);
+    assert_eq!(planned.reference_slots().len(), 2);
 
     let destinations = heap
         .plan_collector_poll_minor_gc_relocation_destinations(
