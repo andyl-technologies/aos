@@ -1075,6 +1075,12 @@ mod tests {
                     .as_ref()
                     .map(|state| state.scheduler.clone())
                     .unwrap_or_else(crucible::SchedulerState::empty),
+                event_log: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.event_log)
+                    .unwrap_or_default(),
             })
         }
 
@@ -1102,6 +1108,12 @@ mod tests {
                     .as_ref()
                     .map(|state| state.scheduler.clone())
                     .unwrap_or_else(crucible::SchedulerState::empty),
+                event_log: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.event_log)
+                    .unwrap_or_default(),
             })
         }
 
@@ -1124,6 +1136,12 @@ mod tests {
                     .as_ref()
                     .map(|state| state.scheduler.clone())
                     .unwrap_or_else(crucible::SchedulerState::empty),
+                event_log: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.event_log)
+                    .unwrap_or_default(),
             })
         }
 
@@ -1145,6 +1163,7 @@ mod tests {
                 node_blobs: runtime.node_blobs,
                 node_icounts: runtime.node_icounts,
                 scheduler,
+                event_log: runtime.event_log,
             })
         }
     }

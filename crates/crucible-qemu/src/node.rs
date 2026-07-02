@@ -11,8 +11,9 @@ use std::process::Child;
 use std::time::Duration;
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, ExecutionFingerprint,
-    ExecutionHorizon, Icount, NodeId,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
+    Checkpoint, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, Icount, NodeId,
+    SimulationBackend, StepObservation, VirtualTime,
 };
 use thiserror::Error;
 
@@ -454,6 +455,7 @@ pub struct QemuNode {
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
+    last_observed_time: VirtualTime,
 }
 
 impl QemuNode {
@@ -475,6 +477,7 @@ impl QemuNode {
             async_policy,
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
+            last_observed_time: VirtualTime::default(),
         }
     }
 
@@ -531,13 +534,15 @@ impl QemuNode {
             ExecutionHorizon { icount: ceiling },
         )
         .map_err(QemuNodeError::from_async_driver)?;
-        match report.outcome {
+        let advance = match report.outcome {
             QemuAsyncNodeStepOutcome::Completed { advance } => Ok(advance),
             QemuAsyncNodeStepOutcome::Crashed { status, shutdown } => Err(QemuNodeError::Crashed {
                 status: Box::new(status),
                 shutdown: Box::new(shutdown),
             }),
-        }
+        }?;
+        self.last_observed_time = virtual_time_from_advance_outcome(ceiling, advance);
+        Ok(advance)
     }
 
     /// Delivers deterministic input through shared memory.
@@ -597,7 +602,10 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when QMP cannot save the checkpoint.
     pub fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeError> {
         match self.channels.qmp_machine_control.save_checkpoint() {
-            Ok(checkpoint) => Ok(checkpoint),
+            Ok(mut checkpoint) => {
+                checkpoint.virtual_time = self.last_observed_time;
+                Ok(checkpoint)
+            }
             Err(source) => self.handle_qmp_channel_error(source),
         }
     }
@@ -613,7 +621,10 @@ impl QemuNode {
             .qmp_machine_control
             .restore_checkpoint(checkpoint)
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.last_observed_time = checkpoint.virtual_time;
+                Ok(())
+            }
             Err(source) => self.handle_qmp_channel_error(source),
         }
     }
@@ -753,6 +764,79 @@ impl Backend for QemuNode {
         self.shutdown_child()
             .map(|_| ())
             .map_err(BackendError::from)
+    }
+}
+
+impl SimulationBackend for QemuNode {
+    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+        let outcome = self
+            .advance_to_ceiling(Icount {
+                retired: ceiling.ticks,
+            })
+            .map_err(BackendError::from)?;
+        Ok(StepObservation::from_advance_outcome(ceiling, outcome))
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+        if at != self.last_observed_time {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "qemu backend effect at {} does not match scheduler time {}",
+                    at.ticks, self.last_observed_time.ticks
+                ),
+            });
+        }
+        match effect {
+            BackendEffect::Noop => Ok(()),
+            BackendEffect::DeliverInput(input) => self
+                .deliver_frame(input.clone())
+                .map_err(BackendError::from),
+            BackendEffect::Shutdown => self
+                .shutdown_child()
+                .map(|_| ())
+                .map_err(BackendError::from),
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+        self.save_checkpoint()
+            .map(BackendSnapshot::new)
+            .map_err(BackendError::from)
+    }
+
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        self.restore_checkpoint(&snapshot.checkpoint)
+            .map_err(BackendError::from)
+    }
+
+    fn now(&self) -> VirtualTime {
+        self.last_observed_time
+    }
+
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+        Ok(FingerprintSample {
+            node,
+            at: self.last_observed_time,
+            fingerprint: self.execution_fingerprint().map_err(BackendError::from)?,
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        self.shutdown_child()
+            .map(|_| ())
+            .map_err(BackendError::from)
+    }
+}
+
+const fn virtual_time_from_advance_outcome(
+    ceiling: Icount,
+    outcome: AdvanceOutcome,
+) -> VirtualTime {
+    match outcome {
+        AdvanceOutcome::ReachedHorizon => VirtualTime {
+            ticks: ceiling.retired,
+        },
+        AdvanceOutcome::Paused { at } => VirtualTime { ticks: at.retired },
     }
 }
 
@@ -1095,7 +1179,8 @@ mod tests {
         );
 
         let saved = Backend::snapshot(&mut node)?;
-        assert_eq!(saved, checkpoint("snapshot"));
+        assert_eq!(saved.id, checkpoint("snapshot").id);
+        assert_eq!(saved.virtual_time, VirtualTime { ticks: 19 });
         Backend::restore(&mut node, &saved)?;
         let report = node.shutdown_child()?;
 
@@ -1125,6 +1210,97 @@ mod tests {
                 ChannelCall::ShmemIdle,
                 ChannelCall::ShmemFingerprint,
                 ChannelCall::QmpSnapshot,
+                ChannelCall::QmpRestore(content_hash("checkpoint", "snapshot")),
+                ChannelCall::PluginQuit,
+                ChannelCall::QmpQuit,
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_satisfies_simulation_backend_trait() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node_with_runtime(
+            Rc::clone(&log),
+            false,
+            false,
+            false,
+            [
+                QemuAsyncWaitOutcome::Completed,
+                QemuAsyncWaitOutcome::Completed,
+            ],
+        )?;
+
+        let observation = SimulationBackend::step_to(&mut node, VirtualTime { ticks: 23 })?;
+        assert_eq!(observation.reached, VirtualTime { ticks: 23 });
+        assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 23 });
+
+        assert!(matches!(
+            SimulationBackend::apply(
+                &mut node,
+                &BackendEffect::Noop,
+                VirtualTime { ticks: 22 },
+            ),
+            Err(BackendError::Rejected { message })
+                if message.contains("does not match scheduler time")
+        ));
+        SimulationBackend::apply(
+            &mut node,
+            &BackendEffect::DeliverInput(BackendInput {
+                node: node_id("vm-a"),
+                payload: vec![3, 2, 1],
+            }),
+            VirtualTime { ticks: 23 },
+        )?;
+        let sample = SimulationBackend::fingerprint(&mut node, node_id("vm-a"))?;
+        assert_eq!(sample.node, node_id("vm-a"));
+        assert_eq!(sample.at, VirtualTime { ticks: 23 });
+        assert_eq!(
+            sample.fingerprint,
+            ExecutionFingerprint {
+                hash: content_hash("fingerprint", "vm-a"),
+            }
+        );
+
+        let snapshot = SimulationBackend::snapshot(&mut node)?;
+        assert_eq!(snapshot.checkpoint.id, checkpoint("snapshot").id);
+        assert_eq!(snapshot.checkpoint.virtual_time, VirtualTime { ticks: 23 });
+        let later = SimulationBackend::step_to(&mut node, VirtualTime { ticks: 29 })?;
+        assert_eq!(later.reached, VirtualTime { ticks: 29 });
+        assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 29 });
+        SimulationBackend::restore(&mut node, &snapshot)?;
+        assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 23 });
+        SimulationBackend::shutdown(&mut node)?;
+
+        assert_eq!(
+            recorded(&log),
+            vec![
+                ChannelCall::HostYield,
+                ChannelCall::ShmemStart(23),
+                ChannelCall::HostAwait {
+                    wait: QemuAsyncWait::AdvanceCompletion,
+                    timeout: Duration::from_millis(4),
+                    outcome: QemuAsyncWaitOutcome::Completed,
+                },
+                ChannelCall::ShmemFinish(23),
+                ChannelCall::HostYield,
+                ChannelCall::ShmemDeliver {
+                    node: String::from("vm-a"),
+                    payload: vec![3, 2, 1],
+                },
+                ChannelCall::ShmemFingerprint,
+                ChannelCall::QmpSnapshot,
+                ChannelCall::HostYield,
+                ChannelCall::ShmemStart(29),
+                ChannelCall::HostAwait {
+                    wait: QemuAsyncWait::AdvanceCompletion,
+                    timeout: Duration::from_millis(4),
+                    outcome: QemuAsyncWaitOutcome::Completed,
+                },
+                ChannelCall::ShmemFinish(29),
+                ChannelCall::HostYield,
                 ChannelCall::QmpRestore(content_hash("checkpoint", "snapshot")),
                 ChannelCall::PluginQuit,
                 ChannelCall::QmpQuit,

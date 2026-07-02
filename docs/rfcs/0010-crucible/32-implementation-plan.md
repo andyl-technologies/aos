@@ -254,6 +254,13 @@ long-held locks.
   and streams actor-owned full `EngineState` transitions through
   `SessionStateTransitionBus` with lag-or-drop behavior instead of subscriber
   back-pressure.
+  `T-SESS-11` is green through `checks.crucible.phase5.sessionSimulationBackend`,
+  which defines the pluggable `SimulationBackend` contract, exports its
+  observation/effect/snapshot/fingerprint data types, and verifies the mock,
+  `SimBackend`, `SimDouble`, and QEMU `QemuNode` implementations against the
+  same scheduler-supplied timing boundary, including full SimDouble
+  snapshot/restore, QEMU restore-time mirror updates, and rejection of
+  trait-level SimDouble outbound sends without scheduler authorization.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
