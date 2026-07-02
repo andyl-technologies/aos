@@ -421,6 +421,14 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             ),
         })
     }
+
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        record_control_operations(&self.observed_control, &control);
+        Ok(self.event_log_entries(&control))
+    }
 }
 
 impl SimDoubleQuantumLoop {

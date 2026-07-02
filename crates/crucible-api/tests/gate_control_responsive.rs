@@ -330,15 +330,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
         let configuration = step(&request.configuration, decision.clone());
-        self.observed_control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(
-                request
-                    .control
-                    .iter()
-                    .map(|operation| operation.kind.clone()),
-            );
+        record_control_operations(&self.observed_control, &request.control);
         let event_log_entries = self.event_log_entries();
         Ok(QuantumOutcome {
             configuration,
@@ -357,6 +349,24 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             ),
         })
     }
+
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<crucible::ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        record_control_operations(&self.observed_control, &control);
+        Ok(Vec::new())
+    }
+}
+
+fn record_control_operations(
+    observed_control: &Arc<Mutex<Vec<SchedulerControlOperationKind>>>,
+    control: &[crucible::ControlOperation],
+) {
+    observed_control
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extend(control.iter().map(|operation| operation.kind.clone()));
 }
 
 impl SimDoubleQuantumLoop {
