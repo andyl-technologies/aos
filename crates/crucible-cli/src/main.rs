@@ -1440,13 +1440,15 @@ fn plan_verify_invocation(
     args: &VerifyArgs,
     store_root: &Path,
 ) -> Result<VerifyInvocationPlan, CliError> {
-    if args.runs == 0 {
-        return Err(usage_error("--runs must be greater than zero"));
-    }
     if args.compare.len() != 0 && args.compare.len() != 2 {
         return Err(usage_error("--compare requires exactly two artifacts"));
     }
     let mode = if args.compare.is_empty() {
+        if args.runs < 2 {
+            return Err(usage_error(
+                "--runs must be at least 2 for fresh verify reductions",
+            ));
+        }
         VerifyMode::RunScenario {
             scenario: resolve_command_scenario("verify", args.scenario.as_deref(), store_root)?,
         }
@@ -2978,7 +2980,12 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     )
                 }
                 (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Double) => {
-                    Err(fresh_verify_unavailable_error("local double"))
+                    run_local_double_verify_workflow(
+                        thin_plan,
+                        backend_plan,
+                        ergonomics_plan,
+                        verify_plan,
+                    )
                 }
                 (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Qemu { .. }) => {
                     Err(backend_error(
@@ -3017,9 +3024,6 @@ impl BackendCommandRunner for NullBackendCommandRunner {
             return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
         }
         if let Some(verify_plan) = verify_plan {
-            if matches!(verify_plan.mode, VerifyMode::RunScenario { .. }) {
-                return Err(fresh_verify_unavailable_error("remote daemon"));
-            }
             return run_remote_verify_workflow(
                 daemon,
                 thin_plan,
@@ -3034,12 +3038,6 @@ impl BackendCommandRunner for NullBackendCommandRunner {
             ergonomics_plan,
         ))
     }
-}
-
-fn fresh_verify_unavailable_error(target: &str) -> CliError {
-    backend_error(format!(
-        "fresh verify reductions for {target} require an RFC-0010 backend-grade verifier; use `verify --compare A B` until execution-fingerprint streams and divergence bisection are backed by real run artifacts"
-    ))
 }
 
 fn execute_backend_routed_command(
@@ -3199,6 +3197,36 @@ fn run_local_double_workflow(
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
+fn run_local_double_verify_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    verify_plan: &VerifyInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-double",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_verify_workflow_async(
+        &client,
+        verify_plan,
+        backend_plan.resolved_backend.as_ref(),
+        ergonomics_plan,
+    ))?;
+    finish_verify_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        verify_plan,
+        report,
+    )
+}
+
 fn run_remote_workflow(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
@@ -3344,12 +3372,13 @@ fn finish_verify_workflow_outcome(
         let canonical_log_digest = content_address_bytes(&witness.canonical_log_bytes);
         let fingerprint_digest = content_address_bytes(&witness.fingerprint_stream);
         outcome.stdout.push(format!(
-            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}",
+            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}\tsamples={}",
             witness.reduction.index,
             witness.reduction.run_index,
             witness.reduction.host_profile.label(),
             canonical_log_digest,
-            fingerprint_digest
+            fingerprint_digest,
+            witness.fingerprint_samples.len()
         ));
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -3357,12 +3386,13 @@ fn finish_verify_workflow_outcome(
             node: String::from("verify"),
             kind: String::from("independent_reduction"),
             summary: format!(
-                "index={} run={} profile={} canonical_log={} fingerprint={}",
+                "index={} run={} profile={} canonical_log={} fingerprint={} samples={}",
                 witness.reduction.index,
                 witness.reduction.run_index,
                 witness.reduction.host_profile.label(),
                 canonical_log_digest,
-                fingerprint_digest
+                fingerprint_digest,
+                witness.fingerprint_samples.len()
             ),
         });
     }
@@ -9088,6 +9118,36 @@ mod tests {
     }
 
     #[test]
+    fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("1"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+
+        let error = plan_verify_invocation(args, temp.path())
+            .expect_err("fresh verify with one reduction cannot prove determinism");
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(
+            error
+                .to_string()
+                .contains("--runs must be at least 2 for fresh verify reductions")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
     -> Result<(), Box<dyn Error>> {
         let mut loop_impl = SimBackendLifecycleLoop::default();
@@ -9130,7 +9190,7 @@ mod tests {
             String::from("verify"),
             scenario.display().to_string(),
             String::from("--runs"),
-            String::from("1"),
+            String::from("2"),
         ]);
         let Commands::Verify(args) = &cli.command else {
             panic!("expected verify command");
@@ -9157,6 +9217,7 @@ mod tests {
             Some(&ResolvedLocalBackend::Double),
             Some(&seed_plan),
         ))?;
+        assert_eq!(report.witnesses.len(), 2);
         let witness = report
             .witnesses
             .first()
@@ -9181,8 +9242,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_verify_workflow_rejects_fresh_local_double_without_backend_grade_verifier()
-    -> Result<(), Box<dyn Error>> {
+    fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
         let cli = Cli::parse_from([
@@ -9214,10 +9274,37 @@ mod tests {
             Some(&verify_plan),
             &mut NullBackendCommandRunner,
         )
-        .expect_err("fresh local double verify must not report a synthetic pass");
+        .expect("fresh local double verify should run independent reductions");
 
-        assert!(matches!(outcome, CliError::Backend(_)));
-        assert!(outcome.to_string().contains("backend-grade verifier"));
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("verify-plan\tmode=run-scenario\truns=2"))
+        );
+        assert_eq!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
+                .count(),
+            2
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
+                .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("verify-result\tstatus=passed"))
+        );
 
         Ok(())
     }
@@ -9450,8 +9537,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_verify_workflow_rejects_fresh_remote_daemon_without_backend_grade_verifier()
-    -> Result<(), Box<dyn Error>> {
+    fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
         let daemon = spawn_production_lifecycle_server()?;
@@ -9488,10 +9574,37 @@ mod tests {
             Some(&verify_plan),
             &mut NullBackendCommandRunner,
         )
-        .expect_err("fresh remote daemon verify must not report a synthetic pass");
+        .expect("fresh remote daemon verify should run independent reductions");
 
-        assert!(matches!(outcome, CliError::Backend(_)));
-        assert!(outcome.to_string().contains("backend-grade verifier"));
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("verify-plan\tmode=run-scenario\truns=2"))
+        );
+        assert_eq!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
+                .count(),
+            2
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
+                .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("verify-result\tstatus=passed"))
+        );
 
         Ok(())
     }
