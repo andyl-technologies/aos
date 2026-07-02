@@ -939,10 +939,21 @@ branch on the verdict without parsing output:
   session/API operations including a remote `--daemon` route, and negative cases
   for CLI-owned state, scheduler logic, checkpoint materialization, fork logic,
   and invented control capabilities.
-- [ ] **T-CLI-3** Implement backend selection and the local/remote split
+- [x] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
   [CLI-8]; spec §3.
+  Completed by `checks.crucible.phase5.cliBackendSelection`: the CLI now builds
+  and executes a `BackendSelectionPlan` for every backend-routed subcommand,
+  routes `--daemon` invocations to a fakeable remote API command runner without
+  selecting a local backend, resolves local `--backend auto` to QEMU only when
+  both `--qemu` and `--plugin` are supplied and readable and otherwise to the
+  in-process double, and announces the auto-selected backend unless `--quiet` is
+  set. Explicit `--backend qemu` fails with exit code 4 until both artifacts are
+  supplied and readable, while `--backend double` never resolves to QEMU. The
+  focused tests record local and remote command-runner invocations and compare
+  stdout/stderr, exit code, canonical-log digest, and artifact digest
+  projections; full flag/env/AOS package-set discovery remains T-CLI-5.
 - [ ] **T-CLI-4** Implement determinism ergonomics: seed resolution
   (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
   artifact + copy-pasteable repro command, and the three trace formats

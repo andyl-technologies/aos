@@ -1436,6 +1436,18 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliBackendSelection = import ./phase5-cli-backend-selection.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliBackendSelection";
+      taskIds = ["T-CLI-3"];
+      dependencies = [
+        phase5.cliThinWrapper
+        phase5.apiNondeterminism
+        phase5.apiReferenceClientConformance
+        phase5.sessionSimulationBackend
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

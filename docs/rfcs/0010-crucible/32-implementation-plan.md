@@ -360,6 +360,14 @@ long-held locks.
   CLI-held state only as daemon/content-addressed/artifact/savepoint handles, and
   rejects CLI-owned canonical state, scheduler logic, checkpoint materialization,
   fork logic, or invented control capabilities.
+  `T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`, which
+  records a backend-selection route for each backend-routed subcommand, sends
+  `--daemon` invocations over a fakeable API command runner without local
+  backend selection, resolves local `auto` to QEMU only when explicit QEMU/plugin
+  artifacts are both supplied and readable and otherwise to the in-process double
+  with an announcement, fails explicit QEMU without readable artifacts with exit
+  4, proves explicit double never resolves to QEMU, and compares recorded
+  local/remote stdout/stderr, exit-code, canonical-log, and artifact projections.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
