@@ -6527,6 +6527,17 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       non-executable naming metadata only: no `JITModule`, symbol declaration,
       relocation, executable address, compiled artifact cache, or native call is
       implemented.
+- [x] Current non-executable CLIF artifact precursor:
+      `ratchet-jit::artifact::JitClifArtifact` carries verified Cranelift
+      `Function` values together with tier, thunk-body kind, and source identity
+      metadata. The lowerer now exposes artifact-returning variants for
+      standalone constant smoke bodies, literal IR roots, and the whole-IR root
+      entrypoint. Tests pin tier-1/kind/source metadata, default smoke-body
+      naming, direct `ThunkAlloc` root source ids, nonzero whole-artifact roots,
+      and extraction of the contained CLIF function. This is address-free CLIF
+      metadata only: no `JITModule`, executable buffer, function pointer,
+      symbol registration, compiled artifact cache, persistence format, or
+      native call is implemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

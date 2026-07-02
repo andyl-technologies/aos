@@ -1169,6 +1169,17 @@ harness, never cut for scope.
       metadata for non-executable CLIF only: no `JITModule`, external symbol
       declaration, relocation, executable address, or compiled artifact cache is
       implemented.
+- [x] Current non-executable CLIF artifact precursor:
+      `ratchet-jit::artifact::JitClifArtifact` wraps verified Cranelift
+      `Function` values with tier, thunk-body kind, and source identity
+      metadata. The current lowerer exposes artifact-returning variants for the
+      constant smoke path, literal IR roots, and whole-IR root entrypoint. Tests
+      pin tier-1/kind/source metadata, default constant-body names, direct
+      `ThunkAlloc` root source ids, nonzero whole-artifact roots, and extraction
+      of the contained CLIF function. This remains address-free CLIF metadata:
+      no `JITModule`, executable buffer, function pointer, runtime-symbol
+      registration, compiled artifact cache, persistence format, or native call
+      is implemented.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:

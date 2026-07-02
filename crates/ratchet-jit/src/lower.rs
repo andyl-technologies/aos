@@ -17,7 +17,11 @@ use cranelift_codegen::{
 use ratchet_core::{Ir, IrArena, IrData, IrId, IrKind, IrNode, runtime_thunk_call_signature};
 use ratchet_value::value::Value;
 
-use crate::abi::{JitClifSignatureError, clif_signature_for_runtime_call};
+use crate::{
+    abi::{JitClifSignatureError, clif_signature_for_runtime_call},
+    artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
+    tier::JitTier,
+};
 
 /// Cranelift user-function namespace reserved for Core IR root thunks.
 ///
@@ -48,6 +52,24 @@ pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
 /// rejects the generated single-block function.
 pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError> {
     lower_constant_thunk_body_with_name(value, UserFuncName::default())
+}
+
+/// Lowers a constant runtime value into a non-executable CLIF artifact.
+///
+/// The artifact records tier-1 thunk-body metadata around the same verified
+/// CLIF function returned by [`lower_constant_thunk_body`].
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::Abi`] if the runtime thunk signature cannot be
+/// lowered to a CLIF signature. Returns [`JitLowerError::Verifier`] if Cranelift
+/// rejects the generated single-block function.
+pub fn lower_constant_thunk_body_artifact(value: Value) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_constant_thunk_body(value)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::ConstantSmoke,
+        function,
+    ))
 }
 
 fn lower_constant_thunk_body_with_name(
@@ -91,6 +113,34 @@ pub fn lower_constant_ir_thunk_body(
     lower_constant_thunk_body_with_name(value, clif_name_for_ir_root(root))
 }
 
+/// Lowers a literal IR root into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_constant_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `arena`. Returns [`JitLowerError::UnsupportedIrRoot`] when `root` is not one
+/// of the supported constant forms. Returns
+/// [`JitLowerError::MismatchedConstantData`] when a literal node carries a
+/// payload variant that does not match its kind. Returns
+/// [`JitLowerError::MissingIrBody`], [`JitLowerError::UnsupportedIrBody`], or
+/// [`JitLowerError::MismatchedBodyConstantData`] for malformed direct thunk
+/// bodies. Returns
+/// [`JitLowerError::MismatchedIrNodeData`] when a supported wrapper node carries
+/// the wrong payload shape. Also returns the errors from [`lower_constant_thunk_body`].
+pub fn lower_constant_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_constant_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
 /// Lowers the root of a lowered IR artifact into a compiled-thunk CLIF body.
 ///
 /// This is the normal Core-IR entrypoint for the current literal-only lowerer.
@@ -111,6 +161,29 @@ pub fn lower_constant_ir_thunk_body(
 /// the wrong payload shape. Also returns the errors from [`lower_constant_thunk_body`].
 pub fn lower_constant_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
     lower_constant_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root of a lowered IR artifact into a non-executable CLIF artifact.
+///
+/// The artifact records `ir.root` as source metadata and contains the same
+/// verified CLIF function returned by [`lower_constant_ir_root_thunk_body`].
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `ir.root` is not present in
+/// `ir.arena`. Returns [`JitLowerError::UnsupportedIrRoot`] when the root is not
+/// one of the supported constant forms. Returns
+/// [`JitLowerError::MismatchedConstantData`] when a literal node carries a
+/// payload variant that does not match its kind. Returns
+/// [`JitLowerError::MissingIrBody`], [`JitLowerError::UnsupportedIrBody`], or
+/// [`JitLowerError::MismatchedBodyConstantData`] for malformed direct thunk
+/// bodies. Returns
+/// [`JitLowerError::MismatchedIrNodeData`] when a supported wrapper node carries
+/// the wrong payload shape. Also returns the errors from [`lower_constant_thunk_body`].
+pub fn lower_constant_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_constant_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
 /// A failure while lowering safe metadata into CLIF.
@@ -284,6 +357,15 @@ fn constant_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
     }
 }
 
+fn thunk_body_artifact(source: JitClifArtifactSource, function: Function) -> JitClifArtifact {
+    JitClifArtifact::new(
+        JitTier::Tier1Baseline,
+        JitClifArtifactKind::ThunkBody,
+        source,
+        function,
+    )
+}
+
 fn append_entry_block_params(function: &mut Function) -> cranelift_codegen::ir::Block {
     let entry_block = function.dfg.make_block();
     let parameter_types = function
@@ -357,6 +439,24 @@ mod tests {
 
         assert_eq!(user_name.namespace, AOS_IR_ROOT_FUNCTION_NAMESPACE);
         assert_eq!(user_name.index, 42);
+    }
+
+    #[test]
+    fn constant_thunk_body_artifact_records_smoke_metadata() {
+        let artifact = lower_constant_thunk_body_artifact(Value::bool(false))
+            .expect("constant bool thunk artifact lowers");
+
+        assert_eq!(artifact.tier(), JitTier::Tier1Baseline);
+        assert_eq!(artifact.kind(), JitClifArtifactKind::ThunkBody);
+        assert_eq!(artifact.source(), JitClifArtifactSource::ConstantSmoke);
+        assert_eq!(artifact.function_name(), &UserFuncName::default());
+        assert_eq!(
+            iconst_words(artifact.function()),
+            vec![ValueTag::Bool as u64, Value::bool(false).payload_bits()]
+        );
+
+        let function = artifact.into_function();
+        assert_eq!(function.name, UserFuncName::default());
     }
 
     #[test]
@@ -481,6 +581,45 @@ mod tests {
         assert_eq!(
             iconst_words(&function),
             vec![ValueTag::Int as u64, Value::int(17).payload_bits()]
+        );
+    }
+
+    #[test]
+    fn constant_ir_thunk_body_artifact_records_root_source() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(4, 6),
+                    EffectClass::pure(),
+                    IrData::Int(23),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 6),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let artifact = lower_constant_ir_thunk_body_artifact(&arena, IrId::new(1))
+            .expect("direct literal thunk allocation artifact lowers");
+
+        assert_eq!(artifact.tier(), JitTier::Tier1Baseline);
+        assert_eq!(artifact.kind(), JitClifArtifactKind::ThunkBody);
+        assert_eq!(
+            artifact.source(),
+            JitClifArtifactSource::IrRoot(IrId::new(1))
+        );
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(1))
+        );
+        assert_eq!(
+            iconst_words(artifact.function()),
+            vec![ValueTag::Int as u64, Value::int(23).payload_bits()]
         );
     }
 
@@ -685,6 +824,44 @@ mod tests {
         assert_eq!(
             iconst_words(&function),
             vec![ValueTag::Int as u64, Value::int(11).payload_bits()]
+        );
+    }
+
+    #[test]
+    fn constant_ir_root_thunk_body_artifact_records_nonzero_artifact_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Str,
+                    Span::new(0, 6),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(7, 9),
+                    EffectClass::pure(),
+                    IrData::Int(13),
+                ),
+            ],
+            Vec::new(),
+        );
+        let ir = minimal_ir(IrId::new(1), arena);
+
+        let artifact =
+            lower_constant_ir_root_thunk_body_artifact(&ir).expect("IR root artifact lowers");
+
+        assert_eq!(
+            artifact.source(),
+            JitClifArtifactSource::IrRoot(IrId::new(1))
+        );
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(1))
+        );
+        assert_eq!(
+            iconst_words(artifact.function()),
+            vec![ValueTag::Int as u64, Value::int(13).payload_bits()]
         );
     }
 

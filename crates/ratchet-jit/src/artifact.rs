@@ -1,0 +1,87 @@
+//! Non-executable CLIF artifact records for verified JIT lowerer output.
+//!
+//! This module wraps Cranelift [`Function`] values with the metadata the future
+//! compile-once tier needs before executable code exists: tier, body kind, and
+//! source identity. It does not allocate executable memory, create a
+//! `JITModule`, bind symbols, or call native code.
+
+use cranelift_codegen::ir::{Function, UserFuncName};
+use ratchet_core::IrId;
+
+use crate::tier::JitTier;
+
+/// The lowered body shape stored in a CLIF artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitClifArtifactKind {
+    /// A compiled-thunk body using the frozen thunk runtime ABI.
+    ThunkBody,
+}
+
+/// The source identity for a non-executable CLIF artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitClifArtifactSource {
+    /// A standalone constant-body smoke test not associated with a Core IR root.
+    ConstantSmoke,
+    /// A Core IR root lowered as one per-expression thunk body.
+    IrRoot(IrId),
+}
+
+/// A verified CLIF artifact that has not been made executable.
+///
+/// The contained [`Function`] is Cranelift IR only. This record is deliberately
+/// address-free so future code can choose between inspection, caching,
+/// `JITModule` compilation, or differential testing without conflating those
+/// later steps with safe lowering. Artifacts are constructed by lowerer
+/// entrypoints that verify the contained function first.
+pub struct JitClifArtifact {
+    tier: JitTier,
+    kind: JitClifArtifactKind,
+    source: JitClifArtifactSource,
+    function: Function,
+}
+
+impl JitClifArtifact {
+    pub(crate) fn new(
+        tier: JitTier,
+        kind: JitClifArtifactKind,
+        source: JitClifArtifactSource,
+        function: Function,
+    ) -> Self {
+        Self {
+            tier,
+            kind,
+            source,
+            function,
+        }
+    }
+
+    /// Returns the JIT tier this artifact is intended to feed.
+    pub const fn tier(&self) -> JitTier {
+        self.tier
+    }
+
+    /// Returns the lowered body shape.
+    pub const fn kind(&self) -> JitClifArtifactKind {
+        self.kind
+    }
+
+    /// Returns the source identity associated with the artifact.
+    pub const fn source(&self) -> JitClifArtifactSource {
+        self.source
+    }
+
+    /// Returns the contained verified CLIF function.
+    pub fn function(&self) -> &Function {
+        &self.function
+    }
+
+    /// Returns the Cranelift user-function name for this artifact.
+    pub fn function_name(&self) -> &UserFuncName {
+        &self.function.name
+    }
+
+    /// Consumes the artifact and returns the contained CLIF function.
+    pub fn into_function(self) -> Function {
+        self.function
+    }
+}
