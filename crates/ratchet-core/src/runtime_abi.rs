@@ -421,6 +421,311 @@ pub enum RuntimeCallAbiError {
     },
 }
 
+/// Result returned when building builtin runtime-call manifest metadata.
+pub type RuntimeBuiltinCallManifestResult =
+    Result<Vec<RuntimeBuiltinCallManifestEntry>, RuntimeSymbolNameError>;
+
+/// Builds the stable builtin runtime-call manifest.
+///
+/// The manifest preserves sorted `nix.builtin.*` symbol order and classifies
+/// each builtin as a callable primop wrapper, a value-only builtin, or a builtin
+/// whose declared arity has no frozen native-call signature yet. This is safe
+/// ABI-contract metadata only; it does not export builtin wrappers or install
+/// JIT symbols.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError::NonUtf8BuiltinName`] if a builtin suffix is
+/// not valid UTF-8.
+pub fn runtime_builtin_call_manifest() -> RuntimeBuiltinCallManifestResult {
+    let mut entries = Vec::with_capacity(BUILTINS.len());
+
+    for builtin in BUILTINS.iter().copied() {
+        entries.push(RuntimeBuiltinCallManifestEntry::new(
+            builtin.runtime_symbol().to_symbol_string()?,
+            builtin.name(),
+            RuntimeBuiltinCallStatus::from_first_class_arity(builtin.first_class_arity()),
+        ));
+    }
+
+    entries.sort_by(|left, right| left.symbol_name.cmp(&right.symbol_name));
+    Ok(entries)
+}
+
+/// Result returned when building builtin runtime-call preflight metadata.
+pub type RuntimeBuiltinCallPreflightResult =
+    Result<RuntimeBuiltinCallPreflight, RuntimeSymbolNameError>;
+
+/// Builds callable builtin runtime-call readiness metadata.
+///
+/// Callable builtin symbols receive their frozen primop call signature. Builtin
+/// value symbols and unsupported arities are reported as gaps so later native
+/// registration cannot silently treat them as executable wrappers.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError::NonUtf8BuiltinName`] if the builtin call
+/// manifest cannot be built.
+pub fn runtime_builtin_call_preflight() -> RuntimeBuiltinCallPreflightResult {
+    let mut call_bindings = Vec::new();
+    let mut missing_bindings = Vec::new();
+
+    for entry in runtime_builtin_call_manifest()? {
+        match entry.status() {
+            RuntimeBuiltinCallStatus::Callable { arity, signature } => {
+                call_bindings.push(RuntimeBuiltinCallBinding::new(
+                    entry.symbol_name().to_owned(),
+                    entry.builtin_name(),
+                    arity,
+                    signature,
+                ));
+            }
+            RuntimeBuiltinCallStatus::ValueOnly => {
+                missing_bindings.push(RuntimeBuiltinCallMissingBinding::value_only(
+                    entry.symbol_name().to_owned(),
+                    entry.builtin_name(),
+                ));
+            }
+            RuntimeBuiltinCallStatus::UnsupportedArity { arity, max } => {
+                missing_bindings.push(RuntimeBuiltinCallMissingBinding::unsupported_arity_gap(
+                    entry.symbol_name().to_owned(),
+                    entry.builtin_name(),
+                    arity,
+                    max,
+                ));
+            }
+        }
+    }
+
+    Ok(RuntimeBuiltinCallPreflight::new(
+        call_bindings,
+        missing_bindings,
+    ))
+}
+
+/// The current runtime-call status for one builtin symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeBuiltinCallStatus {
+    /// A callable builtin wrapper with a frozen primop call signature.
+    Callable {
+        /// The first-class builtin arity served by the wrapper.
+        arity: usize,
+        /// The native-call signature reserved for this arity.
+        signature: RuntimeCallSignature,
+    },
+    /// A builtin value symbol such as `true`, `false`, `null`, or `builtins`.
+    ValueOnly,
+    /// A callable builtin whose arity exceeds the frozen metadata inventory.
+    UnsupportedArity {
+        /// The declared first-class builtin arity.
+        arity: usize,
+        /// The largest primop arity described by current metadata.
+        max: usize,
+    },
+}
+
+impl RuntimeBuiltinCallStatus {
+    fn from_first_class_arity(first_class_arity: Option<usize>) -> Self {
+        match first_class_arity {
+            Some(arity) => match runtime_primop_call_signature(arity) {
+                Ok(signature) => Self::Callable { arity, signature },
+                Err(RuntimeCallAbiError::UnsupportedPrimopArity { max, .. }) => {
+                    Self::UnsupportedArity { arity, max }
+                }
+            },
+            None => Self::ValueOnly,
+        }
+    }
+}
+
+/// One builtin symbol and its current runtime-call status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeBuiltinCallManifestEntry {
+    symbol_name: String,
+    builtin_name: &'static [u8],
+    status: RuntimeBuiltinCallStatus,
+}
+
+impl RuntimeBuiltinCallManifestEntry {
+    fn new(
+        symbol_name: String,
+        builtin_name: &'static [u8],
+        status: RuntimeBuiltinCallStatus,
+    ) -> Self {
+        Self {
+            symbol_name,
+            builtin_name,
+            status,
+        }
+    }
+
+    /// Returns the stable `nix.builtin.*` runtime symbol name.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the byte-oriented builtin declaration name.
+    pub const fn builtin_name(&self) -> &'static [u8] {
+        self.builtin_name
+    }
+
+    /// Returns the current runtime-call status for this builtin symbol.
+    pub const fn status(&self) -> RuntimeBuiltinCallStatus {
+        self.status
+    }
+}
+
+/// A callable builtin runtime-call binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeBuiltinCallBinding {
+    symbol_name: String,
+    builtin_name: &'static [u8],
+    arity: usize,
+    signature: RuntimeCallSignature,
+}
+
+impl RuntimeBuiltinCallBinding {
+    fn new(
+        symbol_name: String,
+        builtin_name: &'static [u8],
+        arity: usize,
+        signature: RuntimeCallSignature,
+    ) -> Self {
+        Self {
+            symbol_name,
+            builtin_name,
+            arity,
+            signature,
+        }
+    }
+
+    /// Returns the stable `nix.builtin.*` runtime symbol name.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the byte-oriented builtin declaration name.
+    pub const fn builtin_name(&self) -> &'static [u8] {
+        self.builtin_name
+    }
+
+    /// Returns the first-class builtin arity served by this binding.
+    pub const fn arity(&self) -> usize {
+        self.arity
+    }
+
+    /// Returns the native-call signature reserved for this builtin binding.
+    pub const fn signature(&self) -> RuntimeCallSignature {
+        self.signature
+    }
+}
+
+/// One builtin symbol that does not yet have a callable runtime binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeBuiltinCallMissingBinding {
+    /// The builtin is a value symbol rather than a callable primop wrapper.
+    ValueOnly {
+        /// The stable `nix.builtin.*` runtime symbol name.
+        symbol_name: String,
+        /// The byte-oriented builtin declaration name.
+        builtin_name: &'static [u8],
+    },
+    /// The builtin declares an arity without a frozen call signature.
+    UnsupportedArity {
+        /// The stable `nix.builtin.*` runtime symbol name.
+        symbol_name: String,
+        /// The byte-oriented builtin declaration name.
+        builtin_name: &'static [u8],
+        /// The declared first-class builtin arity.
+        arity: usize,
+        /// The largest primop arity described by current metadata.
+        max: usize,
+    },
+}
+
+impl RuntimeBuiltinCallMissingBinding {
+    fn value_only(symbol_name: String, builtin_name: &'static [u8]) -> Self {
+        Self::ValueOnly {
+            symbol_name,
+            builtin_name,
+        }
+    }
+
+    fn unsupported_arity_gap(
+        symbol_name: String,
+        builtin_name: &'static [u8],
+        arity: usize,
+        max: usize,
+    ) -> Self {
+        Self::UnsupportedArity {
+            symbol_name,
+            builtin_name,
+            arity,
+            max,
+        }
+    }
+
+    /// Returns the stable `nix.builtin.*` runtime symbol name.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::ValueOnly { symbol_name, .. } | Self::UnsupportedArity { symbol_name, .. } => {
+                symbol_name
+            }
+        }
+    }
+
+    /// Returns the byte-oriented builtin declaration name.
+    pub const fn builtin_name(&self) -> &'static [u8] {
+        match self {
+            Self::ValueOnly { builtin_name, .. } | Self::UnsupportedArity { builtin_name, .. } => {
+                builtin_name
+            }
+        }
+    }
+
+    /// Returns the unsupported arity when this gap is arity-related.
+    pub const fn unsupported_arity(&self) -> Option<usize> {
+        match self {
+            Self::UnsupportedArity { arity, .. } => Some(*arity),
+            Self::ValueOnly { .. } => None,
+        }
+    }
+}
+
+/// A deterministic readiness report for callable builtin runtime symbols.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeBuiltinCallPreflight {
+    call_bindings: Vec<RuntimeBuiltinCallBinding>,
+    missing_bindings: Vec<RuntimeBuiltinCallMissingBinding>,
+}
+
+impl RuntimeBuiltinCallPreflight {
+    fn new(
+        call_bindings: Vec<RuntimeBuiltinCallBinding>,
+        missing_bindings: Vec<RuntimeBuiltinCallMissingBinding>,
+    ) -> Self {
+        Self {
+            call_bindings,
+            missing_bindings,
+        }
+    }
+
+    /// Returns callable builtin bindings in stable symbol order.
+    pub fn call_bindings(&self) -> &[RuntimeBuiltinCallBinding] {
+        &self.call_bindings
+    }
+
+    /// Returns builtin symbols that do not yet have callable bindings.
+    pub fn missing_bindings(&self) -> &[RuntimeBuiltinCallMissingBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every builtin symbol has a callable runtime binding.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+}
+
 /// The runtime symbol family served by a manifest entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeSymbolKind {
@@ -715,6 +1020,121 @@ mod tests {
         assert_eq!(
             error,
             RuntimeCallAbiError::UnsupportedPrimopArity {
+                arity: MAX_RUNTIME_PRIMOP_ABI_ARITY + 1,
+                max: MAX_RUNTIME_PRIMOP_ABI_ARITY,
+            }
+        );
+    }
+
+    #[test]
+    fn builtin_call_manifest_preserves_runtime_builtin_symbol_order() {
+        let runtime_builtin_symbols = runtime_symbol_manifest()
+            .expect("runtime manifest builds")
+            .into_iter()
+            .filter(|entry| entry.kind() == RuntimeSymbolKind::Builtin)
+            .map(|entry| entry.name().to_owned())
+            .collect::<Vec<_>>();
+        let call_manifest = runtime_builtin_call_manifest().expect("builtin call manifest builds");
+
+        assert_eq!(
+            call_manifest
+                .iter()
+                .map(RuntimeBuiltinCallManifestEntry::symbol_name)
+                .collect::<Vec<_>>(),
+            runtime_builtin_symbols
+        );
+    }
+
+    #[test]
+    fn builtin_call_manifest_marks_callable_and_value_only_builtins() {
+        let manifest = runtime_builtin_call_manifest().expect("builtin call manifest builds");
+
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "nix.builtin.derivationStrict")
+                .map(RuntimeBuiltinCallManifestEntry::status),
+            Some(RuntimeBuiltinCallStatus::Callable {
+                arity: 1,
+                signature: runtime_primop_call_signature(1).expect("arity 1 is frozen"),
+            })
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "nix.builtin.foldl'")
+                .map(RuntimeBuiltinCallManifestEntry::status),
+            Some(RuntimeBuiltinCallStatus::Callable {
+                arity: 3,
+                signature: runtime_primop_call_signature(3).expect("arity 3 is frozen"),
+            })
+        );
+        for symbol_name in [
+            "nix.builtin.builtins",
+            "nix.builtin.false",
+            "nix.builtin.null",
+            "nix.builtin.true",
+        ] {
+            assert_eq!(
+                manifest
+                    .iter()
+                    .find(|entry| entry.symbol_name() == symbol_name)
+                    .map(RuntimeBuiltinCallManifestEntry::status),
+                Some(RuntimeBuiltinCallStatus::ValueOnly),
+                "{symbol_name} stays a value-only builtin symbol"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_call_preflight_reports_current_value_only_gaps() {
+        let preflight = runtime_builtin_call_preflight().expect("builtin call preflight builds");
+        let callable_count = BUILTINS
+            .iter()
+            .filter(|builtin| builtin.first_class_arity().is_some())
+            .count();
+        let value_only_count = BUILTINS
+            .iter()
+            .filter(|builtin| builtin.first_class_arity().is_none())
+            .count();
+
+        assert!(!preflight.is_complete());
+        assert_eq!(preflight.call_bindings().len(), callable_count);
+        assert_eq!(preflight.missing_bindings().len(), value_only_count);
+        assert!(
+            preflight
+                .missing_bindings()
+                .iter()
+                .all(|missing| missing.unsupported_arity().is_none())
+        );
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "nix.builtin.true" && missing.builtin_name() == b"true"
+        }));
+
+        for binding in preflight.call_bindings() {
+            let builtin = BUILTINS
+                .lookup(binding.builtin_name())
+                .expect("call binding names a declared builtin");
+            let expected_symbol = builtin
+                .runtime_symbol()
+                .to_symbol_string()
+                .expect("builtin symbol is UTF-8");
+            assert_eq!(binding.symbol_name(), expected_symbol);
+            assert_eq!(Some(binding.arity()), builtin.first_class_arity());
+            assert_eq!(
+                binding.signature(),
+                runtime_primop_call_signature(binding.arity()).expect("binding arity is frozen")
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_call_status_reports_future_unsupported_arities() {
+        assert_eq!(
+            RuntimeBuiltinCallStatus::from_first_class_arity(Some(
+                MAX_RUNTIME_PRIMOP_ABI_ARITY + 1
+            )),
+            RuntimeBuiltinCallStatus::UnsupportedArity {
                 arity: MAX_RUNTIME_PRIMOP_ABI_ARITY + 1,
                 max: MAX_RUNTIME_PRIMOP_ABI_ARITY,
             }

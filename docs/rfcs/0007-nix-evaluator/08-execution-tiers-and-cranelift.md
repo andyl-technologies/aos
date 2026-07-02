@@ -908,6 +908,17 @@ harness, never cut for scope.
       ABI contract metadata only; it is not an exported `ThunkFn`/`LambdaFn`
       wrapper, raw-pointer call boundary, Cranelift lowering, or
       `JITBuilder::symbol` registration.
+- [x] Current builtin runtime-call preflight precursor:
+      `runtime_builtin_call_manifest()` keeps `nix.builtin.*` symbols in stable
+      runtime-manifest order and classifies each builtin as callable
+      primop-wrapper metadata, a value-only builtin symbol, or an unsupported
+      arity. The preflight attaches frozen `RuntimeCallSignature` metadata for
+      callable builtins while reporting value-only builtin symbols as gaps.
+      Tests cover sorted symbol parity, representative callable arities,
+      value-only gaps, and unsupported-arity handling. This is not Cranelift
+      lowering or symbol registration: no builtin wrapper addresses, exported C
+      ABI functions, raw-pointer calls, or `JITBuilder::symbol` entries exist
+      here.
 - [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `nix.builtin.<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
 - [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
       heap object creation through `BumpArena::aos_alloc_*`

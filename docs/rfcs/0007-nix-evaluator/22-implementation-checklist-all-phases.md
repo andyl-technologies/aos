@@ -6445,6 +6445,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       no `unsafe extern "C"` type aliases, exported wrappers, raw-pointer call
       boundaries, Cranelift lowering, or `JITBuilder::symbol` registration are
       implemented here.
+- [x] Current builtin runtime-call preflight precursor:
+      `ratchet-core::runtime_abi::runtime_builtin_call_manifest()` keeps the
+      `nix.builtin.*` call-shape inventory in stable runtime-symbol order and
+      classifies each builtin as callable primop-wrapper metadata, value-only
+      builtin metadata, or an unsupported future arity. The corresponding
+      preflight attaches frozen `RuntimeCallSignature` metadata for callable
+      builtin symbols and reports value-only symbols (`true`, `false`, `null`,
+      `builtins`, and other configured values) as gaps. Tests pin order parity
+      with the runtime symbol manifest, representative callable arities,
+      value-only gaps, and unsupported-arity handling. This remains metadata
+      only: no builtin `unsafe extern "C"` wrappers, executable addresses,
+      raw-pointer dispatch, Cranelift lowering, or `JITBuilder::symbol`
+      registration are implemented here.
 - [x] Current stable-symbol naming precursor: `ratchet-core::runtime_abi`
       freezes the safe metadata names that later `jit/abi.rs` and
       `jit/cranelift.rs` will register: `nix.builtin.<visible-name>` for every

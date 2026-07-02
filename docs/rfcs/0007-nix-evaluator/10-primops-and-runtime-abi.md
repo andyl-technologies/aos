@@ -754,6 +754,18 @@ harness, never cut for scope.
       the builtin declaration inventory. This is contract metadata only: it does
       not define `unsafe extern "C"` type aliases, export wrappers, register
       Cranelift symbols, or call through raw pointers.
+- [x] Current builtin runtime-call preflight precursor:
+      `ratchet-core::runtime_abi::runtime_builtin_call_manifest()` preserves
+      sorted `nix.builtin.*` symbol order and classifies each declared builtin as
+      a callable primop wrapper shape, a value-only builtin symbol, or an
+      unsupported future arity. `runtime_builtin_call_preflight()` attaches the
+      frozen `RuntimeCallSignature` for callable builtin symbols and reports
+      value-only symbols such as `true`, `false`, `null`, and `builtins` as
+      current gaps. Tests pin order parity with the runtime symbol manifest,
+      representative callable arities, value-only gaps, and the unsupported
+      arity path. This is still metadata only: no builtin `unsafe extern "C"`
+      wrappers, raw-pointer dispatch, `JITBuilder::symbol` entries, or executable
+      builtin addresses are implemented.
 - [x] P1 safe tree-walk oracle contains no unsafe boundaries: `aos-nix` has `#![forbid(unsafe_code)]`, and source scans find no Rust `unsafe` in the evaluator crate beyond builtin names such as `unsafeGetAttrPos`. The `// SAFETY:` discipline for actual `unsafe extern "C"` runtime/JIT wrappers and the miri/sanitizer CI gate remain future P6 work with the unchecked ABI/JIT rows ([§2.1](#21-the-one-calling-convention)) — P1 complete / P6 pending, `S-17`; gate: miri/sanitizer CI on the safe tree.
 - [x] Arity + currying via `PrimopApp` partial-application value; under-application is a WHNF function value ([§2.2](#22-arity-currying-and-overunder-application)) — P1, `S-12`; gate: conformance 21. Implemented in the tree-walk oracle as `EvalPrimOp { symbol, args }` plus `EvalPrimOpArg`: builtin declarations expose `first_class_arity`, selecting a first-class builtin allocates an unapplied `EvalPrimOp`, applying fewer than `arity` arguments allocates a new partially applied `EvalPrimOp`, saturated first-class application dispatches through the registered builtin, and `ValueTag::Primop` is treated as a callable WHNF by `isFunction`/`typeOf`. Covered by `runtime::builtins::tests::builtin_declarations_record_first_class_arity_by_category`, heap primop record tests, `unary_type_predicate_primops_classify_whnf_values`, `type_of_primop_returns_nix_type_names`, `first_class_binary_builtin_selects_are_curried`, and broad first-class builtin tests for unary/binary/ternary primops including `map`, `filter`, `foldl'`, `scopedImport`, and `findFile`. This checkoff covers the tree-walk behavior required by the conformance-21 builtin catalog; the reusable external conformance-suite harness remains tracked in [15](15-differential-testing-and-benchmarking.md), and direct static-call/first-class forcing-order parity remains tracked by the next unchecked row.
 - [ ] Tier-2 inlining of the `PrimopApp` wrapper at proven-monomorphic saturated call sites ([§2.2](#22-arity-currying-and-overunder-application)) — P7.
