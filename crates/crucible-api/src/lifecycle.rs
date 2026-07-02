@@ -15,7 +15,7 @@ use crucible::{
 };
 use crucible_session::{
     Engine, LiveSnapshot, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind,
-    SessionError, SessionRunReport,
+    SessionError, SessionRunReport, SessionStateTransitionBus,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -471,6 +471,7 @@ where
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
+        let state_transitions = actor.state_transition_bus();
         let actor_task = tokio::spawn(async move { actor.run().await });
 
         let session_ref = self.next_session_ref(request.seed);
@@ -479,6 +480,7 @@ where
             sender,
             live,
             event_log,
+            state_transitions,
             actor_task,
         };
 
@@ -623,6 +625,7 @@ where
             runtime.sender.clone(),
             Arc::clone(&runtime.live),
             runtime.event_log.clone(),
+            runtime.state_transitions.clone(),
         ))
     }
 
@@ -795,6 +798,7 @@ struct SessionRuntime {
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
+    state_transitions: SessionStateTransitionBus,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
 }
 

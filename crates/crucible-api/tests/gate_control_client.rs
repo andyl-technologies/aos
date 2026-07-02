@@ -20,9 +20,9 @@ use crucible_api::{
     ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventSource,
     RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient, RpcEndpoint,
     RpcTransportProtocol, ScenarioCatalogEntry, SendRequest, SendResponse, SessionId, SessionRef,
-    StateUpdate, StreamingEventFrame, WatchStream, assert_shared_wire_model,
-    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
-    session_command_for_open_set_command_kind,
+    StateUpdate, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame, WatchStream,
+    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
+    open_set_command_kind, session_command_for_open_set_command_kind,
 };
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
@@ -190,6 +190,9 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         control_continued.state_update.map(|update| update.state),
         Some(LiveStateKind::Running),
     );
+    let control_running_update = recv_rpc_control_state_update(&mut control).await;
+    assert_eq!(control_running_update.update.session, created.session);
+    assert_eq!(control_running_update.update.state, LiveStateKind::Running);
 
     let control_paused = rpc
         .control_send(SendRequest::new(
@@ -204,6 +207,13 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(
         control_paused.state_update.map(|update| update.state),
         Some(LiveStateKind::Paused),
+    );
+    let control_paused_update = recv_rpc_control_state_update(&mut control).await;
+    assert_eq!(control_paused_update.update.session, created.session);
+    assert_eq!(control_paused_update.update.state, LiveStateKind::Paused);
+    assert!(
+        control_paused_update.sequence > control_running_update.sequence,
+        "Control state updates should be monotone",
     );
 
     let watch_replay_start = rpc
@@ -236,6 +246,10 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let watch_live = recv_rpc_watch_event(&mut watch).await;
     assert_eq!(watch_live.cursor, EventLogCursor::new(watch_replay_start));
     assert_eq!(watch_live.event.payload.kind, "crucible.event.rng_draw");
+    let watch_burst_start = watch_replay_start.saturating_add(2);
+    rpc_server
+        .append_session_events(created.session, &event_burst(watch_burst_start, 304, 10))
+        .await;
 
     let send_continued = rpc
         .send_command(SendRequest::new(
@@ -251,6 +265,9 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         send_continued.state_update.map(|update| update.state),
         Some(LiveStateKind::Running),
     );
+    let watch_running_update = recv_rpc_watch_state_update(&mut watch).await;
+    assert_eq!(watch_running_update.update.session, created.session);
+    assert_eq!(watch_running_update.update.state, LiveStateKind::Running);
 
     let rejected_start = rpc
         .send_command(SendRequest::new(
@@ -381,12 +398,32 @@ async fn recv_rpc_control_event(
         .unwrap_or_else(|| panic!("RPC Control event stream should remain open"))
 }
 
+async fn recv_rpc_control_state_update(
+    stream: &mut crucible_api::ClientControlStream,
+) -> StreamingStateUpdateFrame {
+    tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())
+        .await
+        .unwrap_or_else(|_| panic!("RPC Control state update should arrive before timeout"))
+        .unwrap_or_else(|error| panic!("RPC Control state update should decode: {error}"))
+        .unwrap_or_else(|| panic!("RPC Control state update stream should remain open"))
+}
+
 async fn recv_rpc_watch_event(stream: &mut crucible_api::ClientWatchStream) -> StreamingEventFrame {
     tokio::time::timeout(Duration::from_millis(100), stream.recv_event())
         .await
         .unwrap_or_else(|_| panic!("RPC Watch event should arrive before timeout"))
         .unwrap_or_else(|error| panic!("RPC Watch event should decode: {error}"))
         .unwrap_or_else(|| panic!("RPC Watch event stream should remain open"))
+}
+
+async fn recv_rpc_watch_state_update(
+    stream: &mut crucible_api::ClientWatchStream,
+) -> StreamingStateUpdateFrame {
+    tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())
+        .await
+        .unwrap_or_else(|_| panic!("RPC Watch state update should arrive before timeout"))
+        .unwrap_or_else(|error| panic!("RPC Watch state update should decode: {error}"))
+        .unwrap_or_else(|| panic!("RPC Watch state update stream should remain open"))
 }
 
 struct Http2LifecycleServer {
@@ -1170,12 +1207,12 @@ fn control_event_body(
             if let Some(message) = pending {
                 return Some((Ok(message), (control, None)));
             }
-            let frame = match control.recv_event().await {
+            let frame = match control.recv_frame().await {
                 Ok(Some(frame)) => frame,
                 Ok(None) | Err(_) => return None,
             };
             Some((
-                Ok(framed_rpc_message(encode_streaming_event_frame(&frame))),
+                Ok(framed_rpc_message(encode_streaming_frame(&frame))),
                 (control, None),
             ))
         },
@@ -1190,12 +1227,12 @@ fn watch_event_body(
         if let Some(message) = pending {
             return Some((Ok(message), (watch, None)));
         }
-        let frame = match watch.recv_event().await {
+        let frame = match watch.recv_frame().await {
             Ok(Some(frame)) => frame,
             Ok(None) | Err(_) => return None,
         };
         Some((
-            Ok(framed_rpc_message(encode_streaming_event_frame(&frame))),
+            Ok(framed_rpc_message(encode_streaming_frame(&frame))),
             (watch, None),
         ))
     })
@@ -1205,6 +1242,13 @@ fn framed_rpc_message(message: String) -> axum::body::Bytes {
     let mut message = message;
     message.push('\n');
     axum::body::Bytes::from(message)
+}
+
+fn encode_streaming_frame(frame: &StreamingFrame) -> String {
+    match frame {
+        StreamingFrame::Event(frame) => encode_streaming_event_frame(frame),
+        StreamingFrame::StateUpdate(frame) => encode_streaming_state_update_frame(*frame),
+    }
 }
 
 fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
@@ -1259,6 +1303,17 @@ fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
             &format!("{}|{}", hex_encode(name.as_bytes()), attribute_wire(value)),
         );
     }
+    output
+}
+
+fn encode_streaming_state_update_frame(frame: StreamingStateUpdateFrame) -> String {
+    let mut output = String::from("crucible.rpc/state-update-frame\n");
+    push_wire_line(&mut output, "sequence", &frame.sequence.to_string());
+    push_wire_line(
+        &mut output,
+        "state-update",
+        &state_update_wire(frame.update),
+    );
     output
 }
 
@@ -1371,6 +1426,17 @@ fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> 
         )),
     );
     vec![causal, observational]
+}
+
+fn event_burst(first_sequence: u64, first_quantum: u64, pairs: u64) -> Vec<SchedulerEventLogEntry> {
+    let mut entries = Vec::new();
+    for offset in 0..pairs {
+        entries.extend(event_pair(
+            first_sequence.saturating_add(offset.saturating_mul(2)),
+            first_quantum.saturating_add(offset),
+        ));
+    }
+    entries
 }
 
 struct ServerQuantumLoop {

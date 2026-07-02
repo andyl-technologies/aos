@@ -5,7 +5,7 @@
 //! session actor path or the HTTP/2 RPC path. The two paths intentionally share
 //! [`ControlWireModel`], which is backed by the frozen RPC ABI message encoder.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,6 +37,7 @@ use crate::streaming::{
     AttachRequest, AttachSnapshot, Attached, CommandRejectionKind, CommandResult,
     CommandResultStatus, SendRequest, SendResponse, StateUpdate, StreamingApiError,
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEventFrame,
+    StreamingStateUpdateFrame,
 };
 
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
@@ -50,6 +51,7 @@ const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
 const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 const RPC_STREAM_EVENT_CHANNEL_CAPACITY: usize = 16;
+const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
 pub type ControlClientFuture<'a, T> =
@@ -83,6 +85,25 @@ impl ClientControlStream {
         match self {
             Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
             Self::Rpc(stream) => stream.recv_event().await,
+        }
+    }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the underlying transport fails, the
+    /// RPC state-update frame is malformed, or the in-process state-update
+    /// stream lags.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
+        match self {
+            Self::InProcess(stream) => stream
+                .recv_state_update()
+                .await
+                .map_err(ControlClientError::from),
+            Self::Rpc(stream) => stream.recv_state_update().await,
         }
     }
 
@@ -137,6 +158,25 @@ impl ClientWatchStream {
             Self::Rpc(stream) => stream.recv_event().await,
         }
     }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the underlying transport fails, the
+    /// RPC state-update frame is malformed, or the in-process state-update
+    /// stream lags.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
+        match self {
+            Self::InProcess(stream) => stream
+                .recv_state_update()
+                .await
+                .map_err(ControlClientError::from),
+            Self::Rpc(stream) => stream.recv_state_update().await,
+        }
+    }
 }
 
 /// Attached HTTP/2 RPC `Control` stream.
@@ -161,6 +201,18 @@ impl RpcControlStream {
     /// the next event frame cannot be decoded.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
         self.events.recv_event().await
+    }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
+    /// the next state-update frame cannot be decoded.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
+        self.events.recv_state_update().await
     }
 
     /// Dispatches one command envelope over the RPC control stream.
@@ -202,19 +254,91 @@ impl RpcWatchStream {
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
         self.events.recv_event().await
     }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
+    /// the next state-update frame cannot be decoded.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
+        self.events.recv_state_update().await
+    }
 }
 
 struct RpcStreamingEventReceiver {
-    frames: mpsc::Receiver<Result<StreamingEventFrame, ControlClientError>>,
+    frames: mpsc::Receiver<Result<RpcStreamingFrame, ControlClientError>>,
+    pending_events: VecDeque<StreamingEventFrame>,
+    pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
+    skipped_events: u64,
+    skipped_state_updates: u64,
 }
 
 impl RpcStreamingEventReceiver {
     async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        match self.frames.recv().await {
-            Some(Ok(frame)) => Ok(Some(frame)),
-            Some(Err(error)) => Err(error),
-            None => Ok(None),
+        if self.skipped_events > 0 {
+            let skipped = std::mem::take(&mut self.skipped_events);
+            return Err(ControlClientError::from(
+                StreamingApiError::EventStreamLagged { skipped },
+            ));
         }
+        if let Some(frame) = self.pending_events.pop_front() {
+            return Ok(Some(frame));
+        }
+
+        loop {
+            match self.frames.recv().await {
+                Some(Ok(RpcStreamingFrame::Event(frame))) => return Ok(Some(frame)),
+                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    self.push_pending_state_update(frame);
+                }
+                Some(Err(error)) => return Err(error),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
+        if self.skipped_state_updates > 0 {
+            let skipped = std::mem::take(&mut self.skipped_state_updates);
+            return Err(ControlClientError::from(
+                StreamingApiError::StateUpdateStreamLagged { skipped },
+            ));
+        }
+        if let Some(frame) = self.pending_state_updates.pop_front() {
+            return Ok(Some(frame));
+        }
+
+        loop {
+            match self.frames.recv().await {
+                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => return Ok(Some(frame)),
+                Some(Ok(RpcStreamingFrame::Event(frame))) => {
+                    self.push_pending_event(frame);
+                }
+                Some(Err(error)) => return Err(error),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    fn push_pending_event(&mut self, frame: StreamingEventFrame) {
+        if self.pending_events.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
+            let _dropped = self.pending_events.pop_front();
+            self.skipped_events = self.skipped_events.saturating_add(1);
+        }
+        self.pending_events.push_back(frame);
+    }
+
+    fn push_pending_state_update(&mut self, frame: StreamingStateUpdateFrame) {
+        if self.pending_state_updates.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
+            let _dropped = self.pending_state_updates.pop_front();
+            self.skipped_state_updates = self.skipped_state_updates.saturating_add(1);
+        }
+        self.pending_state_updates.push_back(frame);
     }
 }
 
@@ -899,32 +1023,49 @@ async fn decode_attached_stream_response(
         .await?
         .ok_or_else(|| rpc_decode("empty RPC stream attach response"))?;
     let attached = decode_attached_response(&attached_message)?;
-    let (sender, receiver) = mpsc::channel(RPC_STREAM_EVENT_CHANNEL_CAPACITY);
+    let (frame_sender, frame_receiver) = mpsc::channel(RPC_STREAM_EVENT_CHANNEL_CAPACITY);
     tokio::spawn(async move {
-        pump_rpc_event_frames(stream, buffer, sender).await;
+        pump_rpc_stream_frames(stream, buffer, frame_sender).await;
     });
-    Ok((attached, RpcStreamingEventReceiver { frames: receiver }))
+    Ok((
+        attached,
+        RpcStreamingEventReceiver {
+            frames: frame_receiver,
+            pending_events: VecDeque::new(),
+            pending_state_updates: VecDeque::new(),
+            skipped_events: 0,
+            skipped_state_updates: 0,
+        },
+    ))
 }
 
-async fn pump_rpc_event_frames(
+async fn pump_rpc_stream_frames(
     mut stream: BoxStream<'static, Result<Bytes, reqwest::Error>>,
     mut buffer: Vec<u8>,
-    sender: mpsc::Sender<Result<StreamingEventFrame, ControlClientError>>,
+    frame_sender: mpsc::Sender<Result<RpcStreamingFrame, ControlClientError>>,
 ) {
     loop {
         let message = match read_next_framed_rpc_message(&mut stream, &mut buffer).await {
             Ok(Some(message)) => message,
             Ok(None) => return,
             Err(error) => {
-                let _send_result = sender.send(Err(error)).await;
+                let _send_result = frame_sender.send(Err(error)).await;
                 return;
             }
         };
-        let frame = decode_streaming_event_frame(&message);
-        if sender.send(frame).await.is_err() {
+        if frame_sender
+            .send(decode_streaming_frame(&message))
+            .await
+            .is_err()
+        {
             return;
         }
     }
+}
+
+enum RpcStreamingFrame {
+    Event(StreamingEventFrame),
+    StateUpdate(StreamingStateUpdateFrame),
 }
 
 async fn read_next_framed_rpc_message(
@@ -1191,6 +1332,22 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
     })
 }
 
+fn decode_streaming_frame(body: &[u8]) -> Result<RpcStreamingFrame, ControlClientError> {
+    let text = response_text(body)?;
+    match text.lines().next() {
+        Some("crucible.rpc/event-frame") => {
+            decode_streaming_event_frame(body).map(RpcStreamingFrame::Event)
+        }
+        Some("crucible.rpc/state-update-frame") => {
+            decode_streaming_state_update_frame(body).map(RpcStreamingFrame::StateUpdate)
+        }
+        Some(header) => Err(rpc_decode(format!(
+            "unexpected RPC stream message header `{header}`"
+        ))),
+        None => Err(rpc_decode("empty RPC stream message")),
+    }
+}
+
 fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, ControlClientError> {
     let text = response_text(body)?;
     let mut lines = text.lines();
@@ -1224,6 +1381,20 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
             payload: OpenSetPayload::new(kind, attributes),
         },
     })
+}
+
+fn decode_streaming_state_update_frame(
+    body: &[u8],
+) -> Result<StreamingStateUpdateFrame, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/state-update-frame")?;
+    let sequence = parse_u64_line(lines.next(), "sequence=")?;
+    let Some(update) = parse_state_update_line(lines.next())? else {
+        return Err(rpc_decode("state-update-frame carried no state update"));
+    };
+    reject_trailing(lines.next())?;
+    Ok(StreamingStateUpdateFrame { sequence, update })
 }
 
 fn response_text(body: &[u8]) -> Result<&str, ControlClientError> {

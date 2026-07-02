@@ -83,6 +83,6 @@ pub use streaming::{
     CommandResultStatus, ControlStream, InProcessStreamingSession,
     STREAMING_COMMAND_MAX_ACTOR_YIELDS, SendRequest, SendResponse, StateUpdate, StreamingApiError,
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEquivalenceError,
-    StreamingEquivalenceReport, StreamingEventFrame, WatchStream,
-    validate_control_watch_send_equivalence,
+    StreamingEquivalenceReport, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
+    WatchStream, validate_control_watch_send_equivalence,
 };

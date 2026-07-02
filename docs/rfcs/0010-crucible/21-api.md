@@ -648,8 +648,8 @@ ran in-process against the double or over the wire against QEMU.
   paths for `Control` attach/send, `Watch` attach, and unary `Send`; all command
   paths advertise the same command capability set from the thin API mapping
   table, dispatch accepted commands through the same session actor mailbox
-  helper, and use the session lifecycle transition model for invalid-state
-  command results. Monotonic live `StateUpdate` streaming remains T-API-7.
+  helper, use the session lifecycle transition model for invalid-state command
+  results, and now share monotonic live `StateUpdate` streaming via T-API-7.
 - [x] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log
   catalog (19 §19.7); opaque-unknown-kind handling on receive, typed
@@ -679,9 +679,21 @@ ran in-process against the double or over the wire against QEMU.
   observational flag. The cursor gate replays causal plus observational entries
   from `from_seq = 0`, proves attach beyond the tail skips historical replay, and
   verifies live-tail delivery after attach without changing the live state.
-- [ ] **T-API-7** Implement `StateUpdate` delivery distinct from event-log entries,
+- [x] **T-API-7** Implement `StateUpdate` delivery distinct from event-log entries,
   applied monotonically, so a Watch-only client tracks run-state from
   StateUpdate + SendResponse. — satisfies [API-19]; spec §21.4; cross-ref 20 §2.
+  Completed by `checks.crucible.phase5.apiStateUpdateStream`:
+  `crucible-api::streaming` now subscribes each `Control`/`Watch` attach to the
+  session actor's state-transition bus, exposes monotone
+  `StreamingStateUpdateFrame` delivery separately from event-log frames, and
+  maps state-transition lag to a distinct streaming error. The RPC client reads
+  one framed stream and demultiplexes event and state-update frames on demand so
+  a state-only receiver cannot be starved behind undrained event frames. The
+  HTTP/2 gate emits framed `state-update-frame` messages beside event frames.
+  The state-update gate proves a Watch-only client advances Loaded -> Paused ->
+  Running -> Paused -> Stopped from `SendResponse` plus `StateUpdate` frames,
+  verifies monotone state-update sequence numbers, and asserts those updates do
+  not appear as event-log frames.
 - [ ] **T-API-8** Implement epoch guards: server-monotonic `session_epoch` on
   `SessionRef`, `expected_epoch` on attach/lifecycle/command RPCs, fast-fail with
   FailedPrecondition / SessionClosed(EPOCH_MISMATCH) on a recycled id; prove the

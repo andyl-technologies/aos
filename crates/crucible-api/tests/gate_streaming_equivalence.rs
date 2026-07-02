@@ -2,14 +2,17 @@
 
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
+
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, EventLogOffset, GenesisCheckpoint, QuantumLoop,
     QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_api::{
     AttachRequest, CommandRejectionKind, CommandResultStatus, ControlPlaneEventLog, EventLogCursor,
-    InProcessStreamingSession, SendRequest, SessionId, SessionRef, StreamingCommandCapability,
-    StreamingEquivalenceError, validate_control_watch_send_equivalence,
+    InProcessStreamingSession, SendRequest, SessionId, SessionRef, StateUpdate,
+    StreamingCommandCapability, StreamingEquivalenceError, StreamingStateUpdateFrame,
+    validate_control_watch_send_equivalence,
 };
 use crucible_session::{
     Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind, SessionError,
@@ -117,6 +120,68 @@ async fn control_stream_and_watch_send_drive_the_same_session_lifecycle() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn watch_only_state_updates_are_monotone_and_not_event_log_entries() {
+    let fixture = StreamingFixture::spawn_loaded(13).await;
+    let session = fixture.session;
+    let mut watch = fixture
+        .api
+        .watch(AttachRequest::new(session).with_client_name("watch-state-client"))
+        .unwrap_or_else(|error| panic!("Watch attach should succeed: {error}"));
+    assert_eq!(watch.attached().state, LiveStateKind::Loaded);
+    let mut tracked_state = watch.attached().state;
+    let mut last_sequence = 0;
+
+    let started = fixture
+        .api
+        .send(SendRequest::new(session, 1, SessionCommand::Start))
+        .await
+        .unwrap_or_else(|error| panic!("Send Start should dispatch: {error}"));
+    tracked_state = apply_send_state_update(tracked_state, started.state_update);
+    let started_update = recv_watch_state_update(&mut watch).await;
+    assert_eq!(started_update.update.state, tracked_state);
+    assert!(started_update.sequence > last_sequence);
+    last_sequence = started_update.sequence;
+    assert_watch_has_no_event_log_frame(&mut watch).await;
+
+    let continued = fixture
+        .api
+        .send(SendRequest::new(session, 2, SessionCommand::Continue))
+        .await
+        .unwrap_or_else(|error| panic!("Send Continue should dispatch: {error}"));
+    tracked_state = apply_send_state_update(tracked_state, continued.state_update);
+    let continued_update = recv_watch_state_update(&mut watch).await;
+    assert_eq!(continued_update.update.state, tracked_state);
+    assert!(continued_update.sequence > last_sequence);
+    last_sequence = continued_update.sequence;
+    assert_watch_has_no_event_log_frame(&mut watch).await;
+
+    let paused = fixture
+        .api
+        .send(SendRequest::new(session, 3, SessionCommand::Pause))
+        .await
+        .unwrap_or_else(|error| panic!("Send Pause should dispatch: {error}"));
+    tracked_state = apply_send_state_update(tracked_state, paused.state_update);
+    let paused_update = recv_watch_state_update(&mut watch).await;
+    assert_eq!(paused_update.update.state, tracked_state);
+    assert!(paused_update.sequence > last_sequence);
+    last_sequence = paused_update.sequence;
+    assert_watch_has_no_event_log_frame(&mut watch).await;
+
+    let stopped = fixture
+        .api
+        .send(SendRequest::new(session, 4, SessionCommand::Stop))
+        .await
+        .unwrap_or_else(|error| panic!("Send Stop should dispatch: {error}"));
+    tracked_state = apply_send_state_update(tracked_state, stopped.state_update);
+    let stopped_update = recv_watch_state_update(&mut watch).await;
+    assert_eq!(stopped_update.update.state, tracked_state);
+    assert!(stopped_update.sequence > last_sequence);
+    assert_watch_has_no_event_log_frame(&mut watch).await;
+
+    fixture.join_stopped().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn control_and_send_drive_non_basic_command_classes() {
     for command in [
         SessionCommandKind::StepQuantum,
@@ -197,6 +262,28 @@ fn streaming_equivalence_rejects_missing_capabilities() {
         missing.to_string(),
         "streaming command capability Start is missing"
     );
+}
+
+async fn recv_watch_state_update(
+    watch: &mut crucible_api::WatchStream,
+) -> StreamingStateUpdateFrame {
+    tokio::time::timeout(Duration::from_millis(100), watch.recv_state_update())
+        .await
+        .unwrap_or_else(|_| panic!("Watch state update should arrive before timeout"))
+        .unwrap_or_else(|error| panic!("Watch state update should decode: {error}"))
+        .unwrap_or_else(|| panic!("Watch state update stream should remain open"))
+}
+
+async fn assert_watch_has_no_event_log_frame(watch: &mut crucible_api::WatchStream) {
+    let event = tokio::time::timeout(Duration::from_millis(10), watch.recv_event()).await;
+    assert!(
+        event.is_err(),
+        "StateUpdate delivery must remain distinct from event-log entries",
+    );
+}
+
+fn apply_send_state_update(current: LiveStateKind, update: Option<StateUpdate>) -> LiveStateKind {
+    update.map(|update| update.state).unwrap_or(current)
 }
 
 async fn drive_command_with_control(command: SessionCommandKind) -> crucible_api::SendResponse {
@@ -306,9 +393,16 @@ impl StreamingFixture {
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
+        let state_transitions = actor.state_transition_bus();
         let actor_task = tokio::spawn(async move { actor.run().await });
         let session = SessionRef::new(SessionId::new(seed), seed, scenario.seed());
-        let api = InProcessStreamingSession::new(session, sender, live.clone(), event_log);
+        let api = InProcessStreamingSession::new(
+            session,
+            sender,
+            live.clone(),
+            event_log,
+            state_transitions,
+        );
         Self {
             session,
             api,
