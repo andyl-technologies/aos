@@ -22,19 +22,19 @@ use crucible_api::{
     GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessLifecycleClient,
     InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, ListScenariosResponse,
     ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource,
-    OpenSetEventTime, OpenSetPayload, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
-    ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
-    RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry,
-    ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef, SessionSummary, StateUpdate,
-    StreamingApiError, StreamingCapabilitySet, StreamingEventFrame, StreamingFrame,
-    StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model, encode_rpc_hello_request,
-    encode_rpc_hello_response, open_set_command_kind, rpc_status_code_wire_name,
-    session_command_for_open_set_command_kind,
+    OpenSetEventTime, OpenSetPayload, QuiescentLifecycleLoop, RPC_OPEN_SET_PAYLOAD_KINDS,
+    RPC_PROTOCOL_VERSION, ReproductionCommandPayload, ReproductionCommandRecord,
+    ReproductionCommandResult, RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol,
+    ScenarioCatalogEntry, ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef,
+    SessionSummary, StateUpdate, StreamingApiError, StreamingCapabilitySet, StreamingEventFrame,
+    StreamingFrame, StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model,
+    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
+    rpc_status_code_wire_name, serve_lifecycle_http2, session_command_for_open_set_command_kind,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
-    CheckpointRef, CommandReply, Engine, LiveStateKind, SessionActor, SessionCommand,
+    CheckpointRef, CommandReply, Engine, LiveStateKind, OutcomeKind, SessionActor, SessionCommand,
     SessionCommandKind, SessionError, SessionRunReport,
 };
 use futures_util::stream;
@@ -571,6 +571,74 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 listener should bind: {error}"));
+    let addr = listener.local_addr().unwrap_or_else(|error| {
+        panic!("production HTTP/2 listener should report address: {error}")
+    });
+    let control_plane = LifecycleControlPlane::new(
+        "production-http2-lifecycle-server",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
+
+    let rpc = RpcControlClient::new(RpcEndpoint::http2(format!("http://{addr}")))
+        .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
+    let hello = rpc
+        .hello(HelloRequest::new(
+            "production-http2-lifecycle-client",
+            RPC_PROTOCOL_VERSION,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 hello should decode: {error}"));
+    assert_eq!(hello.server_name, "production-http2-lifecycle-server");
+
+    let scenario = generated_scenario(91);
+    let created = rpc
+        .create_session(
+            CreateSessionRequest::inline(scenario.clone(), scenario.seed()).with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 create should decode: {error}"));
+    assert_eq!(created.state, LiveStateKind::Paused);
+
+    let control = rpc
+        .control_attach(
+            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 control attach should decode: {error}"));
+    assert_eq!(control.attached().session, created.session);
+    let query = control
+        .send_command(1, SessionCommand::query_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 control send should decode: {error}"));
+    assert_eq!(query.result.status, CommandResultStatus::Accepted);
+
+    let sessions = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 list sessions should decode: {error}"));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, created.session);
+    assert_eq!(sessions.sessions[0].state, LiveStateKind::Paused);
+
+    let destroyed = rpc
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 destroy should decode: {error}"));
+    assert!(destroyed.stopped);
+    server.abort();
+    match server.await {
+        Err(error) if error.is_cancelled() => {}
+        other => panic!("production HTTP/2 server task should abort cleanly: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_stream() {
     let (streaming, actor, session) =
         streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 90);
@@ -970,10 +1038,16 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             sessions: vec![SessionSummary {
                 session,
                 state: LiveStateKind::Running,
+                outcome: None,
+                terminal_savepoint: None,
+                frontier: VirtualTime { ticks: 8 },
                 event_log_len: 12,
+                quanta_stepped: 4,
             }],
         }),
-        &format!("crucible.rpc/list-sessions-response\nsession=42|7|{seed_hex}|running|12\n"),
+        &format!(
+            "crucible.rpc/list-sessions-response\nsession=42|7|{seed_hex}|running|12|8|4|none|none\n"
+        ),
     );
     assert_rpc_snapshot(
         "destroy-session-response",
@@ -3112,6 +3186,14 @@ fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
         output.push_str(state_wire_name(session.state));
         output.push('|');
         output.push_str(&session.event_log_len.to_string());
+        output.push('|');
+        output.push_str(&session.frontier.ticks.to_string());
+        output.push('|');
+        output.push_str(&session.quanta_stepped.to_string());
+        output.push('|');
+        output.push_str(outcome_wire_name(session.outcome));
+        output.push('|');
+        output.push_str(&content_hash_option_wire(session.terminal_savepoint));
         output.push('\n');
     }
     output
@@ -3608,6 +3690,24 @@ fn state_wire_name(state: LiveStateKind) -> &'static str {
         LiveStateKind::Paused => "paused",
         LiveStateKind::Running => "running",
         LiveStateKind::Stopped => "stopped",
+    }
+}
+
+fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
+    match outcome {
+        Some(OutcomeKind::Passed) => "passed",
+        Some(OutcomeKind::Failed) => "failed",
+        Some(OutcomeKind::Timeout) => "timeout",
+        Some(OutcomeKind::Crashed) => "crashed",
+        Some(OutcomeKind::Stopped) => "stopped",
+        None => "none",
+    }
+}
+
+fn content_hash_option_wire(hash: Option<ContentHash>) -> String {
+    match hash {
+        Some(hash) => hash.to_hex(),
+        None => String::from("none"),
     }
 }
 

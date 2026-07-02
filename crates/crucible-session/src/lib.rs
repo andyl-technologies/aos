@@ -351,6 +351,57 @@ impl OutcomeKind {
     ];
 }
 
+fn outcome_kind_from_raw(raw: u8) -> Option<OutcomeKind> {
+    match raw {
+        1 => Some(OutcomeKind::Passed),
+        2 => Some(OutcomeKind::Failed),
+        3 => Some(OutcomeKind::Timeout),
+        4 => Some(OutcomeKind::Crashed),
+        5 => Some(OutcomeKind::Stopped),
+        _ => None,
+    }
+}
+
+fn outcome_kind_to_raw(kind: Option<OutcomeKind>) -> u8 {
+    match kind {
+        Some(OutcomeKind::Passed) => 1,
+        Some(OutcomeKind::Failed) => 2,
+        Some(OutcomeKind::Timeout) => 3,
+        Some(OutcomeKind::Crashed) => 4,
+        Some(OutcomeKind::Stopped) => 5,
+        None => 0,
+    }
+}
+
+fn outcome_kind_from_engine_state(state: &EngineState) -> Option<OutcomeKind> {
+    match state {
+        EngineState::Stopped { outcome } => Some(OutcomeKind::from(outcome)),
+        EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => None,
+    }
+}
+
+fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
+    let mut words = [0_u64; 4];
+    for (index, chunk) in hash.bytes.chunks_exact(8).enumerate() {
+        let mut word = [0_u8; 8];
+        word.copy_from_slice(chunk);
+        words[index] = u64::from_be_bytes(word);
+    }
+    words
+}
+
+fn content_hash_from_words(present: u8, words: [u64; 4]) -> Option<ContentHash> {
+    if present == 0 {
+        return None;
+    }
+    let mut bytes = [0_u8; 32];
+    bytes[0..8].copy_from_slice(&words[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&words[1].to_be_bytes());
+    bytes[16..24].copy_from_slice(&words[2].to_be_bytes());
+    bytes[24..32].copy_from_slice(&words[3].to_be_bytes());
+    Some(ContentHash { bytes })
+}
+
 impl From<&Outcome> for OutcomeKind {
     fn from(outcome: &Outcome) -> Self {
         match outcome {
@@ -1787,6 +1838,8 @@ pub struct EngineSnapshot {
     pub state: EngineState,
     /// The source-of-truth execution configuration.
     pub configuration: Configuration,
+    /// Terminal savepoint materialized when the engine reached an outcome.
+    pub terminal_savepoint: Option<Checkpoint>,
     /// The most recent scheduler frontier.
     pub frontier: VirtualTime,
     /// Number of canonical event-log entries observed through scheduler output.
@@ -1872,6 +1925,9 @@ pub struct SessionResume<L> {
 pub struct LiveSnapshot {
     epoch: AtomicU64,
     state_kind: AtomicU8,
+    outcome_kind: AtomicU8,
+    terminal_savepoint_present: AtomicU8,
+    terminal_savepoint_words: [AtomicU64; 4],
     virtual_time_ticks: AtomicU64,
     event_log_len: AtomicU64,
     quanta_stepped: AtomicU64,
@@ -1883,6 +1939,10 @@ pub struct LiveSnapshot {
 pub struct LiveSnapshotView {
     /// Compact state kind visible to observers.
     pub state_kind: LiveStateKind,
+    /// Terminal outcome kind when the engine has stopped.
+    pub outcome: Option<OutcomeKind>,
+    /// Terminal savepoint checkpoint id materialized for the outcome.
+    pub terminal_savepoint: Option<ContentHash>,
     /// The latest scheduler virtual-time frontier.
     pub virtual_time: VirtualTime,
     /// Canonical event-log length observed by the session actor.
@@ -1913,6 +1973,14 @@ impl LiveSnapshot {
         let snapshot = Self {
             epoch: AtomicU64::new(0),
             state_kind: AtomicU8::new(LiveStateKind::Loaded as u8),
+            outcome_kind: AtomicU8::new(0),
+            terminal_savepoint_present: AtomicU8::new(0),
+            terminal_savepoint_words: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
             virtual_time_ticks: AtomicU64::new(0),
             event_log_len: AtomicU64::new(0),
             quanta_stepped: AtomicU64::new(0),
@@ -1936,6 +2004,15 @@ impl LiveSnapshot {
             }
 
             let state_kind = self.state_kind.load(Ordering::Acquire);
+            let outcome_kind = self.outcome_kind.load(Ordering::Acquire);
+            let terminal_savepoint_present =
+                self.terminal_savepoint_present.load(Ordering::Acquire);
+            let terminal_savepoint_words = [
+                self.terminal_savepoint_words[0].load(Ordering::Acquire),
+                self.terminal_savepoint_words[1].load(Ordering::Acquire),
+                self.terminal_savepoint_words[2].load(Ordering::Acquire),
+                self.terminal_savepoint_words[3].load(Ordering::Acquire),
+            ];
             let virtual_time_ticks = self.virtual_time_ticks.load(Ordering::Acquire);
             let event_log_len = self.event_log_len.load(Ordering::Acquire);
             let quanta_stepped = self.quanta_stepped.load(Ordering::Acquire);
@@ -1945,6 +2022,11 @@ impl LiveSnapshot {
             if start_epoch == end_epoch && end_epoch.is_multiple_of(2) {
                 return LiveSnapshotView {
                     state_kind: LiveStateKind::from_raw(state_kind),
+                    outcome: outcome_kind_from_raw(outcome_kind),
+                    terminal_savepoint: content_hash_from_words(
+                        terminal_savepoint_present,
+                        terminal_savepoint_words,
+                    ),
                     virtual_time: VirtualTime {
                         ticks: virtual_time_ticks,
                     },
@@ -1979,6 +2061,23 @@ impl LiveSnapshot {
             LiveStateKind::from_engine_state(&snapshot.state) as u8,
             Ordering::Release,
         );
+        self.outcome_kind.store(
+            outcome_kind_to_raw(outcome_kind_from_engine_state(&snapshot.state)),
+            Ordering::Release,
+        );
+        let terminal_savepoint = snapshot.terminal_savepoint.as_ref().map(|value| value.id);
+        let terminal_savepoint_words = terminal_savepoint
+            .map(content_hash_to_words)
+            .unwrap_or([0, 0, 0, 0]);
+        self.terminal_savepoint_present
+            .store(u8::from(terminal_savepoint.is_some()), Ordering::Release);
+        for (word, value) in self
+            .terminal_savepoint_words
+            .iter()
+            .zip(terminal_savepoint_words)
+        {
+            word.store(value, Ordering::Release);
+        }
         self.virtual_time_ticks
             .store(snapshot.frontier.ticks, Ordering::Release);
         self.event_log_len
@@ -2568,6 +2667,7 @@ pub struct Engine<L> {
     runtime: Option<RuntimeState>,
     runtime_instantiated: bool,
     state: EngineState,
+    terminal_savepoint: Option<Checkpoint>,
     active_step: Option<ActiveStep>,
     graph: TemporalGraph,
     breakpoints: BreakpointSet,
@@ -2597,6 +2697,7 @@ impl<L> Engine<L> {
             runtime: None,
             runtime_instantiated: false,
             state: EngineState::Loaded,
+            terminal_savepoint: None,
             active_step: None,
             graph,
             breakpoints: BreakpointSet::new(),
@@ -2632,6 +2733,7 @@ impl<L> Engine<L> {
             state: EngineState::Paused {
                 reason: PauseReason::Instantiated,
             },
+            terminal_savepoint: None,
             active_step: None,
             graph,
             breakpoints: BreakpointSet::new(),
@@ -2937,6 +3039,7 @@ impl<L> Engine<L> {
         EngineSnapshot {
             state: self.state.clone(),
             configuration: self.configuration.clone(),
+            terminal_savepoint: self.terminal_savepoint.clone(),
             frontier: self.frontier,
             event_log_len: self.event_log_len,
             quanta: self.quanta,
@@ -3408,6 +3511,13 @@ impl<L> Engine<L> {
         self.pending_control.len()
     }
 
+    fn enter_stopped(&mut self, outcome: Outcome) -> Result<(), SessionError> {
+        let checkpoint = self.graph.save_checkpoint(&self.configuration)?;
+        self.terminal_savepoint = Some(checkpoint);
+        self.state = EngineState::Stopped { outcome };
+        Ok(())
+    }
+
     fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
         std::mem::take(&mut self.pending_event_log_entries)
     }
@@ -3611,9 +3721,7 @@ impl<L: QuantumLoop> Engine<L> {
                 self.quantum_loop.shutdown()?;
                 self.pending_control.clear();
                 self.active_step = None;
-                self.state = EngineState::Stopped {
-                    outcome: Outcome::Stopped,
-                };
+                self.enter_stopped(Outcome::Stopped)?;
             }
             SessionCommandKind::Start
             | SessionCommandKind::Continue
@@ -3858,9 +3966,7 @@ impl<L: QuantumLoop> Engine<L> {
                     self.pending_control.clear();
                     self.active_step = None;
                     self.debug_branch_required = false;
-                    self.state = EngineState::Stopped {
-                        outcome: Outcome::Stopped,
-                    };
+                    self.enter_stopped(Outcome::Stopped)?;
                     Ok(self.snapshot())
                 }
             }
@@ -4059,6 +4165,22 @@ impl<L: QuantumLoop> Engine<L> {
         }
 
         Ok(outcome)
+    }
+
+    fn stop_on_continuous_quiescence(&mut self) -> Result<(), SessionError> {
+        if matches!(self.state, EngineState::Running)
+            && self.active_step.is_none()
+            && self.breakpoints.is_empty()
+            && self
+                .scheduler_quiescence
+                .as_ref()
+                .is_some_and(SchedulerQuiescence::is_quiescent)
+        {
+            self.quantum_loop.shutdown()?;
+            self.pending_control.clear();
+            self.enter_stopped(Outcome::Passed)?;
+        }
+        Ok(())
     }
 }
 
@@ -4648,6 +4770,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries);
+                self.engine.stop_on_continuous_quiescence()?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -4690,6 +4813,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries);
+                self.engine.stop_on_continuous_quiescence()?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -7278,7 +7402,12 @@ mod tests {
             vec![breakpoint_id]
         );
         assert!(actor.engine().breakpoints().is_empty());
-        assert!(matches!(actor.engine().state(), EngineState::Running));
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Stopped {
+                outcome: Outcome::Passed
+            }
+        ));
     }
 
     #[tokio::test]
@@ -8500,6 +8629,7 @@ mod tests {
         );
         assert_eq!(stopped.from.state_kind, LiveStateKind::Paused);
         assert_eq!(stopped.to.state_kind, LiveStateKind::Stopped);
+        assert_eq!(stopped.to.outcome, Some(OutcomeKind::Stopped));
     }
 
     #[tokio::test]
@@ -8508,6 +8638,8 @@ mod tests {
         let mut stream = bus.subscribe();
         let view = LiveSnapshotView {
             state_kind: LiveStateKind::Loaded,
+            outcome: None,
+            terminal_savepoint: None,
             virtual_time: VirtualTime { ticks: 0 },
             event_log_len: 0,
             quanta_stepped: 0,

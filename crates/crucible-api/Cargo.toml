@@ -8,6 +8,7 @@ publish = false
 workspace = true
 
 [dependencies]
+axum = { workspace = true }
 bytes = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-session = { path = "../crucible-session" }
@@ -17,7 +18,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-axum = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }

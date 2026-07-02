@@ -389,6 +389,16 @@ long-held locks.
   with compile-time AOS store-path hints for `qemu-crucible` and
   `crucible-qemu-plugin`, and pins the selected QEMU build identity plus plugin
   ABI into replay identity checks and failure reproduction artifacts.
+  `T-CLI-6` is green through `checks.crucible.phase5.cliRunWorkflow`, which
+  covers canonical scenario file and `blake3:` store-reference parsing,
+  invalid-scenario exit 5, local and daemon lifecycle session creation through
+  the typed control-client workflow, production HTTP/2 RPC serving, control
+  attachment, non-empty scheduler event/state stream consumption, parsed
+  virtual-time/quanta budget checks from live counters, outcome-derived
+  terminal status, user-visible `--watch` status lines, real terminal
+  savepoint handles for `--save-on`, incremental stdin acknowledgements for
+  interactive commands, and non-passing outcome exit propagation with a
+  reproduction artifact.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

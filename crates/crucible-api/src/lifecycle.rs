@@ -10,13 +10,15 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crucible::{
-    Action, Checkpoint, CheckpointKind, Configuration, ControlOperationKind, EngineError,
-    GenesisCheckpoint, LogLevel, MembershipFault, PartitionDirection, QuantumLoop, RestartPolicy,
-    ScenarioDef, Seed, TemporalGraph, VirtualTime,
+    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
+    EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
+    GenesisCheckpoint, LogLevel, MembershipFault, PartitionDirection, QuantumLoop, QuantumOutcome,
+    QuantumRequest, RestartPolicy, ScenarioDef, SchedulerError, SchedulerEventLogEntry,
+    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
-    SessionActor, SessionCommand, SessionCommandKind, SessionControlLogEntry,
+    OutcomeKind, SessionActor, SessionCommand, SessionCommandKind, SessionControlLogEntry,
     SessionControlPayload, SessionControlResult, SessionError, SessionReproductionLog,
     SessionRunReport, SessionStateTransitionBus,
 };
@@ -37,6 +39,75 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
+
+/// Minimal delegated quantum loop used by the in-process CLI double.
+///
+/// The loop owns the scheduler boundary below the CLI/API layer. It advances a
+/// deterministic virtual-time counter, emits no scheduler event-log entries, and
+/// reports terminal quiescence after each quantum so lifecycle-created sessions
+/// can exercise the real `Start`/`Continue`/streaming/terminal-state path
+/// without a QEMU backend.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuiescentLifecycleLoop {
+    quanta: u64,
+    event_log_events: u64,
+}
+
+impl QuiescentLifecycleLoop {
+    /// Builds a quiescent lifecycle loop with a zero virtual-time frontier.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            quanta: 0,
+            event_log_events: 0,
+        }
+    }
+
+    /// Returns the number of driven quanta.
+    #[must_use]
+    pub const fn quanta(&self) -> u64 {
+        self.quanta
+    }
+}
+
+impl QuantumLoop for QuiescentLifecycleLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        let frontier = VirtualTime { ticks: self.quanta };
+        let event_log_entries = vec![self.diagnostic_entry(frontier)];
+        self.event_log_events = self
+            .event_log_events
+            .saturating_add(event_log_entries.len() as u64);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier,
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries,
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::new(Default::default(), 0, self.event_log_events),
+            scheduler_quiescence: Some(SchedulerQuiescence::default()),
+        })
+    }
+}
+
+impl QuiescentLifecycleLoop {
+    fn diagnostic_entry(&self, frontier: VirtualTime) -> SchedulerEventLogEntry {
+        let mut details = BTreeMap::new();
+        details.insert(
+            String::from("quantum"),
+            EventAttributeValue::U64(self.quanta),
+        );
+        SchedulerEventLogEntry::diagnostic(
+            self.event_log_events,
+            frontier,
+            EventDiagnosticPayload::new("crucible.lifecycle.quiescent", EventLevel::Info, details),
+        )
+    }
+}
 
 /// Stable API-level session identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -256,8 +327,16 @@ pub struct SessionSummary {
     pub session: SessionRef,
     /// State read from the lock-free live mirror.
     pub state: LiveStateKind,
+    /// Terminal outcome read from the live mirror, when the session stopped.
+    pub outcome: Option<OutcomeKind>,
+    /// Terminal savepoint checkpoint id materialized for the outcome.
+    pub terminal_savepoint: Option<ContentHash>,
+    /// Latest scheduler virtual-time frontier read from the live mirror.
+    pub frontier: VirtualTime,
     /// Event-log length read from the lock-free live mirror.
     pub event_log_len: u64,
+    /// Number of scheduler quanta completed by the session actor.
+    pub quanta_stepped: u64,
 }
 
 /// Response returned by `ListSessions`.
@@ -1228,7 +1307,11 @@ impl SessionRuntime {
         SessionSummary {
             session: self.session,
             state: status.state_kind,
+            outcome: status.outcome,
+            terminal_savepoint: status.terminal_savepoint,
+            frontier: status.virtual_time,
             event_log_len: status.event_log_len,
+            quanta_stepped: status.quanta_stepped,
         }
     }
 }

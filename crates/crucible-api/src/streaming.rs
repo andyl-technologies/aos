@@ -1084,7 +1084,7 @@ async fn dispatch_command(
     session: SessionRef,
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
-    _max_actor_yields: u64,
+    max_actor_yields: u64,
     command_id: u64,
     command: SessionCommand,
 ) -> Result<SendResponse, StreamingApiError> {
@@ -1129,10 +1129,12 @@ async fn dispatch_command(
             if expected == before {
                 None
             } else {
-                Some(StateUpdate {
-                    session,
-                    state: expected,
-                })
+                let state = if command_requires_stable_state_ack(command_kind) {
+                    wait_for_streaming_state(live, command_kind, expected, max_actor_yields).await?
+                } else {
+                    expected
+                };
+                Some(StateUpdate { session, state })
             }
         }
         (LifecycleTransition::Rejected, _) => None,
@@ -1143,6 +1145,53 @@ async fn dispatch_command(
         result,
         state_update,
     })
+}
+
+async fn wait_for_streaming_state(
+    live: &LiveSnapshot,
+    command: SessionCommandKind,
+    expected: LiveStateKind,
+    max_actor_yields: u64,
+) -> Result<LiveStateKind, StreamingApiError> {
+    let observed = live.read().state_kind;
+    if streaming_state_satisfies_ack(command, expected, observed) {
+        return Ok(observed);
+    }
+    for _ in 0..max_actor_yields {
+        tokio::task::yield_now().await;
+        let observed = live.read().state_kind;
+        if streaming_state_satisfies_ack(command, expected, observed) {
+            return Ok(observed);
+        }
+    }
+    Err(StreamingApiError::StateDidNotAdvance { command, expected })
+}
+
+fn streaming_state_satisfies_ack(
+    command: SessionCommandKind,
+    expected: LiveStateKind,
+    observed: LiveStateKind,
+) -> bool {
+    observed == expected
+        || matches!(
+            (command, expected, observed),
+            (
+                SessionCommandKind::Continue,
+                LiveStateKind::Running,
+                LiveStateKind::Stopped
+            )
+        )
+}
+
+const fn command_requires_stable_state_ack(command: SessionCommandKind) -> bool {
+    !matches!(
+        command,
+        SessionCommandKind::StepQuantum
+            | SessionCommandKind::StepEvent
+            | SessionCommandKind::StepAssertion
+            | SessionCommandKind::StepTimer
+            | SessionCommandKind::StepDuration
+    )
 }
 
 const fn lifecycle_state(state: LiveStateKind) -> LifecycleStateKind {
