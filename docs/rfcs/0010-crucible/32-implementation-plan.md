@@ -316,6 +316,11 @@ long-held locks.
   RPC `state-update-frame` messages from the shared framed stream without
   starving behind undrained event frames, and proves a Watch-only client can
   track run-state from `SendResponse` plus `StateUpdate`.
+  `T-API-8` is green through `checks.crucible.phase5.apiEpochGuards`, which
+  carries `expected_epoch` on attach, command, and lifecycle destroy requests,
+  rejects stale session refs and expected epochs before actor dispatch, proves
+  failed guards leave live state and event-log cursors unchanged, and checks
+  server-monotonic epochs across creates.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

@@ -14,15 +14,16 @@ use crucible::{
 };
 use crucible_api::{
     API_COMMAND_MAPPINGS, AttachRequest, Attached, CommandRejectionKind, CommandResultStatus,
-    ControlClient, ControlPlaneEventLog, ControlStream, ControlTransportKind, ControlWireModel,
-    CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
-    EventLogCursor, HelloRequest, InProcessControlClient, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventSource,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient, RpcEndpoint,
-    RpcTransportProtocol, ScenarioCatalogEntry, SendRequest, SendResponse, SessionId, SessionRef,
-    StateUpdate, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame, WatchStream,
-    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
-    open_set_command_kind, session_command_for_open_set_command_kind,
+    ControlClient, ControlClientError, ControlPlaneEventLog, ControlStream, ControlTransportKind,
+    ControlWireModel, CreateSessionRequest, CreateSessionResponse, DestroySessionRequest,
+    DestroySessionResponse, EventLogCursor, HelloRequest, InProcessControlClient,
+    LifecycleApiError, LifecycleControlPlane, ListScenariosResponse, ListSessionsResponse,
+    OpenSetAttributeValue, OpenSetEventSource, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
+    RpcControlClient, RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest,
+    SendResponse, SessionId, SessionRef, StateUpdate, StreamingApiError, StreamingEventFrame,
+    StreamingFrame, StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model,
+    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
+    session_command_for_open_set_command_kind,
 };
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
@@ -324,8 +325,63 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(inline_sessions.sessions[0].session, inline_created.session);
     assert_eq!(inline_sessions.sessions[0].state, LiveStateKind::Paused);
 
+    let stale_epoch = inline_created.session.epoch.saturating_add(1);
+    let stale_watch_error = match rpc
+        .watch_attach(AttachRequest::new(inline_created.session).with_expected_epoch(stale_epoch))
+        .await
+    {
+        Ok(_) => panic!("RPC Watch attach stale epoch should be typed"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        stale_watch_error,
+        crucible_api::ControlClientError::Streaming {
+            source: StreamingApiError::EpochMismatch {
+                expected: stale_epoch,
+                actual: inline_created.session.epoch,
+            },
+        },
+    );
+
+    let stale_send_error = rpc
+        .send_command(
+            SendRequest::new(inline_created.session, 200, SessionCommand::Continue)
+                .with_expected_epoch(stale_epoch),
+        )
+        .await
+        .expect_err("RPC Send stale epoch should be typed");
+    assert_eq!(
+        stale_send_error,
+        crucible_api::ControlClientError::Streaming {
+            source: StreamingApiError::EpochMismatch {
+                expected: stale_epoch,
+                actual: inline_created.session.epoch,
+            },
+        },
+    );
+
+    let stale_destroy_error = rpc
+        .destroy_session(
+            DestroySessionRequest::new(inline_created.session).with_expected_epoch(stale_epoch),
+        )
+        .await
+        .expect_err("RPC DestroySession stale epoch should be typed");
+    assert_eq!(
+        stale_destroy_error,
+        crucible_api::ControlClientError::Lifecycle {
+            source: LifecycleApiError::EpochMismatch {
+                session_id: inline_created.session.id,
+                expected: inline_created.session.epoch,
+                actual: stale_epoch,
+            },
+        },
+    );
+
     let inline_destroyed = rpc
-        .destroy_session(DestroySessionRequest::new(inline_created.session))
+        .destroy_session(
+            DestroySessionRequest::new(inline_created.session)
+                .with_expected_epoch(inline_created.session.epoch),
+        )
         .await
         .unwrap_or_else(|error| panic!("RPC inline destroy session should decode: {error}"));
     assert_eq!(inline_destroyed.session, inline_created.session);
@@ -720,6 +776,13 @@ async fn handle_destroy_session(
 
     let response = match control_plane.lock().await.destroy_session(destroy).await {
         Ok(response) => response,
+        Err(LifecycleApiError::EpochMismatch {
+            session_id,
+            expected,
+            actual,
+        }) => {
+            return lifecycle_epoch_mismatch_response(session_id, expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
@@ -744,12 +807,18 @@ async fn handle_control_attach(
     };
     let streaming = match control_plane.lock().await.streaming_session(attach.session) {
         Ok(streaming) => streaming,
+        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
+            return streaming_epoch_mismatch_response(expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
     };
     let control = match streaming.control(attach) {
         Ok(control) => control,
+        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
+            return streaming_epoch_mismatch_response(expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
@@ -779,12 +848,18 @@ async fn handle_watch_attach(
     };
     let streaming = match control_plane.lock().await.streaming_session(attach.session) {
         Ok(streaming) => streaming,
+        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
+            return streaming_epoch_mismatch_response(expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
     };
     let watch = match streaming.watch(attach) {
         Ok(watch) => watch,
+        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
+            return streaming_epoch_mismatch_response(expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
@@ -819,6 +894,11 @@ async fn handle_streaming_send(
         .await
     {
         Ok(response) => response,
+        Err(ControlClientError::Streaming {
+            source: StreamingApiError::EpochMismatch { expected, actual },
+        }) => {
+            return streaming_epoch_mismatch_response(expected, actual);
+        }
         Err(error) => {
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
@@ -895,6 +975,28 @@ fn encode_destroy_session_response(response: &DestroySessionResponse) -> String 
         if response.stopped { "true" } else { "false" },
     );
     output
+}
+
+fn lifecycle_epoch_mismatch_response(
+    session_id: SessionId,
+    expected: u64,
+    actual: u64,
+) -> axum::response::Response {
+    let mut output = String::from("crucible.rpc/error\n");
+    push_wire_line(&mut output, "code", "failed-precondition");
+    push_wire_line(&mut output, "reason", "epoch-mismatch");
+    push_wire_line(&mut output, "session-id", &session_id.value.to_string());
+    push_wire_line(&mut output, "expected", &expected.to_string());
+    push_wire_line(&mut output, "actual", &actual.to_string());
+    http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
+}
+
+fn streaming_epoch_mismatch_response(expected: u64, actual: u64) -> axum::response::Response {
+    let mut output = String::from("crucible.rpc/error\n");
+    push_wire_line(&mut output, "code", "session-closed:epoch-mismatch");
+    push_wire_line(&mut output, "expected", &expected.to_string());
+    push_wire_line(&mut output, "actual", &actual.to_string());
+    http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
 }
 
 fn encode_attached_response(attached: &Attached) -> String {
@@ -1014,8 +1116,13 @@ fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, S
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/destroy-session-request")?;
     let session = parse_session_ref(&mut lines)?;
+    let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
     reject_extra_line(lines.next())?;
-    Ok(DestroySessionRequest::new(session))
+    let mut request = DestroySessionRequest::new(session);
+    if let Some(expected_epoch) = expected_epoch {
+        request = request.with_expected_epoch(expected_epoch);
+    }
+    Ok(request)
 }
 
 fn parse_attach_request(body: &[u8]) -> Result<AttachRequest, String> {
