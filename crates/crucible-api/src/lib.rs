@@ -48,10 +48,12 @@ pub use event_log_stream::{
 };
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
-    DestroySessionResponse, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+    DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
+    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, ScenarioCatalogEntry, ScenarioCatalogSource,
-    ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    ListScenariosResponse, ListSessionsResponse, ReproductionCommandPayload,
+    ReproductionCommandRecord, ReproductionCommandResult, ScenarioCatalogEntry,
+    ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,

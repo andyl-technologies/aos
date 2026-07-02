@@ -1337,6 +1337,25 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiReproductionContext = import ./phase5-api-reproduction-context.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiReproductionContext";
+      taskIds = ["T-API-9"];
+      dependencies = [
+        phase5.apiEpochGuards
+        phase5.apiStateUpdateStream
+        phase5.apiStreamingCursor
+        phase5.apiOpenSetPayload
+        phase5.apiStreamingEquivalence
+        phase5.apiLifecycleUnary
+        phase5.sessionControlDeterminism
+        phase5.sessionLockFreeObservation
+        phase5.sessionLifecycle
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

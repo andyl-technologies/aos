@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crucible::{EventLevel, Seed};
+use crucible::{EventLevel, Seed, VirtualTime};
 use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand, SessionCommandKind};
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -21,8 +21,10 @@ use tokio::sync::mpsc;
 use crate::event_log_stream::{ControlPlaneEventLog, EventLogCursor};
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
-    DestroySessionResponse, LifecycleApiError, ListScenariosResponse, ListSessionsResponse,
-    ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    DestroySessionResponse, GetReproductionRequest, GetReproductionResponse, LifecycleApiError,
+    ListScenariosResponse, ListSessionsResponse, ReproductionCommandPayload,
+    ReproductionCommandRecord, ReproductionCommandResult, ScenarioSummary, SessionId, SessionRef,
+    SessionSummary,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime,
@@ -45,6 +47,7 @@ const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
 const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
 const LIST_SESSIONS_RPC_PATH: &str = "/crucible.rpc/list-sessions";
 const DESTROY_SESSION_RPC_PATH: &str = "/crucible.rpc/destroy-session";
+const GET_REPRODUCTION_RPC_PATH: &str = "/crucible.rpc/get-reproduction";
 const CONTROL_ATTACH_RPC_PATH: &str = "/crucible.rpc/control/attach";
 const CONTROL_SEND_RPC_PATH: &str = "/crucible.rpc/control/send";
 const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
@@ -585,6 +588,24 @@ pub trait ControlClient {
         })
     }
 
+    /// Returns the deterministic reproduction context for a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request,
+    /// the lifecycle server rejects the epoch, or this client handle does not
+    /// implement reproduction-context retrieval.
+    fn get_reproduction(
+        &self,
+        _request: GetReproductionRequest,
+    ) -> ControlClientFuture<'_, GetReproductionResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "GetReproduction",
+            })
+        })
+    }
+
     /// Attaches the bidirectional `Control` stream.
     ///
     /// # Errors
@@ -986,6 +1007,21 @@ impl ControlClient for RpcControlClient {
         })
     }
 
+    fn get_reproduction(
+        &self,
+        request: GetReproductionRequest,
+    ) -> ControlClientFuture<'_, GetReproductionResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    GET_REPRODUCTION_RPC_PATH,
+                    encode_get_reproduction_request(&request),
+                )
+                .await?;
+            decode_get_reproduction_response(&body)
+        })
+    }
+
     fn control_attach(
         &self,
         request: AttachRequest,
@@ -1199,6 +1235,17 @@ fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
     output.into_bytes()
 }
 
+fn encode_get_reproduction_request(request: &GetReproductionRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/get-reproduction-request\n");
+    push_session_ref(&mut output, request.session);
+    match request.expected_epoch {
+        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
+        None => push_line(&mut output, "expected-epoch", "none"),
+    }
+    output.into_bytes()
+}
+
 fn encode_attach_request(request: &AttachRequest) -> Vec<u8> {
     let mut output = String::new();
     output.push_str("crucible.rpc/attach-request\n");
@@ -1314,6 +1361,17 @@ fn decode_destroy_session_response(
     })
 }
 
+fn decode_get_reproduction_response(
+    body: &[u8],
+) -> Result<GetReproductionResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/get-reproduction-response")?;
+    let session = parse_session_ref(&mut lines)?;
+    let commands = parse_reproduction_records(lines)?;
+    Ok(GetReproductionResponse { session, commands })
+}
+
 fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClientError> {
     let text = response_text(body)?;
     let mut lines = text.lines();
@@ -1371,7 +1429,24 @@ fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError>
     let state = parse_state_line(lines.next())?;
     let version = parse_current_version_line(lines.next())?;
     let capabilities = parse_capabilities_line(lines.next())?;
-    let snapshot = parse_attach_snapshot_line(lines.next())?;
+    let mut snapshot = parse_attach_snapshot_line(lines.next())?;
+    let trailing = lines.next();
+    let reproduction = match trailing {
+        Some(line) if line.starts_with("reproduction=") => {
+            parse_reproduction_records_line(Some(line))?
+        }
+        Some(_) => {
+            return Err(rpc_decode("unexpected trailing fields in RPC response"));
+        }
+        None => Vec::new(),
+    };
+    if let Some(snapshot) = &mut snapshot {
+        snapshot.reproduction = reproduction;
+    } else if !reproduction.is_empty() {
+        return Err(rpc_decode(
+            "attached response carried reproduction without snapshot",
+        ));
+    }
     reject_trailing(lines.next())?;
     Ok(Attached {
         session,
@@ -1736,7 +1811,99 @@ fn parse_attach_snapshot_line(
         causal_event_count,
         observational_event_count,
         last_sequence,
+        reproduction: Vec::new(),
     }))
+}
+
+fn parse_reproduction_records_line(
+    line: Option<&str>,
+) -> Result<Vec<ReproductionCommandRecord>, ControlClientError> {
+    let value = parse_prefixed_line(line, "reproduction=")?;
+    if value == "none" || value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(parse_reproduction_record)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn parse_reproduction_records<'a, I>(
+    lines: I,
+) -> Result<Vec<ReproductionCommandRecord>, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut records = Vec::new();
+    for line in lines {
+        let value = parse_prefixed_line(Some(line), "command=")?;
+        records.push(parse_reproduction_record(value)?);
+    }
+    Ok(records)
+}
+
+fn parse_reproduction_record(value: &str) -> Result<ReproductionCommandRecord, ControlClientError> {
+    let mut fields = value.split('|');
+    let sequence = parse_u64_field(fields.next(), "reproduction sequence")?;
+    let command = parse_command_kind_field(fields.next(), "reproduction command")?;
+    let virtual_time_ticks = parse_u64_field(fields.next(), "reproduction virtual time")?;
+    let quanta = parse_u64_field(fields.next(), "reproduction quanta")?;
+    let at_sequence = parse_u64_field(fields.next(), "reproduction at-sequence")?;
+    let result = parse_reproduction_result_field(fields.next())?;
+    let observational_order = parse_u64_field(fields.next(), "reproduction observational order")?;
+    let scheduler_batch = parse_u64_field(fields.next(), "reproduction scheduler batch")?;
+    let scheduler_control = parse_reproduction_scheduler_control(fields.next())?;
+    let command_payload = parse_reproduction_command_payload(fields.next())?;
+    if fields.next().is_some() {
+        return Err(rpc_decode("unexpected extra reproduction command fields"));
+    }
+    Ok(ReproductionCommandRecord {
+        sequence,
+        payload: ReproductionCommandPayload {
+            command,
+            command_payload,
+            scheduler_batch,
+            scheduler_control,
+        },
+        virtual_time: VirtualTime {
+            ticks: virtual_time_ticks,
+        },
+        quanta,
+        at_sequence,
+        result,
+        observational_order,
+    })
+}
+
+fn parse_command_kind_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<SessionCommandKind, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    session_command_for_open_set_command_kind(value)
+        .ok_or_else(|| rpc_decode(format!("unknown {label} `{value}`")))
+}
+
+fn parse_reproduction_result_field(
+    value: Option<&str>,
+) -> Result<ReproductionCommandResult, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode("missing reproduction result"))? {
+        "accepted" => Ok(ReproductionCommandResult::Accepted),
+        value => Err(rpc_decode(format!("unknown reproduction result `{value}`"))),
+    }
+}
+
+fn parse_reproduction_scheduler_control(
+    value: Option<&str>,
+) -> Result<Option<String>, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode("missing reproduction scheduler control"))? {
+        "none" => Ok(None),
+        value => parse_hex_string(value).map(Some),
+    }
+}
+
+fn parse_reproduction_command_payload(value: Option<&str>) -> Result<String, ControlClientError> {
+    parse_hex_field(value, "reproduction command payload")
 }
 
 fn parse_snapshot_u64(value: Option<&str>, field: &'static str) -> Result<u64, ControlClientError> {

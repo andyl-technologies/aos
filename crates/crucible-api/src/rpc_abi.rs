@@ -3,8 +3,9 @@
 //! The current corpus is the ABI-conformance seed for RFC-0010 file 21. It
 //! deliberately freezes a small canonical envelope vocabulary before the full
 //! reference client lands: explicit `Hello` version negotiation, `Attached`
-//! version echoing, one mutating request/response pair, one event, and the
-//! open-set payload-kind catalog.
+//! version echoing, one mutating request/response pair, one reproduction
+//! context request/response pair, one reproduction-bearing attach, one event,
+//! and the open-set payload-kind catalog.
 //!
 //! Wire-format sketch:
 //!
@@ -21,7 +22,7 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 /// RPC protocol major version for wire-incompatible changes.
 pub const RPC_PROTOCOL_MAJOR: u16 = 1;
 /// RPC protocol minor version for backward-compatible additions.
-pub const RPC_PROTOCOL_MINOR: u16 = 0;
+pub const RPC_PROTOCOL_MINOR: u16 = 1;
 /// RPC protocol patch version for compatible fixes.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
@@ -38,7 +39,7 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 0,
+    minor: 1,
     patch: 0,
     build: "crucible-rpc-abi-v1",
 };
@@ -105,6 +106,49 @@ pub enum RpcGoldenVectorMessage {
         mode: RpcAttachMode,
         /// Current RPC protocol version echoed by the stream.
         version: ProtocolVersion,
+    },
+    /// Stream attachment acknowledgement carrying a reproduction snapshot.
+    AttachedWithReproduction {
+        /// Stable session identifier assigned by the control plane.
+        session_id: u64,
+        /// Server-monotonic session epoch.
+        session_epoch: u64,
+        /// Attachment stream mode.
+        mode: RpcAttachMode,
+        /// Current RPC protocol version echoed by the stream.
+        version: ProtocolVersion,
+        /// Recorded reproduction command sequence.
+        command_sequence: u64,
+        /// Open-set command kind recorded for reproduction.
+        command_kind: &'static str,
+        /// Hex-encoded stable command payload material.
+        command_payload: &'static str,
+        /// Hex-encoded stable scheduler-control material, or `none`.
+        scheduler_control: &'static str,
+    },
+    /// Deterministic reproduction-context request.
+    GetReproductionRequest {
+        /// Stable session identifier assigned by the control plane.
+        session_id: u64,
+        /// Server-monotonic session epoch.
+        session_epoch: u64,
+        /// Expected epoch guard supplied by the caller.
+        expected_epoch: u64,
+    },
+    /// Deterministic reproduction-context response.
+    GetReproductionResponse {
+        /// Stable session identifier assigned by the control plane.
+        session_id: u64,
+        /// Server-monotonic session epoch.
+        session_epoch: u64,
+        /// Recorded reproduction command sequence.
+        command_sequence: u64,
+        /// Open-set command kind recorded for reproduction.
+        command_kind: &'static str,
+        /// Hex-encoded stable command payload material.
+        command_payload: &'static str,
+        /// Hex-encoded stable scheduler-control material, or `none`.
+        scheduler_control: &'static str,
     },
     /// Mutating session command request.
     CommandRequest {
@@ -184,7 +228,7 @@ pub enum RpcAbiError {
 }
 
 /// Frozen RPC golden-vector corpus in stable ABI-conformance order.
-pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
+pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
     RpcGoldenVector {
         name: "hello-request",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
@@ -192,7 +236,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
             client_name: "crucible-api-golden-client",
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/hello-request\nversion=1.0.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
+        bytes: b"crucible.rpc/hello-request\nversion=1.1.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
     },
     RpcGoldenVector {
         name: "hello-response",
@@ -202,7 +246,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=1.0.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        bytes: b"crucible.rpc/hello-response\nversion=1.1.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -213,7 +257,47 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
             mode: RpcAttachMode::Control,
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/attached\nversion=1.0.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        bytes: b"crucible.rpc/attached\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
+    },
+    RpcGoldenVector {
+        name: "attached-with-reproduction",
+        protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+        message: RpcGoldenVectorMessage::AttachedWithReproduction {
+            session_id: 42,
+            session_epoch: 7,
+            mode: RpcAttachMode::Control,
+            version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+            command_sequence: 1,
+            command_kind: "crucible.cmd.pause",
+            command_payload:
+                "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
+            scheduler_control: "none",
+        },
+        bytes: b"crucible.rpc/attached-with-reproduction\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+    },
+    RpcGoldenVector {
+        name: "get-reproduction-request",
+        protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+        message: RpcGoldenVectorMessage::GetReproductionRequest {
+            session_id: 42,
+            session_epoch: 7,
+            expected_epoch: 7,
+        },
+        bytes: b"crucible.rpc/get-reproduction-request\nsession-id=42\nsession-epoch=7\nexpected-epoch=7\n",
+    },
+    RpcGoldenVector {
+        name: "get-reproduction-response",
+        protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+        message: RpcGoldenVectorMessage::GetReproductionResponse {
+            session_id: 42,
+            session_epoch: 7,
+            command_sequence: 1,
+            command_kind: "crucible.cmd.pause",
+            command_payload:
+                "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
+            scheduler_control: "none",
+        },
+        bytes: b"crucible.rpc/get-reproduction-response\nsession-id=42\nsession-epoch=7\ncommand-sequence=1\ncommand-kind=crucible.cmd.pause\ncommand-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nscheduler-control=none\nresult=accepted\n",
     },
     RpcGoldenVector {
         name: "send-command-request",
@@ -291,6 +375,67 @@ pub fn encode_rpc_message(message: RpcGoldenVectorMessage) -> Vec<u8> {
             push_u64_line(&mut output, "session-id", session_id);
             push_u64_line(&mut output, "session-epoch", session_epoch);
             push_str_line(&mut output, "mode", attach_mode_wire_name(mode));
+            output.into_bytes()
+        }
+        RpcGoldenVectorMessage::AttachedWithReproduction {
+            session_id,
+            session_epoch,
+            mode,
+            version,
+            command_sequence,
+            command_kind,
+            command_payload,
+            scheduler_control,
+        } => {
+            let mut output = String::new();
+            output.push_str("crucible.rpc/attached-with-reproduction\n");
+            push_version_line(&mut output, "version", version);
+            push_u64_line(&mut output, "session-id", session_id);
+            push_u64_line(&mut output, "session-epoch", session_epoch);
+            push_str_line(&mut output, "mode", attach_mode_wire_name(mode));
+            push_reproduction_command_lines(
+                &mut output,
+                "reproduction-",
+                command_sequence,
+                command_kind,
+                command_payload,
+                scheduler_control,
+            );
+            output.into_bytes()
+        }
+        RpcGoldenVectorMessage::GetReproductionRequest {
+            session_id,
+            session_epoch,
+            expected_epoch,
+        } => {
+            let mut output = String::new();
+            output.push_str("crucible.rpc/get-reproduction-request\n");
+            push_u64_line(&mut output, "session-id", session_id);
+            push_u64_line(&mut output, "session-epoch", session_epoch);
+            push_u64_line(&mut output, "expected-epoch", expected_epoch);
+            output.into_bytes()
+        }
+        RpcGoldenVectorMessage::GetReproductionResponse {
+            session_id,
+            session_epoch,
+            command_sequence,
+            command_kind,
+            command_payload,
+            scheduler_control,
+        } => {
+            let mut output = String::new();
+            output.push_str("crucible.rpc/get-reproduction-response\n");
+            push_u64_line(&mut output, "session-id", session_id);
+            push_u64_line(&mut output, "session-epoch", session_epoch);
+            push_reproduction_command_lines(
+                &mut output,
+                "",
+                command_sequence,
+                command_kind,
+                command_payload,
+                scheduler_control,
+            );
+            push_str_line(&mut output, "result", "accepted");
             output.into_bytes()
         }
         RpcGoldenVectorMessage::CommandRequest {
@@ -374,6 +519,29 @@ fn push_str_line(output: &mut String, key: &str, value: &str) {
     output.push('=');
     output.push_str(value);
     output.push('\n');
+}
+
+fn push_reproduction_command_lines(
+    output: &mut String,
+    prefix: &str,
+    sequence: u64,
+    command_kind: &str,
+    command_payload: &str,
+    scheduler_control: &str,
+) {
+    let sequence_key = if prefix.is_empty() {
+        String::from("command-sequence")
+    } else {
+        format!("{prefix}sequence")
+    };
+    push_u64_line(output, &sequence_key, sequence);
+    push_str_line(output, &format!("{prefix}command-kind"), command_kind);
+    push_str_line(output, &format!("{prefix}command-payload"), command_payload);
+    push_str_line(
+        output,
+        &format!("{prefix}scheduler-control"),
+        scheduler_control,
+    );
 }
 
 fn push_payload_kinds_line(output: &mut String, payload_kinds: &[&str]) {

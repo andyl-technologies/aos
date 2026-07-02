@@ -709,11 +709,21 @@ ran in-process against the double or over the wire against QEMU.
   matching epochs allow cleanup, stale epochs leave live state and event-log
   cursor unchanged, and session epochs advance across successive creates while
   remaining outside the causal event-log subsequence.
-- [ ] **T-API-9** Implement the reproduction context: expose the recorded command
+- [x] **T-API-9** Implement the reproduction context: expose the recorded command
   stream (keyed by virtual-time boundary, with at-seq, result, observational
   wall-clock aid) via per-attach snapshot and `GetReproduction`; prove
   interactive and scripted runs of the same schedule reproduce equivalently. —
   satisfies [API-22], [API-23]; spec §21.5.2; cross-ref 20 §8, 23, 06.
+  Completed by `checks.crucible.phase5.apiReproductionContext`:
+  the session actor now publishes an actor-owned `SessionReproductionLog` from
+  the engine boundary-control log, carrying the command payload, virtual-time
+  boundary, pre-command event-log sequence, accepted result, and an
+  observational ordering aid that is not a replay input. `AttachSnapshot` carries
+  the same recorded command stream as unary `GetReproduction`, both in-process
+  and over the HTTP/2 RPC client. The gate proves `GetReproduction` is read-only,
+  stale expected epochs fail before actor dispatch, attach snapshots and unary
+  reads agree, and an injected intervention driven interactively through
+  `Control` matches the same scripted `Send` schedule.
 - [ ] **T-API-10** Implement the typed command-rejection and RPC-status taxonomy
   (INVALID_STATE/NOT_FOUND/INVALID_ARGUMENT/UNSUPPORTED/INTERNAL), total and
   side-effect-free, never closing the stream. — satisfies [API-24]; spec §21.5.3;

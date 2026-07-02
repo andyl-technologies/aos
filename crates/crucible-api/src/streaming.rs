@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use crucible_session::{
     LifecycleStateKind, LifecycleTransition, LiveQueryKind, LiveSnapshot, LiveStateKind,
-    SessionCommand, SessionCommandKind, SessionEventLogStream, SessionStateTransitionBus,
-    SessionStateTransitionFrame, SessionStateTransitionStream, SessionStateTransitionStreamError,
-    lifecycle_transition,
+    SessionCommand, SessionCommandKind, SessionEventLogStream, SessionReproductionLog,
+    SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
+    SessionStateTransitionStreamError, lifecycle_transition,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ use crate::event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SessionEventLogFrame, SessionEventLogSnapshot,
     SessionEventLogStreamError,
 };
-use crate::lifecycle::SessionRef;
+use crate::lifecycle::{ReproductionCommandRecord, SessionRef};
 use crate::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
 use crate::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION};
 use crate::session_mapping::{
@@ -220,16 +220,22 @@ pub struct AttachSnapshot {
     pub observational_event_count: u64,
     /// Last sequence folded into the snapshot, when any entry was present.
     pub last_sequence: Option<u64>,
+    /// Recorded command stream captured for deterministic reproduction.
+    pub reproduction: Vec<ReproductionCommandRecord>,
 }
 
-impl From<SessionEventLogSnapshot> for AttachSnapshot {
-    fn from(value: SessionEventLogSnapshot) -> Self {
+impl AttachSnapshot {
+    fn from_event_log(
+        value: SessionEventLogSnapshot,
+        reproduction: Vec<ReproductionCommandRecord>,
+    ) -> Self {
         Self {
             through: value.through,
             event_count: value.event_count,
             causal_event_count: value.causal_count,
             observational_event_count: value.observational_count,
             last_sequence: value.last_sequence,
+            reproduction,
         }
     }
 }
@@ -417,6 +423,7 @@ pub struct InProcessStreamingSession {
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
+    reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
     max_actor_yields: u64,
 }
@@ -429,6 +436,7 @@ impl InProcessStreamingSession {
         sender: mpsc::Sender<SessionCommand>,
         live: Arc<LiveSnapshot>,
         event_log: ControlPlaneEventLog,
+        reproduction_log: SessionReproductionLog,
         state_transitions: SessionStateTransitionBus,
     ) -> Self {
         Self {
@@ -436,6 +444,7 @@ impl InProcessStreamingSession {
             sender,
             live,
             event_log,
+            reproduction_log,
             state_transitions,
             max_actor_yields: STREAMING_COMMAND_MAX_ACTOR_YIELDS,
         }
@@ -452,6 +461,12 @@ impl InProcessStreamingSession {
     #[must_use]
     pub const fn event_log(&self) -> &ControlPlaneEventLog {
         &self.event_log
+    }
+
+    /// Returns the reproduction-log snapshot handle used for attach metadata.
+    #[must_use]
+    pub const fn reproduction_log(&self) -> &SessionReproductionLog {
+        &self.reproduction_log
     }
 
     /// Returns the state-transition bus used for live run-state updates.
@@ -529,7 +544,17 @@ impl InProcessStreamingSession {
         self.validate_session(request.session, request.expected_epoch)?;
         let state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
-        let snapshot = AttachSnapshot::from(self.event_log.snapshot_through(attach_tail));
+        let reproduction = self
+            .reproduction_log
+            .snapshot()
+            .into_iter()
+            .map(ReproductionCommandRecord::from)
+            .filter(|record| record.at_sequence <= attach_tail.next_sequence)
+            .collect();
+        let snapshot = AttachSnapshot::from_event_log(
+            self.event_log.snapshot_through(attach_tail),
+            reproduction,
+        );
         let live = self.live.read();
         Ok((
             Attached {
