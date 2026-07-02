@@ -434,6 +434,32 @@ pub fn runtime_symbol_abi_signature_plan() -> RuntimeSymbolAbiSignaturePlanResul
 pub type RuntimeSymbolNativeTargetCandidatePreflightResult =
     Result<RuntimeSymbolNativeTargetCandidatePreflight, RuntimeSymbolNameError>;
 
+/// Result returned when requiring complete native-target candidate metadata.
+pub type RuntimeSymbolNativeTargetCandidatePlanResult =
+    Result<RuntimeSymbolNativeTargetCandidatePlan, RuntimeSymbolNativeTargetCandidatePlanError>;
+
+/// A failure while preparing complete native-target candidate metadata.
+#[derive(Debug, Error)]
+pub enum RuntimeSymbolNativeTargetCandidatePlanError {
+    /// The core runtime symbol or builtin call manifest could not be built.
+    #[error("failed to build runtime symbol native-target candidate metadata")]
+    SymbolManifest {
+        /// The underlying stable-symbol manifest error.
+        #[from]
+        source: RuntimeSymbolNameError,
+    },
+    /// Some runtime symbols cannot yet become native-target candidates.
+    #[error(
+        "runtime symbol native-target candidate metadata is incomplete: {missing_count} symbol targets missing"
+    )]
+    Incomplete {
+        /// The number of symbols still missing native-target candidate metadata.
+        missing_count: usize,
+        /// The full preflight report, including candidate and missing symbols.
+        preflight: RuntimeSymbolNativeTargetCandidatePreflight,
+    },
+}
+
 /// Builds a runtime-symbol report for native target candidate metadata.
 ///
 /// The report consumes [`runtime_symbol_binding_manifest`], preserves its order,
@@ -507,6 +533,19 @@ pub fn runtime_symbol_native_target_candidate_preflight()
         candidate_bindings,
         missing_bindings,
     ))
+}
+
+/// Builds the complete runtime-symbol native-target candidate plan.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNativeTargetCandidatePlanError::SymbolManifest`] if
+/// the core runtime symbol manifest or the builtin call manifest cannot be
+/// built. Returns [`RuntimeSymbolNativeTargetCandidatePlanError::Incomplete`]
+/// while any runtime symbol still lacks native-target candidate metadata.
+pub fn runtime_symbol_native_target_candidate_plan() -> RuntimeSymbolNativeTargetCandidatePlanResult
+{
+    runtime_symbol_native_target_candidate_preflight()?.into_native_target_candidate_plan()
 }
 
 /// Result returned when building runtime-symbol Rust-callable readiness metadata.
@@ -947,6 +986,23 @@ impl RuntimeSymbolNativeTargetCandidateMissingBinding {
     }
 }
 
+/// The complete set of address-free native-target candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolNativeTargetCandidatePlan {
+    candidate_bindings: Vec<RuntimeSymbolNativeTargetCandidateBinding>,
+}
+
+impl RuntimeSymbolNativeTargetCandidatePlan {
+    fn new(candidate_bindings: Vec<RuntimeSymbolNativeTargetCandidateBinding>) -> Self {
+        Self { candidate_bindings }
+    }
+
+    /// Returns native-target candidates in runtime symbol-manifest projection order.
+    pub fn candidate_bindings(&self) -> &[RuntimeSymbolNativeTargetCandidateBinding] {
+        &self.candidate_bindings
+    }
+}
+
 /// A deterministic runtime-symbol report for native target candidate metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSymbolNativeTargetCandidatePreflight {
@@ -978,6 +1034,29 @@ impl RuntimeSymbolNativeTargetCandidatePreflight {
     /// Returns true when every runtime symbol has native-target candidate metadata.
     pub fn is_complete(&self) -> bool {
         self.missing_bindings.is_empty()
+    }
+
+    /// Converts a complete preflight report into native-target candidate metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSymbolNativeTargetCandidatePlanError::Incomplete`] when
+    /// any runtime symbol still lacks native-target candidate metadata.
+    pub fn into_native_target_candidate_plan(
+        self,
+    ) -> Result<RuntimeSymbolNativeTargetCandidatePlan, RuntimeSymbolNativeTargetCandidatePlanError>
+    {
+        let missing_count = self.missing_bindings.len();
+        if missing_count == 0 {
+            Ok(RuntimeSymbolNativeTargetCandidatePlan::new(
+                self.candidate_bindings,
+            ))
+        } else {
+            Err(RuntimeSymbolNativeTargetCandidatePlanError::Incomplete {
+                missing_count,
+                preflight: self,
+            })
+        }
     }
 }
 
@@ -1805,6 +1884,59 @@ mod tests {
                 .iter()
                 .all(|missing| missing.missing_helper_callable_role().is_none())
         );
+    }
+
+    #[test]
+    fn runtime_symbol_native_target_candidate_preflight_converts_complete_report_to_plan() {
+        let helper_binding = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .find(|binding| binding.rust_callable_binding().is_some())
+            .expect("runtime helper inventory has at least one callable binding");
+        let candidate_bindings = vec![RuntimeSymbolNativeTargetCandidateBinding::helper(
+            helper_binding,
+        )];
+        let preflight = RuntimeSymbolNativeTargetCandidatePreflight::new(
+            candidate_bindings.clone(),
+            Vec::new(),
+        );
+
+        let plan = preflight
+            .into_native_target_candidate_plan()
+            .expect("complete native-target candidate preflight converts");
+
+        assert_eq!(plan.candidate_bindings(), candidate_bindings.as_slice());
+    }
+
+    #[test]
+    fn runtime_symbol_native_target_candidate_plan_rejects_until_all_symbols_are_candidates() {
+        let error = runtime_symbol_native_target_candidate_plan()
+            .expect_err("current native-target candidate plan rejects incomplete metadata");
+        let RuntimeSymbolNativeTargetCandidatePlanError::Incomplete {
+            missing_count,
+            preflight,
+        } = error
+        else {
+            panic!("expected incomplete native-target candidate plan error");
+        };
+
+        assert_eq!(missing_count, preflight.missing_bindings().len());
+        assert!(!preflight.is_complete());
+        assert!(preflight.candidate_bindings().iter().any(|candidate| {
+            candidate.symbol_name() == "aos_alloc_attrs"
+                && candidate.helper_role() == RuntimeHelperRole::Allocation
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.missing_abi_signature().is_some_and(|gap| {
+                gap.symbol_name() == "aos_force"
+                    && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+            })
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing
+                .missing_builtin_wrapper()
+                .is_some_and(|binding| binding.symbol_name() == "nix.builtin.derivationStrict")
+        }));
     }
 
     #[test]

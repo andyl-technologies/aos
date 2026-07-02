@@ -860,6 +860,17 @@ harness, never cut for scope.
       is readiness metadata only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
+- [x] Current runtime symbol native-target candidate plan precursor:
+      `runtime_symbol_native_target_candidate_plan()` turns the address-free
+      native-target candidate preflight into a checked completeness gate. It
+      yields a `RuntimeSymbolNativeTargetCandidatePlan` only when every runtime
+      symbol is a symbol/role candidate and currently returns an incomplete-plan
+      error carrying the preflight while helper and builtin wrapper gaps remain.
+      Tests pin the missing count, representative helper candidates,
+      representative helper/builtin gaps, and a synthetic complete conversion.
+      This is metadata gating only; no addresses, exported wrappers,
+      `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
+      relinking are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata

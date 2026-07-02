@@ -1030,6 +1030,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       of helper-callable gaps today. This is readiness metadata only: no
       executable addresses, exported wrappers, `JITBuilder::symbol`
       registrations, or native trap-transfer paths are implemented.
+- [x] Current runtime symbol native-target candidate plan precursor:
+      `runtime::helpers::runtime_symbol_native_target_candidate_plan()` is the
+      checked completeness gate over the address-free candidate preflight. It
+      converts only a complete report into a
+      `RuntimeSymbolNativeTargetCandidatePlan` and currently returns an
+      incomplete-plan error carrying the full preflight while helper and builtin
+      gaps remain. Tests pin the missing count, representative address-free
+      helper candidates, representative helper/builtin gaps, and a synthetic
+      complete conversion path. This is symbol/role metadata gating only: no
+      executable addresses, exported wrappers, `JITBuilder::symbol`
+      registrations, or native trap-transfer paths are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches

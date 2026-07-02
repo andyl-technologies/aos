@@ -1004,6 +1004,15 @@ harness, never cut for scope.
       gaps, and no current helper-callable gaps. This does not attach executable
       addresses, export wrappers, lower Cranelift IR, or call
       `JITBuilder::symbol`.
+- [x] Current runtime symbol native-target candidate plan precursor:
+      `runtime_symbol_native_target_candidate_plan()` is the checked completeness
+      gate over the address-free candidate preflight. It returns a
+      `RuntimeSymbolNativeTargetCandidatePlan` only when no gaps remain and
+      currently returns an incomplete error with the preserved preflight while
+      helper and builtin wrapper gaps remain. Tests cover the missing count,
+      representative address-free helper candidates, representative gaps, and a
+      synthetic complete conversion. This does not attach executable addresses,
+      export wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
