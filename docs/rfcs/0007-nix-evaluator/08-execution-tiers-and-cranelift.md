@@ -898,6 +898,16 @@ harness, never cut for scope.
 ### Runtime ABI and symbol table (the tier-invariant spine)
 
 - [ ] Uniform `extern "C"` `ThunkFn`/`LambdaFn` signature `(rt, env[, arg]) -> Value`, 16-byte `Value` register-passed ([§7.1](#71-the-uniform-calling-convention)) — P6, `S-4`/`S-12`; gate: differential `.drv` harness.
+- [x] Current uniform runtime-call ABI metadata precursor:
+      `ratchet-core::runtime_abi` publishes safe `RuntimeCallSignature`
+      descriptors for the compiled thunk-body, compiled lambda-body, and
+      builtin-primop call shapes. The descriptors pin `extern "C"`, the shared
+      `rt`/`env` prefix, lambda and primop `Value` arguments, `Value` returns,
+      and the 16-byte/two-register value layout, with tests cross-checking the
+      covered primop arities against the builtin declaration inventory. This is
+      ABI contract metadata only; it is not an exported `ThunkFn`/`LambdaFn`
+      wrapper, raw-pointer call boundary, Cranelift lowering, or
+      `JITBuilder::symbol` registration.
 - [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `nix.builtin.<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
 - [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
       heap object creation through `BumpArena::aos_alloc_*`

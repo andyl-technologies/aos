@@ -6433,6 +6433,18 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       per-expression once; thunks are `(code, env, state)` instances (`S-4`).
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
+- [x] Current uniform runtime-call ABI metadata precursor:
+      `ratchet-core::runtime_abi` now owns safe `RuntimeCallSignature`
+      descriptors for compiled thunk bodies, compiled lambda bodies, and
+      builtin primop wrappers through the current maximum declared first-class
+      builtin arity. The descriptors pin the shared `extern "C"` convention,
+      runtime/environment parameter prefix, positional `Value` arguments,
+      `Value` returns, and the 16-byte/two-register `Value` layout. Tests cover
+      thunk/lambda shapes, primop arity descriptors, unsupported-arity rejection,
+      and parity with the builtin declaration inventory. This is metadata only:
+      no `unsafe extern "C"` type aliases, exported wrappers, raw-pointer call
+      boundaries, Cranelift lowering, or `JITBuilder::symbol` registration are
+      implemented here.
 - [x] Current stable-symbol naming precursor: `ratchet-core::runtime_abi`
       freezes the safe metadata names that later `jit/abi.rs` and
       `jit/cranelift.rs` will register: `nix.builtin.<visible-name>` for every
