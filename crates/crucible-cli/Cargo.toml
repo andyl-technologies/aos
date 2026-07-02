@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+clap_complete = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-session = { path = "../crucible-session" }

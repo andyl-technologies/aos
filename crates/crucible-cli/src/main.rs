@@ -20,7 +20,8 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use crucible::DagStore;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
@@ -436,8 +437,12 @@ struct ServeArgs {
     listen: String,
 }
 
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-struct CompletionsArgs {}
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CompletionsArgs {
+    /// Select completion shell.
+    #[arg(value_enum)]
+    shell: Shell,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CliSubcommand {
@@ -894,7 +899,7 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
         },
     };
 
-    if cli.daemon.is_some() {
+    if cli.daemon.is_some() && subcommand_uses_backend_selection(&cli.command) {
         plan.delegated_drivers.push(CliDelegatedDriver::ControlApi);
         plan.state_references
             .push(CliStateReferenceKind::DaemonConnection);
@@ -5262,8 +5267,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
-        | Commands::Serve(_)
-        | Commands::Completions(_) => Ok(()),
+        | Commands::Serve(_) => Ok(()),
+        Commands::Completions(args) => {
+            write_completions(args.shell, &mut io::stdout());
+            Ok(())
+        }
         Commands::Triage(args) => {
             let report = run_triage_invocation(cli, args)?;
             if !cli.quiet {
@@ -5324,6 +5332,12 @@ fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
             .push(crucible::verify_example_scenario_runs(&fixture, 5).map_err(CliError::Selftest)?);
     }
     Ok(SelftestReport { verified })
+}
+
+fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_string();
+    clap_complete::generate(shell, &mut command, name, writer);
 }
 
 fn mark_mock_failure_outcome(
@@ -7820,6 +7834,60 @@ mod tests {
     }
 
     #[test]
+    fn cli_completions_generates_shell_script() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::parse_from(["crucible", "completions", "bash"]);
+        let Commands::Completions(args) = cli.command else {
+            panic!("expected completions command");
+        };
+        assert_eq!(args.shell, Shell::Bash);
+
+        let mut script = Vec::new();
+        write_completions(args.shell, &mut script);
+        let script = String::from_utf8(script)?;
+
+        assert!(script.contains("crucible"));
+        assert!(script.contains("verify"));
+        assert!(script.contains("completions"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_completions_requires_shell_argument() {
+        let error = match Cli::try_parse_from(["crucible", "completions"]) {
+            Ok(_) => panic!("completions without shell must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn cli_completions_ignores_global_daemon_for_thin_wrapper_metadata()
+    -> Result<(), Box<dyn Error>> {
+        let cli = Cli::parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "completions",
+            "bash",
+        ]);
+        let plan = plan_cli_invocation(&cli);
+
+        assert_eq!(
+            plan.delegated_drivers,
+            vec![CliDelegatedDriver::ShellCompletionGenerator]
+        );
+        assert!(plan.state_references.is_empty());
+        assert!(plan_backend_selection(&cli)?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
         let cases = [
             (
@@ -7846,7 +7914,10 @@ mod tests {
                 vec!["crucible", "debug", "case.crucible"],
             ),
             (CliSubcommand::Serve, vec!["crucible", "serve"]),
-            (CliSubcommand::Completions, vec!["crucible", "completions"]),
+            (
+                CliSubcommand::Completions,
+                vec!["crucible", "completions", "bash"],
+            ),
         ];
         let mut observed = BTreeSet::new();
 
@@ -9068,7 +9139,7 @@ mod tests {
             vec!["crucible", "selftest"],
             vec!["crucible", "triage", "findings"],
             vec!["crucible", "debug", "case.crucible"],
-            vec!["crucible", "completions"],
+            vec!["crucible", "completions", "bash"],
         ] {
             let cli = Cli::parse_from(argv);
             assert!(
