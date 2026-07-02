@@ -55,6 +55,17 @@ pub fn runtime_write_barrier_rust_callable_bindings() -> Vec<RuntimeWriteBarrier
         .collect()
 }
 
+/// Builds native-export readiness metadata for frozen write-barrier helpers.
+pub fn runtime_write_barrier_native_export_preflight() -> RuntimeWriteBarrierNativeExportPreflight {
+    RuntimeWriteBarrierNativeExportPreflight::new(
+        runtime_write_barrier_entrypoints()
+            .iter()
+            .copied()
+            .map(RuntimeWriteBarrierNativeExportReadiness::for_entrypoint)
+            .collect(),
+    )
+}
+
 /// Returns the frozen write-barrier entry-point inventory.
 pub const fn runtime_write_barrier_entrypoints() -> &'static [RuntimeWriteBarrierEntryPoint] {
     RUNTIME_WRITE_BARRIER_ENTRYPOINTS
@@ -304,7 +315,8 @@ impl RuntimeWriteBarrierEntryPoint {
     /// Returns the callable Rust storage-wrapper binding for this entry point.
     ///
     /// The callable's Rust shape is separate from the frozen native ABI
-    /// signature because runtime-context extraction, thunk-pointer decoding, and
+    /// signature because runtime-context extraction, GC-state extraction,
+    /// thunk-pointer decoding, value decoding, safe before-publish dispatch, and
     /// trap transfer are not implemented yet.
     pub fn rust_callable_binding(self) -> RuntimeWriteBarrierRustCallableBinding {
         RuntimeWriteBarrierRustCallableBinding::new(
@@ -335,6 +347,13 @@ impl RuntimeWriteBarrierEntryPoint {
             }
         };
         RuntimeWriteBarrierRustCallableAddress::new(ptr)
+    }
+
+    /// Returns the current native-export blockers for this write-barrier helper.
+    pub const fn native_export_blockers(self) -> &'static [RuntimeWriteBarrierNativeExportBlocker] {
+        match self {
+            Self::AosGcWriteBarrier => WRITE_BARRIER_NATIVE_EXPORT_BLOCKERS,
+        }
     }
 }
 
@@ -415,6 +434,117 @@ impl RuntimeWriteBarrierRustCallableBinding {
     /// Returns the process-local callable Rust address for this binding.
     pub const fn address(self) -> RuntimeWriteBarrierRustCallableAddress {
         self.address
+    }
+}
+
+/// A missing piece before the safe write-barrier helper can become a native ABI export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeWriteBarrierNativeExportBlocker {
+    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
+    MissingExternCWrapper,
+    /// Native wrappers cannot yet decode the runtime context pointer.
+    RuntimeContextAbiUnimplemented,
+    /// Native wrappers cannot yet extract heap, remembered-set, and card-table state.
+    RuntimeGcStateExtractionUnimplemented,
+    /// Native wrappers cannot yet decode the source thunk pointer.
+    NativeThunkPointerDecodeUnimplemented,
+    /// Native wrappers cannot yet decode the by-value runtime value payload.
+    NativeValueDecodeUnimplemented,
+    /// Helper failures cannot yet transfer into evaluator trap/error machinery.
+    TrapTransferUnimplemented,
+    /// The frozen ABI does not yet invoke the safe before-publish barrier path.
+    BarrierDispatchUnimplemented,
+}
+
+const WRITE_BARRIER_NATIVE_EXPORT_BLOCKERS: &[RuntimeWriteBarrierNativeExportBlocker] = &[
+    RuntimeWriteBarrierNativeExportBlocker::MissingExternCWrapper,
+    RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented,
+    RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented,
+    RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented,
+    RuntimeWriteBarrierNativeExportBlocker::NativeValueDecodeUnimplemented,
+    RuntimeWriteBarrierNativeExportBlocker::TrapTransferUnimplemented,
+    RuntimeWriteBarrierNativeExportBlocker::BarrierDispatchUnimplemented,
+];
+
+/// Native-export readiness for one frozen write-barrier helper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeWriteBarrierNativeExportReadiness {
+    entrypoint: RuntimeWriteBarrierEntryPoint,
+    abi_signature: RuntimeWriteBarrierAbiSignature,
+    rust_callable_binding: RuntimeWriteBarrierRustCallableBinding,
+    blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
+}
+
+impl RuntimeWriteBarrierNativeExportReadiness {
+    fn for_entrypoint(entrypoint: RuntimeWriteBarrierEntryPoint) -> Self {
+        Self {
+            entrypoint,
+            abi_signature: entrypoint.abi_signature(),
+            rust_callable_binding: entrypoint.rust_callable_binding(),
+            blockers: entrypoint.native_export_blockers(),
+        }
+    }
+
+    /// Returns the write-barrier entry point served by this readiness record.
+    pub const fn entrypoint(&self) -> RuntimeWriteBarrierEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the stable runtime symbol name for this readiness record.
+    pub const fn symbol_name(&self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the frozen native ABI signature for this write-barrier helper.
+    pub const fn abi_signature(&self) -> RuntimeWriteBarrierAbiSignature {
+        self.abi_signature
+    }
+
+    /// Returns the current Rust callable binding.
+    pub const fn rust_callable_binding(&self) -> RuntimeWriteBarrierRustCallableBinding {
+        self.rust_callable_binding
+    }
+
+    /// Returns the current blockers before this helper can be a native ABI export.
+    pub const fn blockers(&self) -> &'static [RuntimeWriteBarrierNativeExportBlocker] {
+        self.blockers
+    }
+
+    /// Returns true when this helper has exported native ABI metadata.
+    pub const fn is_export_ready(&self) -> bool {
+        self.blockers.is_empty()
+    }
+}
+
+/// Native-export readiness report for frozen write-barrier helpers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeWriteBarrierNativeExportPreflight {
+    readiness: Vec<RuntimeWriteBarrierNativeExportReadiness>,
+}
+
+impl RuntimeWriteBarrierNativeExportPreflight {
+    fn new(readiness: Vec<RuntimeWriteBarrierNativeExportReadiness>) -> Self {
+        Self { readiness }
+    }
+
+    /// Returns write-barrier native-export readiness in runtime entry-point order.
+    pub fn readiness(&self) -> &[RuntimeWriteBarrierNativeExportReadiness] {
+        &self.readiness
+    }
+
+    /// Returns true when every write-barrier helper has native ABI export metadata.
+    pub fn is_complete(&self) -> bool {
+        self.readiness.iter().all(|record| record.is_export_ready())
+    }
+
+    /// Returns the readiness record for `symbol_name`, when present.
+    pub fn readiness_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&RuntimeWriteBarrierNativeExportReadiness> {
+        self.readiness
+            .iter()
+            .find(|record| record.symbol_name() == symbol_name)
     }
 }
 
@@ -677,6 +807,84 @@ mod tests {
                 binding.symbol_name()
             );
         }
+    }
+
+    #[test]
+    fn write_barrier_native_export_preflight_preserves_frozen_abi_and_callable() {
+        let preflight = runtime_write_barrier_native_export_preflight();
+
+        assert!(!preflight.is_complete());
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeWriteBarrierNativeExportReadiness::entrypoint)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_write_barrier_entrypoints()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeWriteBarrierNativeExportReadiness::abi_signature)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_write_barrier_abi_signatures()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeWriteBarrierNativeExportReadiness::rust_callable_binding)
+                .collect::<Vec<_>>(),
+            runtime_write_barrier_rust_callable_bindings()
+        );
+
+        let record = preflight
+            .readiness_for_symbol("aos_gc_write_barrier")
+            .expect("write-barrier export readiness exists");
+        assert_eq!(
+            record.entrypoint(),
+            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier
+        );
+        assert_eq!(record.symbol_name(), "aos_gc_write_barrier");
+        assert_eq!(
+            record.blockers(),
+            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.native_export_blockers()
+        );
+        assert!(!record.is_export_ready());
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::MissingExternCWrapper)
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented)
+        );
+        assert!(record.blockers().contains(
+            &RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented
+        ));
+        assert!(record.blockers().contains(
+            &RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented
+        ));
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::NativeValueDecodeUnimplemented)
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::TrapTransferUnimplemented)
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::BarrierDispatchUnimplemented)
+        );
     }
 
     #[test]
