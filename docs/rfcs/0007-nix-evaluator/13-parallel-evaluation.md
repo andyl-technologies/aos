@@ -829,6 +829,26 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
 ### L1 — coarse top-level parallelism (§4)
 
 - [ ] Chase-Lev work-stealing deque pool over independent top-level derivations, each worker with its own bump nursery; round-robin seed, LIFO local push/pop, FIFO steal, termination barrier (§4.1–§4.2) — **P3.5**, `C-12`; task grain is a derivation subtree, never per-thunk (§7).
+- [x] Current per-worker nursery/hash-cons merge precursor:
+      `ratchet-oracle::eval::parallel_heap` defines the deterministic planning
+      boundary for worker-owned heap state before allocator internals become
+      concurrent. `parallel_worker_nursery_plan` assigns each top-level task to
+      a stable initial worker-local bump nursery, preserving the round-robin
+      seed placement used by the safe scheduler precursor, and
+      `merge_parallel_hash_cons_candidates` normalizes worker-local table
+      emissions by `(worker_id, local_index)` before performing
+      equality-confirmed reuse within structural-hash buckets. Unit tests prove
+      idle worker nurseries are retained, worker completion order cannot change
+      the canonical hash-cons winners, same-hash duplicate values converge to
+      the earliest worker-local candidate, same-hash distinct values remain
+      separate, equal values with mismatched hashes are admitted independently,
+      and duplicate worker-local slots are rejected. This is a
+      merge-contract/readiness layer only: it does not allocate evaluator
+      objects, split `EvalHeap` into live per-worker heaps, publish into the
+      current hash-cons tables, implement a lock-free/concurrent table, define
+      allocation ownership for stolen tasks, integrate with the Chase-Lev/rayon
+      scheduler, or satisfy the loom/Miri/TSan gate (§4.1–§4.3, §5) — **P3.5**
+      precursor, `C-12`/`R-4`.
 - [x] Current demand-graph node-table single-flight precursor:
       `SharedDemandGraph` serializes the existing in-memory node table with a
       same-process mutex, exposes insert-or-get admission status for shared

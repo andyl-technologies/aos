@@ -6613,6 +6613,25 @@ nurseries build on the bump arena.
 - [ ] Per-worker bump nurseries + a concurrent (or per-worker-then-merged)
       hash-cons table; never-free in CLI mode sidesteps any moving-collector race
       ([13](13-parallel-evaluation.md) §5).
+- [x] Current per-worker nursery/hash-cons merge precursor:
+      `ratchet-oracle::eval::parallel_heap` records the deterministic heap-state
+      contract needed before the evaluator owns real per-worker heaps.
+      `parallel_worker_nursery_plan` maps top-level tasks to stable
+      initial worker-local nurseries, and `merge_parallel_hash_cons_candidates`
+      merges worker-local hash-cons emissions in `(worker_id, local_index)` order
+      while using equality checks to distinguish reuse from same-hash
+      collisions.
+      Tests prove stable nursery assignment, retained idle-worker nurseries,
+      completion-order-independent canonical winners, equality-confirmed
+      same-hash duplicate reuse, collision-safe distinct admissions,
+      independent admission for equal values with mismatched hashes, duplicate
+      worker-local slot rejection, and empty merges. This is the deterministic
+      per-worker-then-merged contract only: it does not allocate through
+      per-worker `EvalHeap` instances, publish into the live cons tables, replace
+      the current hash-cons implementation with a concurrent/lock-free table,
+      define allocation ownership for stolen tasks, integrate with the
+      scheduler, rely on never-free CLI mode, or satisfy the loom/Miri/TSan
+      gate.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.

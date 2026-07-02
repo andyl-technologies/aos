@@ -11,6 +11,7 @@ pub mod heap;
 pub mod internal_diff;
 pub mod module;
 pub mod parallel;
+pub mod parallel_heap;
 pub mod thunk;
 pub mod thunk_cas;
 pub mod thunk_wait;
@@ -27,6 +28,12 @@ pub use parallel::{
     ParallelTaskExecution, ParallelTaskPlacement, ParallelTopLevelError,
     ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan, ParallelWorkerExecutionReport,
     execute_parallel_top_level, parallel_top_level_seed_plan,
+};
+pub use parallel_heap::{
+    ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,
+    ParallelHashConsMergeError, ParallelHashConsMergeOutcome, ParallelWorkerNursery,
+    ParallelWorkerNurseryAssignment, ParallelWorkerNurseryPlan,
+    merge_parallel_hash_cons_candidates, parallel_worker_nursery_plan,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,
