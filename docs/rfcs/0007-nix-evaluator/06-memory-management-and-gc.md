@@ -1739,6 +1739,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       This remains caller-owned metadata: it does not discover old objects from
       card pages, own dirty-card scanning state, mutate old fields, publish the
       remembered set into evaluator state, or drive a collector.
+- [x] Current minor-GC commit-plan old-field-rescan precursor:
+      `MinorGcCommitPlan::from_parts_with_old_field_rescan` validates dirty
+      old/permanent field rescan decisions against the same object-copy schedule
+      used by forwarding, reference-rewrite, and remembered-set refresh
+      validation before precomputing the next remembered set with retained rescan
+      edges included. Publication still validates the caller-owned source
+      remembered-set epoch and snapshot edges, while the published next epoch may
+      include deduplicated dirty-card rescan edges. Tests cover duplicate
+      refresh/rescan retention, new dirty-source retention, promoted/dead rescan
+      drops, and stale relocation-map rejection through a dedicated
+      old-field-rescan mismatch error. This remains commit metadata only: it
+      does not mutate live old fields, own the card table, clear dirty cards from
+      evaluator state, or invoke a collector.
 - [x] Current minor-GC commit-plan precursor:
       `ratchet-value::heap::gc::MinorGcCommitPlan::from_parts` composes the
       validated object-copy schedule, forwarding-pointer plan, reference-rewrite

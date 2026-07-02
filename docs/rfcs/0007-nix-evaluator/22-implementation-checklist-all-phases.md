@@ -5162,6 +5162,19 @@ and helps the oracle directly.
       objects from card pages, owning dirty-card scanning state, mutating old
       fields, publishing the remembered set into evaluator state, and collector
       dispatch remain open.
+- [x] Current minor-GC commit-plan old-field-rescan precursor:
+      `MinorGcCommitPlan::from_parts_with_old_field_rescan` validates dirty
+      old/permanent field rescan decisions against the same object-copy schedule
+      used by forwarding, reference-rewrite, and remembered-set refresh
+      validation before precomputing the next remembered set with retained rescan
+      edges included. Publication still validates the caller-owned source
+      remembered-set epoch and snapshot edges, while the published next epoch may
+      include deduplicated dirty-card rescan edges. Unit tests cover duplicate
+      refresh/rescan retention, new dirty-source retention, promoted/dead rescan
+      drops, and stale relocation-map rejection through a dedicated
+      old-field-rescan mismatch error. This remains commit metadata only; live
+      old-field mutation, card-table ownership, evaluator-state dirty-card
+      clearing, and collector dispatch remain open.
 - [x] Current minor-GC commit-plan precursor:
       `ratchet-value::heap::gc::MinorGcCommitPlan::from_parts` composes the
       validated object-copy schedule, forwarding-pointer plan, reference-rewrite

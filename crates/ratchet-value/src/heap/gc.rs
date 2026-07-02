@@ -2134,6 +2134,44 @@ impl MinorGcCommitPlan {
         })
     }
 
+    /// Builds a minor-GC commit plan that includes dirty old-field rescans.
+    ///
+    /// This validates the ordinary commit subplans, validates each dirty
+    /// old/permanent field rescan decision against the object-copy schedule,
+    /// and precomputes the next remembered set from both retained source
+    /// snapshot edges and retained dirty-card rescan edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if any subplan or old-field rescan does
+    /// not match `object_copies`, if the remembered-set epoch cannot advance, or
+    /// if rebuilding the next remembered set cannot reserve storage.
+    pub fn from_parts_with_old_field_rescan(
+        object_copies: MinorGcObjectCopyPlan,
+        forwarding_pointers: MinorGcForwardingPointerPlan,
+        reference_rewrites: MinorGcReferenceRewritePlan,
+        remembered_set_refresh: MinorGcRememberedSetRefreshPlan,
+        old_field_rescan: &MinorGcOldFieldRescanPlan,
+    ) -> Result<Self, GenerationalGcError> {
+        validate_forwarding_plan_matches_object_copies(&object_copies, &forwarding_pointers)?;
+        validate_reference_rewrites_match_object_copies(&object_copies, &reference_rewrites)?;
+        validate_remembered_set_refresh_matches_object_copies(
+            &object_copies,
+            &remembered_set_refresh,
+        )?;
+        validate_old_field_rescan_matches_object_copies(&object_copies, old_field_rescan)?;
+        let next_remembered_set = remembered_set_refresh
+            .rebuild_remembered_set_with_old_field_rescan(old_field_rescan)?;
+
+        Ok(Self {
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+            next_remembered_set,
+        })
+    }
+
     /// Returns object-copy metadata for the commit.
     pub fn object_copies(&self) -> &MinorGcObjectCopyPlan {
         &self.object_copies
@@ -2813,7 +2851,7 @@ fn validate_remembered_set_refresh_matches_object_copies(
     remembered_set_refresh: &MinorGcRememberedSetRefreshPlan,
 ) -> Result<(), GenerationalGcError> {
     for refresh in remembered_set_refresh.refreshes() {
-        let expected = expected_remembered_set_refresh_action(object_copies, *refresh);
+        let expected = expected_remembered_edge_action(object_copies, refresh.original());
         let actual = refresh.action();
         if actual != expected {
             return Err(
@@ -2823,6 +2861,25 @@ fn validate_remembered_set_refresh_matches_object_copies(
                     actual,
                 },
             );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_old_field_rescan_matches_object_copies(
+    object_copies: &MinorGcObjectCopyPlan,
+    old_field_rescan: &MinorGcOldFieldRescanPlan,
+) -> Result<(), GenerationalGcError> {
+    for rescan in old_field_rescan.rescans() {
+        let expected = expected_remembered_edge_action(object_copies, rescan.original());
+        let actual = rescan.action();
+        if actual != expected {
+            return Err(GenerationalGcError::MinorGcCommitOldFieldRescanMismatch {
+                original: rescan.original(),
+                expected,
+                actual,
+            });
         }
     }
 
@@ -2864,11 +2921,10 @@ fn validate_remembered_set_publication_source(
     Ok(())
 }
 
-fn expected_remembered_set_refresh_action(
+fn expected_remembered_edge_action(
     object_copies: &MinorGcObjectCopyPlan,
-    refresh: MinorGcRememberedSetRefresh,
+    original: RememberedEdge,
 ) -> MinorGcRememberedSetRefreshAction {
-    let original = refresh.original();
     match object_copy_for(object_copies, original.target()) {
         Some(copy) if copy.action() == MinorGcSurvivorAction::CopyToNursery => {
             MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
@@ -3741,6 +3797,19 @@ pub enum GenerationalGcError {
         /// The refresh action projected from the object-copy plan.
         expected: MinorGcRememberedSetRefreshAction,
         /// The caller-supplied refresh action.
+        actual: MinorGcRememberedSetRefreshAction,
+    },
+    /// A minor-GC commit plan received a dirty old-field rescan decision from
+    /// another relocation map.
+    #[error(
+        "minor-GC commit old-field rescan mismatch for {original:?}: expected {expected:?}, got {actual:?}"
+    )]
+    MinorGcCommitOldFieldRescanMismatch {
+        /// The remembered edge discovered by rescanning a dirty old field.
+        original: RememberedEdge,
+        /// The rescan action projected from the object-copy plan.
+        expected: MinorGcRememberedSetRefreshAction,
+        /// The caller-supplied old-field rescan action.
         actual: MinorGcRememberedSetRefreshAction,
     },
     /// A minor-GC commit plan tried to publish into a remembered set from
@@ -6413,6 +6482,118 @@ mod tests {
     }
 
     #[test]
+    fn minor_gc_commit_plan_composes_dirty_old_field_rescan() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let dead = address(0x5000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let remembered_source = address(0x3000);
+        let promoted_source = address(0x4000);
+        let extra_source = address(0x6000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 24, 8),
+                NurseryObjectLayout::new(promote, 40, 16),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+        let mut remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(7));
+        remembered_set
+            .record(RememberedEdge::new(remembered_source, copy))
+            .expect("remembered copy edge records");
+        remembered_set
+            .record(RememberedEdge::new(promoted_source, promote))
+            .expect("remembered promote edge records");
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("remembered-set refresh plan builds");
+        let mut card_table = GcCardTable::new(0x1000).expect("card table builds");
+        card_table
+            .mark_source(remembered_source)
+            .expect("remembered source card marks");
+        card_table
+            .mark_source(extra_source)
+            .expect("extra source card marks");
+        let remembered_source_fields = [ResolvedValueGeneration::young(copy)];
+        let extra_source_fields = [
+            ResolvedValueGeneration::young(copy),
+            ResolvedValueGeneration::young(promote),
+            ResolvedValueGeneration::young(dead),
+        ];
+        let old_fields = [
+            MinorGcOldObjectFields::new(
+                remembered_source,
+                HeapGeneration::Old,
+                &remembered_source_fields,
+            ),
+            MinorGcOldObjectFields::new(extra_source, HeapGeneration::Old, &extra_source_fields),
+        ];
+        let old_field_rescan = MinorGcOldFieldRescanPlan::from_dirty_cards(
+            card_table.snapshot(),
+            &old_fields,
+            &relocation_plan,
+        )
+        .expect("old-field rescan builds");
+
+        let commit_plan = MinorGcCommitPlan::from_parts_with_old_field_rescan(
+            object_copies,
+            forwarding_pointers,
+            MinorGcReferenceRewritePlan::default(),
+            remembered_set_refresh,
+            &old_field_rescan,
+        )
+        .expect("commit plan with old-field rescan builds");
+
+        assert_eq!(
+            commit_plan.next_remembered_set().edges(),
+            &[
+                RememberedEdge::new(remembered_source, copy_destination),
+                RememberedEdge::new(extra_source, copy_destination),
+            ]
+        );
+        commit_plan
+            .publish_next_remembered_set(&mut remembered_set)
+            .expect("remembered set publishes");
+        assert_eq!(remembered_set.epoch(), RememberedSetEpoch::new(8));
+        assert_eq!(
+            remembered_set.edges(),
+            &[
+                RememberedEdge::new(remembered_source, copy_destination),
+                RememberedEdge::new(extra_source, copy_destination),
+            ]
+        );
+    }
+
+    #[test]
     fn minor_gc_commit_plan_applies_to_caller_owned_buffers() {
         let copy = address(0x1000);
         let promote = address(0x2000);
@@ -6561,6 +6742,89 @@ mod tests {
             &[RememberedEdge::new(remembered_source, copy_destination)]
         );
         assert!(card_table.is_empty());
+    }
+
+    #[test]
+    fn minor_gc_commit_plan_rejects_inconsistent_old_field_rescan() {
+        let target = address(0x1000);
+        let source = address(0x3000);
+        let copied_destination = address(0x9000);
+        let promoted_destination = address(0xa000);
+        let copied_plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(target)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(target, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("copied minor GC plan builds");
+        let copied_relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &copied_plan,
+            &[MinorGcRelocationDestination::new(
+                target,
+                copied_destination,
+            )],
+        )
+        .expect("copied relocation plan builds");
+        let mut card_table = GcCardTable::new(0x1000).expect("card table builds");
+        card_table
+            .mark_source(source)
+            .expect("source card marks dirty");
+        let source_fields = [ResolvedValueGeneration::young(target)];
+        let old_fields = [MinorGcOldObjectFields::new(
+            source,
+            HeapGeneration::Old,
+            &source_fields,
+        )];
+        let old_field_rescan = MinorGcOldFieldRescanPlan::from_dirty_cards(
+            card_table.snapshot(),
+            &old_fields,
+            &copied_relocation_plan,
+        )
+        .expect("old-field rescan builds");
+        let promoted_plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(target)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(target, 1)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("promoted minor GC plan builds");
+        let promoted_relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &promoted_plan,
+            &[MinorGcRelocationDestination::new(
+                target,
+                promoted_destination,
+            )],
+        )
+        .expect("promoted relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &promoted_relocation_plan,
+            &[NurseryObjectLayout::new(target, 8, 8)],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+
+        assert_eq!(
+            MinorGcCommitPlan::from_parts_with_old_field_rescan(
+                object_copies,
+                forwarding_pointers,
+                MinorGcReferenceRewritePlan::default(),
+                MinorGcRememberedSetRefreshPlan::default(),
+                &old_field_rescan,
+            ),
+            Err(GenerationalGcError::MinorGcCommitOldFieldRescanMismatch {
+                original: RememberedEdge::new(source, target),
+                expected: MinorGcRememberedSetRefreshAction::DropPromoted {
+                    destination: promoted_destination,
+                },
+                actual: MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                    refreshed: RememberedEdge::new(source, copied_destination),
+                },
+            })
+        );
     }
 
     #[test]
