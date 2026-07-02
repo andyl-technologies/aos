@@ -5715,27 +5715,32 @@ and helps the oracle directly.
       rebuilds the paired commit metadata, allocates boundary-owned synthetic
       object byte buffers from the preflight's copy requests, clones forwarding
       slots and reference buffers, clones the remembered-set snapshot, and
-      applies the lower-level `AllocationCollectorPollMinorGcCommitPlan` into
-      those owned buffers. The returned per-tier report includes object-copy,
-      promotion, forwarding, reference-rewrite, and remembered-set publication
-      counts plus the mutated owned buffers. The aggregate
+      copies the same synthetic source bytes into fresh
+      `MinorGcOwnedDestinationStorage` sized by the paired placement plan before
+      applying the lower-level `AllocationCollectorPollMinorGcCommitPlan` into
+      the remaining owned buffers. The returned per-tier report includes
+      object-copy, promotion, forwarding, reference-rewrite, and remembered-set
+      publication counts plus the mutated owned buffers and destination-storage
+      byte snapshots. The aggregate
       `EvalGcStressBoundaryMinorGcCommitPreflights::apply_commits_to_owned_buffers`
       preserves worker/permanent-shared partitioning. Tests cover worker
       owned-buffer commits, mixed root plus heap-field commit applications,
       retained remembered-edge publication into the owned remembered-set buffer,
-      permanent-shared empty commits, and empty reports when GC stress is
-      disabled. Remembered-set source buffers are copied fallibly through the
-      existing `RememberedSet::record` path. This remains boundary-owned
-      synthetic-buffer application only; binding raw bytes to live heap objects,
-      installing real object-header forwarding slots, mutating live tree-walk
-      roots or heap fields, mutating remembered source fields, publishing the
-      evaluator-owned remembered set, and semispace management remain open.
+      copied and promoted destination-storage bytes, permanent-shared empty
+      commits, and empty reports when GC stress is disabled. Remembered-set
+      source buffers are copied fallibly through the existing
+      `RememberedSet::record` path. This remains boundary-owned buffer/storage
+      application only; binding raw bytes to live heap objects, installing real
+      object-header forwarding slots, mutating live tree-walk roots or heap
+      fields, mutating remembered source fields, publishing the evaluator-owned
+      remembered set, and semispace swapping/management remain open.
 - [x] Current GC-stress boundary commit dry-run precursor:
       `EvalGcStressBoundaryMinorGcCommitPreflights::apply_owned_commit_dry_run`
       consumes the boundary preflight bundle, applies owned reference-writeback
-      buffers and owned synthetic commit buffers from the same metadata, and
-      returns `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights,
-      writeback applications, and commit applications preserved together.
+      buffers, owned synthetic commit buffers, and owned destination-storage
+      byte placement from the same metadata, and returns
+      `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights, writeback
+      applications, and commit applications preserved together.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
       boundary pipeline from the recorded GC-stress scans in one checked call,
       and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates per-tier
@@ -5743,10 +5748,10 @@ and helps the oracle directly.
       rewrites, root/heap-field writebacks, remembered-set publication, and
       object-payload byte totals from the preserved preflight metadata.
       Tests cover the worker dry-run path, including copy, promotion,
-      forwarding, reference-rewrite, owned-buffer byte equality, and summary
-      counts/bytes; permanent-shared empty dry-run partitioning; mixed
-      root/heap-field summary aggregation; plus the stress-disabled empty path.
-      This remains an owned
+      forwarding, reference-rewrite, owned-buffer byte equality,
+      destination-storage byte placement, and summary counts/bytes;
+      permanent-shared empty dry-run partitioning; mixed root/heap-field summary
+      aggregation; plus the stress-disabled empty path. This remains an owned
       dry-run telemetry surface only; live heap-object byte binding, real
       object-header forwarding installation, live tree-walk root/heap-field
       mutation, remembered-source field mutation, evaluator remembered-set

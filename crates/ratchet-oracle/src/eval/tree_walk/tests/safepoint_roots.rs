@@ -615,6 +615,31 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
         object_copy.request().size_bytes()
     );
     assert_eq!(object_copy.destination_bytes(), object_copy.source_bytes());
+    let destination_storage = commit_application.destination_storage();
+    assert_eq!(
+        destination_storage.copy_report().object_copies(),
+        commit_report.object_copies()
+    );
+    assert_eq!(destination_storage.copy_report().copied_to_nursery(), 1);
+    assert_eq!(destination_storage.copy_report().promoted_to_old(), 0);
+    assert_eq!(
+        destination_storage.copy_report().nursery_payload_bytes(),
+        object_copy.request().size_bytes()
+    );
+    assert_eq!(
+        destination_storage.nursery_reserved_bytes(),
+        preflight
+            .relocation_plan()
+            .relocation_destinations()
+            .placement_plan()
+            .nursery_reserved_bytes()
+    );
+    assert_eq!(destination_storage.old_reserved_bytes(), 0);
+    assert_eq!(
+        destination_storage.nursery_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    assert!(destination_storage.old_destination_bytes().is_empty());
     assert_eq!(
         commit_application.forwarding_slots()[0].forwarded_value(),
         Some(ResolvedValueGeneration::Heap {
@@ -801,6 +826,24 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
         .expect("worker promoted dry-run commit records");
     assert_eq!(commit_application.report().copied_to_nursery(), 0);
     assert_eq!(commit_application.report().promoted_to_old(), 1);
+    let object_copy = &commit_application.object_byte_copies()[0];
+    let destination_storage = commit_application.destination_storage();
+    assert_eq!(destination_storage.copy_report().copied_to_nursery(), 0);
+    assert_eq!(destination_storage.copy_report().promoted_to_old(), 1);
+    assert_eq!(destination_storage.nursery_reserved_bytes(), 0);
+    assert_eq!(
+        destination_storage.old_reserved_bytes(),
+        preflight
+            .relocation_plan()
+            .relocation_destinations()
+            .placement_plan()
+            .old_reserved_bytes()
+    );
+    assert!(destination_storage.nursery_destination_bytes().is_empty());
+    assert_eq!(
+        destination_storage.old_destination_bytes(),
+        object_copy.source_bytes()
+    );
     assert_eq!(
         commit_application.forwarding_slots()[0].forwarded_value(),
         Some(ResolvedValueGeneration::Heap {
@@ -886,6 +929,37 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     assert_eq!(commit_report.forwarding_pointers(), 0);
     assert_eq!(commit_report.reference_rewrites(), 0);
     assert!(commit_application.object_byte_copies().is_empty());
+    assert_eq!(
+        commit_application
+            .destination_storage()
+            .copy_report()
+            .object_copies(),
+        0
+    );
+    assert_eq!(
+        commit_application
+            .destination_storage()
+            .nursery_reserved_bytes(),
+        0
+    );
+    assert_eq!(
+        commit_application
+            .destination_storage()
+            .old_reserved_bytes(),
+        0
+    );
+    assert!(
+        commit_application
+            .destination_storage()
+            .nursery_destination_bytes()
+            .is_empty()
+    );
+    assert!(
+        commit_application
+            .destination_storage()
+            .old_destination_bytes()
+            .is_empty()
+    );
     assert!(commit_application.forwarding_slots().is_empty());
     assert_eq!(
         commit_application.references(),
@@ -965,6 +1039,16 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
             .object_byte_copies()
             .iter()
             .all(|copy| copy.destination_bytes() == copy.source_bytes())
+    );
+    let destination_storage = commit_application.destination_storage();
+    let storage_report = destination_storage.copy_report();
+    assert_eq!(
+        storage_report.object_copies(),
+        commit_application.report().object_copies()
+    );
+    assert_eq!(
+        storage_report.nursery_payload_bytes() + storage_report.old_payload_bytes(),
+        preflight.object_copy_bytes()
     );
     assert!(
         commit_application
@@ -1289,6 +1373,13 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     assert_eq!(commit_application.report().forwarding_pointers(), 0);
     assert_eq!(commit_application.report().reference_rewrites(), 0);
     assert!(commit_application.object_byte_copies().is_empty());
+    assert_eq!(
+        commit_application
+            .destination_storage()
+            .copy_report()
+            .object_copies(),
+        0
+    );
     assert!(commit_application.forwarding_slots().is_empty());
     assert_eq!(
         commit_application.references(),

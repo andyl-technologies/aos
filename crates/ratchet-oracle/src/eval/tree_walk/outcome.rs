@@ -16,6 +16,14 @@ const BOUNDARY_MINOR_GC_OBJECT_DESTINATION_BYTES_TABLE: &str =
     "boundary minor-GC object destination bytes";
 const BOUNDARY_MINOR_GC_OBJECT_BYTE_COPY_BUFFERS_TABLE: &str =
     "boundary minor-GC object byte-copy buffers";
+const BOUNDARY_MINOR_GC_SOURCE_OBJECT_BYTES_TABLE: &str =
+    "boundary minor-GC source object byte refs";
+const BOUNDARY_MINOR_GC_NURSERY_DESTINATION_STORAGE_BYTES_TABLE: &str =
+    "boundary minor-GC nursery destination storage bytes";
+const BOUNDARY_MINOR_GC_OLD_DESTINATION_STORAGE_BYTES_TABLE: &str =
+    "boundary minor-GC old destination storage bytes";
+const BOUNDARY_MINOR_GC_DESTINATION_STORAGE_LAYOUTS_TABLE: &str =
+    "boundary minor-GC destination storage layouts";
 const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
     "boundary minor-GC forwarding slot buffer";
 const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
@@ -405,23 +413,29 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     /// The method clones this preflight's forwarding slots and reference buffer,
     /// clones the remembered set captured by the minor-GC plan, clones this
     /// preflight's daemon-wide card-table snapshot, builds synthetic source and
-    /// destination byte buffers from the object byte-copy requests, and applies
-    /// the full lower-level commit plan to those owned buffers. The synthetic
-    /// byte buffers prove commit ordering and validation without claiming to
+    /// destination byte buffers from the object byte-copy requests, copies those
+    /// same source bytes into fresh owned destination storage sized from the
+    /// placement plan, and applies the full lower-level commit plan to the
+    /// remaining owned buffers. The synthetic bytes and owned destination
+    /// storage prove commit ordering and storage placement without claiming to
     /// bind to live semispace storage or real heap object bytes. Live tree-walk
     /// roots, heap fields, object headers, remembered-set storage, card-table
     /// storage, and semispace pages remain untouched.
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if any owned buffer cannot be reserved, if
-    /// commit metadata cannot be rebuilt from the paired relocation plan, or if
-    /// any owned buffer fails the lower-level commit validation.
+    /// Returns [`EvalHeapError`] if any owned buffer or destination storage
+    /// cannot be reserved, if commit metadata cannot be rebuilt from the paired
+    /// relocation plan, or if any owned buffer fails validation.
     pub fn apply_commit_to_owned_buffers(
         &self,
     ) -> Result<EvalGcStressBoundaryMinorGcCommitApplication, EvalHeapError> {
         let mut object_byte_copies =
             boundary_minor_gc_object_byte_copy_applications(&self.object_byte_copy_plan)?;
+        let destination_storage = boundary_minor_gc_destination_storage_application(
+            &self.relocation_plan,
+            &object_byte_copies,
+        )?;
         let mut forwarding_slots = clone_boundary_forwarding_slots(&self.forwarding_slots)?;
         let mut references = clone_boundary_reference_buffer(&self.reference_buffer)?;
         let mut remembered_set =
@@ -446,6 +460,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         Ok(EvalGcStressBoundaryMinorGcCommitApplication::new(
             report,
             object_byte_copies,
+            destination_storage,
             forwarding_slots,
             references,
             remembered_set,
@@ -528,11 +543,65 @@ impl EvalGcStressBoundaryMinorGcObjectByteCopyApplication {
     }
 }
 
+/// Applied owned destination storage for one boundary minor-GC preflight.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcDestinationStorageApplication {
+    copy_report: MinorGcOwnedDestinationStorageCopyReport,
+    nursery_reserved_bytes: usize,
+    old_reserved_bytes: usize,
+    nursery_destination_bytes: Vec<u8>,
+    old_destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcDestinationStorageApplication {
+    fn new(
+        copy_report: MinorGcOwnedDestinationStorageCopyReport,
+        nursery_reserved_bytes: usize,
+        old_reserved_bytes: usize,
+        nursery_destination_bytes: Vec<u8>,
+        old_destination_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            copy_report,
+            nursery_reserved_bytes,
+            old_reserved_bytes,
+            nursery_destination_bytes,
+            old_destination_bytes,
+        }
+    }
+
+    /// Returns the owned destination-storage copy report.
+    pub const fn copy_report(&self) -> MinorGcOwnedDestinationStorageCopyReport {
+        self.copy_report
+    }
+
+    /// Returns bytes reserved for copied next-nursery destinations.
+    pub const fn nursery_reserved_bytes(&self) -> usize {
+        self.nursery_reserved_bytes
+    }
+
+    /// Returns bytes reserved for promoted old-generation destinations.
+    pub const fn old_reserved_bytes(&self) -> usize {
+        self.old_reserved_bytes
+    }
+
+    /// Returns the owned next-nursery destination bytes after copying.
+    pub fn nursery_destination_bytes(&self) -> &[u8] {
+        &self.nursery_destination_bytes
+    }
+
+    /// Returns the owned old-generation destination bytes after copying.
+    pub fn old_destination_bytes(&self) -> &[u8] {
+        &self.old_destination_bytes
+    }
+}
+
 /// Applied boundary-owned buffers for one minor-GC commit preflight.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcCommitApplication {
     report: MinorGcCommitReport,
     object_byte_copies: Vec<EvalGcStressBoundaryMinorGcObjectByteCopyApplication>,
+    destination_storage: EvalGcStressBoundaryMinorGcDestinationStorageApplication,
     forwarding_slots: Vec<MinorGcForwardingSlot>,
     references: Vec<ResolvedValueGeneration>,
     remembered_set: RememberedSet,
@@ -543,6 +612,7 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
     fn new(
         report: MinorGcCommitReport,
         object_byte_copies: Vec<EvalGcStressBoundaryMinorGcObjectByteCopyApplication>,
+        destination_storage: EvalGcStressBoundaryMinorGcDestinationStorageApplication,
         forwarding_slots: Vec<MinorGcForwardingSlot>,
         references: Vec<ResolvedValueGeneration>,
         remembered_set: RememberedSet,
@@ -551,6 +621,7 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
         Self {
             report,
             object_byte_copies,
+            destination_storage,
             forwarding_slots,
             references,
             remembered_set,
@@ -566,6 +637,13 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
     /// Returns owned object byte buffers after commit application.
     pub fn object_byte_copies(&self) -> &[EvalGcStressBoundaryMinorGcObjectByteCopyApplication] {
         &self.object_byte_copies
+    }
+
+    /// Returns the owned destination storage snapshot after object-byte copying.
+    pub const fn destination_storage(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcDestinationStorageApplication {
+        &self.destination_storage
     }
 
     /// Returns forwarding slots after commit application.
@@ -669,6 +747,109 @@ fn boundary_minor_gc_object_byte_copy_buffers<'a>(
     }
 
     Ok(buffers)
+}
+
+fn boundary_minor_gc_destination_storage_application(
+    relocation_plan: &EvalGcStressBoundaryMinorGcRelocationPlan,
+    object_byte_copies: &[EvalGcStressBoundaryMinorGcObjectByteCopyApplication],
+) -> Result<EvalGcStressBoundaryMinorGcDestinationStorageApplication, EvalHeapError> {
+    let placement_plan = relocation_plan.relocation_destinations().placement_plan();
+    let mut storage = MinorGcOwnedDestinationStorage::from_placement_plan(placement_plan)?;
+    let copy_plan = boundary_minor_gc_destination_storage_copy_plan(
+        &storage,
+        relocation_plan.minor_gc_plan().plan(),
+        placement_plan,
+    )?;
+    let source_bytes = boundary_minor_gc_source_object_bytes(object_byte_copies)?;
+    let copy_report = storage.copy_from_sources(&copy_plan, &source_bytes)?;
+    let nursery_reserved_bytes = storage.nursery_reserved_bytes();
+    let old_reserved_bytes = storage.old_reserved_bytes();
+    let nursery_destination_bytes = clone_boundary_destination_storage_bytes(
+        BOUNDARY_MINOR_GC_NURSERY_DESTINATION_STORAGE_BYTES_TABLE,
+        storage.nursery_destination_bytes(),
+    )?;
+    let old_destination_bytes = clone_boundary_destination_storage_bytes(
+        BOUNDARY_MINOR_GC_OLD_DESTINATION_STORAGE_BYTES_TABLE,
+        storage.old_destination_bytes(),
+    )?;
+
+    Ok(
+        EvalGcStressBoundaryMinorGcDestinationStorageApplication::new(
+            copy_report,
+            nursery_reserved_bytes,
+            old_reserved_bytes,
+            nursery_destination_bytes,
+            old_destination_bytes,
+        ),
+    )
+}
+
+fn boundary_minor_gc_destination_storage_copy_plan(
+    storage: &MinorGcOwnedDestinationStorage,
+    plan: &MinorGcPlan,
+    placement_plan: &MinorGcDestinationPlacementPlan,
+) -> Result<MinorGcObjectCopyPlan, EvalHeapError> {
+    let destination_plan = storage.relocation_destination_plan(plan)?;
+    let relocation_plan = destination_plan.relocation_plan(plan)?;
+    let nursery_layouts = boundary_minor_gc_nursery_layouts_from_placements(placement_plan)?;
+    Ok(MinorGcObjectCopyPlan::from_relocation_plan(
+        &relocation_plan,
+        &nursery_layouts,
+    )?)
+}
+
+fn boundary_minor_gc_nursery_layouts_from_placements(
+    placement_plan: &MinorGcDestinationPlacementPlan,
+) -> Result<Vec<NurseryObjectLayout>, EvalHeapError> {
+    let mut nursery_layouts = Vec::new();
+    nursery_layouts
+        .try_reserve_exact(placement_plan.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_DESTINATION_STORAGE_LAYOUTS_TABLE,
+            entries: placement_plan.len(),
+        })?;
+    for placement in placement_plan.placements() {
+        nursery_layouts.push(NurseryObjectLayout::new(
+            placement.source(),
+            placement.size_bytes(),
+            placement.align(),
+        ));
+    }
+    Ok(nursery_layouts)
+}
+
+fn boundary_minor_gc_source_object_bytes<'a>(
+    applications: &'a [EvalGcStressBoundaryMinorGcObjectByteCopyApplication],
+) -> Result<Vec<MinorGcSourceObjectBytes<'a>>, EvalHeapError> {
+    let mut sources = Vec::new();
+    sources.try_reserve_exact(applications.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_SOURCE_OBJECT_BYTES_TABLE,
+            entries: applications.len(),
+        }
+    })?;
+    for application in applications {
+        sources.push(MinorGcSourceObjectBytes::new(
+            application.request().source(),
+            application.source_bytes(),
+        ));
+    }
+    Ok(sources)
+}
+
+fn clone_boundary_destination_storage_bytes(
+    table: &'static str,
+    bytes: &[u8],
+) -> Result<Vec<u8>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table,
+            entries: bytes.len(),
+        })?;
+    cloned.extend_from_slice(bytes);
+    Ok(cloned)
 }
 
 fn clone_boundary_forwarding_slots(
@@ -817,16 +998,17 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
     /// Applies complete commit plans for every recorded boundary preflight.
     ///
     /// Each allocator tier is committed independently into owned synthetic
-    /// byte buffers plus cloned forwarding, reference, and remembered-set
-    /// buffers. This preserves the worker/permanent-shared partition while
-    /// still avoiding mutation of live tree-walk roots, heap fields, object
-    /// headers, remembered-set storage, or semispace pages.
+    /// byte buffers, owned destination-storage byte snapshots, and cloned
+    /// forwarding, reference, remembered-set, and card-table buffers. This
+    /// preserves the worker/permanent-shared partition while still avoiding
+    /// mutation of live tree-walk roots, heap fields, object headers,
+    /// remembered-set storage, or semispace pages.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if any preflight cannot allocate its owned
-    /// buffers, rebuild commit metadata, or validate those buffers against the
-    /// lower-level commit plan.
+    /// buffers or destination storage, rebuild commit metadata, or validate
+    /// those buffers against the lower-level commit plan.
     pub fn apply_commits_to_owned_buffers(
         &self,
     ) -> Result<EvalGcStressBoundaryMinorGcCommitApplications, EvalHeapError> {
@@ -850,15 +1032,16 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
     /// Applies every boundary commit preflight to owned dry-run buffers.
     ///
     /// This consumes the preflight bundle so the returned dry-run report retains
-    /// the exact metadata that produced the owned reference-writeback and commit
-    /// applications. It still does not mutate live evaluator roots, live heap
-    /// fields, object headers, remembered-set storage, or semispace pages.
+    /// the exact metadata that produced the owned reference-writeback,
+    /// destination-storage, and commit applications. It still does not mutate
+    /// live evaluator roots, live heap fields, object headers, remembered-set
+    /// storage, or semispace pages.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if any preflight cannot allocate its owned
-    /// writeback or commit buffers, rebuild commit metadata, or validate those
-    /// buffers against the lower-level plans.
+    /// writeback buffers, destination storage, or commit buffers, rebuild commit
+    /// metadata, or validate those buffers against the lower-level plans.
     pub fn apply_owned_commit_dry_run(
         self,
     ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
