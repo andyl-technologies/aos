@@ -880,6 +880,15 @@ harness, never cut for scope.
       callable-kind coverage. This is a crate boundary and metadata adapter only;
       no `unsafe extern "C"` aliases, exported wrappers, raw-pointer calls,
       Cranelift lowering, or `JITBuilder::symbol` registration are implemented.
+- [x] Current `ratchet-jit` runtime-symbol inventory precursor:
+      `ratchet-jit::symbols::jit_runtime_symbol_inventory()` exposes a JIT-side,
+      address-free view of the `ratchet-core` runtime symbol manifest without an
+      oracle dependency. It preserves stable manifest ordering, exposes
+      symbol-presence and kind lookups, and tests pin exact core parity,
+      representative helper/builtin kinds, sorted order, and mixed
+      helper/builtin coverage. This is manifest metadata only; no
+      candidate-readiness gates, executable addresses, exported wrappers,
+      Cranelift lowering, or `JITBuilder::symbol` registration are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata

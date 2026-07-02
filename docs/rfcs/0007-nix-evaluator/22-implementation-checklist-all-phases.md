@@ -6524,6 +6524,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       metadata parity and callable-kind coverage. This adds no oracle dependency,
       Cranelift dependency, exported wrappers, raw function-pointer calls,
       executable addresses, or `JITBuilder::symbol` registration.
+- [x] Current `ratchet-jit` runtime-symbol inventory precursor:
+      `ratchet-jit::symbols::jit_runtime_symbol_inventory()` mirrors the
+      address-free `ratchet-core` runtime symbol manifest inside the JIT crate
+      without depending on `ratchet-oracle`. It preserves core manifest order,
+      exposes symbol-presence and kind lookups, and tests pin exact manifest
+      parity, representative helper/builtin kinds, sorted order, and mixed
+      helper/builtin coverage. This remains symbol metadata only: no candidate
+      readiness, executable addresses, Cranelift lowering, exported wrappers, or
+      `JITBuilder::symbol` registration is implemented.
 - [ ] `jit/tier.rs` — tier-up policy (hot-thunk detection) into tier 1.
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the

@@ -3,9 +3,10 @@
 //! This crate is the landing zone for the Cranelift baseline JIT and later
 //! optimized native tiers. It intentionally starts with safe, address-free
 //! metadata adapters only: [`abi`] mirrors the frozen runtime-call signatures
-//! from `ratchet-core`. Runtime-symbol candidate reports currently remain in
-//! `ratchet-oracle`; a later shared metadata layer can move them below both
-//! crates without making the JIT crate depend on the safe oracle stack.
+//! from `ratchet-core`, and [`symbols`] mirrors the stable runtime-symbol
+//! manifest from `ratchet-core`. Runtime-symbol candidate reports currently
+//! remain in `ratchet-oracle`; a later shared metadata layer can move them below
+//! both crates without making the JIT crate depend on the safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
 //! module construction, and `JITBuilder::symbol` registration are future work
@@ -16,5 +17,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod abi;
+pub mod symbols;
 
 pub use abi::{JitRuntimeAbiInventory, jit_runtime_abi_inventory};
+pub use symbols::{JitRuntimeSymbolInventory, jit_runtime_symbol_inventory};
