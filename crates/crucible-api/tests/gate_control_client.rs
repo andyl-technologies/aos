@@ -3295,6 +3295,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Respons
         LifecycleApiError::SessionNotFound { session } => {
             lifecycle_session_not_found_response(session)
         }
+        LifecycleApiError::SessionLimitReached { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            crucible_api::RpcStatusCode::InvalidState,
+            "session-limit",
+            &error.to_string(),
+        ),
         LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
             axum::http::StatusCode::BAD_REQUEST,
             crucible_api::RpcStatusCode::InvalidArgument,

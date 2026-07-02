@@ -452,6 +452,9 @@ struct ServeArgs {
     /// Bind daemon listener.
     #[arg(long, value_name = "addr", default_value = "127.0.0.1:9000")]
     listen: String,
+    /// Cap live daemon sessions.
+    #[arg(long, value_name = "n")]
+    max_sessions: Option<usize>,
     /// Reject state-mutating API calls.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
@@ -4314,6 +4317,7 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
             "serve hosts the daemon and cannot itself use --daemon",
         ));
     }
+    validate_serve_invocation(args)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -4328,11 +4332,14 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
             };
             println!("crucible: serving API daemon at http://{address} mode={mode}");
         }
-        let control_plane = LifecycleControlPlane::new(
+        let mut control_plane = LifecycleControlPlane::new(
             "crucible-cli-daemon",
             Vec::new(),
             |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
         );
+        if let Some(max_sessions) = args.max_sessions {
+            control_plane = control_plane.with_max_sessions(max_sessions);
+        }
         let mode = if args.read_only {
             LifecycleServerMode::read_only()
         } else {
@@ -4341,6 +4348,13 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
         serve_lifecycle_http2_with_mode(listener, control_plane, mode).await?;
         Ok(())
     })
+}
+
+fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
+    if args.max_sessions == Some(0) {
+        return Err(usage_error("--max-sessions must be greater than zero"));
+    }
+    Ok(())
 }
 
 async fn run_control_client_workflow_async<C>(
@@ -8170,7 +8184,12 @@ mod tests {
             ("replay", &["ARTIFACT", "--check <original-log>"]),
             (
                 "serve",
-                &["--listen <addr>", "--store <path>", "--read-only"],
+                &[
+                    "--listen <addr>",
+                    "--store <path>",
+                    "--max-sessions <n>",
+                    "--read-only",
+                ],
             ),
         ] {
             let help = command
@@ -8199,7 +8218,7 @@ mod tests {
                 "--bisect",
                 "other.crucible",
             ],
-            vec!["crucible", "serve", "--max-sessions", "2"],
+            vec!["crucible", "serve", "--unknown-serve-flag"],
         ] {
             assert!(
                 Cli::try_parse_from(argv).is_err(),
@@ -8212,6 +8231,43 @@ mod tests {
             panic!("expected serve command");
         };
         assert_eq!(args.listen, "127.0.0.1:9001");
+
+        let max_sessions_serve = Cli::parse_from(["crucible", "serve", "--max-sessions", "2"]);
+        let Commands::Serve(args) = &max_sessions_serve.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.max_sessions, Some(2));
+
+        let zero_max_sessions = Cli::parse_from(["crucible", "serve", "--max-sessions", "0"]);
+        let Commands::Serve(args) = &zero_max_sessions.command else {
+            panic!("expected serve command");
+        };
+        let error = match validate_serve_invocation(args) {
+            Ok(_) => panic!("zero max sessions must be rejected before binding can start"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("--max-sessions"));
+
+        let zero_max_sessions_run = Cli::parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:notaport",
+            "--max-sessions",
+            "0",
+        ]);
+        let Commands::Serve(args) = &zero_max_sessions_run.command else {
+            panic!("expected serve command");
+        };
+        let error = match run_serve_invocation(&zero_max_sessions_run, args) {
+            Ok(_) => panic!("zero max sessions must be rejected before binding can start"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("--max-sessions"));
 
         let read_only_serve = Cli::parse_from(["crucible", "serve", "--read-only"]);
         let Commands::Serve(args) = read_only_serve.command else {

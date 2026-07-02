@@ -1511,6 +1511,16 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliServeMaxSessions = import ./phase5-cli-serve-max-sessions.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliServeMaxSessions";
+      taskIds = ["T-CLI-14"];
+      dependencies = [
+        phase5.cliServeReadOnly
+        phase5.cliRunWorkflow
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliCompletionsHelp = import ./phase5-cli-completions-help.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";

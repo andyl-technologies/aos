@@ -422,8 +422,12 @@ long-held locks.
   HTTP/2 rejection of session creation/destruction, control attach, and mutating
   send commands while allowing read-only query sends to reach normal routing;
   full closure waits for the broader hosted-session concurrency surface,
-  max-session policy, shutdown lifecycle, and end-to-end multi-client
-  watch/query coverage.
+  shutdown lifecycle, and end-to-end multi-client watch/query coverage.
+  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeMaxSessions`
+  currently covers `serve --max-sessions <n>` parsing/help, zero-value usage
+  rejection, lifecycle live-session cap enforcement, and typed daemon
+  session-limit responses; full closure waits for end-to-end multi-client
+  admission/concurrency coverage and shutdown lifecycle.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

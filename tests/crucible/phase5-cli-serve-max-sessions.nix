@@ -1,7 +1,7 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase5.cliServeReadOnly",
+  attrPath ? "checks.crucible.phase5.cliServeMaxSessions",
   taskIds ? ["T-CLI-14"],
   dependencies ? [],
 }: let
@@ -14,7 +14,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
+  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -50,72 +50,60 @@
         needle = "- [ ] **T-CLI-14** Implement `serve`";
       }
       {
-        label = "T-CLI-14 read-only progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliServeReadOnly`";
+        label = "T-CLI-14 max-sessions progress note";
+        needle = "Work in progress under `checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI serve read-only progress note";
-        needle = "`T-CLI-14` remains open. `checks.crucible.phase5.cliServeReadOnly` currently";
+        label = "phase5 CLI serve max-sessions progress note";
+        needle = "`T-CLI-14` remains open. `checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
       {
-        label = "server mode exported";
-        needle = "LifecycleServerMode";
+        label = "session cap field";
+        needle = "max_sessions: Option<usize>";
       }
       {
-        label = "mode-aware server exported";
-        needle = "serve_lifecycle_http2_with_mode";
+        label = "session cap builder";
+        needle = "pub const fn with_max_sessions";
+      }
+      {
+        label = "session limit error";
+        needle = "SessionLimitReached";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
       {
-        label = "server read-only mode";
-        needle = "pub struct LifecycleServerMode";
+        label = "typed session-limit response";
+        needle = "\"session-limit\"";
       }
       {
-        label = "read-only rejection response";
-        needle = "read_only_rejection_response";
-      }
-      {
-        label = "create-session read-only rejection";
-        needle = "read-only daemon rejects state-mutating API call";
-      }
-      {
-        label = "destroy-session read-only rejection test";
-        needle = "server_read_only_mode_rejects_session_destruction";
-      }
-      {
-        label = "control attach read-only rejection test";
-        needle = "server_read_only_mode_rejects_control_attach";
-      }
-      {
-        label = "watch attach read-only allowance test";
-        needle = "server_read_only_mode_allows_watch_attach";
-      }
-      {
-        label = "mutating send read-only rejection test";
-        needle = "server_read_only_mode_rejects_mutating_send_but_allows_query";
-      }
-      {
-        label = "default read-write route test";
-        needle = "server_read_write_mode_keeps_default_mutating_routes";
+        label = "server session-limit test";
+        needle = "server_create_session_limit_maps_to_typed_rpc_error";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "serve read-only flag";
-        needle = "read_only: bool";
+        label = "serve max-sessions flag";
+        needle = "max_sessions: Option<usize>";
       }
       {
-        label = "serve uses mode-aware daemon";
-        needle = "serve_lifecycle_http2_with_mode(listener, control_plane, mode)";
+        label = "serve zero max-sessions rejection";
+        needle = "--max-sessions must be greater than zero";
       }
       {
-        label = "serve help advertises read-only";
-        needle = "--read-only";
+        label = "serve validation helper";
+        needle = "fn validate_serve_invocation";
+      }
+      {
+        label = "serve zero max-sessions production-path test";
+        needle = "run_serve_invocation(&zero_max_sessions_run";
+      }
+      {
+        label = "serve max-sessions control-plane plumbing";
+        needle = "control_plane.with_max_sessions(max_sessions)";
       }
       {
         label = "serve help advertises max-sessions";
@@ -124,16 +112,16 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase5 exposes CLI serve read-only check";
-        needle = "cliServeReadOnly = import ./phase5-cli-serve-read-only.nix";
+        label = "phase5 exposes CLI serve max-sessions check";
+        needle = "cliServeMaxSessions = import ./phase5-cli-serve-max-sessions.nix";
       }
     ];
 in
   if failures != []
-  then throw "crucible phase5 CLI serve read-only check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase5 CLI serve max-sessions check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase5-cli-serve-read-only";
+      pname = "crucible-phase5-cli-serve-max-sessions";
       version = "0";
       src = crucibleSrc;
 
@@ -175,7 +163,7 @@ in
           '';
         }
         {
-          name = "run-cli-serve-read-only";
+          name = "run-cli-serve-max-sessions";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -185,14 +173,21 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-cli-serve-read-only-target" \
+              --target-dir "$TMPDIR/crucible-cli-serve-max-sessions-target" \
               -p crucible-api \
-              server_ \
+              create_session_respects_live_session_limit \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-cli-serve-read-only-target" \
+              --target-dir "$TMPDIR/crucible-cli-serve-max-sessions-target" \
+              -p crucible-api \
+              server_create_session_limit \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-serve-max-sessions-target" \
               -p crucible-cli \
               cli_help \
               -- --test-threads=1
@@ -208,7 +203,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             component=crucible-cli,crucible-api
-            serve_read_only=transport-policy
+            serve_max_sessions=live-session-cap
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
