@@ -2418,6 +2418,39 @@ mod tests {
     }
 
     #[test]
+    fn temporal_graph_checkpoint_resume_resolves_cached_snapshot_without_thin_node() {
+        let scenario = generated_scenario(178);
+        let genesis = Configuration::genesis(scenario.clone());
+        let config = Configuration {
+            def: scenario.clone(),
+            schedule: generated_schedule(178, 2),
+        };
+        let mut materializer = match TemporalGraph::empty()
+            .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
+        {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid baked genesis should register: {error}"),
+        };
+        let checkpoint = match materializer.save_checkpoint(&config) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => panic!("save should materialize checkpoint: {error}"),
+        };
+        let mut graph = match TemporalGraph::empty().with_cached_snapshot(&config, checkpoint) {
+            Ok(graph) => graph,
+            Err(error) => panic!("valid cached snapshot should register: {error}"),
+        };
+
+        assert!(graph.checkpoint_node(config.id()).is_none());
+        assert_eq!(graph.checkpoint_configuration(config.id()), Some(&config));
+        let resumed = match graph.resume_checkpoint(config.id()) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("cached snapshot checkpoint should resume: {error}"),
+        };
+        assert_eq!(resumed.configuration, config.id());
+        assert_eq!(resumed.runtime.configuration, config.id());
+    }
+
+    #[test]
     fn temporal_graph_frontier_enumeration_deduplicates_by_configuration_id() {
         let scenario = generated_scenario(79);
         let frontier = Configuration::genesis(scenario.clone());

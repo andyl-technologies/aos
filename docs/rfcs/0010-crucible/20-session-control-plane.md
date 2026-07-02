@@ -1162,11 +1162,25 @@ pub enum SessionError {
     `Named` predicates and metadata-backed white-box/symbol leaves still require
     a session-visible host metadata/oracle surface before they can fire outside
     the existing shared evaluator.
-- [ ] **T-SESS-8** Wire save/resume/fork at the session level purely as
+- [x] **T-SESS-8** Wire save/resume/fork at the session level purely as
   execution-model/temporal-graph operations (fat-checkpoint materialize keyed by
   config.id with oracle validation; instantiate-from-checkpoint; instantiate a
   prefix into an independent child actor), with no bespoke restored/forked code
   path. — satisfies [SESS-18], [SESS-19]; spec §7.
+  - Completed by `checks.crucible.phase5.sessionSaveResumeFork`:
+    `TemporalGraph` now exposes checkpoint-addressed configuration lookup and
+    `resume_checkpoint`, which resolves a checkpoint to its recorded
+    configuration before delegating to the existing `resume`/`instantiate` path.
+    `crucible-session` routes runtime realization through `TemporalGraph::resume`,
+    materializes savepoints through `save_checkpoint`, returns fork handles that
+    identify both checkpoint and configuration, and adds `Engine` helpers for
+    resume-from-checkpoint and fork-from-checkpoint child actors. The actor
+    command path can also be constructed with a fork-loop factory, so a `fork`
+    command returns child mailbox/live-snapshot handles for an independently
+    spawned actor. Focused tests prove savepoint resume and checkpoint-prefix
+    fork produce independent paused actors, child mutation leaves the parent
+    snapshot unchanged, and direct checkpoint fork helpers reject loaded/running
+    parents until the caller pauses at a boundary.
 - [ ] **T-SESS-9** Implement control-operation determinism: record every
   state-mutating intervention (inject/heal, mutating Action breakpoints) as a
   Decision/control-log entry keyed by virtual-time boundary; prove an
