@@ -6610,6 +6610,17 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       helper/builtin coverage. This remains symbol metadata only: no candidate
       readiness, executable addresses, Cranelift lowering, exported wrappers, or
       `JITBuilder::symbol` registration is implemented.
+- [x] Current JIT symbol-declaration preflight precursor:
+      `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` joins
+      the stable runtime symbol manifest with callable builtin ABI metadata and
+      lowers callable builtin runtime signatures to CLIF `Signature`
+      declarations. Runtime helpers and value-only builtins remain explicit
+      declaration gaps. Tests pin a representative callable builtin declaration,
+      helper gaps for allocation and forcing symbols, value-only builtin gaps,
+      and parity with the core callable-builtin count. This is declaration
+      metadata only: no `JITModule`, `JITBuilder::symbol`, executable address,
+      exported wrapper, helper ABI signature, relocation, or native call is
+      implemented.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps

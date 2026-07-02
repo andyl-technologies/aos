@@ -1049,6 +1049,16 @@ harness, never cut for scope.
       helper/builtin coverage. This remains symbol metadata only: no candidate
       readiness, executable addresses, Cranelift lowering, exported wrappers, or
       `JITBuilder::symbol` registration is implemented.
+- [x] Current JIT symbol-declaration preflight precursor:
+      `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` combines
+      the stable runtime symbol manifest with callable builtin ABI metadata and
+      lowers those callable builtin signatures to CLIF `Signature` declarations.
+      Runtime helpers and value-only builtins remain explicit gaps. Tests pin a
+      representative callable builtin declaration, helper gaps for allocation
+      and forcing symbols, value-only builtin gaps, and parity with the core
+      callable-builtin count. This is declaration metadata only: no
+      `JITModule`, `JITBuilder::symbol`, executable address, exported wrapper,
+      helper ABI signature, relocation, or native call is implemented.
 - [x] Current `ratchet-jit` tier-up policy precursor:
       `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
       decision as safe policy metadata: a low default invocation threshold plus

@@ -56,7 +56,11 @@ pub use safety::{
     JIT_SAFETY_COMMENT_PREFIX, JIT_UNSAFE_CRATE_LINT, JitInnateUnsafeOperation,
     JitUnsafeDiscipline, jit_unsafe_discipline,
 };
-pub use symbols::{JitRuntimeSymbolInventory, jit_runtime_symbol_inventory};
+pub use symbols::{
+    JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError, JitRuntimeSymbolDeclarationGap,
+    JitRuntimeSymbolDeclarationPreflight, JitRuntimeSymbolInventory,
+    jit_runtime_symbol_declaration_preflight, jit_runtime_symbol_inventory,
+};
 pub use tier::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpDecision, TierUpDemandHint,
     TierUpObservation, TierUpPolicy, TierUpReasons,
