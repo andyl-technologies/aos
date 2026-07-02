@@ -1,11 +1,13 @@
-//! Safe tier-up policy metadata for future baseline compilation.
+//! Safe tier-up policy and slot metadata for future baseline compilation.
 //!
 //! This module names the counter-based promotion policy from RFC-0007 without
-//! compiling code, installing function pointers, or mutating thunk state. Future
-//! evaluator integration can feed invocation counters and accepted analysis or
-//! profile hints into [`TierUpPolicy`] and route
-//! [`TierUpDecision::PromoteToTier1`] to the Cranelift lowering pipeline once
-//! that pipeline exists.
+//! compiling code or calling native code. Future evaluator integration can feed
+//! invocation counters and accepted analysis or profile hints into
+//! [`TierUpPolicy`], route [`TierUpDecision::PromoteToTier1`] to the Cranelift
+//! lowering pipeline, and install the resulting opaque pointer metadata in
+//! [`JitTieredCodeSlot`] once that pipeline exists.
+
+use std::{error::Error, fmt, ptr::NonNull};
 
 use ratchet_core::Cardinality;
 
@@ -61,6 +63,35 @@ impl TierUpCounter {
         demand_hint: TierUpDemandHint,
     ) -> TierUpObservation {
         TierUpObservation::with_demand_hint(self.invocations, demand_hint)
+    }
+}
+
+/// Opaque metadata for a finalized compiled-code pointer.
+///
+/// This wrapper deliberately does not expose a callable function type. The
+/// pointer remains valid only according to the lifetime and ownership contract
+/// of the backend object that produced it, such as a Cranelift `JITModule`
+/// holder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JitCompiledCodePointer {
+    ptr: NonNull<u8>,
+}
+
+impl JitCompiledCodePointer {
+    /// Wraps non-null compiled-code pointer metadata.
+    ///
+    /// This does not dereference, cast, call, own, or extend the backend
+    /// lifetime of the pointer.
+    pub const fn from_non_null(ptr: NonNull<u8>) -> Self {
+        Self { ptr }
+    }
+
+    /// Returns the wrapped non-null pointer metadata.
+    ///
+    /// The returned pointer is not callable metadata and its validity is still
+    /// bounded by the backend owner that produced it.
+    pub const fn as_non_null(self) -> NonNull<u8> {
+        self.ptr
     }
 }
 
@@ -275,9 +306,156 @@ impl Default for TierUpPolicy {
     }
 }
 
+/// A failure while updating safe tiered-code slot metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitTieredCodeSlotError {
+    /// Tier-1 code metadata is already installed in the slot.
+    Tier1CodeAlreadyInstalled {
+        /// The tier currently selected by the slot.
+        current_tier: JitTier,
+    },
+}
+
+impl fmt::Display for JitTieredCodeSlotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tier1CodeAlreadyInstalled { current_tier } => write!(
+                formatter,
+                "tier-1 code is already installed for slot in {current_tier:?}"
+            ),
+        }
+    }
+}
+
+impl Error for JitTieredCodeSlotError {}
+
+/// Safe per-body tier state with an invocation counter beside code metadata.
+///
+/// The slot models the future thunk or lambda state layout without integrating
+/// with the evaluator heap. It stores only safe metadata: the currently selected
+/// tier, a saturating invocation counter, and an optional opaque tier-1 code
+/// pointer.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct JitTieredCodeSlot {
+    current_tier: JitTier,
+    invocation_counter: TierUpCounter,
+    tier1_code_ptr: Option<JitCompiledCodePointer>,
+}
+
+impl JitTieredCodeSlot {
+    /// Creates a cold tier-0 slot with no compiled-code metadata.
+    pub const fn new() -> Self {
+        Self {
+            current_tier: JitTier::Tier0Oracle,
+            invocation_counter: TierUpCounter::new(0),
+            tier1_code_ptr: None,
+        }
+    }
+
+    /// Creates a tier-0 slot from an explicit invocation counter.
+    pub const fn with_counter(invocation_counter: TierUpCounter) -> Self {
+        Self {
+            current_tier: JitTier::Tier0Oracle,
+            invocation_counter,
+            tier1_code_ptr: None,
+        }
+    }
+
+    /// Returns the tier currently selected by this slot.
+    pub const fn current_tier(&self) -> JitTier {
+        self.current_tier
+    }
+
+    /// Returns the invocation counter stored beside code metadata.
+    pub const fn invocation_counter(&self) -> TierUpCounter {
+        self.invocation_counter
+    }
+
+    /// Returns the installed tier-1 code pointer metadata, when present.
+    ///
+    /// The slot does not own or extend the backend lifetime for this pointer,
+    /// and callers must not cast or call it.
+    pub const fn tier1_code_ptr(&self) -> Option<JitCompiledCodePointer> {
+        self.tier1_code_ptr
+    }
+
+    /// Returns whether tier-1 code metadata has been installed.
+    pub const fn is_tier1_installed(&self) -> bool {
+        self.tier1_code_ptr.is_some()
+    }
+
+    /// Returns the policy observation for the current slot state.
+    pub const fn observation(&self) -> TierUpObservation {
+        self.invocation_counter
+            .observation()
+            .with_current_tier(self.current_tier)
+    }
+
+    /// Returns the policy observation for the current state with demand evidence.
+    pub const fn observation_with_demand_hint(
+        &self,
+        demand_hint: TierUpDemandHint,
+    ) -> TierUpObservation {
+        self.invocation_counter
+            .observation_with_demand_hint(demand_hint)
+            .with_current_tier(self.current_tier)
+    }
+
+    /// Records one invocation without accepted multi-use evidence.
+    pub fn record_invocation(&mut self, policy: TierUpPolicy) -> TierUpDecision {
+        self.record_invocation_with_demand_hint(policy, TierUpDemandHint::NoMultiUseEvidence)
+    }
+
+    /// Records one invocation and classifies the slot with `policy`.
+    pub fn record_invocation_with_demand_hint(
+        &mut self,
+        policy: TierUpPolicy,
+        demand_hint: TierUpDemandHint,
+    ) -> TierUpDecision {
+        self.invocation_counter = self.invocation_counter.record_invocation();
+        policy.decide(self.observation_with_demand_hint(demand_hint))
+    }
+
+    /// Installs opaque tier-1 code metadata for this slot.
+    ///
+    /// This updates only safe slot metadata. It does not cast the pointer, call
+    /// native code, publish into an evaluator heap object, or perform an atomic
+    /// compare-and-swap. The slot does not own or extend the backend lifetime
+    /// for `code_ptr`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JitTieredCodeSlotError::Tier1CodeAlreadyInstalled`] if tier-1
+    /// code metadata is already present.
+    pub fn install_tier1_code(
+        &mut self,
+        code_ptr: JitCompiledCodePointer,
+    ) -> Result<(), JitTieredCodeSlotError> {
+        if self.tier1_code_ptr.is_some() {
+            return Err(JitTieredCodeSlotError::Tier1CodeAlreadyInstalled {
+                current_tier: self.current_tier,
+            });
+        }
+
+        self.current_tier = JitTier::Tier1Baseline;
+        self.tier1_code_ptr = Some(code_ptr);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
+
+    fn opaque_test_code_pointer() -> JitCompiledCodePointer {
+        JitCompiledCodePointer::from_non_null(NonNull::dangling())
+    }
+
+    fn opaque_test_code_pointer_at(address: usize) -> JitCompiledCodePointer {
+        let ptr = NonNull::new(address as *mut u8).expect("test address is non-null");
+        JitCompiledCodePointer::from_non_null(ptr)
+    }
 
     #[test]
     fn default_policy_promotes_after_invocation_threshold() {
@@ -370,6 +548,105 @@ mod tests {
         assert_eq!(decision, TierUpDecision::StayInTier(JitTier::Tier1Baseline));
         assert_eq!(decision.target_tier(), JitTier::Tier1Baseline);
         assert!(!decision.should_promote());
+        assert_eq!(decision.reasons(), None);
+    }
+
+    #[test]
+    fn tiered_code_slot_starts_cold_with_counter_beside_empty_code_pointer() {
+        let slot = JitTieredCodeSlot::new();
+
+        assert_eq!(slot.current_tier(), JitTier::Tier0Oracle);
+        assert_eq!(slot.invocation_counter().invocations(), 0);
+        assert_eq!(slot.tier1_code_ptr(), None);
+        assert!(!slot.is_tier1_installed());
+        assert_eq!(
+            slot.observation(),
+            TierUpObservation::new(0).with_current_tier(JitTier::Tier0Oracle)
+        );
+    }
+
+    #[test]
+    fn tiered_code_slot_records_invocations_and_requests_promotion() {
+        let mut slot = JitTieredCodeSlot::with_counter(TierUpCounter::new(
+            DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+        ));
+
+        let decision = slot.record_invocation(TierUpPolicy::default());
+
+        assert_eq!(
+            slot.invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(slot.current_tier(), JitTier::Tier0Oracle);
+        assert_eq!(decision.reasons(), Some(TierUpReasons::new(true, false)));
+    }
+
+    #[test]
+    fn tiered_code_slot_can_promote_from_multi_use_hint_before_threshold() {
+        let mut slot = JitTieredCodeSlot::new();
+
+        let decision = slot.record_invocation_with_demand_hint(
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+        );
+
+        assert_eq!(slot.invocation_counter().invocations(), 1);
+        assert_eq!(decision.reasons(), Some(TierUpReasons::new(false, true)));
+    }
+
+    #[test]
+    fn tiered_code_slot_installs_tier_one_code_metadata_once() {
+        let mut slot = JitTieredCodeSlot::new();
+        let code_ptr = opaque_test_code_pointer();
+
+        slot.install_tier1_code(code_ptr)
+            .expect("tier-1 code metadata installs");
+
+        assert_eq!(slot.current_tier(), JitTier::Tier1Baseline);
+        assert_eq!(slot.tier1_code_ptr(), Some(code_ptr));
+        assert!(slot.is_tier1_installed());
+        assert_eq!(
+            slot.tier1_code_ptr()
+                .map(JitCompiledCodePointer::as_non_null),
+            Some(NonNull::dangling())
+        );
+    }
+
+    #[test]
+    fn tiered_code_slot_rejects_duplicate_tier_one_install() {
+        let mut slot = JitTieredCodeSlot::new();
+        let first = opaque_test_code_pointer_at(0x10);
+        let second = opaque_test_code_pointer_at(0x20);
+
+        slot.install_tier1_code(first)
+            .expect("initial install succeeds");
+
+        let error = slot
+            .install_tier1_code(second)
+            .expect_err("duplicate install is rejected");
+
+        assert_eq!(
+            error,
+            JitTieredCodeSlotError::Tier1CodeAlreadyInstalled {
+                current_tier: JitTier::Tier1Baseline
+            }
+        );
+        assert_eq!(slot.tier1_code_ptr(), Some(first));
+    }
+
+    #[test]
+    fn installed_tier_one_slot_does_not_request_repeat_promotion() {
+        let mut slot = JitTieredCodeSlot::with_counter(TierUpCounter::new(u64::MAX));
+        slot.install_tier1_code(opaque_test_code_pointer())
+            .expect("tier-1 code metadata installs");
+
+        let decision = slot.record_invocation_with_demand_hint(
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+        );
+
+        assert_eq!(slot.invocation_counter().invocations(), u64::MAX);
+        assert_eq!(decision, TierUpDecision::StayInTier(JitTier::Tier1Baseline));
         assert_eq!(decision.reasons(), None);
     }
 }

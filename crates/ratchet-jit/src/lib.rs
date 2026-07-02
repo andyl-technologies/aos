@@ -12,8 +12,9 @@
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
 //! and preflights future native-address registration metadata, [`tier`] names
-//! the first safe tier-up policy, [`warmup`] keeps the copy-and-patch hedge
-//! measurable, and [`safety`] records the unsafe-boundary discipline.
+//! the first safe tier-up policy and slot metadata, [`warmup`] keeps the
+//! copy-and-patch hedge measurable, and [`safety`] records the unsafe-boundary
+//! discipline.
 //! Runtime-symbol semantic candidate reports currently remain in
 //! `ratchet-oracle`; [`symbols`] owns only JIT-local declaration and opaque
 //! native-address registration readiness. A later shared metadata layer can move
@@ -94,8 +95,9 @@ pub use symbols::{
     jit_runtime_symbol_registration_preflight_with_candidates,
 };
 pub use tier::{
-    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpDecision, TierUpDemandHint,
-    TierUpObservation, TierUpPolicy, TierUpReasons,
+    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer, JitTier, JitTieredCodeSlot,
+    JitTieredCodeSlotError, TierUpCounter, TierUpDecision, TierUpDemandHint, TierUpObservation,
+    TierUpPolicy, TierUpReasons,
 };
 pub use warmup::{
     CopyAndPatchComparison, CopyAndPatchHedgeDecision, CopyAndPatchHedgeGate,

@@ -6733,6 +6733,16 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       already-tier-1 no-repeat promotion. This does not store counters beside
       thunks, mutate thunk state or code pointers, lower Cranelift IR, compile
       native code, install OSR, or run tier-1 code.
+- [x] Current tiered code-slot precursor:
+      `ratchet-jit::tier::JitTieredCodeSlot` stores a saturating
+      `TierUpCounter` beside optional opaque `JitCompiledCodePointer` metadata,
+      records invocations through `TierUpPolicy`, and installs tier-1 code
+      metadata once after a future compile. Tests pin cold default state,
+      threshold and multi-use promotion decisions, duplicate-install rejection,
+      and already-installed tier-1 no-repeat promotion. This is safe slot
+      metadata only: no evaluator heap thunk is rewritten, no atomic thunk-state
+      CAS is implemented, no Cranelift lowering/finalization is triggered, and no
+      code pointer is cast or called.
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the
       `transmute` of code pointers is the documented innate-unsafe call (`S-17`).
