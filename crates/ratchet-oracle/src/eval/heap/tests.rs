@@ -6909,6 +6909,7 @@ fn precise_root_scan_reports_suspended_thunk_capture_variants() {
             first_argument_value,
             EvalModuleId::ROOT,
             IrId::new(5),
+            Span::new(3, 4),
             second_argument_value,
         ))
         .expect("apply2 thunk allocates");

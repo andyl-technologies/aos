@@ -38,6 +38,7 @@ impl TreeWalk {
                 span,
                 name,
                 attrs_id,
+                self.node(attrs_id)?.span,
                 entry.value,
             )?;
             mapped.push(AttrEntry::new(entry.key, value));
@@ -273,6 +274,7 @@ impl TreeWalk {
                 span,
                 name,
                 list_id,
+                self.node(list_id)?.span,
                 values,
             )?;
             entries.push(AttrEntry::new(key, value));

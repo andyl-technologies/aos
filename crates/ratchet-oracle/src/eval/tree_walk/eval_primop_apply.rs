@@ -130,6 +130,7 @@ impl TreeWalk {
         function: Value,
         function_span: Span,
         argument_id: IrId,
+        argument_span: Span,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
         let Some(functor) = self.functor_attr_value(function_id, function_span, function)? else {
@@ -153,8 +154,24 @@ impl TreeWalk {
             function_span,
             function,
             argument_id,
+            argument_span,
             argument,
         )
+    }
+
+    pub(crate) fn apply_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: Value,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let mut function = function;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            function = self.force_demanded_value(id, span, function)?;
+        }
+        function = self.ensure_applicable_value(id, span, function)?;
+        self.apply_lambda_value_with_argument_span(id, span, id, function, span, id, span, argument)
     }
 
     pub(super) fn apply_lambda_value(
@@ -167,10 +184,34 @@ impl TreeWalk {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
+        let argument_span = self.node(argument_id)?.span;
+        self.apply_lambda_value_with_argument_span(
+            id,
+            span,
+            function_id,
+            function,
+            function_span,
+            argument_id,
+            argument_span,
+            argument,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_with_argument_span(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
         match function.tag() {
             ValueTag::Lambda => {}
             ValueTag::Primop => {
-                let argument_span = self.node(argument_id)?.span;
                 return self.apply_primop_value(
                     id,
                     span,
@@ -193,6 +234,7 @@ impl TreeWalk {
                     function,
                     function_span,
                     argument_id,
+                    argument_span,
                     argument,
                 );
             }
@@ -216,7 +258,6 @@ impl TreeWalk {
                 function_span,
             )
         })?;
-        let argument_span = self.node(argument_id)?.span;
         self.with_current_module(lambda.module(), |eval| {
             let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
             let call_frame = EvalFrame::new(slot_count).map_err(|source| {
@@ -288,31 +329,34 @@ impl TreeWalk {
         first_argument_span: Span,
         first_argument: Value,
         second_argument_id: IrId,
+        second_argument_span: Span,
         second_argument: Value,
     ) -> Result<Value, TreeWalkError> {
         let mut function = function;
         if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
             function = self.force_demanded_value(function_id, function_span, function)?;
         }
-        let mut partial = self.apply_lambda_value(
+        let mut partial = self.apply_lambda_value_with_argument_span(
             id,
             span,
             function_id,
             function,
             function_span,
             first_argument_id,
+            first_argument_span,
             first_argument,
         )?;
         if !matches!(partial.tag(), ValueTag::Lambda | ValueTag::Primop) {
             partial = self.force_demanded_value(function_id, function_span, partial)?;
         }
-        self.apply_lambda_value(
+        self.apply_lambda_value_with_argument_span(
             id,
             span,
             function_id,
             partial,
             first_argument_span,
             second_argument_id,
+            second_argument_span,
             second_argument,
         )
     }

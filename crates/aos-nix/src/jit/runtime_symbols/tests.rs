@@ -16,6 +16,7 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 ];
 
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
+const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_force", "aos_force_deep"];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
@@ -34,6 +35,15 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_address
     );
     assert_ne!(env_get.address().as_nonzero_usize().get(), 0);
     assert!(preflight.missing_binding_for("aos_env_get").is_none());
+    let apply = preflight
+        .address_candidate_for("aos_apply")
+        .expect("apply helper has a Rust-callable address candidate");
+    assert_eq!(
+        apply.kind(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
+    );
+    assert_ne!(apply.address().as_nonzero_usize().get(), 0);
+    assert!(preflight.missing_binding_for("aos_apply").is_none());
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         let force = preflight
             .address_candidate_for(symbol_name)
@@ -91,6 +101,10 @@ fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
         .helper_role_address_candidates(RuntimeHelperRole::EnvironmentAccess)
         .map(|candidate| candidate.symbol_name())
         .collect::<Vec<_>>();
+    let call_control_symbols = preflight
+        .helper_role_address_candidates(RuntimeHelperRole::CallControl)
+        .map(|candidate| candidate.symbol_name())
+        .collect::<Vec<_>>();
     let write_barrier_symbols = preflight
         .helper_role_address_candidates(RuntimeHelperRole::WriteBarrier)
         .map(|candidate| candidate.symbol_name())
@@ -102,6 +116,7 @@ fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
 
     assert_eq!(allocation_symbols, EXPECTED_ALLOCATION_SYMBOLS);
     assert_eq!(allocation_convenience_symbols, allocation_symbols);
+    assert_eq!(call_control_symbols, EXPECTED_CALL_CONTROL_SYMBOLS);
     assert_eq!(env_access_symbols, EXPECTED_ENV_ACCESS_SYMBOLS);
     assert_eq!(forcing_symbols, EXPECTED_FORCE_SYMBOLS);
     assert_eq!(write_barrier_symbols, EXPECTED_WRITE_BARRIER_SYMBOLS);
@@ -110,6 +125,7 @@ fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
     }
     for symbol_name in EXPECTED_ENV_ACCESS_SYMBOLS
         .iter()
+        .chain(EXPECTED_CALL_CONTROL_SYMBOLS)
         .chain(EXPECTED_FORCE_SYMBOLS)
         .chain(EXPECTED_WRITE_BARRIER_SYMBOLS)
     {
@@ -141,6 +157,18 @@ fn jit_runtime_symbol_address_candidates_feed_jit_registration_preflight() {
                     .address())
     );
     assert!(registration.gap_for_symbol("aos_env_get").is_none());
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(
+            registration
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("call-control candidate exists")
+                        .address())
+        );
+        assert!(registration.gap_for_symbol(symbol_name).is_none());
+    }
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             registration
@@ -212,6 +240,18 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
                     .address())
     );
     assert!(registration.gap_for_symbol("aos_env_get").is_none());
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(
+            registration
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == candidates
+                        .address_candidate_for(symbol_name)
+                        .expect("call-control candidate exists")
+                        .address())
+        );
+        assert!(registration.gap_for_symbol(symbol_name).is_none());
+    }
     assert!(
         registration
             .binding_for_symbol("aos_gc_write_barrier")
@@ -238,13 +278,6 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
         );
         assert!(registration.gap_for_symbol(symbol_name).is_none());
     }
-    assert!(matches!(
-        registration.gap_for_symbol("aos_apply"),
-        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
-            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
-            ..
-        })
-    ));
     assert!(matches!(
         registration.gap_for_symbol("aos_deopt"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
@@ -295,6 +328,15 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
                     == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl))
         );
     }
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_some_and(
+                    |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
+                )
+        );
+    }
     assert!(
         registration
             .native_export_gap_for_symbol("aos_alloc_attrs")
@@ -316,6 +358,19 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
                         .is_some_and(|blockers| !blockers.is_empty())
             })
     );
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(
+            registration
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| {
+                    gap.missing_exported_c_abi_wrapper_role()
+                        == Some(RuntimeHelperRole::CallControl)
+                        && gap
+                            .missing_exported_call_control_blockers()
+                            .is_some_and(|blockers| !blockers.is_empty())
+                })
+        );
+    }
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             registration
@@ -365,13 +420,9 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(preflight.gap_for_symbol(symbol_name).is_none());
     }
-    assert!(matches!(
-        preflight.gap_for_symbol("aos_apply"),
-        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
-            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
-            ..
-        })
-    ));
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(preflight.gap_for_symbol(symbol_name).is_none());
+    }
     assert!(matches!(
         preflight.gap_for_symbol("aos_deopt"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
@@ -425,6 +476,31 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
                 .address_provenance_gap_for_symbol(symbol_name)
                 .is_some_and(|gap| gap.kind()
                     == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl))
+        );
+    }
+    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
+        assert!(
+            preflight
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == preflight
+                        .address_candidate_preflight()
+                        .address_candidate_for(symbol_name)
+                        .expect("call-control candidate exists")
+                        .address())
+        );
+        assert!(
+            preflight
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| gap.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::CallControl))
+        );
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_some_and(
+                    |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
+                )
         );
     }
     assert!(

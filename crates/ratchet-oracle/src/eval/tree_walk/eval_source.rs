@@ -445,6 +445,7 @@ impl TreeWalk {
             span,
             path_value,
             id,
+            span,
             type_value,
         )?;
         let value = self.force_value(id, span, value)?;

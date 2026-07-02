@@ -571,6 +571,7 @@ fn jit_address_candidate_for_helper_callable(
 fn helper_callable_address(binding: RuntimeHelperRustCallableBinding) -> *const () {
     match binding {
         RuntimeHelperRustCallableBinding::Allocation(binding) => binding.address().as_ptr(),
+        RuntimeHelperRustCallableBinding::CallControl(binding) => binding.address().as_ptr(),
         RuntimeHelperRustCallableBinding::EnvironmentAccess(binding) => binding.address().as_ptr(),
         RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr(),
         RuntimeHelperRustCallableBinding::WriteBarrier(binding) => binding.address().as_ptr(),

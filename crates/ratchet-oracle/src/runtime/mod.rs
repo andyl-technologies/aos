@@ -8,6 +8,7 @@
 //! historical `crate::runtime::builtins` path for the runtime tiers.
 
 pub mod alloc;
+pub mod apply;
 pub mod barrier;
 pub mod env;
 pub mod forcing;

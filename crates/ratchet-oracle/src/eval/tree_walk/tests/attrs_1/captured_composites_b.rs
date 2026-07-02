@@ -188,6 +188,7 @@ fn synthetic_apply2_thunks_do_not_build_force_cache_subjects() {
             Span::new(0, 1),
             Value::int(2),
             ir.root,
+            Span::new(0, source.len() as u32),
             Value::int(3),
         )
         .expect("apply2 thunk allocates");

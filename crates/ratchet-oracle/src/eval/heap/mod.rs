@@ -110,6 +110,8 @@ pub(crate) enum EvalThunkKind {
         first_argument_value: Value,
         /// The IR node associated with the second argument.
         second_argument: EvalNodeRef,
+        /// The source span associated with the second argument.
+        second_argument_span: Span,
         /// The second lazy argument value.
         second_argument_value: Value,
     },

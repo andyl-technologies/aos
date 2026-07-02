@@ -688,6 +688,7 @@ impl TreeWalk {
         first_argument_span: Span,
         first_argument: Value,
         second_argument_id: IrId,
+        second_argument_span: Span,
         second_argument: Value,
     ) -> Result<Value, TreeWalkError> {
         let value = self
@@ -703,6 +704,7 @@ impl TreeWalk {
                 first_argument,
                 self.current_module,
                 second_argument_id,
+                second_argument_span,
                 second_argument,
             ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
@@ -879,6 +881,7 @@ impl TreeWalk {
                     first_argument_span,
                     first_argument_value,
                     second_argument,
+                    second_argument_span,
                     second_argument_value,
                 } => self.with_current_module(function.module(), |eval| {
                     eval.apply_lambda_value_2(
@@ -891,6 +894,7 @@ impl TreeWalk {
                         *first_argument_span,
                         *first_argument_value,
                         second_argument.id(),
+                        *second_argument_span,
                         *second_argument_value,
                     )
                 }),

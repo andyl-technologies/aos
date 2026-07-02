@@ -73,6 +73,7 @@ impl EvalThunk {
         first_argument_value: Value,
         second_argument_module: EvalModuleId,
         second_argument_id: IrId,
+        second_argument_span: Span,
         second_argument_value: Value,
     ) -> Self {
         Self {
@@ -84,6 +85,7 @@ impl EvalThunk {
                 first_argument_span,
                 first_argument_value,
                 second_argument: EvalNodeRef::new(second_argument_module, second_argument_id),
+                second_argument_span,
                 second_argument_value,
             },
             cell: ThunkCell::new(),
