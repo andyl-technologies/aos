@@ -11,6 +11,7 @@ pub mod heap;
 pub mod internal_diff;
 pub mod module;
 pub mod parallel;
+pub mod parallel_failure;
 pub mod parallel_heap;
 pub mod parallel_output;
 pub mod thunk;
@@ -29,6 +30,10 @@ pub use parallel::{
     ParallelTaskExecution, ParallelTaskPlacement, ParallelTopLevelError,
     ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan, ParallelWorkerExecutionReport,
     execute_parallel_top_level, parallel_top_level_seed_plan,
+};
+pub use parallel_failure::{
+    ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTopLevelError,
+    ParallelFallibleTopLevelReport, ParallelTaskOutcome, execute_parallel_top_level_fallible,
 };
 pub use parallel_heap::{
     ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,

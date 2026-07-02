@@ -6671,6 +6671,22 @@ nurseries build on the bump arena.
       change tree-walk allocation, install a single-entry representation,
       implement call-by-name lowering, improve cardinality/escape precision, or
       close the loom/Miri/TSan audit.
+- [x] Current fallible L1 root execution precursor:
+      `ratchet-oracle::eval::parallel_failure` adds a safe fallible top-level
+      executor for independent roots. Root-local failures are stored as per-task
+      outcomes, outcomes are sorted by stable task index before reporting,
+      `canonical_error` selects the lowest-index observed failure, and
+      fail-fast mode sets a shared cancellation flag that workers observe before
+      probing queues for more top-level work; workers already past that check may
+      still start another task. Tests cover collect-all error collation, stable
+      success ordering, cooperative cancellation before later task-boundary
+      checks, canonical selection over observed multi-worker failures, no
+      cancellation in collect-all mode, worker accounting, empty task sets, worker
+      panic reporting, and stable policy display. This is an L1
+      root-failure/cancellation contract only: it does not store per-thunk
+      `Failed` payloads, re-raise stored thunk errors to waiters, wire GC-poll
+      safepoints, interrupt in-flight work, evaluate Nix derivations, or satisfy
+      the loom/Miri/TSan audit.
 
 **Conformance (hold parity).**
 

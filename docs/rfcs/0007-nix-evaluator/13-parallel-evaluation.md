@@ -978,6 +978,22 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
 ### Failure, exceptions, cancellation (§6)
 
 - [ ] Per-thunk `Failed` state (error captured once, re-raised identically by all waiters); L1 island isolation; cooperative cancellation checked at GC-poll/task-boundary safepoints (never a forced mid-force kill); deterministic canonical-order error selection (§6) — **P3.5**, `C-12`.
+- [x] Current fallible L1 root execution precursor:
+      `ratchet-oracle::eval::parallel_failure` executes independent top-level
+      tasks whose root-local failures are collected as data rather than scheduler
+      corruption, keeps successful and failed outcomes sorted by stable task
+      index, selects the canonical observed error by lowest task index, and
+      models fail-fast cancellation as a shared flag checked before workers probe
+      queues for more top-level work; workers already past that check may still
+      start another task. Unit tests cover collect-all error collation, stable
+      success ordering, cooperative task-boundary cancellation, canonical
+      selection over observed multi-worker failures, no cancellation under
+      collect-all, worker accounting, empty task sets, worker panic reporting, and
+      stable policy display. This is the L1 root-failure contract only; it does
+      not attach payloads to per-thunk `Failed` states, re-raise stored thunk
+      errors to waiters, wire GC-poll safepoints, interrupt in-flight work,
+      integrate with Nix derivation evaluation, or satisfy the loom/Miri/TSan gate
+      (§6) — **P3.5** precursor, `C-12`/`R-4`.
 
 ## References
 
