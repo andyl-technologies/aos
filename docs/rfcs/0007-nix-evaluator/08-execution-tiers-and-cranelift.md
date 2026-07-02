@@ -1358,6 +1358,20 @@ harness, never cut for scope.
       no code pointer is cast or called, and no registered helper address is
       dereferenced or called; full/native runtime-symbol registration for
       unrelated stable symbols remains open.
+- [x] Current `aos-nix` evaluator-thunk install readiness preflight:
+      `aos_nix::jit::nix_jit_registered_tier1_thunk_install_readiness_for_ir_root()`
+      composes the registered install-plan handoff with read-only evaluator
+      thunk inspection. It reports missing tier-1 code, missing module
+      ownership, non-node thunks, module-qualified IR-root mismatches, and
+      non-suspended thunk states before exposing the future publication gaps:
+      heap tier-slot storage, atomic thunk-state publish, and native thunk-entry
+      dispatch. Tests cover cold no-code reports, a promoted suspended-node
+      thunk, non-node rejection, IR-root mismatch, same-IR-id module mismatch,
+      missing module ownership for an already-installed slot, and forced-thunk
+      rejection. This remains safe readiness plumbing only: no evaluator heap
+      thunk is mutated, no atomic thunk-state CAS runs, no code pointer is cast
+      or called, and no registered helper address is dereferenced or called;
+      full/native runtime-symbol registration remains open.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

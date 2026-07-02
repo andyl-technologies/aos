@@ -5326,6 +5326,20 @@ and helps the oracle directly.
       thunk-state CAS, cast or call code pointers, dereference registered
       addresses, call native code, or complete full/native runtime-symbol
       registration for unrelated stable symbols.
+- [x] Current `aos-nix` evaluator-thunk install readiness preflight:
+      `aos_nix::jit::nix_jit_registered_tier1_thunk_install_readiness_for_ir_root()`
+      wraps the registered install plan in a read-only report against a target
+      evaluator thunk. The report distinguishes missing tier-1 code, missing
+      module ownership, non-node thunks, module-qualified IR-root mismatches,
+      and non-suspended thunk states from the future publication gaps: heap
+      tier-slot storage, atomic thunk-state publish, and native thunk-entry
+      dispatch. Tests cover cold no-code reports, a promoted suspended-node
+      thunk, non-node rejection, IR-root mismatch, same-IR-id module mismatch,
+      missing module ownership for an already-installed slot, and forced-thunk
+      rejection. This is safe readiness plumbing only: it does not mutate heap
+      thunks, perform atomic thunk-state CAS, cast or call code pointers,
+      dereference registered addresses, call native code, or complete
+      full/native runtime-symbol registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context
