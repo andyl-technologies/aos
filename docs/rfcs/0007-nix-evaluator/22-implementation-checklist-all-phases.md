@@ -5625,9 +5625,10 @@ and helps the oracle directly.
       so the precomputed next remembered set can include deduplicated dirty-card
       rescan edges while publication still validates only the source remembered
       snapshot. Unit tests cover dirty remembered-edge success, dirty
-      unremembered survivor expansion, dirty-old-field rewrite/writeback
-      metadata, old-field metadata capture, and rescan publication of
-      unremembered targets. This remains a planning bridge only; live root/field
+      unremembered survivor expansion for copied and promoted targets,
+      dirty-old-field rewrite/writeback metadata, old-field metadata capture,
+      and rescan publication of unremembered targets. This remains a planning
+      bridge only; live root/field
       mutation, live card-table clearing, semispace ownership, and collector
       dispatch remain open.
 - [x] Current allocation-poll card-table commit-buffer precursor:

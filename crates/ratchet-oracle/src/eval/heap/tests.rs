@@ -4684,6 +4684,111 @@ fn collector_poll_minor_gc_card_table_plan_adds_dirty_unremembered_survivor_edge
 }
 
 #[test]
+fn collector_poll_minor_gc_card_table_plan_promotes_dirty_unremembered_survivor_edge() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let permanent_parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, permanent_parent)
+        .expect("permanent parent root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let mut card_table = GcCardTable::default();
+    card_table
+        .mark_source(gc_address(permanent_parent))
+        .expect("permanent parent card marks");
+
+    let planned = heap
+        .plan_collector_poll_minor_gc_with_card_table(
+            &scan,
+            remembered_set.snapshot(),
+            card_table.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("dirty unremembered edge enters the survivor frontier");
+
+    assert_eq!(planned.plan().survivors().len(), 1);
+    assert_eq!(planned.plan().survivors()[0].address(), gc_address(child));
+    assert_eq!(
+        planned.plan().survivors()[0].action(),
+        MinorGcSurvivorAction::PromoteToOld
+    );
+    assert_eq!(planned.reference_slots().len(), 2);
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::DirtyOldField {
+            object: gc_address(permanent_parent),
+            field_index: 0,
+            source: HeapEdgeSource::ListElement { index: 0 },
+        }
+    );
+
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x3000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan includes promoted dirty old-field survivor");
+    let copy = &commit.commit_plan().object_copies().copies()[0];
+
+    assert_eq!(copy.source(), gc_address(child));
+    assert_eq!(copy.destination_generation(), HeapGeneration::Old);
+    assert_eq!(commit.commit_plan().next_remembered_set().edges(), &[]);
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites().len(),
+        1
+    );
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites()[0].slot(),
+        1
+    );
+    assert_eq!(
+        commit.commit_plan().reference_rewrites().rewrites()[0].replacement(),
+        copy.relocated_value()
+    );
+
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("promoted dirty old-field writeback plan derives");
+    assert_eq!(writeback_plan.len(), 1);
+    assert_eq!(writeback_plan.writebacks()[0].slot(), 1);
+    assert_eq!(
+        writeback_plan.writebacks()[0].validation_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        writeback_plan.writebacks()[0].writeback_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        writeback_plan.writebacks()[0].replacement(),
+        ResolvedValueGeneration::Heap {
+            address: copy.destination(),
+            generation: HeapGeneration::Old,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_card_table_plan_preserves_remembered_order_before_dirty_edges() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
