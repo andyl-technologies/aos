@@ -5234,6 +5234,17 @@ and helps the oracle directly.
       only: no executable addresses, exported wrappers, `JITBuilder::symbol`
       registrations, Cranelift lowering, native trap transfer, or compiled
       artifact relinking is implemented.
+- [x] Current runtime symbol ABI-signature plan precursor:
+      `runtime::helpers::runtime_symbol_abi_signature_plan()` is the checked
+      completeness gate over the ABI-signature preflight. It returns a
+      `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
+      signature metadata and currently returns an incomplete-plan error carrying
+      the full preflight while helper/value-only gaps remain. Tests pin the
+      missing count, representative helper and value-only builtin gaps,
+      preserved callable builtin metadata, and a synthetic complete conversion
+      path. This is metadata gating only: no executable addresses, exported
+      wrappers, `JITBuilder::symbol` registrations, Cranelift lowering, native
+      trap transfer, or compiled artifact relinking is implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches

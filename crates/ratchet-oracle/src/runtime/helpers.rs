@@ -332,6 +332,32 @@ pub fn runtime_symbol_registration_preflight() -> RuntimeSymbolRegistrationPrefl
 pub type RuntimeSymbolAbiSignaturePreflightResult =
     Result<RuntimeSymbolAbiSignaturePreflight, RuntimeSymbolNameError>;
 
+/// Result returned when requiring complete runtime-symbol ABI-signature metadata.
+pub type RuntimeSymbolAbiSignaturePlanResult =
+    Result<RuntimeSymbolAbiSignaturePlan, RuntimeSymbolAbiSignaturePlanError>;
+
+/// A failure while preparing complete runtime-symbol ABI-signature metadata.
+#[derive(Debug, Error)]
+pub enum RuntimeSymbolAbiSignaturePlanError {
+    /// The core runtime symbol or builtin call manifest could not be built.
+    #[error("failed to build runtime symbol ABI-signature metadata")]
+    SymbolManifest {
+        /// The underlying stable-symbol manifest error.
+        #[from]
+        source: RuntimeSymbolNameError,
+    },
+    /// Some runtime symbols have no ABI-signature metadata.
+    #[error(
+        "runtime symbol ABI-signature metadata is incomplete: {missing_count} symbol signatures missing"
+    )]
+    Incomplete {
+        /// The number of symbols still missing ABI-signature metadata.
+        missing_count: usize,
+        /// The full preflight report, including bindable and missing symbols.
+        preflight: RuntimeSymbolAbiSignaturePreflight,
+    },
+}
+
 /// Builds a runtime-symbol report for helper and builtin ABI-signature metadata.
 ///
 /// The report consumes [`runtime_symbol_binding_manifest`], preserves its order,
@@ -390,6 +416,18 @@ pub fn runtime_symbol_abi_signature_preflight() -> RuntimeSymbolAbiSignaturePref
         signature_bindings,
         missing_bindings,
     ))
+}
+
+/// Builds the complete runtime-symbol ABI-signature plan.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolAbiSignaturePlanError::SymbolManifest`] if the core
+/// runtime symbol manifest or the builtin call manifest cannot be built. Returns
+/// [`RuntimeSymbolAbiSignaturePlanError::Incomplete`] while any runtime symbol
+/// still lacks ABI-signature metadata.
+pub fn runtime_symbol_abi_signature_plan() -> RuntimeSymbolAbiSignaturePlanResult {
+    runtime_symbol_abi_signature_preflight()?.into_abi_signature_plan()
 }
 
 /// Result returned when building runtime-symbol Rust-callable readiness metadata.
@@ -666,6 +704,23 @@ impl RuntimeSymbolAbiMissingBinding {
     }
 }
 
+/// The complete set of runtime-symbol ABI signatures required before native binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolAbiSignaturePlan {
+    signature_bindings: Vec<RuntimeSymbolAbiSignatureBinding>,
+}
+
+impl RuntimeSymbolAbiSignaturePlan {
+    fn new(signature_bindings: Vec<RuntimeSymbolAbiSignatureBinding>) -> Self {
+        Self { signature_bindings }
+    }
+
+    /// Returns ABI-signature metadata in runtime symbol-manifest projection order.
+    pub fn signature_bindings(&self) -> &[RuntimeSymbolAbiSignatureBinding] {
+        &self.signature_bindings
+    }
+}
+
 /// A deterministic runtime-symbol report for ABI-signature metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSymbolAbiSignaturePreflight {
@@ -697,6 +752,26 @@ impl RuntimeSymbolAbiSignaturePreflight {
     /// Returns true when every runtime symbol has ABI-signature metadata.
     pub fn is_complete(&self) -> bool {
         self.missing_bindings.is_empty()
+    }
+
+    /// Converts a complete preflight report into ABI-signature metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSymbolAbiSignaturePlanError::Incomplete`] when any
+    /// runtime symbol still lacks ABI-signature metadata.
+    pub fn into_abi_signature_plan(
+        self,
+    ) -> Result<RuntimeSymbolAbiSignaturePlan, RuntimeSymbolAbiSignaturePlanError> {
+        let missing_count = self.missing_bindings.len();
+        if missing_count == 0 {
+            Ok(RuntimeSymbolAbiSignaturePlan::new(self.signature_bindings))
+        } else {
+            Err(RuntimeSymbolAbiSignaturePlanError::Incomplete {
+                missing_count,
+                preflight: self,
+            })
+        }
     }
 }
 
@@ -1285,6 +1360,54 @@ mod tests {
                 .iter()
                 .all(|missing| missing.symbol_name() != "nix.builtin.derivationStrict")
         );
+    }
+
+    #[test]
+    fn runtime_symbol_abi_signature_preflight_converts_complete_report_to_plan() {
+        let helper_binding = runtime_helper_bindings()
+            .first()
+            .copied()
+            .expect("runtime helper inventory has at least one binding");
+        let signature_bindings = vec![RuntimeSymbolAbiSignatureBinding::Helper(helper_binding)];
+        let preflight =
+            RuntimeSymbolAbiSignaturePreflight::new(signature_bindings.clone(), Vec::new());
+
+        let plan = preflight
+            .into_abi_signature_plan()
+            .expect("complete ABI-signature preflight converts");
+
+        assert_eq!(plan.signature_bindings(), signature_bindings.as_slice());
+    }
+
+    #[test]
+    fn runtime_symbol_abi_signature_plan_rejects_until_all_symbols_have_metadata() {
+        let error = runtime_symbol_abi_signature_plan()
+            .expect_err("current ABI-signature plan rejects incomplete metadata");
+        let RuntimeSymbolAbiSignaturePlanError::Incomplete {
+            missing_count,
+            preflight,
+        } = error
+        else {
+            panic!("expected incomplete ABI-signature plan error");
+        };
+
+        assert_eq!(missing_count, preflight.missing_bindings().len());
+        assert!(!preflight.is_complete());
+        assert!(preflight.signature_bindings().iter().any(|binding| {
+            binding.builtin_call_binding().is_some_and(|builtin| {
+                builtin.symbol_name() == "nix.builtin.derivationStrict" && builtin.arity() == 1
+            })
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_force"
+                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "nix.builtin.true"
+                && missing
+                    .builtin_missing_binding()
+                    .is_some_and(|builtin| builtin.builtin_name() == b"true")
+        }));
     }
 
     #[test]

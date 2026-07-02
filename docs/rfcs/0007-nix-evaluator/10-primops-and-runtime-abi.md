@@ -836,6 +836,17 @@ harness, never cut for scope.
       helper/value-only gaps. This is not executable ABI registration: no
       addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
       lowering, or compiled artifact relinking are implemented.
+- [x] Current runtime symbol ABI-signature plan precursor:
+      `runtime_symbol_abi_signature_plan()` turns the ABI-signature preflight
+      into a checked completeness gate: callers receive a
+      `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
+      signature metadata. Today it returns an incomplete-plan error carrying the
+      preflight because forcing/call/attr/error helpers and value-only builtins
+      remain gaps. Tests pin the missing count, representative helper and
+      value-only builtin gaps, preserved callable builtin metadata, and a
+      synthetic complete conversion path. This is metadata gating only; no
+      addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
+      lowering, or compiled artifact relinking are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata

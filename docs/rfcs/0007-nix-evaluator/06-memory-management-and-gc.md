@@ -1008,6 +1008,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       helper/value-only gaps. This is signature metadata only: no executable
       addresses, exported wrappers, `JITBuilder::symbol` registrations, or
       native trap-transfer paths are implemented.
+- [x] Current runtime symbol ABI-signature plan precursor:
+      `runtime::helpers::runtime_symbol_abi_signature_plan()` is the checked
+      completeness gate over the ABI-signature preflight. It converts only a
+      complete report into a `RuntimeSymbolAbiSignaturePlan` and currently
+      returns an incomplete-plan error preserving the full preflight while
+      helper/value-only gaps remain. Tests pin the incomplete error's missing
+      count and representative helper/builtin gaps plus a synthetic complete
+      conversion path. This is still metadata gating only: no executable
+      addresses, exported wrappers, `JITBuilder::symbol` registrations, or
+      native trap-transfer paths are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches

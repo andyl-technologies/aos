@@ -984,6 +984,15 @@ harness, never cut for scope.
       representative callable builtin metadata, and current helper/value-only
       gaps. This does not attach executable addresses, export wrappers, lower
       Cranelift IR, or call `JITBuilder::symbol`.
+- [x] Current runtime symbol ABI-signature plan precursor:
+      `runtime_symbol_abi_signature_plan()` is the checked completeness gate for
+      that ABI-signature metadata. It returns a `RuntimeSymbolAbiSignaturePlan`
+      only when the preflight has no gaps, and currently returns an incomplete
+      error with the preserved preflight while helper/value-only gaps remain.
+      Tests cover the missing count, representative current gaps, preserved
+      callable builtin metadata, and a synthetic complete conversion. This is
+      still metadata gating only; it does not attach executable addresses, export
+      wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
