@@ -154,8 +154,8 @@
         needle = "engine_transition_table_matches_lifecycle_model_for_current_commands";
       }
       {
-        label = "current engine gap whitelist";
-        needle = "current_engine_lifecycle_pair_is_realized";
+        label = "all current command kinds exercised";
+        needle = "for command_kind in SessionCommandKind::ALL";
       }
       {
         label = "side-effect-free rejection helper";

@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b5bb6bec8fcf4c1a`
+Checklist sync digest: `rfc0010-checklist-v1:a04398e732953be1`
 
 ## The phase ladder
 
@@ -208,6 +208,11 @@ long-held locks.
   lifecycle model, proves the pure transition table is total and non-wedging for
   generated representative command streams, and checks realized model/engine
   pairs with typed, side-effect-free rejections.
+  `T-SESS-4` is green through `checks.crucible.phase5.sessionCommandSet`, which
+  adds reply-bearing command payloads for fault injection/healing,
+  breakpoint insert/remove, savepoints, fork, and query, maps them into the
+  session engine, scheduler control queue, and temporal graph, and verifies
+  successful and rejected oneshot replies.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

@@ -1147,6 +1147,12 @@ in rec {
       taskIds = ["T-SESS-3"];
       dependencies = [phase3.gates.schedulerLiveness.rawGate];
     };
+    sessionCommandSet = import ./phase5-session-command-set.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionCommandSet";
+      taskIds = ["T-SESS-4"];
+      dependencies = [phase5.sessionLifecycle];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

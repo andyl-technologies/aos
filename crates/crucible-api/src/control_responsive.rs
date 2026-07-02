@@ -283,9 +283,9 @@ fn session_command_for(operation: ControlOperationKind) -> SessionCommand {
     match operation {
         ControlOperationKind::Pause => SessionCommand::Pause,
         ControlOperationKind::Snapshot => SessionCommand::Snapshot,
-        ControlOperationKind::Fork => SessionCommand::Fork,
+        ControlOperationKind::Fork => SessionCommand::fork_current(),
         ControlOperationKind::Inject => SessionCommand::Inject,
-        ControlOperationKind::Query => SessionCommand::Query,
+        ControlOperationKind::Query => SessionCommand::query_snapshot(),
     }
 }
 

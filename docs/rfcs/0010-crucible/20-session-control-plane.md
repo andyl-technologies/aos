@@ -1084,13 +1084,23 @@ pub enum SessionError {
     `Engine::apply_command` pairs, and side-effect-free typed rejection paths
     that name the rejecting state and command. The check depends on
     `checks.crucible.phase3.gates.schedulerLiveness`; the reply-carrying §4
-    command payloads and operation mappings remain tracked by unchecked
+    command payloads and operation mappings are completed separately by
     `T-SESS-4`.
-- [ ] **T-SESS-4** Implement the closed command set (start/continue/pause/step/
+- [x] **T-SESS-4** Implement the closed command set (start/continue/pause/step/
   stop/inject_fault/heal_fault/set+remove breakpoint/create_savepoint/fork/query)
   with `reply` oneshots, mapping each to its model/graph/scheduler operation
   (§4.1); make start/continue/fork single `instantiate` call sites (05 §5). —
   satisfies [SESS-10], [SESS-11]; spec §4, §4.1.
+  - Completed by `checks.crucible.phase5.sessionCommandSet`:
+    `crucible-session` now carries the reply-bearing §4 command payloads for
+    typed fault injection/healing, breakpoint insert/remove, savepoint creation,
+    fork, and query. The engine maps breakpoint commands into the actor-owned
+    registry, savepoint/fork through `TemporalGraph::save_checkpoint`, running
+    fault/query commands through queued scheduler control operations, and actor
+    command rejection into typed reply completion. Focused tests cover successful
+    reply delivery across engine boundaries and side-effect-free rejection
+    replies. Full breakpoint predicate evaluation and independent forked child
+    actors remain tracked by `T-SESS-7` and `T-SESS-8`.
 - [ ] **T-SESS-5** Implement the five step modes (Quantum/Event/Assertion/Timer/
   Duration), each resolving to a deterministic stop point, interruptible by
   pause/stop, landing at the same configuration on every host. — satisfies

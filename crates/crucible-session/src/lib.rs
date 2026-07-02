@@ -14,20 +14,23 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, Configuration, ContentHash, ControlOperation, ControlOperationKind,
-    DebugReverseStepGrain, Decision, EngineError, Fault, FaultTag, QuantumLoop, QuantumOutcome,
-    QuantumRequest, RuntimeState, Schedule, SchedulerError, SchedulerEventLogEntry, TemporalGraph,
-    VirtualTime, instantiate,
+    Action, Checkpoint, Condition, Configuration, ContentHash, ControlOperation,
+    ControlOperationKind, DebugReverseStepGrain, Decision, EngineError, Fault, FaultTag,
+    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, Schedule, SchedulerError,
+    SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::oneshot;
 
 /// Number of live event-log frames retained by the broadcast tail.
 pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
@@ -221,7 +224,8 @@ impl From<&PauseReason> for PauseReasonKind {
 /// evaluated at deterministic event-log boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BreakpointSet {
-    ids: BTreeSet<u64>,
+    specs: BTreeMap<BreakpointId, BreakpointSpec>,
+    next_id: BreakpointId,
 }
 
 impl BreakpointSet {
@@ -234,13 +238,32 @@ impl BreakpointSet {
     /// Returns whether the set contains no breakpoints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.specs.is_empty()
     }
 
     /// Returns the number of actor-owned breakpoint handles.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ids.len()
+        self.specs.len()
+    }
+
+    /// Registers a breakpoint specification and returns its actor-owned handle.
+    pub fn insert(&mut self, spec: BreakpointSpec) -> BreakpointId {
+        self.next_id = self.next_id.saturating_add(1);
+        let id = self.next_id;
+        self.specs.insert(id, spec);
+        id
+    }
+
+    /// Removes a breakpoint by id and reports whether it was present.
+    pub fn remove(&mut self, id: BreakpointId) -> bool {
+        self.specs.remove(&id).is_some()
+    }
+
+    /// Returns the breakpoint specification for `id`, when present.
+    #[must_use]
+    pub fn get(&self, id: BreakpointId) -> Option<&BreakpointSpec> {
+        self.specs.get(&id)
     }
 }
 
@@ -341,6 +364,190 @@ impl StepMode {
     }
 }
 
+/// Actor-local breakpoint identifier.
+pub type BreakpointId = u64;
+
+/// Reply channel carried by commands that return data to their caller.
+///
+/// The reply transport is deliberately not part of command equality or hashing:
+/// it routes completion back to the caller, but it is not model state.
+pub struct CommandReply<T> {
+    inner: Option<Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>>,
+}
+
+impl<T> CommandReply<T> {
+    /// Builds a reply wrapper that discards completions.
+    #[must_use]
+    pub const fn discard() -> Self {
+        Self { inner: None }
+    }
+
+    /// Builds a reply wrapper and its receiving end.
+    #[must_use]
+    pub fn channel() -> (Self, oneshot::Receiver<Result<T, SessionError>>) {
+        let (sender, receiver) = oneshot::channel();
+        (
+            Self {
+                inner: Some(Arc::new(Mutex::new(Some(sender)))),
+            },
+            receiver,
+        )
+    }
+
+    fn complete(&self, result: Result<T, SessionError>) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let Ok(mut sender) = inner.lock() else {
+            return;
+        };
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(result);
+        }
+    }
+}
+
+impl<T> Clone for CommandReply<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T> fmt::Debug for CommandReply<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommandReply")
+            .field("expects_reply", &self.inner.is_some())
+            .finish()
+    }
+}
+
+impl<T> PartialEq for CommandReply<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for CommandReply<T> {}
+
+impl<T> Hash for CommandReply<T> {
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
+}
+
+/// Fault injection request payload for the RFC §4 command set.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FaultSpec {
+    /// Stable handle used for later healing.
+    pub tag: FaultTag,
+    /// Full fault taxonomy value to activate.
+    pub fault: Fault,
+}
+
+impl FaultSpec {
+    /// Creates a typed fault-control payload.
+    #[must_use]
+    pub fn new(tag: FaultTag, fault: Fault) -> Self {
+        Self { tag, fault }
+    }
+}
+
+/// Breakpoint fire policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BreakpointPolicy {
+    /// Auto-remove after the first fire.
+    #[default]
+    OneShot,
+    /// Persist and fire on each false-to-true transition.
+    Repeatable,
+}
+
+/// What a firing breakpoint does at its deterministic boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BreakpointDisposition {
+    /// Suspend the run.
+    Suspend,
+    /// Emit an observational marker and keep running.
+    Trace,
+    /// Apply a bounded event-graph action at the firing boundary.
+    Action(Action),
+}
+
+/// Actor-owned breakpoint specification.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BreakpointSpec {
+    /// Shared 17a predicate vocabulary evaluated over the event log.
+    pub predicate: Condition,
+    /// Effect of a firing breakpoint.
+    pub disposition: BreakpointDisposition,
+    /// Whether the breakpoint persists after firing.
+    pub policy: BreakpointPolicy,
+}
+
+impl BreakpointSpec {
+    /// Builds a suspending one-shot breakpoint over a shared 17a predicate.
+    #[must_use]
+    pub fn suspend_once(predicate: Condition) -> Self {
+        Self {
+            predicate,
+            disposition: BreakpointDisposition::Suspend,
+            policy: BreakpointPolicy::OneShot,
+        }
+    }
+}
+
+/// Checkpoint reference accepted by a fork command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CheckpointRef {
+    /// Use the session's current boundary configuration.
+    Current,
+    /// Use a named temporal-graph checkpoint.
+    Checkpoint(ContentHash),
+}
+
+/// Handle returned for a forked session request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionHandle {
+    /// Deterministic handle id for the child session request.
+    pub id: ContentHash,
+    /// Checkpoint used as the fork base.
+    pub checkpoint: ContentHash,
+}
+
+/// Information returned after materializing a savepoint.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SavepointInfo {
+    /// Operator label carried by the savepoint command.
+    pub label: String,
+    /// Configuration that was materialized.
+    pub configuration: ContentHash,
+    /// Fat checkpoint returned by the temporal graph.
+    pub checkpoint: Checkpoint,
+}
+
+/// Read-only query kind served through the actor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum QueryKind {
+    /// Return the complete boundary snapshot.
+    Snapshot,
+    /// Return the compact lifecycle state.
+    State,
+    /// Return the canonical event-log length.
+    EventLogLength,
+}
+
+/// Result returned by a read-only query command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryResult {
+    /// Complete boundary snapshot.
+    Snapshot(EngineSnapshot),
+    /// Compact lifecycle state.
+    State(LifecycleStateKind),
+    /// Canonical event-log length.
+    EventLogLength(usize),
+}
+
 /// A control command consumed by the session actor.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SessionCommand {
@@ -357,33 +564,113 @@ pub enum SessionCommand {
     },
     /// Capture a boundary snapshot.
     Snapshot,
-    /// Fork from the current boundary configuration.
-    Fork,
     /// Inject a deterministic control-plane fault at the next boundary.
     Inject,
     /// Inject or replace a full-taxonomy fault at the next boundary.
     InjectFault {
-        /// Stable handle used for later healing.
-        tag: FaultTag,
-        /// Full fault taxonomy value to activate.
-        fault: Fault,
+        /// Fault activation payload.
+        spec: FaultSpec,
+        /// Completion route returning the stable fault tag.
+        reply: CommandReply<FaultTag>,
     },
     /// Heal a full-taxonomy fault at the next boundary.
     HealFault {
         /// Stable handle naming the active fault.
         tag: FaultTag,
+        /// Completion route for the heal acknowledgement.
+        reply: CommandReply<()>,
+    },
+    /// Add a predicate-based breakpoint.
+    SetBreakpoint {
+        /// Breakpoint predicate, disposition, and fire policy.
+        spec: BreakpointSpec,
+        /// Completion route returning the actor-owned breakpoint id.
+        reply: CommandReply<BreakpointId>,
+    },
+    /// Remove a breakpoint by id.
+    RemoveBreakpoint {
+        /// Breakpoint id to remove.
+        id: BreakpointId,
+        /// Completion route returning whether a breakpoint was removed.
+        reply: CommandReply<bool>,
+    },
+    /// Materialize the current configuration as a savepoint.
+    CreateSavepoint {
+        /// Stable operator label.
+        label: String,
+        /// Completion route returning the materialized savepoint handle.
+        reply: CommandReply<SavepointInfo>,
+    },
+    /// Fork from a deterministic checkpoint or boundary.
+    Fork {
+        /// Fork source checkpoint.
+        from: CheckpointRef,
+        /// Completion route returning the child session handle.
+        reply: CommandReply<SessionHandle>,
     },
     /// Transition to a terminal operator-stopped state.
     Stop,
     /// Read the current boundary state without mutation.
-    Query,
+    Query {
+        /// Query payload.
+        kind: QueryKind,
+        /// Completion route returning the query result.
+        reply: CommandReply<QueryResult>,
+    },
 }
 
 impl SessionCommand {
+    /// Builds a discard-reply query for the complete boundary snapshot.
+    #[must_use]
+    pub fn query_snapshot() -> Self {
+        Self::Query {
+            kind: QueryKind::Snapshot,
+            reply: CommandReply::discard(),
+        }
+    }
+
+    /// Builds a discard-reply fork request from the current boundary.
+    #[must_use]
+    pub fn fork_current() -> Self {
+        Self::Fork {
+            from: CheckpointRef::Current,
+            reply: CommandReply::discard(),
+        }
+    }
+
+    /// Builds a discard-reply typed fault-injection command.
+    #[must_use]
+    pub fn inject_fault(tag: FaultTag, fault: Fault) -> Self {
+        Self::InjectFault {
+            spec: FaultSpec::new(tag, fault),
+            reply: CommandReply::discard(),
+        }
+    }
+
+    /// Builds a discard-reply typed fault-heal command.
+    #[must_use]
+    pub fn heal_fault(tag: FaultTag) -> Self {
+        Self::HealFault {
+            tag,
+            reply: CommandReply::discard(),
+        }
+    }
+
     /// Returns whether the command is observation-only.
     #[must_use]
     pub const fn is_read_only(&self) -> bool {
-        matches!(self, Self::Query | Self::Snapshot)
+        matches!(self, Self::Query { .. } | Self::Snapshot)
+    }
+
+    const fn is_terminal_accepted(&self) -> bool {
+        matches!(
+            self,
+            Self::Snapshot
+                | Self::Fork { .. }
+                | Self::SetBreakpoint { .. }
+                | Self::RemoveBreakpoint { .. }
+                | Self::Query { .. }
+        )
     }
 
     const fn is_control_acknowledged(&self) -> bool {
@@ -391,11 +678,14 @@ impl SessionCommand {
             self,
             Self::Pause
                 | Self::Snapshot
-                | Self::Fork
+                | Self::Fork { .. }
                 | Self::Inject
                 | Self::InjectFault { .. }
                 | Self::HealFault { .. }
-                | Self::Query
+                | Self::SetBreakpoint { .. }
+                | Self::RemoveBreakpoint { .. }
+                | Self::CreateSavepoint { .. }
+                | Self::Query { .. }
         )
     }
 
@@ -406,8 +696,22 @@ impl SessionCommand {
                 | Self::Inject
                 | Self::InjectFault { .. }
                 | Self::HealFault { .. }
-                | Self::Query
+                | Self::Query { .. }
         )
+    }
+
+    fn complete_error(&self, error: SessionError) {
+        match self {
+            Self::InjectFault { reply, .. } => reply.complete(Err(error)),
+            Self::HealFault { reply, .. } => reply.complete(Err(error)),
+            Self::SetBreakpoint { reply, .. } => reply.complete(Err(error)),
+            Self::RemoveBreakpoint { reply, .. } => reply.complete(Err(error)),
+            Self::CreateSavepoint { reply, .. } => reply.complete(Err(error)),
+            Self::Fork { reply, .. } => reply.complete(Err(error)),
+            Self::Query { reply, .. } => reply.complete(Err(error)),
+            Self::Start | Self::Continue | Self::Pause | Self::Step { .. } | Self::Stop => {}
+            Self::Snapshot | Self::Inject => {}
+        }
     }
 }
 
@@ -473,8 +777,9 @@ impl SessionCommandKind {
     /// Returns a representative engine command for kinds implemented by the
     /// current [`SessionCommand`] enum.
     ///
-    /// Missing values correspond to T-SESS-4 command-payload work, not to
-    /// missing lifecycle states.
+    /// The representative carries discard replies for reply-bearing commands so
+    /// lifecycle tests can exercise the actor command mapping without awaiting a
+    /// caller channel.
     #[must_use]
     pub fn representative_command(self) -> Option<SessionCommand> {
         let command = match self {
@@ -490,20 +795,32 @@ impl SessionCommandKind {
             Self::Stop => SessionCommand::Stop,
             Self::Inject => SessionCommand::Inject,
             Self::InjectFault => SessionCommand::InjectFault {
-                tag: FaultTag::from_name("lifecycle-model"),
-                fault: Fault::Node(crucible::NodeFault::Crash {
-                    node: crucible::NodeId {
-                        name: String::from("node-a"),
-                    },
-                    restart: crucible::RestartPolicy::StayDown,
-                }),
+                spec: FaultSpec::new(
+                    FaultTag::from_name("lifecycle-model"),
+                    Fault::Node(crucible::NodeFault::Crash {
+                        node: crucible::NodeId {
+                            name: String::from("node-a"),
+                        },
+                        restart: crucible::RestartPolicy::StayDown,
+                    }),
+                ),
+                reply: CommandReply::discard(),
             },
-            Self::HealFault => SessionCommand::HealFault {
-                tag: FaultTag::from_name("lifecycle-model"),
+            Self::HealFault => SessionCommand::heal_fault(FaultTag::from_name("lifecycle-model")),
+            Self::SetBreakpoint => SessionCommand::SetBreakpoint {
+                spec: BreakpointSpec::suspend_once(Condition::Quiescent),
+                reply: CommandReply::discard(),
             },
-            Self::SetBreakpoint | Self::RemoveBreakpoint | Self::CreateSavepoint => return None,
-            Self::Fork => SessionCommand::Fork,
-            Self::Query => SessionCommand::Query,
+            Self::RemoveBreakpoint => SessionCommand::RemoveBreakpoint {
+                id: 1,
+                reply: CommandReply::discard(),
+            },
+            Self::CreateSavepoint => SessionCommand::CreateSavepoint {
+                label: String::from("lifecycle-model"),
+                reply: CommandReply::discard(),
+            },
+            Self::Fork => SessionCommand::fork_current(),
+            Self::Query => SessionCommand::query_snapshot(),
             Self::Snapshot => SessionCommand::Snapshot,
         };
         Some(command)
@@ -521,12 +838,15 @@ impl From<&SessionCommand> for SessionCommandKind {
             } => Self::StepQuantum,
             SessionCommand::Step { .. } => Self::StepUnsupported,
             SessionCommand::Snapshot => Self::Snapshot,
-            SessionCommand::Fork => Self::Fork,
+            SessionCommand::Fork { .. } => Self::Fork,
             SessionCommand::Inject => Self::Inject,
             SessionCommand::InjectFault { .. } => Self::InjectFault,
             SessionCommand::HealFault { .. } => Self::HealFault,
+            SessionCommand::SetBreakpoint { .. } => Self::SetBreakpoint,
+            SessionCommand::RemoveBreakpoint { .. } => Self::RemoveBreakpoint,
+            SessionCommand::CreateSavepoint { .. } => Self::CreateSavepoint,
             SessionCommand::Stop => Self::Stop,
-            SessionCommand::Query => Self::Query,
+            SessionCommand::Query { .. } => Self::Query,
         }
     }
 }
@@ -1067,6 +1387,17 @@ fn u64_to_usize(value: u64) -> usize {
     }
 }
 
+fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.session.fork-handle.v1",
+        &format!(
+            "parent={}\ncheckpoint={}\n",
+            parent.to_hex(),
+            checkpoint.to_hex()
+        ),
+    )
+}
+
 /// Cursor into a session event-log stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventLogCursor {
@@ -1481,6 +1812,19 @@ impl<L> Engine<L> {
     fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
         std::mem::take(&mut self.pending_event_log_entries)
     }
+
+    fn resolve_fork_checkpoint(&mut self, from: CheckpointRef) -> Result<Checkpoint, SessionError> {
+        match from {
+            CheckpointRef::Current => Ok(self.graph.save_checkpoint(&self.configuration)?),
+            CheckpointRef::Checkpoint(checkpoint) => self
+                .graph
+                .checkpoint_node(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                })),
+        }
+    }
 }
 
 impl<L: QuantumLoop> Engine<L> {
@@ -1619,8 +1963,16 @@ impl<L: QuantumLoop> Engine<L> {
                 }
                 Ok(self.snapshot())
             }
-            SessionCommand::Fork => match self.state {
-                EngineState::Paused { .. } | EngineState::Stopped { .. } => Ok(self.snapshot()),
+            SessionCommand::Fork { from, reply } => match self.state {
+                EngineState::Paused { .. } | EngineState::Stopped { .. } => {
+                    let checkpoint = self.resolve_fork_checkpoint(*from)?;
+                    let handle = SessionHandle {
+                        id: fork_session_handle_id(self.configuration.id(), checkpoint.id),
+                        checkpoint: checkpoint.id,
+                    };
+                    reply.complete(Ok(handle));
+                    Ok(self.snapshot())
+                }
                 EngineState::Running | EngineState::Loaded => {
                     Err(self.invalid_transition(command.clone()))
                 }
@@ -1636,27 +1988,53 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::InjectFault { tag, fault } => match self.state {
+            SessionCommand::InjectFault { spec, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
                         self.admit_control_operation(ControlOperationKind::InjectFault {
-                            tag: tag.clone(),
-                            fault: fault.clone(),
+                            tag: spec.tag.clone(),
+                            fault: spec.fault.clone(),
                         });
                     }
+                    reply.complete(Ok(spec.tag.clone()));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::HealFault { tag } => match self.state {
+            SessionCommand::HealFault { tag, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
                         self.admit_control_operation(ControlOperationKind::HealFault {
                             tag: tag.clone(),
                         });
                     }
+                    reply.complete(Ok(()));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::SetBreakpoint { spec, reply } => {
+                let id = self.breakpoints.insert(spec.clone());
+                reply.complete(Ok(id));
+                Ok(self.snapshot())
+            }
+            SessionCommand::RemoveBreakpoint { id, reply } => {
+                let removed = self.breakpoints.remove(*id);
+                reply.complete(Ok(removed));
+                Ok(self.snapshot())
+            }
+            SessionCommand::CreateSavepoint { label, reply } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let checkpoint = self.graph.save_checkpoint(&self.configuration)?;
+                    reply.complete(Ok(SavepointInfo {
+                        label: label.clone(),
+                        configuration: self.configuration.id(),
+                        checkpoint,
+                    }));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -1673,11 +2051,22 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
             }
-            SessionCommand::Query => {
+            SessionCommand::Query { kind, reply } => {
                 if matches!(self.state, EngineState::Running) {
                     self.admit_control_operation(ControlOperationKind::Query);
                 }
-                Ok(self.snapshot())
+                let snapshot = self.snapshot();
+                let result = match kind {
+                    QueryKind::Snapshot => QueryResult::Snapshot(snapshot.clone()),
+                    QueryKind::State => {
+                        QueryResult::State(LifecycleStateKind::from(&snapshot.state))
+                    }
+                    QueryKind::EventLogLength => {
+                        QueryResult::EventLogLength(snapshot.event_log_len)
+                    }
+                };
+                reply.complete(Ok(result));
+                Ok(snapshot)
             }
         }
     }
@@ -1907,6 +2296,7 @@ impl<L: QuantumLoop> SessionActor<L> {
     pub async fn run(mut self) -> Result<SessionRunReport, SessionError> {
         loop {
             if matches!(self.engine.state(), EngineState::Stopped { .. }) {
+                self.drain_terminal_commands().await?;
                 return Ok(self.report());
             }
             self.run_once().await?;
@@ -1942,7 +2332,7 @@ impl<L: QuantumLoop> SessionActor<L> {
                 self.apply_command(command).await
             }
             EngineState::Stopped { .. } => {
-                self.drain_read_only_commands().await?;
+                self.drain_terminal_commands().await?;
                 Ok(())
             }
         }
@@ -1962,7 +2352,10 @@ impl<L: QuantumLoop> SessionActor<L> {
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
-        self.engine.apply_command(command)?;
+        if let Err(error) = self.engine.apply_command(command.clone()) {
+            command.complete_error(error.clone());
+            return Err(error);
+        }
         let entries = self.engine.drain_event_log_entries();
         self.event_log.append_entries(&entries);
         let pending_control_after = self.engine.pending_control_len() as u64;
@@ -1985,11 +2378,17 @@ impl<L: QuantumLoop> SessionActor<L> {
         Ok(())
     }
 
-    async fn drain_read_only_commands(&mut self) -> Result<(), SessionError> {
+    async fn drain_terminal_commands(&mut self) -> Result<(), SessionError> {
         loop {
             match self.mailbox.try_recv() {
-                Ok(command) if command.is_read_only() => self.apply_command(command).await?,
-                Ok(_) | Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+                Ok(command) if command.is_terminal_accepted() => {
+                    self.apply_command(command).await?;
+                }
+                Ok(command) => {
+                    let error = self.engine.invalid_transition(command.clone());
+                    command.complete_error(error);
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
             }
         }
     }
@@ -2233,9 +2632,6 @@ mod tests {
     fn engine_transition_table_matches_lifecycle_model_for_current_commands() {
         for state in LifecycleStateKind::ALL {
             for command_kind in SessionCommandKind::ALL {
-                if !current_engine_lifecycle_pair_is_realized(state, command_kind) {
-                    continue;
-                }
                 let Some(command) = command_kind.representative_command() else {
                     continue;
                 };
@@ -2271,6 +2667,261 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn rfc_command_payloads_return_replies_through_engine_boundary() {
+        let scenario = generated_scenario(26);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime before command replies: {error}");
+        }
+
+        let (state_reply, state_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::Query {
+            kind: QueryKind::State,
+            reply: state_reply,
+        }) {
+            panic!("state query should complete at a paused boundary: {error}");
+        }
+        assert_eq!(
+            receive_reply(state_receiver).await,
+            QueryResult::State(LifecycleStateKind::Paused)
+        );
+
+        let breakpoint = BreakpointSpec::suspend_once(Condition::Quiescent);
+        let (breakpoint_reply, breakpoint_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint.clone(),
+            reply: breakpoint_reply,
+        }) {
+            panic!("set breakpoint should return an actor-owned id: {error}");
+        }
+        let breakpoint_id = receive_reply(breakpoint_receiver).await;
+        assert_eq!(engine.breakpoints().get(breakpoint_id), Some(&breakpoint));
+
+        let (remove_reply, remove_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::RemoveBreakpoint {
+            id: breakpoint_id,
+            reply: remove_reply,
+        }) {
+            panic!("remove breakpoint should return removal status: {error}");
+        }
+        assert!(receive_reply(remove_receiver).await);
+        assert!(engine.breakpoints().is_empty());
+
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter the running command boundary: {error}");
+        }
+        let fault_tag = FaultTag::from_name("rfc-command-payload");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let (inject_reply, inject_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::InjectFault {
+            spec: FaultSpec::new(fault_tag.clone(), fault),
+            reply: inject_reply,
+        }) {
+            panic!("inject fault should return its stable tag: {error}");
+        }
+        assert_eq!(receive_reply(inject_receiver).await, fault_tag);
+        assert_eq!(engine.pending_control_len(), 1);
+
+        let (heal_reply, heal_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::HealFault {
+            tag: fault_tag.clone(),
+            reply: heal_reply,
+        }) {
+            panic!("heal fault should complete its acknowledgement: {error}");
+        }
+        receive_reply(heal_receiver).await;
+        assert_eq!(engine.pending_control_len(), 2);
+
+        let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::CreateSavepoint {
+            label: String::from("rfc-command-savepoint"),
+            reply: savepoint_reply,
+        }) {
+            panic!("create savepoint should materialize through the temporal graph: {error}");
+        }
+        let savepoint = receive_reply(savepoint_receiver).await;
+        assert_eq!(savepoint.label, "rfc-command-savepoint");
+        assert_eq!(savepoint.configuration, engine.configuration().id());
+        assert_eq!(
+            savepoint.checkpoint.configuration,
+            engine.configuration().id()
+        );
+
+        let (query_reply, query_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::Query {
+            kind: QueryKind::EventLogLength,
+            reply: query_reply,
+        }) {
+            panic!("event-log query should complete at a running boundary: {error}");
+        }
+        assert_eq!(
+            receive_reply(query_receiver).await,
+            QueryResult::EventLogLength(0)
+        );
+        assert_eq!(engine.pending_control_len(), 3);
+
+        if let Err(error) = engine.apply_command(SessionCommand::Pause) {
+            panic!("pause should return to a forkable boundary: {error}");
+        }
+        let (fork_reply, fork_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::Fork {
+            from: CheckpointRef::Current,
+            reply: fork_reply,
+        }) {
+            panic!("fork should resolve through the current graph checkpoint: {error}");
+        }
+        let fork = receive_reply(fork_receiver).await;
+        assert_eq!(fork.checkpoint, engine.configuration().id());
+    }
+
+    #[tokio::test]
+    async fn rfc_command_rejections_complete_reply_oneshots_without_side_effects() {
+        let scenario = generated_scenario(27);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, StubLoop);
+        let (_sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+        let before = actor.engine().snapshot();
+        let (reply, reply_receiver) = CommandReply::channel();
+        let command = SessionCommand::Fork {
+            from: CheckpointRef::Current,
+            reply,
+        };
+
+        let error = actor
+            .apply_command(command.clone())
+            .await
+            .expect_err("loaded fork must reject through actor boundary");
+        assert_eq!(
+            receive_reply_error::<SessionHandle>(reply_receiver).await,
+            error
+        );
+        assert_eq!(actor.engine().snapshot(), before);
+        assert_rejection_names_state_and_command(error, before.state, command);
+    }
+
+    #[tokio::test]
+    async fn rfc_command_terminal_drain_completes_queued_replies() {
+        let scenario = generated_scenario(28);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let engine = Engine::new(config, graph, StubLoop);
+        let (sender, receiver) = mpsc::channel(8);
+        let (fork_reply, fork_receiver) = CommandReply::channel();
+        let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
+        let rejected_savepoint = SessionCommand::CreateSavepoint {
+            label: String::from("terminal-savepoint"),
+            reply: savepoint_reply,
+        };
+
+        for command in [
+            SessionCommand::Start,
+            SessionCommand::Stop,
+            SessionCommand::Fork {
+                from: CheckpointRef::Current,
+                reply: fork_reply,
+            },
+            rejected_savepoint.clone(),
+        ] {
+            if let Err(error) = sender.send(command).await {
+                panic!("terminal-drain command should enqueue: {error}");
+            }
+        }
+
+        let report = match SessionActor::new(engine, receiver).run().await {
+            Ok(report) => report,
+            Err(error) => panic!("actor should report after draining terminal commands: {error}"),
+        };
+
+        let fork = receive_reply(fork_receiver).await;
+        assert_eq!(fork.checkpoint, report.final_snapshot.configuration.id());
+        let error = receive_reply_error::<SavepointInfo>(savepoint_receiver).await;
+        assert_rejection_names_state_and_command(
+            error,
+            report.final_snapshot.state,
+            rejected_savepoint,
+        );
+    }
+
+    #[tokio::test]
+    async fn rfc_command_running_actor_acknowledges_local_boundary_replies_immediately() {
+        let scenario = generated_scenario(29);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let breakpoint = BreakpointSpec::suspend_once(Condition::Quiescent);
+        let (set_reply, set_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::SetBreakpoint {
+                spec: breakpoint,
+                reply: set_reply,
+            })
+            .await
+        {
+            panic!("set-breakpoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running set-breakpoint should complete locally: {error}");
+        }
+        let breakpoint_id = receive_reply(set_receiver).await;
+        assert_eq!(actor.control_acknowledgements(), 1);
+        assert_eq!(actor.engine().quanta(), 0);
+
+        let (remove_reply, remove_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::RemoveBreakpoint {
+                id: breakpoint_id,
+                reply: remove_reply,
+            })
+            .await
+        {
+            panic!("remove-breakpoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running remove-breakpoint should complete locally: {error}");
+        }
+        assert!(receive_reply(remove_receiver).await);
+        assert_eq!(actor.control_acknowledgements(), 2);
+        assert_eq!(actor.engine().quanta(), 0);
+
+        let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
+        if let Err(error) = sender
+            .send(SessionCommand::CreateSavepoint {
+                label: String::from("running-local-savepoint"),
+                reply: savepoint_reply,
+            })
+            .await
+        {
+            panic!("savepoint command should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running savepoint should complete locally: {error}");
+        }
+        let savepoint = receive_reply(savepoint_receiver).await;
+        assert_eq!(savepoint.label, "running-local-savepoint");
+        assert_eq!(actor.control_acknowledgements(), 3);
+        assert_eq!(actor.engine().quanta(), 0);
+        assert_eq!(actor.engine().pending_control_len(), 0);
     }
 
     #[test]
@@ -2424,18 +3075,6 @@ mod tests {
         (mixed as usize) % SessionCommandKind::ALL.len()
     }
 
-    fn current_engine_lifecycle_pair_is_realized(
-        _state: LifecycleStateKind,
-        command: SessionCommandKind,
-    ) -> bool {
-        !matches!(
-            command,
-            SessionCommandKind::SetBreakpoint
-                | SessionCommandKind::RemoveBreakpoint
-                | SessionCommandKind::CreateSavepoint
-        )
-    }
-
     fn engine_with_lifecycle_state(state: LifecycleStateKind) -> Engine<AppendingLoop> {
         let seed = match state {
             LifecycleStateKind::Loaded => 9_001,
@@ -2459,6 +3098,26 @@ mod tests {
         };
         engine.runtime_instantiated = !matches!(state, LifecycleStateKind::Loaded);
         engine
+    }
+
+    async fn receive_reply<T: fmt::Debug>(
+        receiver: oneshot::Receiver<Result<T, SessionError>>,
+    ) -> T {
+        match receiver.await {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => panic!("reply should succeed: {error}"),
+            Err(error) => panic!("reply sender should complete: {error}"),
+        }
+    }
+
+    async fn receive_reply_error<T: fmt::Debug>(
+        receiver: oneshot::Receiver<Result<T, SessionError>>,
+    ) -> SessionError {
+        match receiver.await {
+            Ok(Ok(value)) => panic!("reply should fail, got {value:?}"),
+            Ok(Err(error)) => error,
+            Err(error) => panic!("reply sender should complete: {error}"),
+        }
     }
 
     fn assert_rejection_names_state_and_command(
