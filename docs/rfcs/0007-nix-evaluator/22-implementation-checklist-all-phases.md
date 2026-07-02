@@ -6501,6 +6501,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       traversal, environment access, forcing, runtime-symbol calls, branches,
       applications, `JITModule`, executable buffer, finalized function pointer,
       symbol registration, or native call is implemented.
+- [x] Current whole-IR literal CLIF entrypoint precursor:
+      `ratchet-jit::lower::lower_constant_ir_root_thunk_body()` takes a lowered
+      Core `Ir` artifact and lowers its root through the same literal-only CLIF
+      path. Tests cover parsed/resolved/lowered literal source artifacts,
+      nonzero artifact roots, and malformed artifacts with missing root ids. The
+      crate root re-exports the literal IR lowering functions; this is still
+      verified CLIF function construction only, with no `JITModule`, executable
+      buffer, symbol registration, or native call.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

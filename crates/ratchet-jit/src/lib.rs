@@ -4,7 +4,7 @@
 //! optimized native tiers. It intentionally starts with safe, non-executable
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
 //! `ratchet-core`, [`lower`] builds verified CLIF bodies for the first
-//! constant-thunk smoke tests, [`symbols`] mirrors the stable
+//! literal Core-IR and constant-thunk smoke tests, [`symbols`] mirrors the stable
 //! runtime-symbol manifest from `ratchet-core`, [`tier`] names the first safe
 //! tier-up policy, [`warmup`] keeps the copy-and-patch hedge measurable, and
 //! [`safety`] records the unsafe-boundary discipline. Runtime-symbol candidate
@@ -31,7 +31,10 @@ pub use abi::{
     JitClifSignatureError, JitRuntimeAbiInventory, clif_signature_for_runtime_call,
     jit_runtime_abi_inventory,
 };
-pub use lower::{JitLowerError, lower_constant_thunk_body};
+pub use lower::{
+    JitLowerError, lower_constant_ir_root_thunk_body, lower_constant_ir_thunk_body,
+    lower_constant_thunk_body,
+};
 pub use safety::{
     JIT_SAFETY_COMMENT_PREFIX, JIT_UNSAFE_CRATE_LINT, JitInnateUnsafeOperation,
     JitUnsafeDiscipline, jit_unsafe_discipline,

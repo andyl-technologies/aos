@@ -14,7 +14,7 @@ use cranelift_codegen::{
     settings,
     verifier::{VerifierErrors, verify_function},
 };
-use ratchet_core::{IrArena, IrData, IrId, IrKind, IrNode, runtime_thunk_call_signature};
+use ratchet_core::{Ir, IrArena, IrData, IrId, IrKind, IrNode, runtime_thunk_call_signature};
 use ratchet_value::value::Value;
 
 use crate::abi::{JitClifSignatureError, clif_signature_for_runtime_call};
@@ -64,6 +64,24 @@ pub fn lower_constant_ir_thunk_body(
         .ok_or(JitLowerError::MissingIrNode { root })?;
     let value = constant_value_for_node(node)?;
     lower_constant_thunk_body(value)
+}
+
+/// Lowers the root of a lowered IR artifact into a compiled-thunk CLIF body.
+///
+/// This is the normal Core-IR entrypoint for the current literal-only lowerer.
+/// It delegates to [`lower_constant_ir_thunk_body`] using the artifact's root id
+/// and arena, so callers do not have to split the root out manually.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `ir.root` is not present in
+/// `ir.arena`. Returns [`JitLowerError::UnsupportedIrRoot`] when the root is not
+/// one of the supported literal kinds. Returns
+/// [`JitLowerError::MismatchedConstantData`] when a literal node carries a
+/// payload variant that does not match its kind. Also returns the errors from
+/// [`lower_constant_thunk_body`].
+pub fn lower_constant_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_constant_ir_thunk_body(&ir.arena, ir.root)
 }
 
 /// A failure while lowering safe metadata into CLIF.
@@ -187,7 +205,10 @@ fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
 #[cfg(test)]
 mod tests {
     use cranelift_codegen::ir::{InstructionData, Opcode, Type};
-    use ratchet_core::{EffectClass, IrNode, syntax::Span};
+    use ratchet_core::{
+        EffectClass, Ir, IrFacts, IrNode, lower, resolve,
+        syntax::{Span, SymbolTable, parse_str},
+    };
     use ratchet_value::value::ValueTag;
 
     use super::*;
@@ -352,6 +373,95 @@ mod tests {
                 data: IrData::None,
             }
         ));
+    }
+
+    #[test]
+    fn constant_ir_root_thunk_body_lowers_real_literal_ir_artifacts() {
+        let cases = [
+            ("42", Value::int(42)),
+            ("2.5", Value::float(2.5)),
+            ("false", Value::bool(false)),
+            ("null", Value::null()),
+        ];
+
+        for (source, expected_value) in cases {
+            let ir = lowered_ir(source);
+            let function =
+                lower_constant_ir_root_thunk_body(&ir).expect("literal IR artifact lowers");
+
+            assert_eq!(
+                iconst_words(&function),
+                vec![expected_value.tag() as u64, expected_value.payload_bits()]
+            );
+        }
+    }
+
+    #[test]
+    fn constant_ir_root_thunk_body_uses_nonzero_artifact_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Str,
+                    Span::new(0, 6),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(7, 9),
+                    EffectClass::pure(),
+                    IrData::Int(11),
+                ),
+            ],
+            Vec::new(),
+        );
+        let ir = minimal_ir(IrId::new(1), arena);
+
+        let function = lower_constant_ir_root_thunk_body(&ir).expect("nonzero literal root lowers");
+
+        assert_eq!(
+            iconst_words(&function),
+            vec![ValueTag::Int as u64, Value::int(11).payload_bits()]
+        );
+    }
+
+    #[test]
+    fn constant_ir_root_thunk_body_rejects_missing_artifact_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )],
+            Vec::new(),
+        );
+        let ir = minimal_ir(IrId::new(5), arena);
+
+        let error =
+            lower_constant_ir_root_thunk_body(&ir).expect_err("missing artifact root is rejected");
+
+        assert!(matches!(error, JitLowerError::MissingIrNode { root } if root == IrId::new(5)));
+    }
+
+    fn lowered_ir(source: &str) -> Ir {
+        lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("IR lowers")
+    }
+
+    fn minimal_ir(root: IrId, arena: IrArena) -> Ir {
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root,
+            arena,
+            facts,
+            symbols: SymbolTable::new(),
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
     }
 
     fn entry_block_param_types(function: &Function) -> Vec<Type> {

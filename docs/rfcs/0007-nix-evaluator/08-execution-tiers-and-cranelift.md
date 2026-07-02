@@ -1139,6 +1139,13 @@ harness, never cut for scope.
       This is still literal-only lowering: no child traversal, environment
       access, forcing, runtime-symbol calls, branches, applications, `JITModule`,
       executable buffer, or native call is implemented.
+- [x] Current whole-IR literal CLIF entrypoint precursor:
+      `ratchet-jit::lower::lower_constant_ir_root_thunk_body()` accepts a
+      lowered Core `Ir` artifact and lowers its root through the same literal-only
+      path. Tests exercise parsed/resolved/lowered literal source artifacts,
+      nonzero artifact roots, and malformed artifacts whose root id is missing.
+      The crate root re-exports both literal IR lowering entrypoints, while the
+      implementation remains verified CLIF construction only.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.
