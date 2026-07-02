@@ -1054,6 +1054,17 @@ harness, never cut for scope.
       runtime-symbol registration. Call-bearing artifacts still require a later
       finalization path that composes with complete runtime-symbol address
       registration before relocation.
+- [x] Current owned Cranelift tier-1 slot preflight:
+      `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
+      composes artifact finalization with a fresh `JitTieredCodeSlot`, installs
+      the finalized artifact's opaque `JitCompiledCodePointer` into that slot,
+      and keeps the `JITModule` owner in the same returned preflight value. Tests
+      pin constant-smoke and Core-IR-root slot installation, slot/current-tier
+      state, pointer equality with the finalized artifact, incomplete runtime
+      symbol readiness, and module ownership. This is still metadata assembly
+      only: it does not publish into evaluator heap thunk state, perform atomic
+      thunk-state CAS, cast or call the code pointer, lower generic IR, emit
+      runtime calls, or complete runtime-symbol registration.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability

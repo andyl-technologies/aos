@@ -35,7 +35,7 @@ use crate::{
         JitRuntimeSymbolRegistrationError, JitRuntimeSymbolRegistrationGap,
         jit_runtime_symbol_registration_preflight_with_candidates,
     },
-    tier::JitCompiledCodePointer,
+    tier::{JitCompiledCodePointer, JitTieredCodeSlot, JitTieredCodeSlotError},
 };
 
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -402,6 +402,49 @@ impl JitCraneliftArtifactFinalizationPreflight {
     }
 }
 
+/// A finalized artifact kept alive beside safe tier-1 slot metadata.
+pub struct JitCraneliftTier1SlotPreflight {
+    finalization: JitCraneliftArtifactFinalizationPreflight,
+    slot: JitTieredCodeSlot,
+}
+
+impl JitCraneliftTier1SlotPreflight {
+    fn new(
+        finalization: JitCraneliftArtifactFinalizationPreflight,
+        slot: JitTieredCodeSlot,
+    ) -> Self {
+        Self { finalization, slot }
+    }
+
+    /// Returns the finalization preflight that owns the encapsulated `JITModule`.
+    pub const fn finalization(&self) -> &JitCraneliftArtifactFinalizationPreflight {
+        &self.finalization
+    }
+
+    /// Returns the safe tiered-code slot with tier-1 metadata installed.
+    ///
+    /// The slot's opaque pointer remains non-callable metadata. Its backend
+    /// lifetime is kept alive by [`Self::finalization`].
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        &self.slot
+    }
+
+    /// Returns the finalized artifact body metadata.
+    pub const fn finalized_function(&self) -> &JitCraneliftFinalizedFunction {
+        self.finalization.finalized_function()
+    }
+
+    /// Returns the CLIF artifact metadata that seeded the owned module setup.
+    pub const fn artifact(&self) -> &JitModuleArtifactMetadata {
+        self.finalization.artifact()
+    }
+
+    /// Returns true because this preflight owns the module backing the slot pointer.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.finalization.owns_encapsulated_module()
+    }
+}
+
 /// A real `JITModule` containing imported runtime-symbol declarations plus gaps.
 pub struct JitCraneliftModuleDeclarationPreflight {
     artifact: JitModuleArtifactMetadata,
@@ -631,6 +674,13 @@ pub enum JitCraneliftModuleSetupError {
         /// The stable module symbol assigned to the artifact body.
         symbol_name: String,
     },
+    /// Finalized code metadata could not be installed into the tier-1 slot.
+    InstallTier1Code {
+        /// The stable module symbol assigned to the artifact body.
+        symbol_name: String,
+        /// The underlying slot update error.
+        source: JitTieredCodeSlotError,
+    },
 }
 
 impl fmt::Display for JitCraneliftModuleSetupError {
@@ -675,6 +725,13 @@ impl fmt::Display for JitCraneliftModuleSetupError {
                 formatter,
                 "artifact function {symbol_name:?} finalized to a null code pointer"
             ),
+            Self::InstallTier1Code {
+                symbol_name,
+                source,
+            } => write!(
+                formatter,
+                "artifact function {symbol_name:?} could not be installed into a tier-1 slot: {source}"
+            ),
         }
     }
 }
@@ -692,6 +749,7 @@ impl Error for JitCraneliftModuleSetupError {
             Self::DefineArtifactFunction { source, .. } => Some(source),
             Self::FinalizeDefinitions { source, .. } => Some(source),
             Self::FinalizedFunctionPointerNull { .. } => None,
+            Self::InstallTier1Code { source, .. } => Some(source),
         }
     }
 }
@@ -895,6 +953,42 @@ pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
     ))
 }
 
+/// Finalizes one artifact and installs its pointer into owned tier-1 slot metadata.
+///
+/// The returned preflight keeps the `JITModule` owner and the safe
+/// [`JitTieredCodeSlot`] in the same value. The slot's code pointer is still
+/// metadata only: this does not publish into an evaluator heap thunk, cast the
+/// pointer to a function type, call native code, or lower generic IR.
+///
+/// # Errors
+///
+/// Returns any error from
+/// [`jit_cranelift_artifact_finalization_preflight_for_artifact`]. Returns
+/// [`JitCraneliftModuleSetupError::InstallTier1Code`] if the finalized pointer
+/// metadata cannot be installed into the fresh slot.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift unresolved-import and finalized-function
+/// lookup conditions as [`jit_cranelift_artifact_finalization_preflight_for_artifact`].
+pub fn jit_cranelift_tier1_slot_preflight_for_artifact(
+    artifact: JitClifArtifact,
+) -> Result<JitCraneliftTier1SlotPreflight, JitCraneliftModuleSetupError> {
+    let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)?;
+    let symbol_name = finalization.finalized_function().symbol_name().to_owned();
+    let code_ptr = finalization.finalized_function().compiled_code_ptr();
+    let mut slot = JitTieredCodeSlot::new();
+
+    slot.install_tier1_code(code_ptr).map_err(|source| {
+        JitCraneliftModuleSetupError::InstallTier1Code {
+            symbol_name,
+            source,
+        }
+    })?;
+
+    Ok(JitCraneliftTier1SlotPreflight::new(finalization, slot))
+}
+
 /// Builds a complete JIT module setup for `artifact`.
 ///
 /// This strict gate only succeeds once runtime-symbol readiness is complete.
@@ -1081,6 +1175,7 @@ mod tests {
             lower_constant_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
+        tier::JitTier,
     };
 
     fn synthetic_address(raw: usize) -> JitRuntimeSymbolAddress {
@@ -1449,6 +1544,66 @@ mod tests {
                 .compiled_code_ptr()
                 .as_non_null(),
             preflight.finalized_function().code_ptr()
+        );
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn tier1_slot_preflight_installs_constant_artifact_metadata() {
+        let artifact =
+            lower_constant_thunk_body_artifact(Value::int(17)).expect("constant artifact lowers");
+        let preflight = jit_cranelift_tier1_slot_preflight_for_artifact(artifact)
+            .expect("tier-1 slot preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.constant_smoke.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(preflight.slot().is_tier1_installed());
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            preflight
+                .slot()
+                .tier1_code_ptr()
+                .map(JitCompiledCodePointer::as_non_null),
+            Some(preflight.finalized_function().code_ptr())
+        );
+        assert!(!preflight.finalization().is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn tier1_slot_preflight_keeps_ir_root_module_owner_with_slot() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Bool,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Bool(true),
+            )],
+            Vec::new(),
+        );
+        let artifact = lower_constant_ir_thunk_body_artifact(&arena, IrId::new(0))
+            .expect("IR root artifact lowers");
+        let preflight = jit_cranelift_tier1_slot_preflight_for_artifact(artifact)
+            .expect("tier-1 slot preflight builds");
+
+        assert_eq!(
+            preflight.artifact().function_name(),
+            &clif_name_for_ir_root(IrId::new(0))
+        );
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
         );
         assert!(preflight.owns_encapsulated_module());
     }

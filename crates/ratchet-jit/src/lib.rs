@@ -5,10 +5,10 @@
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
 //! `ratchet-core`, [`artifact`] records address-free CLIF artifact metadata,
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
-//! `JITModule` declaration, artifact-definition, and artifact-finalization
-//! preflights, [`lower`] builds verified CLIF bodies for the first literal
-//! Core-IR and constant-thunk smoke tests, [`module`] composes artifacts with
-//! runtime-symbol declaration
+//! `JITModule` declaration, artifact-definition, artifact-finalization, and
+//! owned tier-slot preflights, [`lower`] builds verified CLIF bodies for the
+//! first literal Core-IR and constant-thunk smoke tests, [`module`] composes
+//! artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
 //! and preflights future native-address registration metadata, [`tier`] names
@@ -55,13 +55,15 @@ pub use cranelift::{
     JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
     JitCraneliftModuleSetupError, JitCraneliftRegisteredSymbol,
-    JitCraneliftSymbolRegistrationPreflight, PINNED_CRANELIFT_CODEGEN_VERSION,
-    PINNED_CRANELIFT_JIT_VERSION, PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
+    JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1SlotPreflight,
+    PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
+    PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact, jit_cranelift_dependency_pin,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
     jit_cranelift_symbol_registration_preflight_with_candidates,
+    jit_cranelift_tier1_slot_preflight_for_artifact,
 };
 pub use lower::{
     AOS_IR_ROOT_FUNCTION_NAMESPACE, JitLowerError, clif_name_for_ir_root,
