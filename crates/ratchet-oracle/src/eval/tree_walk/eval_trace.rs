@@ -564,22 +564,22 @@ impl TreeWalk {
         self.eval_lazy_node(second)
     }
 
-    pub(super) fn deep_force_value(
+    pub(crate) fn deep_force_value(
         &mut self,
         id: IrId,
         span: Span,
         value: Value,
         visited: &mut Vec<(ValueTag, u64)>,
-    ) -> Result<(), TreeWalkError> {
+    ) -> Result<Value, TreeWalkError> {
         let value = self.force_value(id, span, value)?;
         let tag = value.tag();
         if !matches!(tag, ValueTag::List | ValueTag::Attrs) {
-            return Ok(());
+            return Ok(value);
         }
 
         let key = (tag, value.payload_bits());
         if visited.contains(&key) {
-            return Ok(());
+            return Ok(value);
         }
         let len = visited.len() + 1;
         visited.try_reserve_exact(1).map_err(|_| {
@@ -626,7 +626,7 @@ impl TreeWalk {
             _ => unreachable!("deepSeq only traverses list and attrset values"),
         }
 
-        Ok(())
+        Ok(value)
     }
 
     pub(super) fn eval_has_context_primop(

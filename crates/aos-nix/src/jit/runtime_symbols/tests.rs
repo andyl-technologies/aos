@@ -16,7 +16,7 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 ];
 
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
-const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_force"];
+const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_force", "aos_force_deep"];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]
@@ -34,15 +34,17 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_address
     );
     assert_ne!(env_get.address().as_nonzero_usize().get(), 0);
     assert!(preflight.missing_binding_for("aos_env_get").is_none());
-    let force = preflight
-        .address_candidate_for("aos_force")
-        .expect("force helper has a Rust-callable address candidate");
-    assert_eq!(
-        force.kind(),
-        RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
-    );
-    assert_ne!(force.address().as_nonzero_usize().get(), 0);
-    assert!(preflight.missing_binding_for("aos_force").is_none());
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        let force = preflight
+            .address_candidate_for(symbol_name)
+            .expect("force helper has a Rust-callable address candidate");
+        assert_eq!(
+            force.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+        );
+        assert_ne!(force.address().as_nonzero_usize().get(), 0);
+        assert!(preflight.missing_binding_for(symbol_name).is_none());
+    }
     assert!(!preflight.is_complete());
 }
 
@@ -103,7 +105,9 @@ fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
     assert_eq!(env_access_symbols, EXPECTED_ENV_ACCESS_SYMBOLS);
     assert_eq!(forcing_symbols, EXPECTED_FORCE_SYMBOLS);
     assert_eq!(write_barrier_symbols, EXPECTED_WRITE_BARRIER_SYMBOLS);
-    assert!(preflight.missing_binding_for("aos_force").is_none());
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(preflight.missing_binding_for(symbol_name).is_none());
+    }
     for symbol_name in EXPECTED_ENV_ACCESS_SYMBOLS
         .iter()
         .chain(EXPECTED_FORCE_SYMBOLS)
@@ -137,16 +141,18 @@ fn jit_runtime_symbol_address_candidates_feed_jit_registration_preflight() {
                     .address())
     );
     assert!(registration.gap_for_symbol("aos_env_get").is_none());
-    assert!(
-        registration
-            .binding_for_symbol("aos_force")
-            .is_some_and(|binding| binding.address()
-                == candidate_preflight
-                    .address_candidate_for("aos_force")
-                    .expect("force candidate exists")
-                    .address())
-    );
-    assert!(registration.gap_for_symbol("aos_force").is_none());
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("force candidate exists")
+                        .address())
+        );
+        assert!(registration.gap_for_symbol(symbol_name).is_none());
+    }
     assert!(!registration.is_complete());
 }
 
@@ -220,16 +226,18 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
             .gap_for_symbol("aos_gc_write_barrier")
             .is_none()
     );
-    assert!(
-        registration
-            .binding_for_symbol("aos_force")
-            .is_some_and(|binding| binding.address()
-                == candidates
-                    .address_candidate_for("aos_force")
-                    .expect("force candidate exists")
-                    .address())
-    );
-    assert!(registration.gap_for_symbol("aos_force").is_none());
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == candidates
+                        .address_candidate_for(symbol_name)
+                        .expect("force candidate exists")
+                        .address())
+        );
+        assert!(registration.gap_for_symbol(symbol_name).is_none());
+    }
     assert!(matches!(
         registration.gap_for_symbol("aos_apply"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
@@ -279,13 +287,14 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
                 |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
             )
     );
-    assert!(
-        registration
-            .address_provenance_gap_for_symbol("aos_force")
-            .is_some_and(
-                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
-            )
-    );
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| gap.kind()
+                    == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl))
+        );
+    }
     assert!(
         registration
             .native_export_gap_for_symbol("aos_alloc_attrs")
@@ -307,16 +316,19 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
                         .is_some_and(|blockers| !blockers.is_empty())
             })
     );
-    assert!(
-        registration
-            .native_export_gap_for_symbol("aos_force")
-            .is_some_and(|gap| {
-                gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::ForcingControl)
-                    && gap
-                        .missing_exported_forcing_blockers()
-                        .is_some_and(|blockers| !blockers.is_empty())
-            })
-    );
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| {
+                    gap.missing_exported_c_abi_wrapper_role()
+                        == Some(RuntimeHelperRole::ForcingControl)
+                        && gap
+                            .missing_exported_forcing_blockers()
+                            .is_some_and(|blockers| !blockers.is_empty())
+                })
+        );
+    }
     assert!(
         registration
             .native_export_gap_for_symbol("aos_gc_write_barrier")
@@ -350,7 +362,9 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     );
     assert!(missing_count > 0);
     assert!(!preflight.is_complete());
-    assert!(preflight.gap_for_symbol("aos_force").is_none());
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(preflight.gap_for_symbol(symbol_name).is_none());
+    }
     assert!(matches!(
         preflight.gap_for_symbol("aos_apply"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
@@ -389,29 +403,30 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
                     .expect("env candidate exists")
                     .address())
     );
-    assert!(
-        preflight
-            .binding_for_symbol("aos_force")
-            .is_some_and(|binding| binding.address()
-                == preflight
-                    .address_candidate_preflight()
-                    .address_candidate_for("aos_force")
-                    .expect("force candidate exists")
-                    .address())
-    );
-    assert!(
-        preflight
-            .native_export_gap_for_symbol("aos_force")
-            .is_some_and(|gap| gap.missing_exported_c_abi_wrapper_role()
-                == Some(RuntimeHelperRole::ForcingControl))
-    );
-    assert!(
-        preflight
-            .address_provenance_gap_for_symbol("aos_force")
-            .is_some_and(
-                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
-            )
-    );
+    for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        assert!(
+            preflight
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == preflight
+                        .address_candidate_preflight()
+                        .address_candidate_for(symbol_name)
+                        .expect("force candidate exists")
+                        .address())
+        );
+        assert!(
+            preflight
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| gap.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl))
+        );
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| gap.kind()
+                    == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl))
+        );
+    }
     assert!(
         preflight
             .native_export_gap_for_symbol("aos_env_get")

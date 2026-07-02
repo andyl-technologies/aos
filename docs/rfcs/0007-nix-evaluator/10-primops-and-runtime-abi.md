@@ -820,7 +820,7 @@ harness, never cut for scope.
       order, and missing
       helper/builtin bindings are reported in stable symbol order. The checked
       `runtime_symbol_registration_plan()` currently returns an incomplete
-      registration error until deep-forcing/call/attr/error helpers and builtin
+      registration error until blackhole-check/call/attr/error helpers and builtin
       executable bindings are added. Tests pin bindable-helper coverage,
       sorted gaps, representative missing helper roles, builtin gaps, and the
       incomplete-plan failure. This still does not register `JITBuilder` symbols,
@@ -843,7 +843,7 @@ harness, never cut for scope.
       into a checked completeness gate: callers receive a
       `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
       signature metadata. Today it returns an incomplete-plan error carrying the
-      preflight because deep-forcing/call/attr/error helpers and value-only
+      preflight because blackhole-check/call/attr/error helpers and value-only
       builtins remain gaps. Tests pin the missing count, representative helper and
       value-only builtin gaps, preserved callable builtin metadata, and a
       synthetic complete conversion path. This is metadata gating only; no
@@ -855,7 +855,7 @@ harness, never cut for scope.
       builtin call-shape metadata into a target-readiness report. Helper symbols
       with allocation/environment-access/forcing/write-barrier callables are
       address-free symbol/role wrapper-generation candidates;
-      deep-forcing/call/attr/error helpers, value-only builtins, and callable builtins
+      blackhole-check/call/attr/error helpers, value-only builtins, and callable builtins
       without wrapper bodies remain gaps with builtin-wrapper blockers: missing
       wrapper body, runtime/env ABI decoding, native `Value` argument
       materialization, evaluator call-frame binding, active argument root
@@ -926,7 +926,7 @@ harness, never cut for scope.
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata
       for currently covered allocation/environment-access/forcing/write-barrier helpers,
-      while keeping deep-forcing/call/attr/error helpers and builtins in the
+      while keeping blackhole-check/call/attr/error helpers and builtins in the
       missing-binding set. Tests prove helper-callable order, helper-symbol
       parity with the safe preflight, and gap parity with the incomplete
       registration report. This is not executable ABI registration: the
@@ -968,7 +968,7 @@ harness, never cut for scope.
       failure result: helpers return only on success, while allocation,
       environment-access, forcing, or barrier failures must transfer to evaluator
       trap/error machinery. Tests pin the convention for each `aos_alloc_*`,
-      `aos_env_get`, `aos_force`, and `aos_gc_write_barrier` symbol. This remains metadata
+      `aos_env_get`, `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol`
       registration, and native startup binding remain open.
 

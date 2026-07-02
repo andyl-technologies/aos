@@ -964,12 +964,12 @@ harness, never cut for scope.
       classifying each symbol as a currently bound allocation,
       environment-access, forcing, or write-barrier helper, an unbound future
       helper role, or a builtin. Tests cross-check core-manifest order, exact
-      safe-helper binding coverage including `aos_env_get` and `aos_force`,
-      representative unbound helpers such as `aos_force_deep` and `aos_apply`,
+      safe-helper binding coverage including `aos_env_get` and both forcing
+      helpers. Representative unbound helpers include `aos_blackhole_check` and `aos_apply`,
       and a representative builtin symbol.
       This is binding-status metadata only; it attaches no function pointers,
       exports no wrappers, registers no Cranelift symbols, and leaves
-      builtin/deep-forcing/call/attr/error helper addresses unbound.
+      builtin/blackhole-check/call/attr/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -978,7 +978,7 @@ harness, never cut for scope.
       reported in the same stable order. The stricter
       `runtime_symbol_registration_plan()` refuses to produce complete
       registration metadata while missing bindings remain. Tests cover helper
-      readiness, sorted missing bindings, representative deep-forcing/call helpers,
+      readiness, sorted missing bindings, representative blackhole-check/call helpers,
       builtin gaps, and the current incomplete-plan error. This is a preflight
       gate only; it attaches no executable addresses and performs no Cranelift
       registration.
@@ -1402,8 +1402,9 @@ harness, never cut for scope.
       native-export preflight beside the `ratchet-jit` registration preflight
       built from those candidates, while separately reporting that the current
       candidates still have Rust-callable rather than exported-wrapper address
-      provenance. Tests pin allocation-helper, `aos_env_get`, `aos_force`, and
-      `aos_gc_write_barrier` binding/address parity, preserve the current
+      provenance. Tests pin allocation-helper, `aos_env_get`,
+      `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier`
+      binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
       prove registered helper addresses still carry missing exported-wrapper
       blockers plus Rust-callable provenance gaps.
@@ -1417,9 +1418,9 @@ harness, never cut for scope.
       exported-address provenance gate to be complete before returning a plan.
       Today it returns a typed incomplete error carrying the owned Nix preflight
       while unbound helper/builtin address gaps, exported-wrapper blockers, and
-      Rust-callable address-provenance gaps remain. `aos_force` now has a
-      Rust-callable address candidate but still carries forcing-specific
-      native-export and provenance blockers. This is still strict
+      Rust-callable address-provenance gaps remain. `aos_force` and
+      `aos_force_deep` now have Rust-callable address candidates but still carry
+      forcing-specific native-export and provenance blockers. This is still strict
       metadata gating only: no `JITBuilder::symbol` registration, exported C ABI
       wrapper, code finalization, helper-address dereference, or native call is
       performed.

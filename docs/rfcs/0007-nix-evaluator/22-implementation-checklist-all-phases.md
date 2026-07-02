@@ -5254,10 +5254,10 @@ and helps the oracle directly.
       allocation, environment-access, forcing, or write-barrier helper, an
       unbound future helper role, or a builtin. Tests cross-check order parity
       with the core manifest, exact safe-helper coverage including `aos_env_get`
-      and `aos_force`, representative unbound helpers such as `aos_force_deep`
+      and both forcing helpers. Representative unbound helpers include `aos_blackhole_check`
       and `aos_apply`, and builtin classification. This is binding-status metadata only; it attaches
       no function pointers, exports no native wrappers, registers no Cranelift
-      symbols, and leaves builtin, deep-forcing/call/attr/error helper addresses
+      symbols, and leaves builtin, blackhole-check/call/attr/error helper addresses
       unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
@@ -5269,7 +5269,7 @@ and helps the oracle directly.
       `runtime_symbol_registration_plan()` currently returns an incomplete
       registration error until all helper and builtin executable bindings exist.
       Tests cover helper readiness, sorted missing bindings, representative
-      deep-forcing/call helper gaps, a builtin gap, and the incomplete-plan failure.
+      blackhole-check/call helper gaps, a builtin gap, and the incomplete-plan failure.
       This is a registration preflight only; it attaches no executable
       addresses, exports no wrappers, and performs no Cranelift registration.
 - [x] Current runtime symbol ABI-signature preflight precursor:
@@ -5366,8 +5366,9 @@ and helps the oracle directly.
       through `ratchet-jit` runtime-symbol registration readiness. The returned
       report owns those handoff inputs and separately reports that the current
       candidates still have Rust-callable rather than exported-wrapper address
-      provenance. Tests prove allocation-helper, `aos_env_get`, `aos_force`,
-      and `aos_gc_write_barrier` binding/address parity, preserve the current
+      provenance. Tests prove allocation-helper, `aos_env_get`,
+      `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier`
+      binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
       prove registered helper addresses still retain missing exported-wrapper
       blockers plus Rust-callable provenance gaps. This is safe integration preflight
@@ -5383,8 +5384,8 @@ and helps the oracle directly.
       plan. The current implementation returns a typed incomplete error carrying
       the owned Nix preflight while unbound helper/builtin address gaps,
       exported-wrapper blockers, and Rust-callable address-provenance gaps
-      remain. `aos_force` now has a Rust-callable address candidate but still
-      carries forcing-specific native-export and provenance blockers. This is
+      remain. `aos_force` and `aos_force_deep` now have Rust-callable address
+      candidates but still carry forcing-specific native-export and provenance blockers. This is
       strict metadata gating only: it
       does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
@@ -5611,7 +5612,7 @@ and helps the oracle directly.
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for deep-forcing/call/attr/error
+      register Cranelift symbols, or add bindings for blackhole-check/call/attr/error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
@@ -5624,7 +5625,7 @@ and helps the oracle directly.
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      deep-forcing/call/attr/error helpers, builtin addresses, or complete
+      blackhole-check/call/attr/error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every

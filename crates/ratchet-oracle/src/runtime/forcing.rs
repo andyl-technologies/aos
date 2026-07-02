@@ -1,12 +1,12 @@
 //! Runtime forcing helper metadata.
 //!
 //! The tree-walk oracle already owns thunk forcing through its internal
-//! `TreeWalk::force_value` path. Future native tiers reference that operation
-//! through the stable `aos_force` helper symbol. This module pins the helper's
-//! safe family metadata and exposes a process-local Rust callable wrapper for
-//! registration preflight only. It does not export a C ABI function, decode a
-//! native runtime context, install a JIT symbol, or bypass the evaluator force
-//! path.
+//! `TreeWalk::force_value` and `TreeWalk::deep_force_value` paths. Future
+//! native tiers reference those operations through the stable `aos_force` and
+//! `aos_force_deep` helper symbols. This module pins the helpers' safe family
+//! metadata and exposes process-local Rust callable wrappers for registration
+//! preflight only. It does not export a C ABI function, decode a native runtime
+//! context, install a JIT symbol, or bypass the evaluator force path.
 
 use crate::compile::IrId;
 use crate::eval::tree_walk::{TreeWalk, TreeWalkError};
@@ -18,11 +18,15 @@ use crate::value::Value;
 pub enum RuntimeForcingEntryPoint {
     /// The `aos_force` helper that forces a value to weak head normal form.
     AosForce,
+    /// The `aos_force_deep` helper that recursively forces lists and attrsets.
+    AosForceDeep,
 }
 
 /// Frozen forcing entry points registered by future native runtimes.
-pub const RUNTIME_FORCING_ENTRYPOINTS: &[RuntimeForcingEntryPoint] =
-    &[RuntimeForcingEntryPoint::AosForce];
+pub const RUNTIME_FORCING_ENTRYPOINTS: &[RuntimeForcingEntryPoint] = &[
+    RuntimeForcingEntryPoint::AosForce,
+    RuntimeForcingEntryPoint::AosForceDeep,
+];
 
 const FORCE_VALUE_PARAMETERS: &[RuntimeForcingAbiParameter] = &[
     RuntimeForcingAbiParameter::new("rt", RuntimeForcingAbiParameterKind::RuntimeContext),
@@ -30,12 +34,18 @@ const FORCE_VALUE_PARAMETERS: &[RuntimeForcingAbiParameter] = &[
 ];
 
 /// Frozen forcing helper ABI signatures for future native runtimes.
-pub const RUNTIME_FORCING_ABI_SIGNATURES: &[RuntimeForcingAbiSignature] =
-    &[RuntimeForcingAbiSignature::new(
+pub const RUNTIME_FORCING_ABI_SIGNATURES: &[RuntimeForcingAbiSignature] = &[
+    RuntimeForcingAbiSignature::new(
         RuntimeForcingEntryPoint::AosForce,
         FORCE_VALUE_PARAMETERS,
         RuntimeForcingAbiReturnKind::Value,
-    )];
+    ),
+    RuntimeForcingAbiSignature::new(
+        RuntimeForcingEntryPoint::AosForceDeep,
+        FORCE_VALUE_PARAMETERS,
+        RuntimeForcingAbiReturnKind::Value,
+    ),
+];
 
 type RuntimeForceValueFn = fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>;
 
@@ -46,6 +56,16 @@ fn rust_callable_aos_force(
     value: Value,
 ) -> Result<Value, TreeWalkError> {
     eval.force_value(id, span, value)
+}
+
+fn rust_callable_aos_force_deep(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    value: Value,
+) -> Result<Value, TreeWalkError> {
+    let mut visited = Vec::new();
+    eval.deep_force_value(id, span, value, &mut visited)
 }
 
 /// Returns forcing helper bindings with callable Rust wrapper addresses.
@@ -63,8 +83,8 @@ pub fn runtime_forcing_rust_callable_bindings() -> Vec<RuntimeForcingRustCallabl
 
 /// Builds native-export readiness metadata for frozen forcing helpers.
 ///
-/// The returned report is intentionally negative today: `aos_force` has frozen
-/// ABI metadata and a safe evaluator-callable wrapper, but no exported C ABI
+/// The returned report is intentionally negative today: forcing helpers have
+/// frozen ABI metadata and safe evaluator-callable wrappers, but no exported C ABI
 /// wrapper. The blocker list is precise so later unsafe wrapper work can clear
 /// individual obligations without treating the Rust callable as a native ABI
 /// export.
@@ -93,6 +113,7 @@ impl RuntimeForcingEntryPoint {
     pub const fn symbol_name(self) -> &'static str {
         match self {
             Self::AosForce => "aos_force",
+            Self::AosForceDeep => "aos_force_deep",
         }
     }
 
@@ -100,6 +121,7 @@ impl RuntimeForcingEntryPoint {
     pub fn from_symbol_name(symbol_name: &str) -> Option<Self> {
         match symbol_name {
             "aos_force" => Some(Self::AosForce),
+            "aos_force_deep" => Some(Self::AosForceDeep),
             _ => None,
         }
     }
@@ -107,7 +129,7 @@ impl RuntimeForcingEntryPoint {
     /// Returns the frozen ABI signature for this forcing entry point.
     pub const fn abi_signature(self) -> RuntimeForcingAbiSignature {
         match self {
-            Self::AosForce => RuntimeForcingAbiSignature::new(
+            Self::AosForce | Self::AosForceDeep => RuntimeForcingAbiSignature::new(
                 self,
                 FORCE_VALUE_PARAMETERS,
                 RuntimeForcingAbiReturnKind::Value,
@@ -133,6 +155,7 @@ impl RuntimeForcingEntryPoint {
     pub const fn rust_callable_shape(self) -> RuntimeForcingRustCallableShape {
         match self {
             Self::AosForce => RuntimeForcingRustCallableShape::TreeWalkForceValue,
+            Self::AosForceDeep => RuntimeForcingRustCallableShape::TreeWalkDeepForceValue,
         }
     }
 
@@ -144,6 +167,7 @@ impl RuntimeForcingEntryPoint {
     pub fn rust_callable_address(self) -> RuntimeForcingRustCallableAddress {
         let ptr = match self {
             Self::AosForce => rust_callable_aos_force as RuntimeForceValueFn as *const (),
+            Self::AosForceDeep => rust_callable_aos_force_deep as RuntimeForceValueFn as *const (),
         };
         RuntimeForcingRustCallableAddress::new(ptr)
     }
@@ -151,7 +175,7 @@ impl RuntimeForcingEntryPoint {
     /// Returns the current native-export blockers for this forcing helper.
     pub const fn native_export_blockers(self) -> &'static [RuntimeForcingNativeExportBlocker] {
         match self {
-            Self::AosForce => FORCING_NATIVE_EXPORT_BLOCKERS,
+            Self::AosForce | Self::AosForceDeep => FORCING_NATIVE_EXPORT_BLOCKERS,
         }
     }
 }
@@ -161,6 +185,8 @@ impl RuntimeForcingEntryPoint {
 pub enum RuntimeForcingRustCallableShape {
     /// `fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>`.
     TreeWalkForceValue,
+    /// `fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>`.
+    TreeWalkDeepForceValue,
 }
 
 /// A process-local callable Rust forcing wrapper address.
@@ -470,7 +496,10 @@ mod tests {
             helper_symbols,
             BTreeSet::from(["aos_blackhole_check", "aos_force", "aos_force_deep"])
         );
-        assert_eq!(entrypoint_symbols, BTreeSet::from(["aos_force"]));
+        assert_eq!(
+            entrypoint_symbols,
+            BTreeSet::from(["aos_force", "aos_force_deep"])
+        );
         assert_eq!(signature_symbols, entrypoint_symbols);
     }
 
@@ -478,7 +507,10 @@ mod tests {
     fn forcing_entrypoint_symbols_round_trip() {
         assert_eq!(
             runtime_forcing_entrypoints(),
-            [RuntimeForcingEntryPoint::AosForce]
+            [
+                RuntimeForcingEntryPoint::AosForce,
+                RuntimeForcingEntryPoint::AosForceDeep,
+            ]
         );
 
         for entrypoint in runtime_forcing_entrypoints() {
@@ -494,7 +526,7 @@ mod tests {
         for symbol in runtime_helper_symbols()
             .iter()
             .copied()
-            .filter(|symbol| symbol.name() != "aos_force")
+            .filter(|symbol| !matches!(symbol.name(), "aos_force" | "aos_force_deep"))
         {
             assert_eq!(
                 RuntimeForcingEntryPoint::from_symbol_name(symbol.name()),
@@ -513,76 +545,98 @@ mod tests {
 
     #[test]
     fn forcing_abi_signature_pins_runtime_value_return() {
-        let signature = RuntimeForcingEntryPoint::AosForce.abi_signature();
-
         assert_eq!(
             runtime_forcing_abi_signatures(),
-            [RuntimeForcingAbiSignature::new(
-                RuntimeForcingEntryPoint::AosForce,
-                FORCE_VALUE_PARAMETERS,
-                RuntimeForcingAbiReturnKind::Value,
-            )]
-        );
-        assert_eq!(signature.entrypoint(), RuntimeForcingEntryPoint::AosForce);
-        assert_eq!(signature.symbol_name(), "aos_force");
-        assert_eq!(
-            signature.parameters(),
             [
-                RuntimeForcingAbiParameter::new(
-                    "rt",
-                    RuntimeForcingAbiParameterKind::RuntimeContext,
+                RuntimeForcingAbiSignature::new(
+                    RuntimeForcingEntryPoint::AosForce,
+                    FORCE_VALUE_PARAMETERS,
+                    RuntimeForcingAbiReturnKind::Value,
                 ),
-                RuntimeForcingAbiParameter::new("value", RuntimeForcingAbiParameterKind::Value),
+                RuntimeForcingAbiSignature::new(
+                    RuntimeForcingEntryPoint::AosForceDeep,
+                    FORCE_VALUE_PARAMETERS,
+                    RuntimeForcingAbiReturnKind::Value,
+                ),
             ]
-            .as_slice()
         );
-        assert_eq!(signature.return_kind(), RuntimeForcingAbiReturnKind::Value);
+        for entrypoint in runtime_forcing_entrypoints() {
+            let signature = entrypoint.abi_signature();
+
+            assert_eq!(signature.entrypoint(), *entrypoint);
+            assert_eq!(signature.symbol_name(), entrypoint.symbol_name());
+            assert_eq!(
+                signature.parameters(),
+                [
+                    RuntimeForcingAbiParameter::new(
+                        "rt",
+                        RuntimeForcingAbiParameterKind::RuntimeContext,
+                    ),
+                    RuntimeForcingAbiParameter::new("value", RuntimeForcingAbiParameterKind::Value),
+                ]
+                .as_slice()
+            );
+            assert_eq!(signature.return_kind(), RuntimeForcingAbiReturnKind::Value);
+        }
     }
 
     #[test]
     fn forcing_abi_signature_matches_core_runtime_call_metadata() {
-        let local_signature = RuntimeForcingEntryPoint::AosForce.abi_signature();
-        let core_signature =
-            runtime_helper_call_signature(local_signature.symbol_name()).expect("core force ABI");
-        let core_parameters = core_signature
-            .parameters()
-            .iter()
-            .map(|parameter| (parameter.name(), parameter.kind()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            local_signature
+        for entrypoint in runtime_forcing_entrypoints() {
+            let local_signature = entrypoint.abi_signature();
+            let core_signature = runtime_helper_call_signature(local_signature.symbol_name())
+                .expect("core force ABI");
+            let core_parameters = core_signature
                 .parameters()
                 .iter()
                 .map(|parameter| (parameter.name(), parameter.kind()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("rt", RuntimeForcingAbiParameterKind::RuntimeContext),
-                ("value", RuntimeForcingAbiParameterKind::Value),
-            ]
-        );
-        assert_eq!(
-            core_parameters,
-            vec![
-                ("rt", RuntimeAbiParameterKind::RuntimeContext),
-                ("value", RuntimeAbiParameterKind::Value),
-            ]
-        );
-        assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Value);
-        assert_eq!(
-            local_signature.return_kind(),
-            RuntimeForcingAbiReturnKind::Value
-        );
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                local_signature
+                    .parameters()
+                    .iter()
+                    .map(|parameter| (parameter.name(), parameter.kind()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("rt", RuntimeForcingAbiParameterKind::RuntimeContext),
+                    ("value", RuntimeForcingAbiParameterKind::Value),
+                ],
+                "{} local ABI parameters match the forcing family shape",
+                entrypoint.symbol_name()
+            );
+            assert_eq!(
+                core_parameters,
+                vec![
+                    ("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    ("value", RuntimeAbiParameterKind::Value),
+                ],
+                "{} core ABI parameters match the forcing family shape",
+                entrypoint.symbol_name()
+            );
+            assert_eq!(core_signature.return_kind(), RuntimeAbiReturnKind::Value);
+            assert_eq!(
+                local_signature.return_kind(),
+                RuntimeForcingAbiReturnKind::Value
+            );
+        }
     }
 
     #[test]
     fn forcing_rust_callable_bindings_preserve_entrypoint_inventory() {
         let bindings = runtime_forcing_rust_callable_bindings();
-        let expected = [(
-            RuntimeForcingEntryPoint::AosForce,
-            RuntimeForcingRustCallableShape::TreeWalkForceValue,
-            rust_callable_aos_force as RuntimeForceValueFn as *const (),
-        )];
+        let expected = [
+            (
+                RuntimeForcingEntryPoint::AosForce,
+                RuntimeForcingRustCallableShape::TreeWalkForceValue,
+                rust_callable_aos_force as RuntimeForceValueFn as *const (),
+            ),
+            (
+                RuntimeForcingEntryPoint::AosForceDeep,
+                RuntimeForcingRustCallableShape::TreeWalkDeepForceValue,
+                rust_callable_aos_force_deep as RuntimeForceValueFn as *const (),
+            ),
+        ];
 
         assert_eq!(bindings.len(), expected.len());
         assert_eq!(
@@ -665,51 +719,49 @@ mod tests {
             runtime_forcing_rust_callable_bindings()
         );
 
-        let record = preflight
-            .readiness_for_symbol("aos_force")
-            .expect("force export readiness exists");
-        assert_eq!(record.entrypoint(), RuntimeForcingEntryPoint::AosForce);
-        assert_eq!(record.symbol_name(), "aos_force");
-        assert_eq!(
-            record.blockers(),
-            RuntimeForcingEntryPoint::AosForce.native_export_blockers()
-        );
-        assert!(!record.is_export_ready());
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::MissingExternCWrapper)
-        );
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented)
-        );
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented)
-        );
-        assert!(
-            record.blockers().contains(
+        for entrypoint in runtime_forcing_entrypoints() {
+            let record = preflight
+                .readiness_for_symbol(entrypoint.symbol_name())
+                .expect("force export readiness exists");
+
+            assert_eq!(record.entrypoint(), *entrypoint);
+            assert_eq!(record.symbol_name(), entrypoint.symbol_name());
+            assert_eq!(record.blockers(), entrypoint.native_export_blockers());
+            assert!(!record.is_export_ready());
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeForcingNativeExportBlocker::MissingExternCWrapper)
+            );
+            assert!(
+                record.blockers().contains(
+                    &RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented
+                )
+            );
+            assert!(
+                record.blockers().contains(
+                    &RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented
+                )
+            );
+            assert!(record.blockers().contains(
                 &RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented
-            )
-        );
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented)
-        );
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented)
-        );
-        assert!(
-            record
-                .blockers()
-                .contains(&RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized)
-        );
+            ));
+            assert!(
+                record.blockers().contains(
+                    &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
+                )
+            );
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented)
+            );
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized)
+            );
+        }
     }
 
     #[test]
@@ -722,7 +774,80 @@ mod tests {
         let value = Value::int(42);
         let forced = rust_callable_aos_force(&mut eval, IrId::new(0), Span::new(0, 4), value)
             .expect("non-thunk force succeeds");
+        let deeply_forced =
+            rust_callable_aos_force_deep(&mut eval, IrId::new(0), Span::new(0, 4), value)
+                .expect("non-thunk deep force succeeds");
 
         assert_eq!(forced.as_int().expect("forced value is an int"), 42);
+        assert_eq!(
+            deeply_forced
+                .as_int()
+                .expect("deeply forced value is an int"),
+            42
+        );
+    }
+
+    #[test]
+    fn deep_force_rust_callable_forces_nested_container_thunks() {
+        let source = "[ [ (1 + 2) ] ]";
+        let ir = aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers");
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("list evaluates");
+        let outer_element = {
+            let list = eval.heap().get_list(root).expect("root list is heap-owned");
+            list.get(0).expect("outer element exists")
+        };
+
+        assert!(
+            eval.heap()
+                .get_thunk(outer_element)
+                .expect("outer element is a suspended thunk")
+                .cell()
+                .cached_value()
+                .expect("suspended outer thunk is readable")
+                .is_none()
+        );
+
+        let deeply_forced = rust_callable_aos_force_deep(
+            &mut eval,
+            ir.root,
+            Span::new(0, source.len() as u32),
+            root,
+        )
+        .expect("nested list deep force succeeds");
+        let inner_list_value = eval
+            .heap()
+            .get_thunk(outer_element)
+            .expect("outer element remains a thunk")
+            .cell()
+            .cached_value()
+            .expect("outer thunk cache is readable")
+            .expect("outer thunk caches the forced inner list");
+        let inner_element = {
+            let inner_list = eval
+                .heap()
+                .get_list(inner_list_value)
+                .expect("inner list is heap-owned");
+            inner_list.get(0).expect("inner element exists")
+        };
+        let inner_cached_value = eval
+            .heap()
+            .get_thunk(inner_element)
+            .expect("inner element remains a thunk")
+            .cell()
+            .cached_value()
+            .expect("inner thunk cache is readable")
+            .expect("inner thunk caches its forced scalar");
+
+        assert!(deeply_forced.raw_eq(root));
+        assert_eq!(
+            inner_cached_value
+                .as_int()
+                .expect("inner cached value is an int"),
+            3
+        );
     }
 }

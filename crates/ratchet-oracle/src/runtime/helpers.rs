@@ -46,6 +46,7 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocThunk.abi_signature()),
     RuntimeHelperBinding::EnvironmentAccess(RuntimeEnvAccessEntryPoint::AosEnvGet.abi_signature()),
     RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForce.abi_signature()),
+    RuntimeHelperBinding::Forcing(RuntimeForcingEntryPoint::AosForceDeep.abi_signature()),
     RuntimeHelperBinding::WriteBarrier(
         RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
     ),
@@ -1413,7 +1414,7 @@ pub enum RuntimeSymbolNativeExportMissingBinding {
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
         /// Environment-access-specific blockers when this wrapper serves `aos_env_get`.
         env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
-        /// Forcing-specific blockers when this wrapper serves `aos_force`.
+        /// Forcing-specific blockers when this wrapper serves a forcing helper.
         forcing_blockers: &'static [RuntimeForcingNativeExportBlocker],
         /// Write-barrier-specific blockers when this wrapper serves `aos_gc_write_barrier`.
         write_barrier_blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
@@ -1509,7 +1510,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
         }
     }
 
-    /// Returns forcing-specific blockers for a missing `aos_force` C ABI wrapper.
+    /// Returns forcing-specific blockers for a missing forcing-helper C ABI wrapper.
     pub fn missing_exported_forcing_blockers(
         &self,
     ) -> Option<&'static [RuntimeForcingNativeExportBlocker]> {
@@ -1909,7 +1910,7 @@ mod tests {
                     RuntimeHelperRole::Allocation
                         | RuntimeHelperRole::EnvironmentAccess
                         | RuntimeHelperRole::WriteBarrier
-                ) || symbol.name() == "aos_force"
+                ) || matches!(symbol.name(), "aos_force" | "aos_force_deep")
             })
             .map(|symbol| (symbol.name(), symbol.role()))
             .collect::<Vec<_>>();
@@ -2051,6 +2052,10 @@ mod tests {
                 ),
                 ("aos_force", RuntimeHelperFailureConvention::TrapToEvaluator,),
                 (
+                    "aos_force_deep",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
                     "aos_gc_write_barrier",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
@@ -2157,7 +2162,7 @@ mod tests {
                 RuntimeHelperRole::Allocation
                     | RuntimeHelperRole::EnvironmentAccess
                     | RuntimeHelperRole::WriteBarrier
-            ) && symbol.name() != "aos_force"
+            ) && !matches!(symbol.name(), "aos_force" | "aos_force_deep")
         }) {
             assert_eq!(
                 RuntimeHelperBinding::from_symbol_name(symbol.name()),
@@ -2235,6 +2240,17 @@ mod tests {
         assert_eq!(
             manifest
                 .iter()
+                .find(|entry| entry.symbol_name() == "aos_force_deep")
+                .map(RuntimeSymbolBindingManifestEntry::status),
+            Some(RuntimeSymbolBindingStatus::BoundHelper(
+                RuntimeHelperBinding::Forcing(
+                    RuntimeForcingEntryPoint::AosForceDeep.abi_signature()
+                )
+            ))
+        );
+        assert_eq!(
+            manifest
+                .iter()
                 .find(|entry| entry.symbol_name() == "aos_apply")
                 .map(RuntimeSymbolBindingManifestEntry::status),
             Some(RuntimeSymbolBindingStatus::UnboundHelper(
@@ -2293,6 +2309,13 @@ mod tests {
                 .helper_bindings()
                 .iter()
                 .any(|binding| binding.symbol_name() == "aos_force"
+                    && binding.role() == RuntimeHelperRole::ForcingControl)
+        );
+        assert!(
+            preflight
+                .helper_bindings()
+                .iter()
+                .any(|binding| binding.symbol_name() == "aos_force_deep"
                     && binding.role() == RuntimeHelperRole::ForcingControl)
         );
         assert!(preflight.missing_bindings().iter().any(|missing| {
@@ -2409,10 +2432,21 @@ mod tests {
         );
         assert!(
             signature_preflight
+                .signature_bindings()
+                .iter()
+                .any(|binding| {
+                    binding.helper_binding().is_some_and(|helper| {
+                        helper.symbol_name() == "aos_force_deep"
+                            && helper.role() == RuntimeHelperRole::ForcingControl
+                    })
+                })
+        );
+        assert!(
+            signature_preflight
                 .missing_bindings()
                 .iter()
                 .any(|missing| {
-                    missing.symbol_name() == "aos_force_deep"
+                    missing.symbol_name() == "aos_blackhole_check"
                         && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
                 })
         );
@@ -2479,8 +2513,14 @@ mod tests {
                     && helper.role() == RuntimeHelperRole::ForcingControl
             })
         }));
+        assert!(preflight.signature_bindings().iter().any(|binding| {
+            binding.helper_binding().is_some_and(|helper| {
+                helper.symbol_name() == "aos_force_deep"
+                    && helper.role() == RuntimeHelperRole::ForcingControl
+            })
+        }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_force_deep"
+            missing.symbol_name() == "aos_blackhole_check"
                 && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
@@ -2544,7 +2584,10 @@ mod tests {
                     assert_eq!(target.symbol_name(), "aos_env_get")
                 }
                 RuntimeHelperRole::ForcingControl => {
-                    assert_eq!(target.symbol_name(), "aos_force")
+                    assert!(matches!(
+                        target.symbol_name(),
+                        "aos_force" | "aos_force_deep"
+                    ))
                 }
                 RuntimeHelperRole::WriteBarrier => {
                     assert_eq!(target.symbol_name(), "aos_gc_write_barrier")
@@ -2673,11 +2716,20 @@ mod tests {
         );
         assert!(
             candidate_preflight
+                .candidate_bindings()
+                .iter()
+                .any(|candidate| {
+                    candidate.symbol_name() == "aos_force_deep"
+                        && candidate.helper_role() == RuntimeHelperRole::ForcingControl
+                })
+        );
+        assert!(
+            candidate_preflight
                 .missing_bindings()
                 .iter()
                 .any(|missing| {
                     missing.missing_abi_signature().is_some_and(|gap| {
-                        gap.symbol_name() == "aos_force_deep"
+                        gap.symbol_name() == "aos_blackhole_check"
                             && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
                     })
                 })
@@ -2761,9 +2813,13 @@ mod tests {
             candidate.symbol_name() == "aos_force"
                 && candidate.helper_role() == RuntimeHelperRole::ForcingControl
         }));
+        assert!(preflight.candidate_bindings().iter().any(|candidate| {
+            candidate.symbol_name() == "aos_force_deep"
+                && candidate.helper_role() == RuntimeHelperRole::ForcingControl
+        }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.missing_abi_signature().is_some_and(|gap| {
-                gap.symbol_name() == "aos_force_deep"
+                gap.symbol_name() == "aos_blackhole_check"
                     && gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
             })
         }));
@@ -2824,6 +2880,13 @@ mod tests {
                 && missing.missing_exported_c_abi_failure_convention()
                     == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
         }));
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_force_deep"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
         let allocation_preflight = runtime_allocation_native_export_preflight();
         let attrs_allocation_blockers = allocation_preflight
             .readiness_for_symbol("aos_alloc_attrs")
@@ -2842,6 +2905,10 @@ mod tests {
         let forcing_blockers = forcing_preflight
             .readiness_for_symbol("aos_force")
             .expect("force export readiness exists")
+            .blockers();
+        let deep_forcing_blockers = forcing_preflight
+            .readiness_for_symbol("aos_force_deep")
+            .expect("deep-force export readiness exists")
             .blockers();
         let write_barrier_preflight = runtime_write_barrier_native_export_preflight();
         let write_barrier_blockers = write_barrier_preflight
@@ -2864,6 +2931,10 @@ mod tests {
             .iter()
             .find(|missing| missing.symbol_name() == "aos_force")
             .expect("force export gap exists");
+        let deep_force_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_force_deep")
+            .expect("deep-force export gap exists");
         let write_barrier_export_gap = exported_wrapper_gaps
             .iter()
             .find(|missing| missing.symbol_name() == "aos_gc_write_barrier")
@@ -2927,6 +2998,10 @@ mod tests {
             force_export_gap.missing_exported_forcing_blockers(),
             Some(forcing_blockers)
         );
+        assert_eq!(
+            deep_force_export_gap.missing_exported_forcing_blockers(),
+            Some(deep_forcing_blockers)
+        );
         assert!(
             force_export_gap
                 .missing_exported_forcing_blockers()
@@ -2957,6 +3032,18 @@ mod tests {
         );
         assert_eq!(
             force_export_gap.missing_exported_write_barrier_blockers(),
+            None
+        );
+        assert_eq!(
+            deep_force_export_gap.missing_exported_allocation_blockers(),
+            None
+        );
+        assert_eq!(
+            deep_force_export_gap.missing_exported_env_access_blockers(),
+            None
+        );
+        assert_eq!(
+            deep_force_export_gap.missing_exported_write_barrier_blockers(),
             None
         );
         assert_eq!(
@@ -3014,6 +3101,11 @@ mod tests {
         }
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "aos_force"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+        }));
+        assert!(export_preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_force_deep"
                 && missing.missing_exported_c_abi_wrapper_role()
                     == Some(RuntimeHelperRole::ForcingControl)
         }));
@@ -3116,6 +3208,11 @@ mod tests {
                 && missing.missing_exported_c_abi_wrapper_role()
                     == Some(RuntimeHelperRole::ForcingControl)
         }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_force_deep"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::ForcingControl)
+        }));
     }
 
     #[test]
@@ -3156,8 +3253,15 @@ mod tests {
                 .any(|callable| callable.symbol_name() == "aos_force"
                     && callable.role() == RuntimeHelperRole::ForcingControl)
         );
+        assert!(
+            callable_preflight
+                .helper_callables()
+                .iter()
+                .any(|callable| callable.symbol_name() == "aos_force_deep"
+                    && callable.role() == RuntimeHelperRole::ForcingControl)
+        );
         assert!(callable_preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_force_deep"
+            missing.symbol_name() == "aos_blackhole_check"
                 && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
         }));
         assert!(callable_preflight.missing_bindings().iter().any(|missing| {

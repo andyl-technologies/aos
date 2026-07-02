@@ -962,7 +962,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       helper failure convention by symbol, and rejects helper roles that still
       have no safe runtime binding. This is a registration manifest only; it
       does not export `unsafe extern "C"` functions, implement trap transfer,
-      register Cranelift symbols, or add bindings for deep-forcing/call/attr/error
+      register Cranelift symbols, or add bindings for blackhole-check/call/attr/error
       helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
@@ -975,7 +975,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata round trips, exact callable coverage, and the empty
       missing-binding report. This is still helper-family Rust metadata only: no
       exported C ABI symbols, Cranelift registration, unbound
-      deep-forcing/call/attr/error helpers, builtin addresses, or complete
+      blackhole-check/call/attr/error helpers, builtin addresses, or complete
       runtime-symbol registration plan is implemented.
 - [x] Current runtime symbol binding-manifest precursor:
       `runtime::helpers::runtime_symbol_binding_manifest()` consumes
@@ -983,11 +983,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       its deterministic order while classifying each symbol as a currently bound
       allocation/environment-access/forcing/write-barrier helper, an unbound
       future helper role, or a builtin. Tests pin order parity with the core
-      manifest, exact safe-helper coverage including `aos_env_get` and
-      `aos_force`, representative unbound helper roles, and builtin classification. This is binding-status
+      manifest, exact safe-helper coverage including `aos_env_get` and both
+      forcing helpers, representative unbound helper roles, and builtin classification. This is binding-status
       metadata only; it attaches no function pointers, exports no native
       wrappers, performs no Cranelift registration, and leaves
-      deep-forcing/call/attr/error helpers plus all builtin bodies unbound.
+      blackhole-check/call/attr/error helpers plus all builtin bodies unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `runtime::helpers::runtime_symbol_registration_preflight()` converts the
       binding-status manifest into a deterministic readiness report: current
@@ -997,7 +997,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       the stricter gate and
       currently returns an incomplete-registration error until all helper and
       builtin executable bindings exist. Tests cover helper readiness, sorted
-      missing symbols, representative deep-forcing/call helper gaps, a builtin gap,
+      missing symbols, representative blackhole-check/call helper gaps, a builtin gap,
       and the incomplete-plan failure. This is only a registration preflight; it
       attaches no executable addresses, exports no wrappers, and performs no
       Cranelift registration.
@@ -1086,7 +1086,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       materialization. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` now preserves
       allocation-specific blockers for `aos_alloc_*`, environment-access-specific
-      blockers for `aos_env_get`, forcing-specific blockers for `aos_force`,
+      blockers for `aos_env_get`, forcing-specific blockers for `aos_force`/`aos_force_deep`,
       write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier helper/builtin candidate gaps in full
       runtime-symbol order. This remains safe readiness metadata only: no C ABI
       function is exported, no Rust callable is treated as ABI-callable, no
