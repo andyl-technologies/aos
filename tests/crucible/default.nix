@@ -1141,6 +1141,12 @@ in rec {
       attrPath = "checks.crucible.phase5.sessionActor";
       taskIds = ["T-SESS-1"];
     };
+    sessionLifecycle = import ./phase5-session-lifecycle.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionLifecycle";
+      taskIds = ["T-SESS-3"];
+      dependencies = [phase3.gates.schedulerLiveness.rawGate];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

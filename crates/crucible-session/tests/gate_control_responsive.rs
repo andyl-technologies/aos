@@ -59,9 +59,6 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     let snapshot_acknowledged =
         acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "snapshot").await;
     assert_eq!(snapshot_acknowledged.state_kind, LiveStateKind::Running);
-    let fork_acknowledged =
-        acknowledge_operation(&sender, &live, SessionCommand::Fork, "fork").await;
-    assert_eq!(fork_acknowledged.state_kind, LiveStateKind::Running);
     let inject_acknowledged =
         acknowledge_operation(&sender, &live, SessionCommand::Inject, "inject").await;
     assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
@@ -72,7 +69,6 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
         observed_control_operations(&observed_control),
         vec![
             ControlOperationKind::Snapshot,
-            ControlOperationKind::Fork,
             ControlOperationKind::Inject,
             ControlOperationKind::Query,
         ]
@@ -80,6 +76,9 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
 
     let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
     assert_eq!(paused.state_kind, LiveStateKind::Paused);
+    let fork_acknowledged =
+        acknowledge_boundary_operation(&sender, &live, SessionCommand::Fork, "fork").await;
+    assert_eq!(fork_acknowledged.state_kind, LiveStateKind::Paused);
 
     send_command(&sender, SessionCommand::Continue).await;
     send_command(&sender, SessionCommand::Stop).await;
@@ -355,6 +354,29 @@ async fn acknowledge_operation(
     }
 
     panic!("{operation} command should be acknowledged within bounded actor yields");
+}
+
+async fn acknowledge_boundary_operation(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &crucible_session::LiveSnapshot,
+    command: SessionCommand,
+    operation: &'static str,
+) -> crucible_session::LiveSnapshotView {
+    let requested_after = live.read();
+    assert_eq!(requested_after.state_kind, LiveStateKind::Paused);
+    let acknowledgements_before = requested_after.control_acknowledgements;
+
+    send_command(sender, command).await;
+
+    for _ in 0..128 {
+        let current = live.read();
+        if current.control_acknowledgements > acknowledgements_before {
+            return current;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    panic!("{operation} boundary command should be acknowledged within bounded actor yields");
 }
 
 #[derive(Default)]

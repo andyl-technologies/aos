@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:4348ec2ee9715a8b`
+Checklist sync digest: `rfc0010-checklist-v1:b5bb6bec8fcf4c1a`
 
 ## The phase ladder
 
@@ -203,6 +203,11 @@ long-held locks.
   proves the live actor owns `Engine<L>` by value, keeps the actor mailbox as
   the only live-session mutation path, owns the event-log writer, carries the
   actor-owned breakpoint set, and gates against a locked/shared actor engine.
+  `T-SESS-3` is green through `checks.crucible.phase5.sessionLifecycle`, which
+  adds the closed lifecycle, pause-reason, outcome, and full §4 command-kind
+  lifecycle model, proves the pure transition table is total and non-wedging for
+  generated representative command streams, and checks realized model/engine
+  pairs with typed, side-effect-free rejections.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

@@ -480,9 +480,9 @@ in
             measured_in=quanta
             quantum_bound=1
             session_required_ops_ack_lte_one_quantum=true
-            scheduler_payload_ops=snapshot,fork,inject,query
+            scheduler_payload_ops=snapshot,inject,query
             pause_ack=actor-boundary-state-transition
-            api_required_ops=pause,snapshot,fork,inject,query
+            api_required_ops=pause,snapshot,inject,query
             daemon_uses_api_contract=true
             RESULT
           '';
