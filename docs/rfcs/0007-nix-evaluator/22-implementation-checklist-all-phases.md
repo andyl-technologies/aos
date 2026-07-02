@@ -6723,6 +6723,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       only: it does not publish into evaluator heap thunk state, perform atomic
       thunk-state CAS, cast or call the code pointer, lower generic IR, emit
       runtime calls, or complete runtime-symbol registration.
+- [x] Current promotion-gated tier-1 compile/install preflight:
+      `ratchet-jit::cranelift::jit_cranelift_tier1_promotion_preflight_for_ir_root()`
+      records one invocation on an existing `JitTieredCodeSlot`, applies
+      `TierUpPolicy`, and only when the policy requests tier-1 promotion lowers a
+      currently-supported literal IR root, finalizes it, installs the opaque
+      pointer metadata into the updated slot, and keeps the `JITModule` owner in
+      the promoted result. Tests pin cold no-compile behavior for unsupported
+      roots, threshold and multi-use promotion, installed-slot no-repeat
+      compilation, deferred lowering errors, slot counter preservation on success
+      and promoted errors, pointer equality, and module ownership. This is still
+      safe preflight assembly only: no evaluator heap thunk is mutated, no atomic
+      thunk-state CAS runs, no native code pointer is cast or called, and
+      generic/runtime-call lowering remains open.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps

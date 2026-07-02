@@ -7,8 +7,10 @@
 //! scaffold declares shape-known runtime symbols as imported functions. The
 //! artifact-definition scaffold additionally compiles one verified CLIF artifact
 //! into an encapsulated module. The artifact-finalization scaffold finalizes one
-//! defined artifact and returns opaque code-pointer metadata. None of these
-//! paths transmutes code pointers or calls native code.
+//! defined artifact and returns opaque code-pointer metadata. The promotion
+//! scaffold records safe slot hotness and compiles only currently-supported
+//! literal roots when policy requests tier 1. None of these paths transmutes code
+//! pointers or calls native code.
 
 use std::{
     error::Error,
@@ -22,9 +24,11 @@ use cranelift_codegen::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
+use ratchet_core::{IrArena, IrId};
 
 use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
+    lower::{JitLowerError, lower_constant_ir_thunk_body_artifact},
     module::{
         JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
         jit_module_readiness_preflight_for_artifact,
@@ -35,7 +39,10 @@ use crate::{
         JitRuntimeSymbolRegistrationError, JitRuntimeSymbolRegistrationGap,
         jit_runtime_symbol_registration_preflight_with_candidates,
     },
-    tier::{JitCompiledCodePointer, JitTieredCodeSlot, JitTieredCodeSlotError},
+    tier::{
+        JitCompiledCodePointer, JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision,
+        TierUpDemandHint, TierUpPolicy,
+    },
 };
 
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -445,6 +452,123 @@ impl JitCraneliftTier1SlotPreflight {
     }
 }
 
+/// Result of one promotion-gated tier-1 compile attempt.
+pub enum JitCraneliftTier1PromotionPreflight {
+    /// The invocation was recorded, but policy did not request compilation.
+    StayedInTier {
+        /// The updated safe tiered-code slot.
+        slot: JitTieredCodeSlot,
+        /// The policy decision made after recording the invocation.
+        decision: TierUpDecision,
+    },
+    /// Policy requested promotion and a tier-1 artifact was finalized into a slot.
+    Promoted {
+        /// The owned finalization plus tier-slot metadata.
+        preflight: JitCraneliftTier1SlotPreflight,
+        /// The policy decision that requested promotion.
+        decision: TierUpDecision,
+    },
+}
+
+impl JitCraneliftTier1PromotionPreflight {
+    /// Returns the policy decision made for this promotion attempt.
+    pub const fn decision(&self) -> TierUpDecision {
+        match self {
+            Self::StayedInTier { decision, .. } | Self::Promoted { decision, .. } => *decision,
+        }
+    }
+
+    /// Returns true when this attempt compiled and installed tier-1 metadata.
+    pub const fn did_compile(&self) -> bool {
+        matches!(self, Self::Promoted { .. })
+    }
+
+    /// Returns the updated tiered-code slot.
+    ///
+    /// For promoted results, the returned slot is backed by the finalization
+    /// preflight held in the same enum value.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        match self {
+            Self::StayedInTier { slot, .. } => slot,
+            Self::Promoted { preflight, .. } => preflight.slot(),
+        }
+    }
+
+    /// Returns the owned tier-1 preflight when compilation occurred.
+    pub const fn promoted_preflight(&self) -> Option<&JitCraneliftTier1SlotPreflight> {
+        match self {
+            Self::StayedInTier { .. } => None,
+            Self::Promoted { preflight, .. } => Some(preflight),
+        }
+    }
+
+    /// Returns true when this value owns a `JITModule` backing the slot pointer.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        match self {
+            Self::StayedInTier { .. } => false,
+            Self::Promoted { preflight, .. } => preflight.owns_encapsulated_module(),
+        }
+    }
+}
+
+/// A failure from a promotion-gated tier-1 compile attempt.
+#[derive(Debug)]
+pub struct JitCraneliftTier1PromotionError {
+    slot: JitTieredCodeSlot,
+    decision: TierUpDecision,
+    source: JitCraneliftModuleSetupError,
+}
+
+impl JitCraneliftTier1PromotionError {
+    fn new(
+        slot: JitTieredCodeSlot,
+        decision: TierUpDecision,
+        source: JitCraneliftModuleSetupError,
+    ) -> Self {
+        Self {
+            slot,
+            decision,
+            source,
+        }
+    }
+
+    /// Returns the invocation-updated slot from the failed promotion attempt.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        &self.slot
+    }
+
+    /// Returns the policy decision that requested compilation.
+    pub const fn decision(&self) -> TierUpDecision {
+        self.decision
+    }
+
+    /// Returns the underlying lowering, finalization, or slot-install error.
+    pub const fn setup_error(&self) -> &JitCraneliftModuleSetupError {
+        &self.source
+    }
+
+    /// Consumes the error and returns the invocation-updated slot.
+    pub fn into_slot(self) -> JitTieredCodeSlot {
+        self.slot
+    }
+}
+
+impl fmt::Display for JitCraneliftTier1PromotionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "tier-1 promotion failed after decision {:?}: {}",
+            self.decision, self.source
+        )
+    }
+}
+
+impl Error for JitCraneliftTier1PromotionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// A real `JITModule` containing imported runtime-symbol declarations plus gaps.
 pub struct JitCraneliftModuleDeclarationPreflight {
     artifact: JitModuleArtifactMetadata,
@@ -641,6 +765,13 @@ pub enum JitCraneliftModuleSetupError {
     Readiness(JitModuleReadinessError),
     /// Native runtime-symbol registration metadata could not be built.
     RuntimeSymbolRegistration(JitRuntimeSymbolRegistrationError),
+    /// A tier-1 artifact could not be lowered from Core IR.
+    LowerTier1Artifact {
+        /// The Core IR root requested for tier-1 compilation.
+        root: IrId,
+        /// The underlying CLIF lowering error.
+        source: JitLowerError,
+    },
     /// A runtime-symbol import could not be declared in the module.
     DeclareRuntimeSymbol {
         /// The stable runtime symbol being declared.
@@ -693,6 +824,10 @@ impl fmt::Display for JitCraneliftModuleSetupError {
             Self::TargetIsa(error) => write!(formatter, "{error}"),
             Self::Readiness(error) => write!(formatter, "{error}"),
             Self::RuntimeSymbolRegistration(error) => write!(formatter, "{error}"),
+            Self::LowerTier1Artifact { root, source } => write!(
+                formatter,
+                "IR root {root:?} could not be lowered for tier-1 compilation: {source}"
+            ),
             Self::DeclareRuntimeSymbol {
                 symbol_name,
                 source,
@@ -744,6 +879,7 @@ impl Error for JitCraneliftModuleSetupError {
             Self::TargetIsa(error) => Some(error),
             Self::Readiness(error) => Some(error),
             Self::RuntimeSymbolRegistration(error) => Some(error),
+            Self::LowerTier1Artifact { source, .. } => Some(source),
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
             Self::DefineArtifactFunction { source, .. } => Some(source),
@@ -975,18 +1111,64 @@ pub fn jit_cranelift_tier1_slot_preflight_for_artifact(
     artifact: JitClifArtifact,
 ) -> Result<JitCraneliftTier1SlotPreflight, JitCraneliftModuleSetupError> {
     let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)?;
-    let symbol_name = finalization.finalized_function().symbol_name().to_owned();
-    let code_ptr = finalization.finalized_function().compiled_code_ptr();
-    let mut slot = JitTieredCodeSlot::new();
+    tier1_slot_preflight_from_finalization(finalization, JitTieredCodeSlot::new())
+}
 
-    slot.install_tier1_code(code_ptr).map_err(|source| {
-        JitCraneliftModuleSetupError::InstallTier1Code {
-            symbol_name,
-            source,
+/// Records one invocation and compiles a supported IR root only when policy promotes.
+///
+/// This is the first safe compile-on-hotness composition point. It records one
+/// invocation in `slot`, asks `policy` whether tier 1 should be selected, and
+/// lowers/finalizes `root` only when the resulting [`TierUpDecision`] requests
+/// promotion. Promoted results keep the finalized `JITModule` owner beside the
+/// installed slot metadata. Non-promoted results return the updated slot without
+/// lowering, module construction, finalization, or pointer installation.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftTier1PromotionError`] if policy requests promotion but
+/// the current literal-only lowerer cannot lower `root`, or if artifact
+/// finalization or tier-slot installation fails. The error preserves the
+/// invocation-updated slot and the policy decision alongside the underlying
+/// setup error.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift unresolved-import and finalized-function
+/// lookup conditions as [`jit_cranelift_artifact_finalization_preflight_for_artifact`]
+/// when policy requests promotion.
+pub fn jit_cranelift_tier1_promotion_preflight_for_ir_root(
+    mut slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitCraneliftTier1PromotionPreflight, JitCraneliftTier1PromotionError> {
+    let decision = slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(JitCraneliftTier1PromotionPreflight::StayedInTier { slot, decision });
+    }
+
+    let artifact = match lower_constant_ir_thunk_body_artifact(arena, root) {
+        Ok(artifact) => artifact,
+        Err(source) => {
+            return Err(JitCraneliftTier1PromotionError::new(
+                slot,
+                decision,
+                JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
+            ));
         }
-    })?;
+    };
+    let finalization = match jit_cranelift_artifact_finalization_preflight_for_artifact(artifact) {
+        Ok(finalization) => finalization,
+        Err(source) => return Err(JitCraneliftTier1PromotionError::new(slot, decision, source)),
+    };
+    let preflight = tier1_slot_preflight_from_finalization_preserving_slot(finalization, slot)
+        .map_err(|(slot, source)| JitCraneliftTier1PromotionError::new(slot, decision, source))?;
 
-    Ok(JitCraneliftTier1SlotPreflight::new(finalization, slot))
+    Ok(JitCraneliftTier1PromotionPreflight::Promoted {
+        preflight,
+        decision,
+    })
 }
 
 /// Builds a complete JIT module setup for `artifact`.
@@ -1132,6 +1314,34 @@ fn finalized_function_pointer(
     })
 }
 
+fn tier1_slot_preflight_from_finalization(
+    finalization: JitCraneliftArtifactFinalizationPreflight,
+    slot: JitTieredCodeSlot,
+) -> Result<JitCraneliftTier1SlotPreflight, JitCraneliftModuleSetupError> {
+    tier1_slot_preflight_from_finalization_preserving_slot(finalization, slot)
+        .map_err(|(_slot, error)| error)
+}
+
+fn tier1_slot_preflight_from_finalization_preserving_slot(
+    finalization: JitCraneliftArtifactFinalizationPreflight,
+    mut slot: JitTieredCodeSlot,
+) -> Result<JitCraneliftTier1SlotPreflight, (JitTieredCodeSlot, JitCraneliftModuleSetupError)> {
+    let symbol_name = finalization.finalized_function().symbol_name().to_owned();
+    let code_ptr = finalization.finalized_function().compiled_code_ptr();
+
+    if let Err(source) = slot.install_tier1_code(code_ptr) {
+        return Err((
+            slot,
+            JitCraneliftModuleSetupError::InstallTier1Code {
+                symbol_name,
+                source,
+            },
+        ));
+    }
+
+    Ok(JitCraneliftTier1SlotPreflight::new(finalization, slot))
+}
+
 fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> String {
     let kind = match artifact.kind() {
         JitClifArtifactKind::ThunkBody => "thunk_body",
@@ -1159,7 +1369,7 @@ fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{num::NonZeroUsize, ptr::NonNull};
 
     use cranelift_codegen::ir::UserFuncName;
     use ratchet_core::syntax::Span;
@@ -1175,7 +1385,7 @@ mod tests {
             lower_constant_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
-        tier::JitTier,
+        tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
     };
 
     fn synthetic_address(raw: usize) -> JitRuntimeSymbolAddress {
@@ -1606,6 +1816,191 @@ mod tests {
             Some(preflight.finalized_function().compiled_code_ptr())
         );
         assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn promotion_preflight_records_cold_invocation_without_lowering_unsupported_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("cold unsupported root does not lower");
+
+        assert!(!result.did_compile());
+        assert_eq!(
+            result.decision(),
+            TierUpDecision::StayInTier(JitTier::Tier0Oracle)
+        );
+        assert_eq!(result.slot().invocation_counter().invocations(), 1);
+        assert_eq!(result.slot().current_tier(), JitTier::Tier0Oracle);
+        assert!(result.promoted_preflight().is_none());
+        assert!(!result.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn promotion_preflight_compiles_literal_root_at_threshold() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Int(99),
+            )],
+            Vec::new(),
+        );
+        let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("threshold literal root compiles");
+
+        assert!(result.did_compile());
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        assert_eq!(
+            result.slot().invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion result owns compiled preflight");
+        assert_eq!(
+            promoted.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn promotion_preflight_compiles_multi_use_before_threshold() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Bool,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Bool(false),
+            )],
+            Vec::new(),
+        );
+        let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("multi-use literal root compiles");
+
+        assert!(result.did_compile());
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(false, true))
+        );
+        assert_eq!(result.slot().invocation_counter().invocations(), 1);
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(result.promoted_preflight().is_some());
+    }
+
+    #[test]
+    fn promotion_preflight_installed_slot_skips_repeat_compilation() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )],
+            Vec::new(),
+        );
+        let mut slot = JitTieredCodeSlot::with_counter(TierUpCounter::new(u64::MAX));
+        let code_ptr = JitCompiledCodePointer::from_non_null(NonNull::dangling());
+        slot.install_tier1_code(code_ptr)
+            .expect("test tier-1 metadata installs");
+
+        let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
+            slot,
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &arena,
+            IrId::new(0),
+        )
+        .expect("installed slot does not recompile");
+
+        assert!(!result.did_compile());
+        assert_eq!(
+            result.decision(),
+            TierUpDecision::StayInTier(JitTier::Tier1Baseline)
+        );
+        assert_eq!(result.slot().invocation_counter().invocations(), u64::MAX);
+        assert_eq!(result.slot().tier1_code_ptr(), Some(code_ptr));
+        assert!(result.promoted_preflight().is_none());
+    }
+
+    #[test]
+    fn promotion_preflight_reports_lowering_error_only_after_promotion() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+        );
+        let Err(error) = result else {
+            panic!("promoted unsupported root reports lowering error");
+        };
+
+        assert_eq!(
+            error.slot().invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(
+            error.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        let JitCraneliftModuleSetupError::LowerTier1Artifact { root, source } = error.setup_error()
+        else {
+            panic!("expected tier-1 lowering error");
+        };
+        assert_eq!(*root, IrId::new(0));
+        assert!(matches!(
+            source,
+            JitLowerError::UnsupportedIrRoot { kind: IrKind::Str }
+        ));
     }
 
     #[test]
