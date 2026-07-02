@@ -68,8 +68,8 @@
         needle = "checks.crucible.phase6.perClusterReports";
       }
       {
-        label = "remaining triage tasks";
-        needle = "`T-TRI-7 … T-TRI-8` remain";
+        label = "downstream triage thin-driver gate";
+        needle = "checks.crucible.phase6.triageThinDriver";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" modelSource [

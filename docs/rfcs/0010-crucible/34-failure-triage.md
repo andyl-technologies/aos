@@ -581,13 +581,13 @@ replays minimization performs, which are re-reductions of recorded schedules,
 
   ARGS
     <FINDINGS>   A findings ledger (§34.7): a directory of reproduction artifacts,
-                 a content hash of a stored ledger, or a glob of artifact files.
+                 a content hash of a stored ledger, or one artifact/ledger file path.
 
   FLAGS (subcommand-local; relevant global flags from 23 §2 also apply)
     --policy <coarse|default|fine|exact>     Signature policy (§34.2.3). Default: default.
     --minimize <none|representative|all>     What to minimize (§34.4). Default: representative.
     --report <dir>                           Write per-cluster reports here.
-    --format <jsonl|json|table|markdown>     Report rendering (§34.5.2). Default: table.
+    --format <jsonl|json|table|markdown>     Report rendering (§34.5.2). Default: jsonl.
     --recompute-signatures                   Recompute signatures and assert byte-equality
                                              with the discovery-time signatures (§34.6).
     --compare <other-triage-result>          Content-diff against another triage result.
@@ -771,7 +771,7 @@ exit codes wired into the uniform mapping (23 §15, [CLI-25]). It is, like the
 rest of the CLI, a thin driver holding no run state ([CLI-1], [CLI-2]); this file
 owns the triage *projection* and 23 owns the *CLI ergonomics* of exposing it,
 exactly as 22 owns exploration policy and 23 owns the `search`/`fuzz` drivers
-([CLI-23]). Until 23 is updated, this forward reference records the seam.
+([CLI-23]).
 
 - **[TRI-19]** The `crucible triage` subcommand ([TRI-15]) MUST be added to the
   `crucible` CLI surface ([`23-cli.md`](23-cli.md)): its name in the subcommand
@@ -828,7 +828,7 @@ RISKS (§34.8): signature stability across minimization (THE invariant, §34.8.1
   over/under-clustering (coverage bucketing + symmetry canon + causal-slice knobs,
   §34.8.2) · cost (O(clusters), §34.8.3) · ledger interaction (no drift, §34.8.4).
 
-FORWARD-REF (§34.9): `crucible triage` to be added to 23's CLI surface ([TRI-19]).
+FORWARD-REF (§34.9): `crucible triage` is added to 23's CLI surface ([TRI-19]).
 ```
 
 The shape of this file is the shape of the guarantee: triage adds *nothing* to
@@ -963,7 +963,16 @@ recomputable byte-for-byte from what was already stored.
   writes the report rendering, and preserves the uniform exit-code path for
   recompute-signature mismatches; bare non-empty artifact-only ledgers are
   rejected rather than assigned fabricated signatures.
-- [ ] **T-TRI-8** Add the `crucible triage` subcommand to the CLI surface of
+- [x] **T-TRI-8** Add the `crucible triage` subcommand to the CLI surface of
   [`23-cli.md`](23-cli.md): subcommand-set entry, user-facing `--help` copy, and
   the uniform exit-code mapping. — satisfies [TRI-19]; spec §34.9; cross-ref 23
   §2, §15.
+  Completed by `checks.crucible.phase6.triageCliSurface`: RFC-23 now names
+  `triage` in the closed subcommand set and owns the CLI ergonomics for
+  `crucible triage <FINDINGS>`, including the `--policy`, `--minimize`,
+  `--report`, global `--format`, `--recompute-signatures`, and `--compare`
+  surface plus the uniform `0`/`1`/`4`/`5`/`64` exit-code mapping, including
+  parse-time usage errors. The CLI Rust regression renders the Clap top-level and
+  `triage` help output, checks the required subcommand name, user-facing flag
+  value sets, Markdown report format, and triage-specific exit-code contract; the
+  phase gate verifies that regression is present and the surface is wired.

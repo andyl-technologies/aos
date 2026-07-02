@@ -54,7 +54,13 @@ struct Cli {
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
     /// Select output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Jsonl, global = true)]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "jsonl|json|table|markdown",
+        default_value_t = OutputFormat::Jsonl,
+        global = true
+    )]
     format: OutputFormat,
     /// Write event log stream.
     #[arg(long, value_name = "path", global = true)]
@@ -132,7 +138,7 @@ enum Commands {
     Search(SearchArgs),
     /// Drive coverage-guided fuzzing.
     Fuzz(FuzzArgs),
-    /// Cluster discovered failures.
+    /// Cluster, dedup, and minimize discovered failures.
     Triage(TriageArgs),
     /// Open the time-travel debugger.
     Debug(DebugArgs),
@@ -183,10 +189,20 @@ struct TriageArgs {
     #[arg(value_name = "FINDINGS")]
     findings: String,
     /// Select the failure-signature policy.
-    #[arg(long, value_enum, default_value_t = TriagePolicyArg::Default)]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "coarse|default|fine|exact",
+        default_value_t = TriagePolicyArg::Default
+    )]
     policy: TriagePolicyArg,
     /// Select representative minimization mode.
-    #[arg(long, value_enum, default_value_t = TriageMinimizeArg::Representative)]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "none|representative|all",
+        default_value_t = TriageMinimizeArg::Representative
+    )]
     minimize: TriageMinimizeArg,
     /// Write per-cluster reports here.
     #[arg(long, value_name = "dir")]
@@ -333,10 +349,29 @@ struct ServeArgs {}
 struct CompletionsArgs {}
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => handle_cli_parse_error(error),
+    };
     if let Err(error) = dispatch(&cli) {
         eprintln!("crucible: {error}");
         std::process::exit(error.exit_code());
+    }
+}
+
+fn handle_cli_parse_error(error: clap::Error) -> ! {
+    let exit_code = cli_parse_error_exit_code(&error);
+    if let Err(print_error) = error.print() {
+        eprintln!("crucible: {print_error}");
+        std::process::exit(CliError::Io(print_error).exit_code());
+    }
+    std::process::exit(exit_code);
+}
+
+fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
+    match error.kind() {
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => 0,
+        _ => CliError::Usage(error.to_string()).exit_code(),
     }
 }
 
@@ -2420,6 +2455,66 @@ mod tests {
         };
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn cli_triage_help_surface_lists_required_flags_and_exit_code_contract() {
+        let mut command = Cli::command();
+        let top_help = command.render_long_help().to_string();
+        assert!(top_help.contains("triage"));
+        assert!(top_help.contains("Cluster, dedup, and minimize discovered failures"));
+        assert!(top_help.contains("--format <jsonl|json|table|markdown>"));
+
+        let triage_help = command
+            .find_subcommand_mut("triage")
+            .expect("triage subcommand must be registered")
+            .render_long_help()
+            .to_string();
+        for needle in [
+            "<FINDINGS>",
+            "--policy <coarse|default|fine|exact>",
+            "--minimize <none|representative|all>",
+            "--report <dir>",
+            "--recompute-signatures",
+            "--compare <other-triage-result>",
+            "--format <jsonl|json|table|markdown>",
+            "Select output format",
+        ] {
+            assert!(
+                triage_help.contains(needle),
+                "triage help is missing `{needle}`:\n{triage_help}"
+            );
+        }
+
+        assert_eq!(
+            CliError::Triage("signature self-check mismatch".to_string()).exit_code(),
+            1
+        );
+        assert_eq!(
+            CliError::Backend("triage discovery/config failure".to_string()).exit_code(),
+            4
+        );
+        assert_eq!(
+            CliError::Artifact("malformed findings ledger".to_string()).exit_code(),
+            5
+        );
+        assert_eq!(
+            CliError::Usage("triage usage error".to_string()).exit_code(),
+            64
+        );
+
+        let missing_findings = Cli::try_parse_from(["crucible", "triage"])
+            .expect_err("missing triage findings must be a parse error");
+        assert_eq!(cli_parse_error_exit_code(&missing_findings), 64);
+
+        let invalid_policy =
+            Cli::try_parse_from(["crucible", "triage", "findings", "--policy", "wide"])
+                .expect_err("invalid triage policy must be a parse error");
+        assert_eq!(cli_parse_error_exit_code(&invalid_policy), 64);
+
+        let help = Cli::try_parse_from(["crucible", "triage", "--help"])
+            .expect_err("help must render through Clap's display path");
+        assert_eq!(cli_parse_error_exit_code(&help), 0);
     }
 
     #[test]

@@ -1695,6 +1695,22 @@ in rec {
         phase4.gates.e2eDeterminism
       ];
     };
+    triageCliSurface = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.triageCliSurface";
+      gate = import ./phase6-triage-cli-surface.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.triageCliSurface";
+        taskIds = ["T-TRI-8"];
+        dependencies = [
+          phase5.cliSkeleton
+          phase6.triageThinDriver.rawGate
+        ];
+      };
+      dependencies = [
+        phase5.cliSkeleton
+        phase6.triageThinDriver
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {
