@@ -27,8 +27,8 @@ use super::barrier::{
     runtime_write_barrier_rust_callable_bindings,
 };
 use super::env::{
-    RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint, RuntimeEnvAccessRustCallableBinding,
-    runtime_env_access_rust_callable_bindings,
+    RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint, RuntimeEnvAccessNativeExportBlocker,
+    RuntimeEnvAccessRustCallableBinding, runtime_env_access_rust_callable_bindings,
 };
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
@@ -640,6 +640,7 @@ fn project_native_export_preflight(
                         candidate.helper_role(),
                         helper_binding.failure_convention(),
                         helper_binding.allocation_native_export_blockers(),
+                        helper_binding.env_access_native_export_blockers(),
                         helper_binding.write_barrier_native_export_blockers(),
                     ),
                 );
@@ -1322,6 +1323,8 @@ pub enum RuntimeSymbolNativeExportMissingBinding {
         failure_convention: RuntimeHelperFailureConvention,
         /// Allocation-specific blockers when this wrapper serves `aos_alloc_*`.
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
+        /// Environment-access-specific blockers when this wrapper serves `aos_env_get`.
+        env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
         /// Write-barrier-specific blockers when this wrapper serves `aos_gc_write_barrier`.
         write_barrier_blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
     },
@@ -1337,6 +1340,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
         role: RuntimeHelperRole,
         failure_convention: RuntimeHelperFailureConvention,
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
+        env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
         write_barrier_blockers: &'static [RuntimeWriteBarrierNativeExportBlocker],
     ) -> Self {
         Self::MissingExportedCAbiWrapper {
@@ -1344,6 +1348,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
             role,
             failure_convention,
             allocation_blockers,
+            env_access_blockers,
             write_barrier_blockers,
         }
     }
@@ -1395,6 +1400,19 @@ impl RuntimeSymbolNativeExportMissingBinding {
                 allocation_blockers,
                 ..
             } if !allocation_blockers.is_empty() => Some(*allocation_blockers),
+            Self::MissingExportedCAbiWrapper { .. } | Self::MissingNativeTargetCandidate(_) => None,
+        }
+    }
+
+    /// Returns environment-access-specific blockers for a missing `aos_env_get` wrapper.
+    pub fn missing_exported_env_access_blockers(
+        &self,
+    ) -> Option<&'static [RuntimeEnvAccessNativeExportBlocker]> {
+        match self {
+            Self::MissingExportedCAbiWrapper {
+                env_access_blockers,
+                ..
+            } if !env_access_blockers.is_empty() => Some(*env_access_blockers),
             Self::MissingExportedCAbiWrapper { .. } | Self::MissingNativeTargetCandidate(_) => None,
         }
     }
@@ -1622,6 +1640,16 @@ impl RuntimeHelperBinding {
         }
     }
 
+    /// Returns environment-access-native-export blockers for environment helpers.
+    pub const fn env_access_native_export_blockers(
+        self,
+    ) -> &'static [RuntimeEnvAccessNativeExportBlocker] {
+        match self {
+            Self::Allocation(_) | Self::WriteBarrier(_) => &[],
+            Self::EnvironmentAccess(signature) => signature.entrypoint().native_export_blockers(),
+        }
+    }
+
     /// Returns the write-barrier ABI signature when this binding serves a barrier.
     pub const fn write_barrier_signature(self) -> Option<RuntimeWriteBarrierAbiSignature> {
         match self {
@@ -1667,7 +1695,8 @@ mod tests {
         runtime_write_barrier_rust_callable_bindings,
     };
     use crate::runtime::env::{
-        runtime_env_access_abi_signatures, runtime_env_access_rust_callable_bindings,
+        RuntimeEnvAccessNativeExportBlocker, runtime_env_access_abi_signatures,
+        runtime_env_access_native_export_preflight, runtime_env_access_rust_callable_bindings,
     };
 
     fn expected_runtime_symbol_abi_signature_projection(
@@ -2546,6 +2575,13 @@ mod tests {
                 && missing.missing_exported_c_abi_failure_convention()
                     == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
         }));
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_env_get"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::EnvironmentAccess)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
         let allocation_preflight = runtime_allocation_native_export_preflight();
         let attrs_allocation_blockers = allocation_preflight
             .readiness_for_symbol("aos_alloc_attrs")
@@ -2554,6 +2590,11 @@ mod tests {
         let thunk_allocation_blockers = allocation_preflight
             .readiness_for_symbol("aos_alloc_thunk")
             .expect("thunk allocation export readiness exists")
+            .blockers();
+        let env_preflight = runtime_env_access_native_export_preflight();
+        let env_blockers = env_preflight
+            .readiness_for_symbol("aos_env_get")
+            .expect("env-get export readiness exists")
             .blockers();
         let write_barrier_preflight = runtime_write_barrier_native_export_preflight();
         let write_barrier_blockers = write_barrier_preflight
@@ -2568,6 +2609,10 @@ mod tests {
             .iter()
             .find(|missing| missing.symbol_name() == "aos_alloc_thunk")
             .expect("thunk export gap exists");
+        let env_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_env_get")
+            .expect("env-get export gap exists");
         let write_barrier_export_gap = exported_wrapper_gaps
             .iter()
             .find(|missing| missing.symbol_name() == "aos_gc_write_barrier")
@@ -2598,6 +2643,35 @@ mod tests {
                 )
         );
         assert_eq!(
+            env_export_gap.missing_exported_env_access_blockers(),
+            Some(env_blockers)
+        );
+        assert!(
+            env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented)
+        );
+        assert!(
+            env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(
+                    &RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented
+                )
+        );
+        assert!(
+            env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized)
+        );
+        assert_eq!(env_export_gap.missing_exported_allocation_blockers(), None);
+        assert_eq!(
+            env_export_gap.missing_exported_write_barrier_blockers(),
+            None
+        );
+        assert_eq!(
             write_barrier_export_gap.missing_exported_write_barrier_blockers(),
             Some(write_barrier_blockers)
         );
@@ -2620,6 +2694,17 @@ mod tests {
             None
         );
         for gap in exported_wrapper_gaps.iter().filter(|missing| {
+            missing.missing_exported_c_abi_wrapper_role()
+                == Some(RuntimeHelperRole::EnvironmentAccess)
+        }) {
+            assert!(
+                gap.missing_exported_env_access_blockers()
+                    .is_some_and(|blockers| !blockers.is_empty()),
+                "{} env-access export gaps must retain family blockers",
+                gap.symbol_name()
+            );
+        }
+        for gap in exported_wrapper_gaps.iter().filter(|missing| {
             missing.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::WriteBarrier)
         }) {
             assert!(
@@ -2629,13 +2714,6 @@ mod tests {
                 gap.symbol_name()
             );
         }
-        assert!(exported_wrapper_gaps.iter().any(|missing| {
-            missing.symbol_name() == "aos_env_get"
-                && missing.missing_exported_c_abi_wrapper_role()
-                    == Some(RuntimeHelperRole::EnvironmentAccess)
-                && missing.missing_exported_c_abi_failure_convention()
-                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
-        }));
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
             missing
                 .missing_native_target_candidate()

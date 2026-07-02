@@ -48,6 +48,17 @@ pub fn runtime_env_access_rust_callable_bindings() -> Vec<RuntimeEnvAccessRustCa
         .collect()
 }
 
+/// Builds native-export readiness metadata for frozen environment-access helpers.
+pub fn runtime_env_access_native_export_preflight() -> RuntimeEnvAccessNativeExportPreflight {
+    RuntimeEnvAccessNativeExportPreflight::new(
+        runtime_env_access_entrypoints()
+            .iter()
+            .copied()
+            .map(RuntimeEnvAccessNativeExportReadiness::for_entrypoint)
+            .collect(),
+    )
+}
+
 /// Returns the frozen environment-access entry-point inventory.
 pub const fn runtime_env_access_entrypoints() -> &'static [RuntimeEnvAccessEntryPoint] {
     RUNTIME_ENV_ACCESS_ENTRYPOINTS
@@ -94,8 +105,8 @@ impl RuntimeEnvAccessEntryPoint {
     /// Returns the callable Rust storage-wrapper binding for this entry point.
     ///
     /// The callable's Rust shape is separate from the frozen native ABI
-    /// signature because environment-pointer decoding and trap transfer are not
-    /// implemented yet.
+    /// signature because environment-pointer decoding, frame-layout binding,
+    /// value-return materialization, and trap transfer are not implemented yet.
     pub fn rust_callable_binding(self) -> RuntimeEnvAccessRustCallableBinding {
         RuntimeEnvAccessRustCallableBinding::new(
             self,
@@ -121,6 +132,13 @@ impl RuntimeEnvAccessEntryPoint {
             Self::AosEnvGet => rust_callable_aos_env_get as RuntimeEnvGetFn as *const (),
         };
         RuntimeEnvAccessRustCallableAddress::new(ptr)
+    }
+
+    /// Returns the current native-export blockers for this environment-access helper.
+    pub const fn native_export_blockers(self) -> &'static [RuntimeEnvAccessNativeExportBlocker] {
+        match self {
+            Self::AosEnvGet => ENV_ACCESS_NATIVE_EXPORT_BLOCKERS,
+        }
     }
 }
 
@@ -202,6 +220,117 @@ impl RuntimeEnvAccessRustCallableBinding {
     /// Returns the process-local callable Rust address for this binding.
     pub const fn address(self) -> RuntimeEnvAccessRustCallableAddress {
         self.address
+    }
+}
+
+/// A missing piece before an environment-access helper can become a native ABI export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeEnvAccessNativeExportBlocker {
+    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
+    MissingExternCWrapper,
+    /// Native wrappers cannot yet decode the captured environment pointer.
+    NativeEnvPointerDecodeUnimplemented,
+    /// The native environment frame layout is not bound to [`EvalFrame`] yet.
+    NativeEnvFrameLayoutUnimplemented,
+    /// Native wrappers cannot yet preserve [`EvalFrame`] borrow-conflict behavior.
+    NativeEnvBorrowDisciplineUnimplemented,
+    /// Native wrappers cannot yet decode and validate the slot index argument.
+    NativeSlotIndexDecodeUnimplemented,
+    /// Helper failures cannot yet transfer into evaluator trap/error machinery.
+    TrapTransferUnimplemented,
+    /// The by-value [`Value`] return is not yet materialized through the native ABI.
+    NativeValueReturnUnmaterialized,
+}
+
+const ENV_ACCESS_NATIVE_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocker] = &[
+    RuntimeEnvAccessNativeExportBlocker::MissingExternCWrapper,
+    RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented,
+    RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented,
+    RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented,
+    RuntimeEnvAccessNativeExportBlocker::NativeSlotIndexDecodeUnimplemented,
+    RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
+    RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+];
+
+/// Native-export readiness for one frozen environment-access helper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeEnvAccessNativeExportReadiness {
+    entrypoint: RuntimeEnvAccessEntryPoint,
+    abi_signature: RuntimeEnvAccessAbiSignature,
+    rust_callable_binding: RuntimeEnvAccessRustCallableBinding,
+    blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
+}
+
+impl RuntimeEnvAccessNativeExportReadiness {
+    fn for_entrypoint(entrypoint: RuntimeEnvAccessEntryPoint) -> Self {
+        Self {
+            entrypoint,
+            abi_signature: entrypoint.abi_signature(),
+            rust_callable_binding: entrypoint.rust_callable_binding(),
+            blockers: entrypoint.native_export_blockers(),
+        }
+    }
+
+    /// Returns the environment-access entry point served by this readiness record.
+    pub const fn entrypoint(&self) -> RuntimeEnvAccessEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the stable runtime symbol name for this readiness record.
+    pub const fn symbol_name(&self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the frozen native ABI signature for this environment-access helper.
+    pub const fn abi_signature(&self) -> RuntimeEnvAccessAbiSignature {
+        self.abi_signature
+    }
+
+    /// Returns the current Rust callable binding.
+    pub const fn rust_callable_binding(&self) -> RuntimeEnvAccessRustCallableBinding {
+        self.rust_callable_binding
+    }
+
+    /// Returns the current blockers before this helper can be a native ABI export.
+    pub const fn blockers(&self) -> &'static [RuntimeEnvAccessNativeExportBlocker] {
+        self.blockers
+    }
+
+    /// Returns true when this helper has exported native ABI metadata.
+    pub const fn is_export_ready(&self) -> bool {
+        self.blockers.is_empty()
+    }
+}
+
+/// Native-export readiness report for frozen environment-access helpers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeEnvAccessNativeExportPreflight {
+    readiness: Vec<RuntimeEnvAccessNativeExportReadiness>,
+}
+
+impl RuntimeEnvAccessNativeExportPreflight {
+    fn new(readiness: Vec<RuntimeEnvAccessNativeExportReadiness>) -> Self {
+        Self { readiness }
+    }
+
+    /// Returns environment-access native-export readiness in entry-point order.
+    pub fn readiness(&self) -> &[RuntimeEnvAccessNativeExportReadiness] {
+        &self.readiness
+    }
+
+    /// Returns true when every environment-access helper has native ABI export metadata.
+    pub fn is_complete(&self) -> bool {
+        self.readiness.iter().all(|record| record.is_export_ready())
+    }
+
+    /// Returns the readiness record for `symbol_name`, when present.
+    pub fn readiness_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&RuntimeEnvAccessNativeExportReadiness> {
+        self.readiness
+            .iter()
+            .find(|record| record.symbol_name() == symbol_name)
     }
 }
 
@@ -492,6 +621,83 @@ mod tests {
                 binding.symbol_name()
             );
         }
+    }
+
+    #[test]
+    fn env_access_native_export_preflight_preserves_frozen_abi_and_callable() {
+        let preflight = runtime_env_access_native_export_preflight();
+
+        assert!(!preflight.is_complete());
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeEnvAccessNativeExportReadiness::entrypoint)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_env_access_entrypoints()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeEnvAccessNativeExportReadiness::abi_signature)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_env_access_abi_signatures()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeEnvAccessNativeExportReadiness::rust_callable_binding)
+                .collect::<Vec<_>>(),
+            runtime_env_access_rust_callable_bindings()
+        );
+
+        let record = preflight
+            .readiness_for_symbol("aos_env_get")
+            .expect("env-get export readiness exists");
+        assert_eq!(record.entrypoint(), RuntimeEnvAccessEntryPoint::AosEnvGet);
+        assert_eq!(record.symbol_name(), "aos_env_get");
+        assert_eq!(
+            record.blockers(),
+            RuntimeEnvAccessEntryPoint::AosEnvGet.native_export_blockers()
+        );
+        assert!(!record.is_export_ready());
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeEnvAccessNativeExportBlocker::MissingExternCWrapper)
+        );
+        assert!(
+            record.blockers().contains(
+                &RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented
+            )
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented)
+        );
+        assert!(record.blockers().contains(
+            &RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented
+        ));
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeSlotIndexDecodeUnimplemented)
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented)
+        );
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized)
+        );
     }
 
     #[test]

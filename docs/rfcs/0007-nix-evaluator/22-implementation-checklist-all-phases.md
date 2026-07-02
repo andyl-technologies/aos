@@ -5575,6 +5575,22 @@ and helps the oracle directly.
       callable is treated as ABI-callable, no `JITBuilder::symbol` registration
       occurs, and no native trap transfer or semantic object initialization is
       implemented.
+- [x] Current environment-access native-export readiness gate:
+      `runtime::env::runtime_env_access_native_export_preflight()` records the
+      exact blockers that keep `aos_env_get` from being an exported native ABI
+      symbol: missing `unsafe extern "C"` wrapper, native environment-pointer
+      and frame-layout binding, `EvalFrame` borrow-conflict preservation,
+      slot-index decoding, evaluator trap transfer, and by-value `Value` return
+      materialization. The aggregate
+      `runtime::helpers::runtime_symbol_native_export_preflight()` now preserves
+      allocation-specific blockers for `aos_alloc_*`,
+      environment-access-specific blockers for `aos_env_get`,
+      write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier
+      helper/builtin candidate gaps in full runtime-symbol order. This remains
+      safe readiness metadata only: no C ABI function is exported, no Rust
+      callable is treated as ABI-callable, no `JITBuilder::symbol` registration
+      occurs, and no native trap transfer, frame-layout/borrow binding, or `Value` ABI
+      return path is implemented.
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()`
       records the exact blockers that keep `aos_gc_write_barrier` from being an
@@ -5584,12 +5600,13 @@ and helps the oracle directly.
       evaluator trap transfer, and dispatch into the safe before-publish barrier
       path. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` now preserves
-      allocation-specific blockers for `aos_alloc_*`, write-barrier-specific
-      blockers for `aos_gc_write_barrier`, and earlier helper/builtin candidate
-      gaps in full runtime-symbol order. This remains safe readiness metadata
-      only: no C ABI function is exported, no Rust callable is treated as
-      ABI-callable, no `JITBuilder::symbol` registration occurs, and no native
-      trap transfer or thunk/value decoding is implemented.
+      allocation-specific blockers for `aos_alloc_*`,
+      environment-access-specific blockers for `aos_env_get`,
+      write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier
+      helper/builtin candidate gaps in full runtime-symbol order. This remains
+      safe readiness metadata only: no C ABI function is exported, no Rust
+      callable is treated as ABI-callable, no `JITBuilder::symbol` registration
+      occurs, and no native trap transfer or thunk/value decoding is implemented.
 - [x] Current allocation collector-poll request precursor:
       `AllocationSafepoint::collector_poll` and
       `AllocationSafepointState::last_safepoint_collector_poll` expose a typed
