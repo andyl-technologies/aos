@@ -1166,20 +1166,24 @@ mod tests {
         let preflight = jit_runtime_symbol_declaration_preflight()
             .expect("JIT symbol declaration preflight builds");
 
-        assert!(matches!(
-            preflight.gap_for_symbol("aos_blackhole_check"),
-            Some(
-                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
-                    ..
-                }
-            )
-        ));
-        assert!(
-            preflight
-                .declaration_for_symbol("aos_blackhole_check")
-                .is_none()
-        );
+        for (symbol_name, role) in [
+            ("aos_blackhole_check", RuntimeHelperRole::ForcingControl),
+            ("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
+            ("aos_try_begin", RuntimeHelperRole::ErrorControl),
+            ("aos_try_end", RuntimeHelperRole::ErrorControl),
+            ("aos_update", RuntimeHelperRole::AttrsetAccess),
+        ] {
+            assert!(matches!(
+                preflight.gap_for_symbol(symbol_name),
+                Some(
+                    JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                        role: gap_role,
+                        ..
+                    }
+                ) if *gap_role == role
+            ));
+            assert!(preflight.declaration_for_symbol(symbol_name).is_none());
+        }
     }
 
     #[test]
@@ -1392,28 +1396,54 @@ mod tests {
 
     #[test]
     fn jit_runtime_symbol_registration_preflight_keeps_declaration_gaps_before_addresses() {
-        let candidates = [synthetic_address_candidate(
-            "aos_blackhole_check",
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
-            1,
-        )];
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_blackhole_check",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                1,
+            ),
+            synthetic_address_candidate(
+                "aos_has_attr",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                2,
+            ),
+            synthetic_address_candidate(
+                "aos_try_begin",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ErrorControl),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_try_end",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ErrorControl),
+                4,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                5,
+            ),
+        ];
         let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
             .expect("JIT symbol registration preflight builds");
 
-        assert!(
-            preflight
-                .binding_for_symbol("aos_blackhole_check")
-                .is_none()
-        );
-        assert!(matches!(
-            preflight.gap_for_symbol("aos_blackhole_check"),
-            Some(JitRuntimeSymbolRegistrationGap::Declaration(
-                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
-                    role: RuntimeHelperRole::ForcingControl,
-                    ..
-                }
-            ))
-        ));
+        for (symbol_name, role) in [
+            ("aos_blackhole_check", RuntimeHelperRole::ForcingControl),
+            ("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
+            ("aos_try_begin", RuntimeHelperRole::ErrorControl),
+            ("aos_try_end", RuntimeHelperRole::ErrorControl),
+            ("aos_update", RuntimeHelperRole::AttrsetAccess),
+        ] {
+            assert!(preflight.binding_for_symbol(symbol_name).is_none());
+            assert!(matches!(
+                preflight.gap_for_symbol(symbol_name),
+                Some(JitRuntimeSymbolRegistrationGap::Declaration(
+                    JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                        role: gap_role,
+                        ..
+                    }
+                )) if *gap_role == role
+            ));
+        }
     }
 
     #[test]

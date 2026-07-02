@@ -1342,11 +1342,19 @@ mod tests {
                 "aos_throw",
             ])
         );
-        assert_eq!(
-            runtime_helper_call_signature("aos_blackhole_check"),
-            None,
-            "blackhole checking does not have a frozen core-owned call signature yet"
-        );
+        for symbol_name in [
+            "aos_blackhole_check",
+            "aos_has_attr",
+            "aos_try_begin",
+            "aos_try_end",
+            "aos_update",
+        ] {
+            assert_eq!(
+                runtime_helper_call_signature(symbol_name),
+                None,
+                "{symbol_name} does not have a frozen core-owned call signature yet"
+            );
+        }
     }
 
     #[test]

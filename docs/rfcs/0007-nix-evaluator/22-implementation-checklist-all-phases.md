@@ -6991,12 +6991,13 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`; `aos_deopt`
       is frozen as `(rt, DeoptRecordPointer) -> Value`; `aos_throw` is frozen
       as `(rt, ErrorPointer) -> !`.
-      Unshaped helpers such as `aos_blackhole_check` and value-only builtins
+      Unshaped helpers (`aos_blackhole_check`, `aos_has_attr`,
+      `aos_try_begin`, `aos_try_end`, and `aos_update`) and value-only builtins
       remain explicit declaration gaps. Tests pin a representative callable
       builtin declaration, allocation, attrset-access, call-control,
       deoptimization, environment-access, error-control,
-      write-barrier, and forcing-helper declarations, an unshaped forcing-helper
-      gap, value-only builtin gaps, and exact declaration parity with callable
+      write-barrier, and forcing-helper declarations, the current unshaped
+      helper gaps, value-only builtin gaps, and exact declaration parity with callable
       builtins plus core-owned helpers.
       This is declaration metadata only: no environment layout, runtime helper
       address, `JITModule`, `JITBuilder::symbol`, executable address, exported
@@ -7038,8 +7039,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       apply, and force/deep-force helper declarations, and stable
       runtime-symbol gaps as one future module-setup handoff. The checked
       `jit_module_readiness_plan_for_artifact()` gate currently returns an
-      incomplete-symbol error while unshaped helpers such as
-      `aos_blackhole_check` and value-only builtin declaration gaps remain.
+      incomplete-symbol error while unshaped helpers (`aos_blackhole_check`,
+      `aos_has_attr`, `aos_try_begin`, `aos_try_end`, and `aos_update`) and
+      value-only builtin declaration gaps remain.
       Tests pin artifact metadata, callable builtin/helper declaration
       visibility, representative helper gaps, the
       current incomplete-plan error, deterministic IR-root function-name copying,
@@ -7056,8 +7058,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
-      while unshaped helpers such as `aos_blackhole_check` and value-only
-      builtin gaps remain. Tests pin the expanded Cranelift crate-version set,
+      while unshaped helpers (`aos_blackhole_check`, `aos_has_attr`,
+      `aos_try_begin`, `aos_try_end`, and `aos_update`) and value-only builtin
+      gaps remain. Tests pin the expanded Cranelift crate-version set,
       imported callable builtin/helper declarations, representative helper gaps,
       and the strict setup rejection.
       This is real safe module construction and import declaration only: no
@@ -7069,8 +7072,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       consumes one verified CLIF artifact, declares a deterministic exported
       module symbol for the artifact body, and passes that body through
       Cranelift's `JITModule::define_function` API while preserving callable
-      builtin/helper imports and the current `aos_blackhole_check`/value-only
-      builtin declaration gaps, while rejecting call-bearing artifacts with a structured
+      builtin/helper imports and the current unshaped-helper/value-only builtin
+      declaration gaps, while rejecting call-bearing artifacts with a structured
       runtime-import registration error. Tests pin constant-smoke and
       Core-IR-root module symbol names, exported linkage, imported callable
       builtin/helper visibility, representative helper gaps, env-slot
