@@ -1087,6 +1087,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         LifecycleApiError::SessionNotFound { session } => {
             lifecycle_session_not_found_response(session)
         }
+        LifecycleApiError::SessionLimitReached { .. } => typed_rpc_status_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            RpcStatusCode::InvalidState,
+            "session-limit",
+            &error.to_string(),
+        ),
         LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
@@ -1449,6 +1455,20 @@ mod tests {
         }
     }
 
+    fn test_state_with_max_sessions(mode: LifecycleServerMode, max_sessions: usize) -> TestState {
+        Http2LifecycleState {
+            control_plane: Arc::new(Mutex::new(
+                LifecycleControlPlane::new(
+                    "server-test",
+                    Vec::new(),
+                    quiescent_loop as fn(&ScenarioDef, Seed) -> QuiescentLifecycleLoop,
+                )
+                .with_max_sessions(max_sessions),
+            )),
+            mode,
+        }
+    }
+
     fn rpc_request(body: impl Into<String>) -> Request<Body> {
         Request::builder()
             .version(Version::HTTP_2)
@@ -1591,6 +1611,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response_text(response).await?;
         assert!(body.contains("status=not-found"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_create_session_limit_maps_to_typed_rpc_error() -> Result<(), Box<dyn Error>> {
+        let response = handle_create_session(
+            State(test_state_with_max_sessions(
+                LifecycleServerMode::read_write(),
+                0,
+            )),
+            rpc_request(create_session_request()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = response_text(response).await?;
+        assert!(body.contains("status=invalid-state"));
+        assert!(body.contains("reason=session-limit"));
 
         Ok(())
     }

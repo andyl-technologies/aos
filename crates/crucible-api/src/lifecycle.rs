@@ -765,6 +765,12 @@ pub enum LifecycleApiError {
         /// Requested session reference.
         session: SessionRef,
     },
+    /// The live session cap has been reached.
+    #[error("live session limit reached: limit={limit}")]
+    SessionLimitReached {
+        /// Maximum number of live sessions.
+        limit: usize,
+    },
     /// The session did not reach the expected state in the bounded yield budget.
     #[error("session {session_id:?} did not reach state {expected:?}")]
     StateDidNotAdvance {
@@ -807,6 +813,7 @@ pub struct LifecycleControlPlane<L, F> {
     loop_factory: F,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
+    max_sessions: Option<usize>,
     _loop: PhantomData<fn() -> L>,
 }
 
@@ -835,6 +842,7 @@ where
             loop_factory,
             mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
             startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,
+            max_sessions: None,
             _loop: PhantomData,
         }
     }
@@ -850,6 +858,13 @@ where
     #[must_use]
     pub fn with_startup_max_actor_yields(mut self, startup_max_actor_yields: u64) -> Self {
         self.startup_max_actor_yields = startup_max_actor_yields;
+        self
+    }
+
+    /// Overrides the maximum number of live sessions accepted by `CreateSession`.
+    #[must_use]
+    pub const fn with_max_sessions(mut self, max_sessions: usize) -> Self {
+        self.max_sessions = Some(max_sessions);
         self
     }
 
@@ -891,16 +906,23 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError::ScenarioNotFound`] when a named scenario is
-    /// unknown, [`LifecycleApiError::GenesisGraph`] when the genesis temporal
-    /// graph cannot be built, [`LifecycleApiError::CommandChannelClosed`] when
-    /// the actor mailbox closes before startup, or
-    /// [`LifecycleApiError::StateDidNotAdvance`] when the actor does not publish
-    /// the expected startup state within the bounded yield budget.
+    /// Returns [`LifecycleApiError::SessionLimitReached`] when the live-session
+    /// cap has been reached, [`LifecycleApiError::ScenarioNotFound`] when a
+    /// named scenario is unknown, [`LifecycleApiError::GenesisGraph`] when the
+    /// genesis temporal graph cannot be built,
+    /// [`LifecycleApiError::CommandChannelClosed`] when the actor mailbox closes
+    /// before startup, or [`LifecycleApiError::StateDidNotAdvance`] when the
+    /// actor does not publish the expected startup state within the bounded
+    /// yield budget.
     pub async fn create_session(
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<CreateSessionResponse, LifecycleApiError> {
+        if let Some(limit) = self.max_sessions {
+            if self.sessions.len() >= limit {
+                return Err(LifecycleApiError::SessionLimitReached { limit });
+            }
+        }
         let scenario = self.resolve_scenario(&request)?;
         let configuration = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario)?;

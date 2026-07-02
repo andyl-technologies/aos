@@ -247,6 +247,34 @@ async fn create_session_rejects_unknown_scenario_without_side_effects() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn create_session_respects_live_session_limit_without_side_effects() {
+    let mut control_plane = lifecycle_control_plane().with_max_sessions(1);
+    let first = control_plane
+        .create_session(CreateSessionRequest::scenario_ref(
+            "api-lifecycle-scenario",
+            Seed::from_u64(110),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("first session should fit under cap: {error}"));
+
+    let error = control_plane
+        .create_session(CreateSessionRequest::scenario_ref(
+            "api-lifecycle-scenario",
+            Seed::from_u64(111),
+        ))
+        .await
+        .expect_err("second live session should hit cap");
+
+    assert_eq!(error, LifecycleApiError::SessionLimitReached { limit: 1 });
+    assert_eq!(control_plane.session_count(), 1);
+
+    control_plane
+        .destroy_session(DestroySessionRequest::new(first.session))
+        .await
+        .unwrap_or_else(|error| panic!("cleanup destroy should stop actor: {error}"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn create_session_rejects_inline_seed_mismatch_without_side_effects() {
     let mut control_plane = lifecycle_control_plane();
     let scenario = generated_scenario(108);
