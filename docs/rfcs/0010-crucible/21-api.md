@@ -747,12 +747,24 @@ ran in-process against the double or over the wire against QEMU.
   the advertised open-set payload kinds with explicit
   `major.minor.patch+build` versioning and typed major-mismatch rejection. The
   full reference-client lifecycle suite remains T-API-13.
-- [ ] **T-API-13** Build the reference client + conformance suite driving the full
+- [x] **T-API-13** Build the reference client + conformance suite driving the full
   lifecycle (Hello…DestroySession incl. both attach paths, faults, breakpoints,
   savepoint, fork, GetReproduction, epoch-guard rejection) against BOTH the QEMU
   backend and the in-process `SimDouble`, with contract/snapshot tests over every
   RPC and message variant. — satisfies [API-27], [API-28], [API-29]; spec §21.6;
   cross-ref 24 §3, 20 §10.
+  Completed by `checks.crucible.phase5.apiReferenceClientConformance`: the
+  reference `ControlClient` conformance driver now runs the full lifecycle through
+  `InProcessLifecycleClient` over a `SimDouble` stepping backend and through the
+  HTTP/2 `RpcControlClient`. The suite exercises scenario-ref and inline
+  `CreateSession`, both `Control` and `Watch` attach paths, `Send` through
+  continue/pause/step/fault/breakpoint/savepoint/fork/query, `GetReproduction`,
+  stale epoch rejection, `DestroySession`, and idempotent destroy. The gate also
+  runs the `crucible-qemu` `qemu_node_satisfies_simulation_backend_trait` test,
+  which exercises `QemuNode` step/apply/fingerprint/snapshot/restore/shutdown
+  through the `SimulationBackend` contract. The ABI and wire-snapshot tests now
+  explicitly cover the frozen RPC request, response, streaming-frame, error, and
+  open-set payload variants.
 - [ ] **T-API-14** Prove the API introduces no nondeterminism: mutating commands
   land at deterministic quantum boundaries; transport, observer load, wall-clock,
   and RPC arrival order do not influence the causal subsequence or State; read-only

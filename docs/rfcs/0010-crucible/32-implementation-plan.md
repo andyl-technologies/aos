@@ -334,6 +334,14 @@ long-held locks.
   UNSUPPORTED/INTERNAL, freezes the new RPC status wire vectors, and proves
   invalid commands, missing scenarios, missing sessions, and stale epochs decode
   as typed errors without stream teardown or state mutation.
+  `T-API-13` is green through
+  `checks.crucible.phase5.apiReferenceClientConformance`, which drives the
+  reference `ControlClient` lifecycle over in-process SimDouble and an HTTP/2
+  RPC server, covers scenario-ref and inline creation, both attach paths, command
+  send, fault, breakpoint, savepoint, fork, `GetReproduction`, stale epoch
+  rejection, destroy, idempotent destroy, and per-message RPC ABI snapshot
+  coverage, and also runs the `crucible-qemu` `QemuNode`
+  `SimulationBackend` contract test.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

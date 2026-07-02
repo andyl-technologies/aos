@@ -89,45 +89,61 @@ fn assert_frozen_golden_vectors() {
         ],
     );
 
-    let mut saw_request = false;
-    let mut saw_response = false;
+    let mut saw_hello_request = false;
+    let mut saw_hello_response = false;
+    let mut saw_attached = false;
+    let mut saw_attached_with_reproduction = false;
+    let mut saw_get_reproduction_request = false;
+    let mut saw_get_reproduction_response = false;
+    let mut saw_command_request = false;
+    let mut saw_command_response = false;
+    let mut saw_rpc_error = false;
     let mut saw_event = false;
-    let mut saw_attached_version = false;
 
     for vector in GOLDEN_RPC_VECTORS {
         assert_eq!(vector.protocol_version, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION);
         match vector.message {
-            RpcGoldenVectorMessage::HelloRequest { .. }
-            | RpcGoldenVectorMessage::CommandRequest { .. }
-            | RpcGoldenVectorMessage::GetReproductionRequest { .. } => saw_request = true,
+            RpcGoldenVectorMessage::HelloRequest { .. } => saw_hello_request = true,
             RpcGoldenVectorMessage::HelloResponse { payload_kinds, .. } => {
-                saw_response = true;
+                saw_hello_response = true;
                 assert_eq!(payload_kinds, RPC_OPEN_SET_PAYLOAD_KINDS);
             }
-            RpcGoldenVectorMessage::CommandResponse { .. }
-            | RpcGoldenVectorMessage::GetReproductionResponse { .. }
-            | RpcGoldenVectorMessage::RpcError { .. } => saw_response = true,
-            RpcGoldenVectorMessage::Event { .. } => saw_event = true,
             RpcGoldenVectorMessage::Attached { version, .. } => {
-                saw_attached_version = true;
+                saw_attached = true;
                 assert_eq!(version, RPC_PROTOCOL_VERSION);
             }
+            RpcGoldenVectorMessage::GetReproductionRequest { .. } => {
+                saw_get_reproduction_request = true;
+            }
+            RpcGoldenVectorMessage::GetReproductionResponse { .. } => {
+                saw_get_reproduction_response = true;
+            }
+            RpcGoldenVectorMessage::CommandRequest { .. } => saw_command_request = true,
+            RpcGoldenVectorMessage::CommandResponse { .. } => saw_command_response = true,
+            RpcGoldenVectorMessage::RpcError { .. } => saw_rpc_error = true,
+            RpcGoldenVectorMessage::Event { .. } => saw_event = true,
             RpcGoldenVectorMessage::AttachedWithReproduction {
                 version,
                 command_payload,
                 ..
             } => {
-                saw_attached_version = true;
+                saw_attached_with_reproduction = true;
                 assert_eq!(version, RPC_PROTOCOL_VERSION);
                 assert!(!command_payload.is_empty());
             }
         }
     }
 
-    assert!(saw_request);
-    assert!(saw_response);
+    assert!(saw_hello_request);
+    assert!(saw_hello_response);
+    assert!(saw_attached);
+    assert!(saw_attached_with_reproduction);
+    assert!(saw_get_reproduction_request);
+    assert!(saw_get_reproduction_response);
+    assert!(saw_command_request);
+    assert!(saw_command_response);
+    assert!(saw_rpc_error);
     assert!(saw_event);
-    assert!(saw_attached_version);
 }
 
 #[test]
