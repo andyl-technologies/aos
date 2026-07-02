@@ -20,10 +20,12 @@
 //! crate depend on the safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
-//! finalization, and `JITBuilder::symbol` registration are future work inside
-//! this crate. Unsafe blocks are allowed only behind the crate-level
-//! `unsafe_op_in_unsafe_fn` discipline and must carry local `// SAFETY:`
-//! invariants when those later slices land.
+//! finalization, full runtime symbol tables, and executable native calls are
+//! future work inside this crate. The current `JITBuilder::symbol` precursor
+//! registers only explicit opaque address metadata with an encapsulated builder.
+//! Unsafe blocks are allowed only behind the crate-level `unsafe_op_in_unsafe_fn`
+//! discipline and must carry local `// SAFETY:` invariants when those later
+//! slices land.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -48,11 +50,13 @@ pub use cranelift::{
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
     JitCraneliftArtifactDefinitionPreflight, JitCraneliftDefinedFunction,
     JitCraneliftDependencyPin, JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight,
-    JitCraneliftModuleSetup, JitCraneliftModuleSetupError, PINNED_CRANELIFT_CODEGEN_VERSION,
+    JitCraneliftModuleSetup, JitCraneliftModuleSetupError, JitCraneliftRegisteredSymbol,
+    JitCraneliftSymbolRegistrationPreflight, PINNED_CRANELIFT_CODEGEN_VERSION,
     PINNED_CRANELIFT_JIT_VERSION, PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact, jit_cranelift_dependency_pin,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
+    jit_cranelift_symbol_registration_preflight_with_candidates,
 };
 pub use lower::{
     AOS_IR_ROOT_FUNCTION_NAMESPACE, JitLowerError, clif_name_for_ir_root,

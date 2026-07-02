@@ -1126,6 +1126,19 @@ harness, never cut for scope.
       registration-readiness metadata only: it does not call
       `JITBuilder::symbol`, expose raw function pointers, dereference native
       addresses, export wrappers, finalize code, or call native code.
+- [x] Current Cranelift `JITBuilder::symbol` registration precursor:
+      `ratchet-jit::cranelift::jit_cranelift_symbol_registration_preflight_with_candidates()`
+      consumes explicit native-address candidates, calls `JITBuilder::symbol`
+      for every symbol that has both CLIF declaration metadata and address
+      metadata, and seals the configured builder inside an encapsulated
+      `JITModule`. Missing declarations, missing addresses, kind mismatches,
+      duplicates, and unknown candidates stay as registration gaps or errors.
+      Tests pin the default no-address state, synthetic registered-symbol order,
+      representative declaration gaps, unknown-candidate error propagation, and
+      encapsulated-module ownership. This does not install real exported
+      wrappers, dereference or call registered addresses, declare imports,
+      define CLIF functions, finalize executable memory, or expose code
+      pointers.
 - [x] Current `ratchet-jit` tier-up policy precursor:
       `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
       decision as safe policy metadata: a low default invocation threshold plus

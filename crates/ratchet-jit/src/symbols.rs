@@ -289,8 +289,9 @@ impl From<RuntimeSymbolNameError> for JitRuntimeSymbolDeclarationError {
 ///
 /// This is address metadata only. The JIT crate stores the non-zero word so
 /// registration preflights can prove symbol/name/kind alignment without
-/// dereferencing it, converting it to a function pointer, or passing it to
-/// `JITBuilder::symbol`.
+/// dereferencing it or converting it to a function pointer. Cranelift setup may
+/// pass accepted candidates to `JITBuilder::symbol`, but the metadata layer
+/// never calls, validates, or persists the address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JitRuntimeSymbolAddress {
     raw: NonZeroUsize,

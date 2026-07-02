@@ -2,13 +2,14 @@
 //!
 //! This module records the Cranelift crate versions that the current CLIF
 //! slices are validated against and constructs the first real `JITModule`
-//! scaffolds. The declaration scaffold declares shape-known runtime symbols as
-//! imported functions. The artifact-definition scaffold additionally compiles
-//! one verified CLIF artifact into an encapsulated module. Neither path
-//! registers runtime addresses, finalizes memory, returns code pointers, or
-//! calls native code.
+//! scaffolds. The symbol-registration scaffold installs explicitly supplied
+//! native-address candidates into a `JITBuilder` symbol table. The declaration
+//! scaffold declares shape-known runtime symbols as imported functions. The
+//! artifact-definition scaffold additionally compiles one verified CLIF artifact
+//! into an encapsulated module. None of these paths finalize memory, return code
+//! pointers, or call native code.
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, ptr};
 
 use cranelift_codegen::{
     CodegenError, Context,
@@ -23,7 +24,12 @@ use crate::{
         JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
         jit_module_readiness_preflight_for_artifact,
     },
-    symbols::{JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationGap},
+    symbols::{
+        JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitRuntimeSymbolDeclaration,
+        JitRuntimeSymbolDeclarationGap, JitRuntimeSymbolRegistrationBinding,
+        JitRuntimeSymbolRegistrationError, JitRuntimeSymbolRegistrationGap,
+        jit_runtime_symbol_registration_preflight_with_candidates,
+    },
 };
 
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -179,6 +185,91 @@ impl JitCraneliftDefinedFunction {
     /// Returns the Cranelift function identifier assigned to the artifact body.
     pub const fn func_id(&self) -> FuncId {
         self.func_id
+    }
+}
+
+/// A runtime symbol registered with a Cranelift JIT builder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitCraneliftRegisteredSymbol {
+    symbol_name: String,
+    address: JitRuntimeSymbolAddress,
+}
+
+impl JitCraneliftRegisteredSymbol {
+    fn new(symbol_name: String, address: JitRuntimeSymbolAddress) -> Self {
+        Self {
+            symbol_name,
+            address,
+        }
+    }
+
+    /// Returns the stable runtime symbol name registered with the builder.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the opaque native address metadata passed to the builder.
+    pub const fn address(&self) -> JitRuntimeSymbolAddress {
+        self.address
+    }
+}
+
+/// A real `JITModule` created from a builder with runtime symbols registered.
+pub struct JitCraneliftSymbolRegistrationPreflight {
+    registered_symbols: Vec<JitCraneliftRegisteredSymbol>,
+    symbol_gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+    module: JITModule,
+}
+
+impl JitCraneliftSymbolRegistrationPreflight {
+    fn new(
+        registered_symbols: Vec<JitCraneliftRegisteredSymbol>,
+        symbol_gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+        module: JITModule,
+    ) -> Self {
+        Self {
+            registered_symbols,
+            symbol_gaps,
+            module,
+        }
+    }
+
+    /// Returns runtime symbols registered in the JIT builder's symbol table.
+    pub fn registered_symbols(&self) -> &[JitCraneliftRegisteredSymbol] {
+        &self.registered_symbols
+    }
+
+    /// Returns runtime symbols that still block complete symbol registration.
+    pub fn symbol_gaps(&self) -> &[JitRuntimeSymbolRegistrationGap] {
+        &self.symbol_gaps
+    }
+
+    /// Returns true when every stable runtime symbol has been registered.
+    pub fn is_complete(&self) -> bool {
+        self.symbol_gaps.is_empty()
+    }
+
+    /// Returns the registered symbol for `symbol_name`, when present.
+    pub fn registered_symbol_for(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitCraneliftRegisteredSymbol> {
+        self.registered_symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name() == symbol_name)
+    }
+
+    /// Returns the registration gap for `symbol_name`, when present.
+    pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolRegistrationGap> {
+        self.symbol_gaps
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    /// Returns true because this preflight owns an encapsulated `JITModule`.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        let _module = &self.module;
+        true
     }
 }
 
@@ -376,6 +467,8 @@ pub enum JitCraneliftModuleSetupError {
     TargetIsa(CodegenError),
     /// Runtime-symbol readiness metadata could not be completed.
     Readiness(JitModuleReadinessError),
+    /// Native runtime-symbol registration metadata could not be built.
+    RuntimeSymbolRegistration(JitRuntimeSymbolRegistrationError),
     /// A runtime-symbol import could not be declared in the module.
     DeclareRuntimeSymbol {
         /// The stable runtime symbol being declared.
@@ -408,6 +501,7 @@ impl fmt::Display for JitCraneliftModuleSetupError {
             Self::Settings(error) => write!(formatter, "{error}"),
             Self::TargetIsa(error) => write!(formatter, "{error}"),
             Self::Readiness(error) => write!(formatter, "{error}"),
+            Self::RuntimeSymbolRegistration(error) => write!(formatter, "{error}"),
             Self::DeclareRuntimeSymbol {
                 symbol_name,
                 source,
@@ -440,6 +534,7 @@ impl Error for JitCraneliftModuleSetupError {
             Self::Settings(error) => Some(error),
             Self::TargetIsa(error) => Some(error),
             Self::Readiness(error) => Some(error),
+            Self::RuntimeSymbolRegistration(error) => Some(error),
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
             Self::DefineArtifactFunction { source, .. } => Some(source),
@@ -462,6 +557,12 @@ impl From<CodegenError> for JitCraneliftModuleSetupError {
 impl From<JitModuleReadinessError> for JitCraneliftModuleSetupError {
     fn from(error: JitModuleReadinessError) -> Self {
         Self::Readiness(error)
+    }
+}
+
+impl From<JitRuntimeSymbolRegistrationError> for JitCraneliftModuleSetupError {
+    fn from(error: JitRuntimeSymbolRegistrationError) -> Self {
+        Self::RuntimeSymbolRegistration(error)
     }
 }
 
@@ -494,6 +595,38 @@ pub fn jit_cranelift_module_declaration_preflight_for_artifact(
         readiness.artifact().clone(),
         imported_symbols,
         readiness.symbol_gaps().to_vec(),
+        module,
+    ))
+}
+
+/// Builds a JIT module from a builder with explicit runtime symbols registered.
+///
+/// The returned preflight calls [`JITBuilder::symbol`] for every runtime symbol
+/// that has both CLIF declaration metadata and explicit native-address candidate
+/// metadata. Missing declarations, missing addresses, kind mismatches, duplicate
+/// candidates, and unknown candidates remain explicit gaps or errors from the
+/// registration metadata layer. The resulting module is not given imported
+/// declarations, no CLIF body is defined or finalized, and no registered address
+/// is dereferenced or called.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftModuleSetupError::RuntimeSymbolRegistration`] if
+/// runtime-symbol registration metadata cannot be built. Returns
+/// [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot build
+/// an ISA for the current host. Returns
+/// [`JitCraneliftModuleSetupError::Settings`] if required JIT settings are
+/// rejected. Returns [`JitCraneliftModuleSetupError::TargetIsa`] if Cranelift
+/// rejects the native ISA configuration.
+pub fn jit_cranelift_symbol_registration_preflight_with_candidates(
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitCraneliftSymbolRegistrationPreflight, JitCraneliftModuleSetupError> {
+    let registration = jit_runtime_symbol_registration_preflight_with_candidates(candidates)?;
+    let (module, registered_symbols) = module_with_registered_symbols(registration.bindings())?;
+
+    Ok(JitCraneliftSymbolRegistrationPreflight::new(
+        registered_symbols,
+        registration.gaps().to_vec(),
         module,
     ))
 }
@@ -623,6 +756,26 @@ fn module_with_imported_symbols(
     Ok((module, imported_symbols))
 }
 
+fn module_with_registered_symbols(
+    bindings: &[JitRuntimeSymbolRegistrationBinding],
+) -> Result<(JITModule, Vec<JitCraneliftRegisteredSymbol>), JitCraneliftModuleSetupError> {
+    let mut builder = native_jit_builder()?;
+    let mut registered_symbols = Vec::with_capacity(bindings.len());
+
+    for binding in bindings {
+        builder.symbol(
+            binding.symbol_name(),
+            ptr::with_exposed_provenance::<u8>(binding.address().as_nonzero_usize().get()),
+        );
+        registered_symbols.push(JitCraneliftRegisteredSymbol::new(
+            binding.symbol_name().to_owned(),
+            binding.address(),
+        ));
+    }
+
+    Ok((JITModule::new(builder), registered_symbols))
+}
+
 fn define_artifact_function(
     module: &mut JITModule,
     artifact: JitClifArtifact,
@@ -681,9 +834,13 @@ fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use cranelift_codegen::ir::UserFuncName;
     use ratchet_core::syntax::Span;
-    use ratchet_core::{EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole};
+    use ratchet_core::{
+        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
+    };
     use ratchet_value::value::Value;
 
     use super::*;
@@ -694,6 +851,18 @@ mod tests {
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
     };
+
+    fn synthetic_address(raw: usize) -> JitRuntimeSymbolAddress {
+        JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).expect("test address is non-zero"))
+    }
+
+    fn synthetic_address_candidate(
+        symbol_name: &str,
+        kind: RuntimeSymbolKind,
+        raw: usize,
+    ) -> JitRuntimeSymbolAddressCandidate {
+        JitRuntimeSymbolAddressCandidate::new(symbol_name.to_owned(), kind, synthetic_address(raw))
+    }
 
     #[test]
     fn active_cranelift_versions_match_pin() {
@@ -720,6 +889,139 @@ mod tests {
         assert_eq!(pin.jit_version(), PINNED_CRANELIFT_JIT_VERSION);
         assert_eq!(pin.module_version(), PINNED_CRANELIFT_MODULE_VERSION);
         assert_eq!(pin.native_version(), PINNED_CRANELIFT_NATIVE_VERSION);
+    }
+
+    #[test]
+    fn symbol_registration_preflight_builds_module_without_default_registrations() {
+        let preflight = jit_cranelift_symbol_registration_preflight_with_candidates(&[])
+            .expect("JIT symbol registration preflight builds");
+
+        assert!(preflight.registered_symbols().is_empty());
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_alloc_attrs"),
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                    kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                    ..
+                }
+            )
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_force"),
+            Some(crate::symbols::JitRuntimeSymbolRegistrationGap::Declaration(
+                crate::symbols::JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                    role: RuntimeHelperRole::ForcingControl,
+                    ..
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn symbol_registration_preflight_registers_explicit_candidates_in_manifest_order() {
+        let candidates = [
+            synthetic_address_candidate(
+                "nix.builtin.derivationStrict",
+                RuntimeSymbolKind::Builtin,
+                2,
+            ),
+            synthetic_address_candidate(
+                "aos_alloc_attrs",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                1,
+            ),
+        ];
+        let preflight = jit_cranelift_symbol_registration_preflight_with_candidates(&candidates)
+            .expect("JIT symbol registration preflight builds");
+        let registered_symbols = preflight
+            .registered_symbols()
+            .iter()
+            .map(JitCraneliftRegisteredSymbol::symbol_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            registered_symbols,
+            vec!["aos_alloc_attrs", "nix.builtin.derivationStrict"]
+        );
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_alloc_attrs")
+                .expect("allocation helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            1
+        );
+        assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn symbol_registration_preflight_propagates_registration_metadata_errors() {
+        let candidates = [synthetic_address_candidate(
+            "aos_not_a_runtime_symbol",
+            RuntimeSymbolKind::Builtin,
+            1,
+        )];
+        let Err(error) = jit_cranelift_symbol_registration_preflight_with_candidates(&candidates)
+        else {
+            panic!("unknown address candidates must be rejected before builder setup");
+        };
+
+        assert!(matches!(
+            error,
+            JitCraneliftModuleSetupError::RuntimeSymbolRegistration(
+                crate::symbols::JitRuntimeSymbolRegistrationError::UnknownAddressCandidate {
+                    symbol_name,
+                }
+            ) if symbol_name == "aos_not_a_runtime_symbol"
+        ));
+    }
+
+    #[test]
+    fn symbol_registration_preflight_propagates_duplicate_candidate_errors() {
+        let candidates = [
+            synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 1),
+            synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 2),
+        ];
+        let Err(error) = jit_cranelift_symbol_registration_preflight_with_candidates(&candidates)
+        else {
+            panic!("duplicate address candidates must be rejected before builder setup");
+        };
+
+        assert!(matches!(
+            error,
+            JitCraneliftModuleSetupError::RuntimeSymbolRegistration(
+                crate::symbols::JitRuntimeSymbolRegistrationError::DuplicateAddressCandidate {
+                    symbol_name,
+                }
+            ) if symbol_name == "aos_alloc_attrs"
+        ));
+    }
+
+    #[test]
+    fn symbol_registration_preflight_preserves_kind_mismatch_gaps() {
+        let candidates = [synthetic_address_candidate(
+            "aos_alloc_attrs",
+            RuntimeSymbolKind::Builtin,
+            1,
+        )];
+        let preflight = jit_cranelift_symbol_registration_preflight_with_candidates(&candidates)
+            .expect("JIT symbol registration preflight builds");
+
+        assert!(preflight.registered_symbol_for("aos_alloc_attrs").is_none());
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_alloc_attrs"),
+            Some(
+                crate::symbols::JitRuntimeSymbolRegistrationGap::NativeAddressKindMismatch {
+                    declaration_kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                    candidate_kind: RuntimeSymbolKind::Builtin,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
