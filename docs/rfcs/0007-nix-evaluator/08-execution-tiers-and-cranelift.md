@@ -1142,9 +1142,9 @@ harness, never cut for scope.
       `Null` literals. It rejects missing roots, unsupported kinds, and
       mismatched kind/payload pairs before reusing the constant-thunk body
       lowerer. Tests cover all supported literals plus those rejection cases.
-      This is still literal-only lowering: no child traversal, environment
-      access, forcing, runtime-symbol calls, branches, applications, `JITModule`,
-      executable buffer, or native call is implemented.
+      This is still bounded constant lowering: no generic child traversal,
+      environment access, forcing, runtime-symbol calls, branches, applications,
+      `JITModule`, executable buffer, or native call is implemented.
 - [x] Current whole-IR literal CLIF entrypoint precursor:
       `ratchet-jit::lower::lower_constant_ir_root_thunk_body()` accepts a
       lowered Core `Ir` artifact and lowers its root through the same literal-only
@@ -1152,6 +1152,14 @@ harness, never cut for scope.
       nonzero artifact roots, and malformed artifacts whose root id is missing.
       The crate root re-exports both literal IR lowering entrypoints, while the
       implementation remains verified CLIF construction only.
+- [x] Current direct-`ThunkAlloc` literal CLIF precursor:
+      `ratchet-jit::lower::lower_constant_ir_thunk_body()` can unwrap one direct
+      `IrKind::ThunkAlloc` / `IrData::Node` wrapper and lower the referenced
+      literal body through the constant path. Tests cover a raw direct literal
+      thunk allocation, missing thunk bodies, unsupported thunk body kinds, and
+      malformed thunk payloads. This is the first bounded child traversal only:
+      nested/generic traversal, forcing, runtime-symbol calls, branches,
+      applications, executable buffers, and native calls remain unimplemented.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:

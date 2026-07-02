@@ -42,27 +42,28 @@ pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError
 
 /// Lowers a literal IR root into a verified compiled-thunk CLIF body.
 ///
-/// This is the first Core-IR entrypoint for the tier-1 lowerer. It accepts only
-/// literal `Int`, `Float`, `Bool`, and `Null` roots, then reuses
+/// This is the first Core-IR entrypoint for the tier-1 lowerer. It accepts
+/// literal `Int`, `Float`, `Bool`, and `Null` roots plus one direct
+/// [`IrKind::ThunkAlloc`] wrapper around those literal roots, then reuses
 /// [`lower_constant_thunk_body`] to build the single-block CLIF body.
 ///
 /// # Errors
 ///
 /// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
 /// `arena`. Returns [`JitLowerError::UnsupportedIrRoot`] when `root` is not one
-/// of the supported literal kinds. Returns
+/// of the supported constant forms. Returns
 /// [`JitLowerError::MismatchedConstantData`] when a literal node carries a
-/// payload variant that does not match its kind. Also returns the errors from
-/// [`lower_constant_thunk_body`].
+/// payload variant that does not match its kind. Returns
+/// [`JitLowerError::MissingIrBody`], [`JitLowerError::UnsupportedIrBody`], or
+/// [`JitLowerError::MismatchedBodyConstantData`] for malformed direct thunk
+/// bodies. Returns
+/// [`JitLowerError::MismatchedIrNodeData`] when a supported wrapper node carries
+/// the wrong payload shape. Also returns the errors from [`lower_constant_thunk_body`].
 pub fn lower_constant_ir_thunk_body(
     arena: &IrArena,
     root: IrId,
 ) -> Result<Function, JitLowerError> {
-    let node = arena
-        .node(root)
-        .copied()
-        .ok_or(JitLowerError::MissingIrNode { root })?;
-    let value = constant_value_for_node(node)?;
+    let value = constant_value_for_root(arena, root)?;
     lower_constant_thunk_body(value)
 }
 
@@ -76,10 +77,14 @@ pub fn lower_constant_ir_thunk_body(
 ///
 /// Returns [`JitLowerError::MissingIrNode`] when `ir.root` is not present in
 /// `ir.arena`. Returns [`JitLowerError::UnsupportedIrRoot`] when the root is not
-/// one of the supported literal kinds. Returns
+/// one of the supported constant forms. Returns
 /// [`JitLowerError::MismatchedConstantData`] when a literal node carries a
-/// payload variant that does not match its kind. Also returns the errors from
-/// [`lower_constant_thunk_body`].
+/// payload variant that does not match its kind. Returns
+/// [`JitLowerError::MissingIrBody`], [`JitLowerError::UnsupportedIrBody`], or
+/// [`JitLowerError::MismatchedBodyConstantData`] for malformed direct thunk
+/// bodies. Returns
+/// [`JitLowerError::MismatchedIrNodeData`] when a supported wrapper node carries
+/// the wrong payload shape. Also returns the errors from [`lower_constant_thunk_body`].
 pub fn lower_constant_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
     lower_constant_ir_thunk_body(&ir.arena, ir.root)
 }
@@ -96,9 +101,19 @@ pub enum JitLowerError {
         /// The missing IR root id.
         root: IrId,
     },
+    /// The direct thunk-allocation body was not present in the arena.
+    MissingIrBody {
+        /// The missing IR body id.
+        body: IrId,
+    },
     /// The requested IR root is not a literal this precursor can lower.
     UnsupportedIrRoot {
         /// The unsupported root node kind.
+        kind: IrKind,
+    },
+    /// The direct thunk-allocation body is not a literal this precursor can lower.
+    UnsupportedIrBody {
+        /// The unsupported body node kind.
         kind: IrKind,
     },
     /// A literal IR node carried payload data that did not match its kind.
@@ -107,6 +122,22 @@ pub enum JitLowerError {
         kind: IrKind,
         /// The unexpected payload data.
         data: IrData,
+    },
+    /// A direct thunk-allocation body carried payload data that did not match its kind.
+    MismatchedBodyConstantData {
+        /// The literal body node kind.
+        kind: IrKind,
+        /// The unexpected payload data.
+        data: IrData,
+    },
+    /// A supported IR wrapper node carried payload data with the wrong shape.
+    MismatchedIrNodeData {
+        /// The wrapper node kind.
+        kind: IrKind,
+        /// The unexpected payload data.
+        data: IrData,
+        /// The expected payload shape.
+        expected: &'static str,
     },
 }
 
@@ -120,15 +151,39 @@ impl fmt::Display for JitLowerError {
             Self::MissingIrNode { root } => {
                 write!(formatter, "IR root {root:?} is not present in the arena")
             }
+            Self::MissingIrBody { body } => {
+                write!(
+                    formatter,
+                    "IR thunk body {body:?} is not present in the arena"
+                )
+            }
             Self::UnsupportedIrRoot { kind } => {
                 write!(
                     formatter,
                     "IR root kind {kind:?} is not supported by the constant lowerer"
                 )
             }
+            Self::UnsupportedIrBody { kind } => {
+                write!(
+                    formatter,
+                    "IR thunk body kind {kind:?} is not supported by the constant lowerer"
+                )
+            }
             Self::MismatchedConstantData { kind, data } => write!(
                 formatter,
                 "IR root kind {kind:?} carried incompatible constant payload {data:?}"
+            ),
+            Self::MismatchedBodyConstantData { kind, data } => write!(
+                formatter,
+                "IR thunk body kind {kind:?} carried incompatible constant payload {data:?}"
+            ),
+            Self::MismatchedIrNodeData {
+                kind,
+                data,
+                expected,
+            } => write!(
+                formatter,
+                "IR root kind {kind:?} carried incompatible payload {data:?}, expected {expected}"
             ),
         }
     }
@@ -140,8 +195,12 @@ impl Error for JitLowerError {
             Self::Abi(error) => Some(error),
             Self::Verifier(error) => Some(error),
             Self::MissingIrNode { .. }
+            | Self::MissingIrBody { .. }
             | Self::UnsupportedIrRoot { .. }
-            | Self::MismatchedConstantData { .. } => None,
+            | Self::UnsupportedIrBody { .. }
+            | Self::MismatchedConstantData { .. }
+            | Self::MismatchedBodyConstantData { .. }
+            | Self::MismatchedIrNodeData { .. } => None,
         }
     }
 }
@@ -149,6 +208,42 @@ impl Error for JitLowerError {
 impl From<JitClifSignatureError> for JitLowerError {
     fn from(error: JitClifSignatureError) -> Self {
         Self::Abi(error)
+    }
+}
+
+fn constant_value_for_root(arena: &IrArena, root: IrId) -> Result<Value, JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            constant_value_for_body(body)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => constant_value_for_node(node),
+    }
+}
+
+fn constant_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
+        (IrKind::Null, IrData::None) => Ok(Value::null()),
+        (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
+            Err(JitLowerError::MismatchedBodyConstantData { kind, data })
+        }
+        (kind, _) => Err(JitLowerError::UnsupportedIrBody { kind }),
     }
 }
 
@@ -324,6 +419,35 @@ mod tests {
     }
 
     #[test]
+    fn constant_ir_thunk_body_lowers_direct_literal_thunk_alloc_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(4, 6),
+                    EffectClass::pure(),
+                    IrData::Int(17),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 6),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let function = lower_constant_ir_thunk_body(&arena, IrId::new(1))
+            .expect("direct literal thunk allocation lowers");
+
+        assert_eq!(
+            iconst_words(&function),
+            vec![ValueTag::Int as u64, Value::int(17).payload_bits()]
+        );
+    }
+
+    #[test]
     fn constant_ir_thunk_body_rejects_missing_root() {
         let arena = IrArena::new();
 
@@ -371,6 +495,107 @@ mod tests {
             JitLowerError::MismatchedConstantData {
                 kind: IrKind::Int,
                 data: IrData::None,
+            }
+        ));
+    }
+
+    #[test]
+    fn constant_ir_thunk_body_rejects_missing_thunk_body() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 6),
+                EffectClass::pure(),
+                IrData::Node(IrId::new(9)),
+            )],
+            Vec::new(),
+        );
+
+        let error = lower_constant_ir_thunk_body(&arena, IrId::new(0))
+            .expect_err("missing thunk body is rejected");
+
+        assert!(matches!(error, JitLowerError::MissingIrBody { body } if body == IrId::new(9)));
+    }
+
+    #[test]
+    fn constant_ir_thunk_body_rejects_unsupported_thunk_body_kind() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Str,
+                    Span::new(4, 9),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 9),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let error = lower_constant_ir_thunk_body(&arena, IrId::new(1))
+            .expect_err("unsupported thunk body kind is rejected");
+
+        assert!(matches!(error, JitLowerError::UnsupportedIrBody { kind } if kind == IrKind::Str));
+    }
+
+    #[test]
+    fn constant_ir_thunk_body_rejects_mismatched_thunk_body_payload() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(4, 9),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 9),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let error = lower_constant_ir_thunk_body(&arena, IrId::new(1))
+            .expect_err("mismatched thunk body payload is rejected");
+
+        assert!(matches!(
+            error,
+            JitLowerError::MismatchedBodyConstantData {
+                kind: IrKind::Int,
+                data: IrData::None,
+            }
+        ));
+    }
+
+    #[test]
+    fn constant_ir_thunk_body_rejects_malformed_thunk_alloc_payload() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 6),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+
+        let error = lower_constant_ir_thunk_body(&arena, IrId::new(0))
+            .expect_err("thunk allocation without body node is malformed");
+
+        assert!(matches!(
+            error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::ThunkAlloc,
+                data: IrData::None,
+                expected: "body node",
             }
         ));
     }

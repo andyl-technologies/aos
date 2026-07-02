@@ -6497,10 +6497,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       them to the current `ratchet-value` representation, and reuses the
       constant-thunk CLIF body path. It rejects missing roots, unsupported root
       kinds, and mismatched kind/payload pairs. Tests cover supported literals
-      and those rejection paths. This remains literal-only lowering: no child
-      traversal, environment access, forcing, runtime-symbol calls, branches,
-      applications, `JITModule`, executable buffer, finalized function pointer,
-      symbol registration, or native call is implemented.
+      and those rejection paths. This remains bounded constant lowering: no
+      generic child traversal, environment access, forcing, runtime-symbol calls,
+      branches, applications, `JITModule`, executable buffer, finalized function
+      pointer, symbol registration, or native call is implemented.
 - [x] Current whole-IR literal CLIF entrypoint precursor:
       `ratchet-jit::lower::lower_constant_ir_root_thunk_body()` takes a lowered
       Core `Ir` artifact and lowers its root through the same literal-only CLIF
@@ -6509,6 +6509,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       crate root re-exports the literal IR lowering functions; this is still
       verified CLIF function construction only, with no `JITModule`, executable
       buffer, symbol registration, or native call.
+- [x] Current direct-`ThunkAlloc` literal CLIF precursor:
+      `ratchet-jit::lower::lower_constant_ir_thunk_body()` unwraps one direct
+      `IrKind::ThunkAlloc` / `IrData::Node` wrapper and lowers its literal body
+      through the constant path. Tests cover raw direct literal thunk allocation,
+      missing thunk body ids, unsupported thunk body kinds, and malformed thunk
+      payload data. This is the first bounded child traversal only:
+      nested/generic traversal, runtime calls, forcing, branches, applications,
+      `JITModule`, executable buffer, symbol registration, and native calls
+      remain unimplemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:
