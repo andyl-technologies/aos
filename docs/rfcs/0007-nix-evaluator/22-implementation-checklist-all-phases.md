@@ -5067,6 +5067,25 @@ and helps the oracle directly.
       object allocation, real heap storage reads, semispace page reservation,
       forwarding pointers, root/field writeback, and remembered-set mutation
       remain open.
+- [x] Current minor-GC owned destination-storage precursor:
+      `ratchet-value::heap::gc::MinorGcOwnedDestinationStorage` allocates
+      caller-owned next-nursery and old-generation byte buffers from a validated
+      `MinorGcDestinationPlacementPlan`, chooses aligned interior bases for each
+      generation, exposes those bases through `MinorGcDestinationBases`, and can
+      materialize the matching relocation-destination plan. `copy_from_sources`
+      accepts source bytes in object-copy order, first verifies that the object
+      copy plan exactly matches the storage's placement plan, then validates
+      source count, source order, exact byte lengths, destination range bounds,
+      and same-generation range overlap before mutating storage. Successful
+      copies report copied/promoted counts plus per-generation payload bytes.
+      Unit tests cover aligned base materialization, nursery/old payload copying
+      with padding preservation, empty placement plans, copy-plan length/
+      destination/size mismatch rejection, and source count/source/length
+      mismatch rejection with no partial writes. This reserves owned byte
+      storage for a planned collection, but still does not allocate live object
+      headers, read source bytes from real heap objects, swap nursery semispaces,
+      install forwarding pointers, mutate roots/fields, own the card table, or
+      rescan old fields.
 - [x] Current minor-GC forwarding-pointer planning precursor:
       `ratchet-value::heap::gc::MinorGcForwardingPointerPlan::from_object_copy_plan`
       turns the object-copy schedule into deterministic forwarding-pointer

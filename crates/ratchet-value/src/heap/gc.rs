@@ -11,6 +11,13 @@
 
 use crate::value::tag::POINTER_TAG_MASK;
 
+mod owned_destination;
+
+pub use owned_destination::{
+    MinorGcOwnedDestinationStorage, MinorGcOwnedDestinationStorageCopyReport,
+    MinorGcSourceObjectBytes,
+};
+
 /// The runtime tier in which the generational write barrier is evaluated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GenerationalGcTier {
@@ -3280,6 +3287,185 @@ pub enum GenerationalGcError {
     /// Minor-GC destination placement reserved bytes overflowed in aggregate.
     #[error("minor-GC total destination placement bytes overflowed")]
     MinorGcDestinationPlacementTotalBytesOverflow,
+    /// Owned minor-GC destination storage bytes overflowed.
+    #[error("minor-GC destination storage bytes overflowed for {generation:?}")]
+    MinorGcDestinationStorageBytesOverflow {
+        /// The destination generation whose owned storage length overflowed.
+        generation: HeapGeneration,
+    },
+    /// Owned minor-GC destination storage could not be reserved.
+    #[error("failed to reserve {bytes} bytes of minor-GC destination storage for {generation:?}")]
+    MinorGcDestinationStorageAllocationFailed {
+        /// The destination generation being reserved.
+        generation: HeapGeneration,
+        /// The byte capacity requested for the owned storage buffer.
+        bytes: usize,
+    },
+    /// Aligning an owned minor-GC destination storage base overflowed.
+    #[error(
+        "minor-GC destination storage base address overflowed for {generation:?} address 0x{address_bits:x} align {align}"
+    )]
+    MinorGcDestinationStorageBaseAddressOverflow {
+        /// The destination generation whose base address overflowed.
+        generation: HeapGeneration,
+        /// The raw allocation address being aligned.
+        address_bits: usize,
+        /// The required base alignment in bytes.
+        align: usize,
+    },
+    /// Owned minor-GC destination storage could not reserve validation metadata.
+    #[error("failed to reserve {copies} minor-GC destination storage copy records")]
+    MinorGcDestinationStorageCopyPlanAllocationFailed {
+        /// The object-copy count being validated.
+        copies: usize,
+    },
+    /// The object-copy plan did not match the owned destination placement count.
+    #[error(
+        "minor-GC destination storage copy count {copies} does not match placement count {placements}"
+    )]
+    MinorGcDestinationStorageCopyPlanLengthMismatch {
+        /// The destination placement count.
+        placements: usize,
+        /// The object-copy count.
+        copies: usize,
+    },
+    /// An object-copy plan did not preserve placement source order.
+    #[error(
+        "minor-GC destination storage copy source mismatch at index {index}: expected 0x{expected:x}, got 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcDestinationStorageCopySourceMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The source object expected by the placement plan.
+        expected: GcHeapAddress,
+        /// The source object found in the object-copy plan.
+        actual: GcHeapAddress,
+    },
+    /// An object-copy plan carried a different copy/promote action.
+    #[error(
+        "minor-GC destination storage copy action mismatch for 0x{address:x}: expected {expected:?}, got {actual:?}",
+        address = address.address_bits()
+    )]
+    MinorGcDestinationStorageCopyActionMismatch {
+        /// The source object with mismatched copy action.
+        address: GcHeapAddress,
+        /// The action expected by the placement plan.
+        expected: MinorGcSurvivorAction,
+        /// The action found in the object-copy plan.
+        actual: MinorGcSurvivorAction,
+    },
+    /// An object-copy plan carried a different destination address.
+    #[error(
+        "minor-GC destination storage copy destination mismatch for 0x{address:x}: expected 0x{expected:x}, got 0x{actual:x}",
+        address = address.address_bits(),
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcDestinationStorageCopyDestinationMismatch {
+        /// The source object with mismatched destination metadata.
+        address: GcHeapAddress,
+        /// The destination projected from the placement plan.
+        expected: GcHeapAddress,
+        /// The destination found in the object-copy plan.
+        actual: GcHeapAddress,
+    },
+    /// An object-copy plan carried a different object size.
+    #[error(
+        "minor-GC destination storage copy size mismatch for 0x{address:x}: expected {expected}, got {actual}",
+        address = address.address_bits()
+    )]
+    MinorGcDestinationStorageCopySizeMismatch {
+        /// The source object with mismatched size metadata.
+        address: GcHeapAddress,
+        /// The size expected by the placement plan.
+        expected: usize,
+        /// The size found in the object-copy plan.
+        actual: usize,
+    },
+    /// An object-copy plan carried a different object alignment.
+    #[error(
+        "minor-GC destination storage copy alignment mismatch for 0x{address:x}: expected {expected}, got {actual}",
+        address = address.address_bits()
+    )]
+    MinorGcDestinationStorageCopyAlignmentMismatch {
+        /// The source object with mismatched alignment metadata.
+        address: GcHeapAddress,
+        /// The alignment expected by the placement plan.
+        expected: usize,
+        /// The alignment found in the object-copy plan.
+        actual: usize,
+    },
+    /// A planned object copy targeted bytes outside owned destination storage.
+    #[error(
+        "minor-GC destination storage range for {generation:?} destination 0x{destination:x} size {size_bytes} is outside base 0x{base:x} reserved {reserved_bytes} bytes",
+        destination = destination.address_bits(),
+        base = base.address_bits()
+    )]
+    MinorGcDestinationStorageRangeOutOfBounds {
+        /// The destination generation being written.
+        generation: HeapGeneration,
+        /// The owned storage base address for the destination generation.
+        base: GcHeapAddress,
+        /// The planned destination object address.
+        destination: GcHeapAddress,
+        /// The planned object size in bytes.
+        size_bytes: usize,
+        /// The reserved destination bytes for this generation.
+        reserved_bytes: usize,
+    },
+    /// Two planned object copies overlapped in owned destination storage.
+    #[error(
+        "minor-GC destination storage ranges overlap in {generation:?}: 0x{first:x} and 0x{second:x}",
+        first = first.address_bits(),
+        second = second.address_bits()
+    )]
+    MinorGcDestinationStorageRangeOverlap {
+        /// The destination generation with overlapping ranges.
+        generation: HeapGeneration,
+        /// The first overlapping destination object.
+        first: GcHeapAddress,
+        /// The second overlapping destination object.
+        second: GcHeapAddress,
+    },
+    /// The source-byte inventory length did not match the object-copy plan.
+    #[error("minor-GC source-byte count {sources} does not match object-copy count {copies}")]
+    MinorGcSourceObjectBytesCountMismatch {
+        /// The planned object-copy count.
+        copies: usize,
+        /// The supplied source-byte count.
+        sources: usize,
+    },
+    /// A source-byte entry was supplied for a different object.
+    #[error(
+        "minor-GC source-byte object mismatch at index {index}: expected 0x{expected:x}, got 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcSourceObjectBytesSourceMismatch {
+        /// The mismatched source-byte index.
+        index: usize,
+        /// The source object expected by the object-copy plan.
+        expected: GcHeapAddress,
+        /// The source object found in the source-byte inventory.
+        actual: GcHeapAddress,
+    },
+    /// A source-byte slice had the wrong length for a planned object copy.
+    #[error(
+        "minor-GC source-byte length {actual} for 0x{address:x} at index {index} does not match planned size {expected}",
+        address = address.address_bits()
+    )]
+    MinorGcSourceObjectBytesLengthMismatch {
+        /// The mismatched source-byte index.
+        index: usize,
+        /// The source object whose bytes were supplied.
+        address: GcHeapAddress,
+        /// The planned object size.
+        expected: usize,
+        /// The supplied source byte length.
+        actual: usize,
+    },
     /// The minor-GC relocation destination plan length overflowed.
     #[error("minor-GC relocation destination length overflow")]
     MinorGcRelocationDestinationLengthOverflow,
