@@ -4,7 +4,9 @@
 //! backend directly. Today the installed worker strategy is the Tier-A one-shot
 //! bump arena, with a separate permanent-shared bump arena for hash-consed
 //! values. Later Phase-3 work can install the precise generational collector
-//! behind the same worker `aos_alloc_*` entry-point surface.
+//! behind the same worker `aos_alloc_*` entry-point surface. A
+//! [`RuntimeAllocationRequest`] provides the current safe Rust call boundary
+//! that native wrappers can eventually lower into the same dispatch table.
 
 use std::mem;
 
@@ -40,6 +42,49 @@ pub enum RuntimeAllocationEntryPoint {
     AosAllocString,
     /// The `aos_alloc_raw` helper.
     AosAllocRaw,
+}
+
+/// A safe allocation request for the active runtime allocator.
+///
+/// The request captures the storage-reservation payload currently needed by the
+/// tree-walk heap builders. Some frozen native ABI signatures carry additional
+/// semantic payloads, such as thunk code pointers or cons-cell values; those are
+/// outside this storage-request surface until native wrapper initialization is
+/// implemented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeAllocationRequest {
+    /// Allocate a thunk object.
+    Thunk,
+    /// Allocate a lambda object.
+    Lambda,
+    /// Allocate an attribute-set object.
+    Attrs {
+        /// The hidden-class shape identifier for this attrset.
+        shape: u32,
+        /// The number of value slots reserved in this attrset.
+        slots: u32,
+    },
+    /// Allocate a cons-cell object.
+    Cons,
+    /// Allocate a contiguous list object.
+    List {
+        /// The number of elements reserved in this list object.
+        len: usize,
+    },
+    /// Allocate a string or path header object.
+    String {
+        /// The byte length reserved in this string object.
+        len: usize,
+    },
+    /// Allocate raw heap storage.
+    Raw {
+        /// The requested payload size in bytes.
+        size: usize,
+        /// The requested payload alignment in bytes.
+        align: usize,
+        /// The runtime type tag associated with the raw allocation.
+        type_tag: u32,
+    },
 }
 
 /// Worker allocator position captured for a future lexical region pop.
@@ -204,6 +249,34 @@ impl RuntimeAllocationVTable {
     /// Returns the frozen ABI signatures implemented by this table.
     pub(crate) const fn abi_signatures(&self) -> &'static [RuntimeAllocationAbiSignature] {
         self.abi_signatures
+    }
+
+    /// Allocates through this table using a typed runtime allocation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn allocate(
+        &self,
+        allocator: &mut RuntimeAllocator,
+        request: RuntimeAllocationRequest,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        match request {
+            RuntimeAllocationRequest::Thunk => self.aos_alloc_thunk(allocator),
+            RuntimeAllocationRequest::Lambda => self.aos_alloc_lambda(allocator),
+            RuntimeAllocationRequest::Attrs { shape, slots } => {
+                self.aos_alloc_attrs(allocator, shape, slots)
+            }
+            RuntimeAllocationRequest::Cons => self.aos_alloc_cons(allocator),
+            RuntimeAllocationRequest::List { len } => self.aos_alloc_list(allocator, len),
+            RuntimeAllocationRequest::String { len } => self.aos_alloc_string(allocator, len),
+            RuntimeAllocationRequest::Raw {
+                size,
+                align,
+                type_tag,
+            } => self.aos_alloc_raw(allocator, size, align, type_tag),
+        }
     }
 
     /// Allocates an attribute-set heap object through this table.
@@ -385,6 +458,26 @@ impl RuntimeAllocationEntryPoint {
                 RuntimeAllocationAbiReturnKind::RawPointer,
             ),
         }
+    }
+}
+
+impl RuntimeAllocationRequest {
+    /// Returns the frozen allocation entry point served by this request.
+    pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
+        match self {
+            Self::Thunk => RuntimeAllocationEntryPoint::AosAllocThunk,
+            Self::Lambda => RuntimeAllocationEntryPoint::AosAllocLambda,
+            Self::Attrs { .. } => RuntimeAllocationEntryPoint::AosAllocAttrs,
+            Self::Cons => RuntimeAllocationEntryPoint::AosAllocCons,
+            Self::List { .. } => RuntimeAllocationEntryPoint::AosAllocList,
+            Self::String { .. } => RuntimeAllocationEntryPoint::AosAllocString,
+            Self::Raw { .. } => RuntimeAllocationEntryPoint::AosAllocRaw,
+        }
+    }
+
+    /// Returns the stable runtime symbol name served by this request.
+    pub const fn symbol_name(self) -> &'static str {
+        self.entrypoint().symbol_name()
     }
 }
 
@@ -1087,6 +1180,19 @@ impl RuntimeAllocator {
         stats
     }
 
+    /// Allocates heap storage through the active runtime allocation request path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
+    /// the requested object.
+    pub fn allocate(
+        &mut self,
+        request: RuntimeAllocationRequest,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        self.allocation_vtable().allocate(self, request)
+    }
+
     /// Allocates a thunk-sized heap object through `aos_alloc_thunk`.
     ///
     /// # Errors
@@ -1094,7 +1200,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_thunk(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_thunk(self)
+        self.allocate(RuntimeAllocationRequest::Thunk)
     }
 
     /// Allocates a lambda-sized heap object through `aos_alloc_lambda`.
@@ -1104,7 +1210,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_lambda(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_lambda(self)
+        self.allocate(RuntimeAllocationRequest::Lambda)
     }
 
     /// Allocates an attribute-set heap object through `aos_alloc_attrs`.
@@ -1118,7 +1224,7 @@ impl RuntimeAllocator {
         shape: u32,
         slots: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_attrs(self, shape, slots)
+        self.allocate(RuntimeAllocationRequest::Attrs { shape, slots })
     }
 
     /// Allocates a cons-cell heap object through `aos_alloc_cons`.
@@ -1128,7 +1234,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_cons(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_cons(self)
+        self.allocate(RuntimeAllocationRequest::Cons)
     }
 
     /// Allocates a contiguous list heap object through `aos_alloc_list`.
@@ -1138,7 +1244,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_list(self, len)
+        self.allocate(RuntimeAllocationRequest::List { len })
     }
 
     /// Allocates a string heap object through `aos_alloc_string`.
@@ -1148,7 +1254,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable().aos_alloc_string(self, len)
+        self.allocate(RuntimeAllocationRequest::String { len })
     }
 
     /// Allocates raw heap storage through `aos_alloc_raw`.
@@ -1163,8 +1269,11 @@ impl RuntimeAllocator {
         align: usize,
         type_tag: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        self.allocation_vtable()
-            .aos_alloc_raw(self, size, align, type_tag)
+        self.allocate(RuntimeAllocationRequest::Raw {
+            size,
+            align,
+            type_tag,
+        })
     }
 
     fn arena_mut(&mut self) -> &mut BumpArena {
@@ -1514,6 +1623,63 @@ mod tests {
         let stats = allocator.stats();
         assert_eq!(stats.chunks, 1);
         assert!(stats.used_bytes > 0);
+    }
+
+    #[test]
+    fn tier_a_allocator_dispatches_typed_allocation_requests() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
+        let requests = [
+            (
+                RuntimeAllocationRequest::Attrs { shape: 7, slots: 2 },
+                HeapObjectKind::Attrs { shape: 7, slots: 2 },
+            ),
+            (RuntimeAllocationRequest::Cons, HeapObjectKind::Cons),
+            (RuntimeAllocationRequest::Lambda, HeapObjectKind::Lambda),
+            (
+                RuntimeAllocationRequest::List { len: 3 },
+                HeapObjectKind::List { len: 3 },
+            ),
+            (
+                RuntimeAllocationRequest::Raw {
+                    size: 8,
+                    align: 8,
+                    type_tag: 0x7261_7770,
+                },
+                HeapObjectKind::Raw {
+                    type_tag: 0x7261_7770,
+                },
+            ),
+            (
+                RuntimeAllocationRequest::String { len: 5 },
+                HeapObjectKind::String { len: 5 },
+            ),
+            (RuntimeAllocationRequest::Thunk, HeapObjectKind::Thunk),
+        ];
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(request, _)| request.entrypoint())
+                .collect::<Vec<_>>(),
+            runtime_allocation_entrypoints()
+        );
+
+        for (index, (request, expected_kind)) in requests.into_iter().enumerate() {
+            assert_eq!(request.symbol_name(), request.entrypoint().symbol_name());
+            let allocation = allocator
+                .allocate(request)
+                .expect("typed request allocates");
+            assert_eq!(allocation.kind, expected_kind);
+            assert_last_safepoint(
+                allocator.allocation_safepoints(),
+                u64::try_from(index + 1).expect("request index fits in u64"),
+                RuntimeAllocatorTier::TierAOneShot,
+                request.entrypoint(),
+                allocation,
+                allocator.stats(),
+            );
+        }
     }
 
     #[test]

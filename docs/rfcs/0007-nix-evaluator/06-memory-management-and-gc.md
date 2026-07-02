@@ -864,6 +864,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       points. This is internal safe Rust startup dispatch only; it does not export
       `unsafe extern "C"` functions, implement trap transfer, register symbols
       with Cranelift, or install a Tier-B collector table.
+- [x] Current allocation-request dispatch precursor:
+      `RuntimeAllocationRequest` now captures the safe storage-reservation
+      payload for each frozen `aos_alloc_*` entry point, exposes its entry-point
+      and symbol mapping, and gives `RuntimeAllocator::allocate` a single typed
+      request wall over the installed `RuntimeAllocationVTable`. The existing
+      public `aos_alloc_*` methods route through that request wall, preserving
+      Tier-A safepoint accounting while making future native wrappers consume
+      the same request-to-entry-point contract. Tests cover manifest-order
+      request dispatch, symbol mapping, expected heap-object kinds, and
+      safepoint entry-point recording. This is still safe Rust dispatch only: it
+      does not export native wrappers, initialize semantic ABI payloads such as
+      thunk code pointers or cons values, register Cranelift symbols, or install
+      a Tier-B collector table.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,

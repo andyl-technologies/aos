@@ -5245,6 +5245,19 @@ and helps the oracle directly.
       safepoint entry points. This is internal safe Rust startup dispatch only; no
       unsafe C exports, native trap transfer, Cranelift symbol registration,
       Tier-B table, or compiled-artifact relinking is implemented here.
+- [x] Current allocation-request dispatch precursor:
+      `RuntimeAllocationRequest` now captures the safe storage-reservation
+      payload for each frozen `aos_alloc_*` entry point, exposes its entry-point
+      and symbol mapping, and gives `RuntimeAllocator::allocate` a single typed
+      request wall over the installed `RuntimeAllocationVTable`. The existing
+      public `aos_alloc_*` methods route through that request wall, preserving
+      Tier-A safepoint accounting while making future native wrappers consume
+      the same request-to-entry-point contract. Tests cover manifest-order
+      request dispatch, symbol mapping, expected heap-object kinds, and
+      safepoint entry-point recording. This is still safe Rust dispatch only; no
+      unsafe C exports, semantic ABI payload initialization, Cranelift symbol
+      registration, Tier-B table, or compiled-artifact relinking is implemented
+      here.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
