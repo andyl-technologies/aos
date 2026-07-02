@@ -1213,6 +1213,16 @@ in rec {
         dependencies = [phase4.gates.e2eDeterminism];
       };
     };
+    sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionSimDoubleSuite";
+      taskIds = ["T-SESS-12"];
+      dependencies = [
+        phase5.sessionSimulationBackend
+        phase3.gates.schedulerLiveness.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

@@ -477,6 +477,8 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:control-responsive
+            backend=crucible-sim-double-adapter
+            real_qemu_required=false
             measured_in=quanta
             quantum_bound=1
             session_required_ops_ack_lte_one_quantum=true

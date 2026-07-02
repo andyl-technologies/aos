@@ -261,6 +261,13 @@ long-held locks.
   same scheduler-supplied timing boundary, including full SimDouble
   snapshot/restore, QEMU restore-time mirror updates, and rejection of
   trait-level SimDouble outbound sends without scheduler authorization.
+  `T-SESS-12` is green through `checks.crucible.phase5.sessionSimDoubleSuite`,
+  which runs the full `crucible-session` suite plus the API/daemon
+  control-responsive tests under in-process `crucible::SimDouble` quantum-loop
+  adapters, and runs `gate:scheduler-liveness` under `test-double` with an
+  initialized and stepped `crucible::SimDouble` smoke path before the pure
+  scheduler-liveness reduction. Source checks reserve real QEMU for Contract A,
+  guest non-mutation, and patch inertness fidelity properties.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

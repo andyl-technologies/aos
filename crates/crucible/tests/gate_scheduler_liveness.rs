@@ -6,20 +6,83 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, check_scheduler_liveness,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDouble,
+    SimDoubleConfig, SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
+    check_scheduler_liveness,
 };
+use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use std::fmt::Debug;
 
-struct SimDouble;
+const SCHEDULER_LIVENESS_BACKEND: &str = "crucible::SimDouble liveness harness";
+const SCHEDULER_LIVENESS_REQUIRES_REAL_QEMU: bool = false;
+const FIDELITY_PROPERTIES_REQUIRING_QEMU: [&str; 3] =
+    ["contract-a", "guest-non-mutation", "patch-inertness"];
 
-impl SimDouble {
+struct SimDoubleLivenessHarness {
+    backend: SimDouble,
+}
+
+impl SimDoubleLivenessHarness {
+    fn new() -> Self {
+        Self {
+            backend: ready_sim_double(),
+        }
+    }
+
     fn check_scheduler_liveness(
-        &self,
+        &mut self,
         scenario: SchedulerLivenessScenario,
     ) -> Result<crucible::SchedulerLivenessReport, SchedulerLivenessError> {
+        SimulationBackend::step_to(
+            &mut self.backend,
+            VirtualTime {
+                ticks: scenario.time_limit.nanos,
+            },
+        )
+        .unwrap_or_else(|error| panic!("SimDouble liveness backend should step: {error}"));
         check_scheduler_liveness(scenario)
     }
+}
+
+fn ready_sim_double() -> SimDouble {
+    let mut backend = SimDouble::new(SimDoubleConfig::default())
+        .unwrap_or_else(|error| panic!("SimDouble liveness backend should build: {error}"));
+    complete_sim_double_setup(&mut backend);
+    backend
+}
+
+fn complete_sim_double_setup(backend: &mut SimDouble) {
+    let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: backend.shmem_header_snapshot().abi_version,
+        slot_index: 0,
+        node_count: backend.shmem_layout().node_count,
+    });
+    if let Err(error) = backend.accept_host_control_frame(&hello_ack) {
+        panic!("SimDouble hello acknowledgement should succeed: {error}");
+    }
+
+    let setup = control_encode_host_msg(&HostMsg::Setup {
+        region_len: backend.shmem_layout().region_size,
+    });
+    match backend.accept_host_control_frame(&setup) {
+        Ok(Some(_setup_ack)) => {}
+        Ok(None) => panic!("SimDouble setup should return a setup acknowledgement"),
+        Err(error) => panic!("SimDouble setup should succeed: {error}"),
+    }
+}
+
+#[test]
+fn gate_scheduler_liveness_declares_in_process_sim_double_backend() {
+    assert_eq!(
+        SCHEDULER_LIVENESS_BACKEND,
+        "crucible::SimDouble liveness harness"
+    );
+    assert!(!SCHEDULER_LIVENESS_REQUIRES_REAL_QEMU);
+    assert_eq!(
+        FIDELITY_PROPERTIES_REQUIRING_QEMU,
+        ["contract-a", "guest-non-mutation", "patch-inertness"]
+    );
 }
 
 #[test]
@@ -270,7 +333,7 @@ fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> V
 fn assert_scheduler_liveness(
     scenario: SchedulerLivenessScenario,
 ) -> crucible::SchedulerLivenessReport {
-    let double = SimDouble;
+    let mut double = SimDoubleLivenessHarness::new();
     assert_twice_reduce_canonical_digest(|| double.check_scheduler_liveness(scenario.clone()))
 }
 

@@ -328,6 +328,8 @@ in
             gate=gate:scheduler-liveness
             tasks=${taskList}
             rust_tests=crucible::gate_scheduler_liveness
+            backend=crucible-sim-double-initialized-test-double
+            real_qemu_required=false
             terminal_set=Quiescent,TimeLimitReached
             generated_scenarios=48
             deadlock_negative_control=true

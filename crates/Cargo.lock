@@ -1550,6 +1550,7 @@ name = "crucible-api"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "crucible-protocol",
  "crucible-session",
  "thiserror",
  "tokio",
@@ -1579,6 +1580,7 @@ version = "0.1.0"
 dependencies = [
  "crucible",
  "crucible-api",
+ "crucible-protocol",
  "crucible-session",
  "thiserror",
  "tokio",
@@ -1646,6 +1648,7 @@ name = "crucible-session"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "crucible-protocol",
  "thiserror",
  "tokio",
 ]
