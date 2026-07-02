@@ -873,6 +873,18 @@ harness, never cut for scope.
       This is metadata gating only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
+- [x] Current runtime symbol native-export readiness gate:
+      `runtime_symbol_native_export_preflight()` runs after address-free target
+      candidacy and records current helper candidates as missing exported C ABI
+      wrappers. For allocation helpers it carries the exact
+      `runtime_allocation_native_export_preflight()` blockers: missing
+      `unsafe extern "C"` wrapper, runtime-context ABI decoding, evaluator trap
+      transfer, typed pointer return materialization, and semantic-payload
+      initialization for `aos_alloc_cons`, `aos_alloc_lambda`, and
+      `aos_alloc_thunk`. `runtime_symbol_native_export_plan()` still rejects as
+      incomplete. This is safe readiness metadata only; no function is exported,
+      no Rust callable becomes ABI-callable, no `JITBuilder::symbol` call runs,
+      and no compiled artifact is relinked.
 - [x] Current `ratchet-jit` ABI-boundary precursor:
       `ratchet-jit::abi` provides a JIT-side, address-free
       `JitRuntimeAbiInventory` copied from the `ratchet-core` runtime-call

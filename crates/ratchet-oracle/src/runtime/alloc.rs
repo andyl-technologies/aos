@@ -217,6 +217,23 @@ pub const fn runtime_allocation_abi_signatures() -> &'static [RuntimeAllocationA
     RUNTIME_ALLOCATION_ABI_SIGNATURES
 }
 
+/// Builds native-export readiness metadata for frozen allocation helpers.
+///
+/// The returned report is intentionally negative today: every `aos_alloc_*`
+/// symbol has frozen ABI metadata and a storage-only Rust callable, but no
+/// exported C ABI wrapper. The blocker list is precise so later unsafe wrapper
+/// work can clear individual obligations without treating Rust callables as
+/// native ABI exports.
+pub fn runtime_allocation_native_export_preflight() -> RuntimeAllocationNativeExportPreflight {
+    RuntimeAllocationNativeExportPreflight::new(
+        runtime_allocation_entrypoints()
+            .iter()
+            .copied()
+            .map(RuntimeAllocationNativeExportReadiness::for_entrypoint)
+            .collect(),
+    )
+}
+
 type RuntimeAllocationAttrsFn =
     fn(&mut RuntimeAllocator, shape: u32, slots: u32) -> Result<ArenaAllocation, ArenaError>;
 type RuntimeAllocationConsFn = fn(&mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError>;
@@ -523,6 +540,18 @@ impl RuntimeAllocationEntryPoint {
         };
         RuntimeAllocationRustCallableAddress::new(ptr)
     }
+
+    /// Returns the current native-export blockers for this allocation helper.
+    pub const fn native_export_blockers(self) -> &'static [RuntimeAllocationNativeExportBlocker] {
+        match self {
+            Self::AosAllocThunk | Self::AosAllocLambda | Self::AosAllocCons => {
+                ALLOCATION_SEMANTIC_NATIVE_EXPORT_BLOCKERS
+            }
+            Self::AosAllocAttrs | Self::AosAllocList | Self::AosAllocString | Self::AosAllocRaw => {
+                ALLOCATION_STORAGE_NATIVE_EXPORT_BLOCKERS
+            }
+        }
+    }
 }
 
 impl RuntimeAllocationRequest {
@@ -628,6 +657,118 @@ impl RuntimeAllocationRustCallableBinding {
     /// Returns the process-local callable Rust address for this binding.
     pub const fn address(self) -> RuntimeAllocationRustCallableAddress {
         self.address
+    }
+}
+
+/// A missing piece before a storage-only allocation helper can become a native ABI export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeAllocationNativeExportBlocker {
+    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
+    MissingExternCWrapper,
+    /// Native wrappers cannot yet decode the runtime context pointer.
+    RuntimeContextAbiUnimplemented,
+    /// Helper failures cannot yet transfer into evaluator trap/error machinery.
+    TrapTransferUnimplemented,
+    /// Pointer-shaped ABI returns are not yet materialized as typed heap objects.
+    TypedPointerReturnUnmaterialized,
+    /// The frozen ABI's semantic payloads are not initialized by the storage wrapper.
+    SemanticPayloadInitializationUnimplemented,
+}
+
+const ALLOCATION_STORAGE_NATIVE_EXPORT_BLOCKERS: &[RuntimeAllocationNativeExportBlocker] = &[
+    RuntimeAllocationNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+    RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+    RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+];
+
+const ALLOCATION_SEMANTIC_NATIVE_EXPORT_BLOCKERS: &[RuntimeAllocationNativeExportBlocker] = &[
+    RuntimeAllocationNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+    RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+    RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+    RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented,
+];
+
+/// Native-export readiness for one frozen allocation helper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationNativeExportReadiness {
+    entrypoint: RuntimeAllocationEntryPoint,
+    abi_signature: RuntimeAllocationAbiSignature,
+    rust_callable_binding: RuntimeAllocationRustCallableBinding,
+    blockers: &'static [RuntimeAllocationNativeExportBlocker],
+}
+
+impl RuntimeAllocationNativeExportReadiness {
+    fn for_entrypoint(entrypoint: RuntimeAllocationEntryPoint) -> Self {
+        Self {
+            entrypoint,
+            abi_signature: entrypoint.abi_signature(),
+            rust_callable_binding: entrypoint.rust_callable_binding(),
+            blockers: entrypoint.native_export_blockers(),
+        }
+    }
+
+    /// Returns the allocation entry point served by this readiness record.
+    pub const fn entrypoint(&self) -> RuntimeAllocationEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the stable runtime symbol name for this readiness record.
+    pub const fn symbol_name(&self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the frozen native ABI signature for this allocation helper.
+    pub const fn abi_signature(&self) -> RuntimeAllocationAbiSignature {
+        self.abi_signature
+    }
+
+    /// Returns the current storage-only Rust callable binding.
+    pub const fn rust_callable_binding(&self) -> RuntimeAllocationRustCallableBinding {
+        self.rust_callable_binding
+    }
+
+    /// Returns the current blockers before this helper can be a native ABI export.
+    pub const fn blockers(&self) -> &'static [RuntimeAllocationNativeExportBlocker] {
+        self.blockers
+    }
+
+    /// Returns true when this helper has exported native ABI metadata.
+    pub const fn is_export_ready(&self) -> bool {
+        self.blockers.is_empty()
+    }
+}
+
+/// Native-export readiness report for frozen allocation helpers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationNativeExportPreflight {
+    readiness: Vec<RuntimeAllocationNativeExportReadiness>,
+}
+
+impl RuntimeAllocationNativeExportPreflight {
+    fn new(readiness: Vec<RuntimeAllocationNativeExportReadiness>) -> Self {
+        Self { readiness }
+    }
+
+    /// Returns allocation native-export readiness in runtime entry-point order.
+    pub fn readiness(&self) -> &[RuntimeAllocationNativeExportReadiness] {
+        &self.readiness
+    }
+
+    /// Returns true when every allocation helper has native ABI export metadata.
+    pub fn is_complete(&self) -> bool {
+        self.readiness.iter().all(|record| record.is_export_ready())
+    }
+
+    /// Returns the readiness record for `symbol_name`, when present.
+    pub fn readiness_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&RuntimeAllocationNativeExportReadiness> {
+        self.readiness
+            .iter()
+            .find(|record| record.symbol_name() == symbol_name)
     }
 }
 
@@ -2386,6 +2527,114 @@ mod tests {
                 binding.address().is_non_null(),
                 "{} has a callable allocation address",
                 binding.symbol_name()
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_native_export_preflight_preserves_frozen_abi_and_storage_callables() {
+        let preflight = runtime_allocation_native_export_preflight();
+
+        assert!(!preflight.is_complete());
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeAllocationNativeExportReadiness::entrypoint)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_allocation_entrypoints()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeAllocationNativeExportReadiness::abi_signature)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_allocation_abi_signatures()
+        );
+        assert_eq!(
+            preflight
+                .readiness()
+                .iter()
+                .map(RuntimeAllocationNativeExportReadiness::rust_callable_binding)
+                .collect::<Vec<_>>(),
+            runtime_allocation_rust_callable_bindings()
+        );
+
+        for record in preflight.readiness() {
+            assert_eq!(record.symbol_name(), record.entrypoint().symbol_name());
+            assert_eq!(
+                record.blockers(),
+                record.entrypoint().native_export_blockers()
+            );
+            assert!(!record.is_export_ready());
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeAllocationNativeExportBlocker::MissingExternCWrapper)
+            );
+            assert!(
+                record.blockers().contains(
+                    &RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented
+                )
+            );
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented)
+            );
+            assert!(
+                record.blockers().contains(
+                    &RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized
+                )
+            );
+            assert_eq!(
+                preflight.readiness_for_symbol(record.symbol_name()),
+                Some(record)
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_native_export_preflight_marks_semantic_payload_gaps() {
+        let preflight = runtime_allocation_native_export_preflight();
+        let semantic_symbols = [
+            RuntimeAllocationEntryPoint::AosAllocCons,
+            RuntimeAllocationEntryPoint::AosAllocLambda,
+            RuntimeAllocationEntryPoint::AosAllocThunk,
+        ];
+        let storage_only_symbols = [
+            RuntimeAllocationEntryPoint::AosAllocAttrs,
+            RuntimeAllocationEntryPoint::AosAllocList,
+            RuntimeAllocationEntryPoint::AosAllocRaw,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ];
+
+        for entrypoint in semantic_symbols {
+            let record = preflight
+                .readiness_for_symbol(entrypoint.symbol_name())
+                .expect("semantic allocation export readiness exists");
+            assert!(
+                record.blockers().contains(
+                    &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                ),
+                "{} must initialize frozen ABI semantic payloads",
+                entrypoint.symbol_name()
+            );
+        }
+
+        for entrypoint in storage_only_symbols {
+            let record = preflight
+                .readiness_for_symbol(entrypoint.symbol_name())
+                .expect("storage allocation export readiness exists");
+            assert!(
+                !record.blockers().contains(
+                    &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                ),
+                "{} has no extra semantic payload beyond storage reservation",
+                entrypoint.symbol_name()
             );
         }
     }

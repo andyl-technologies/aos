@@ -5559,6 +5559,22 @@ and helps the oracle directly.
       `string` allocations. This remains metadata only; collector invocation,
       live-root construction, GC-stress execution, and exported C ABI symbols
       remain open.
+- [x] Current native-export readiness gate:
+      `runtime::alloc::runtime_allocation_native_export_preflight()` records the
+      exact blockers that keep each frozen `aos_alloc_*` helper from being an
+      exported native ABI symbol: missing `unsafe extern "C"` wrapper,
+      runtime-context ABI decoding, evaluator trap transfer, typed pointer
+      return materialization, and the extra semantic-payload initialization gap
+      for `aos_alloc_cons`, `aos_alloc_lambda`, and `aos_alloc_thunk`.
+      `runtime::helpers::runtime_symbol_native_export_preflight()` lifts that
+      into full runtime-symbol order, preserving earlier helper/builtin
+      candidate gaps and converting current address-free helper candidates into
+      explicit missing exported-wrapper gaps. The strict
+      `runtime_symbol_native_export_plan()` still rejects as incomplete. This is
+      safe readiness metadata only: no C ABI function is exported, no Rust
+      callable is treated as ABI-callable, no `JITBuilder::symbol` registration
+      occurs, and no native trap transfer or semantic object initialization is
+      implemented.
 - [x] Current allocation collector-poll request precursor:
       `AllocationSafepoint::collector_poll` and
       `AllocationSafepointState::last_safepoint_collector_poll` expose a typed

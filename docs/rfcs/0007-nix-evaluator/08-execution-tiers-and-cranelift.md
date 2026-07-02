@@ -1183,6 +1183,17 @@ harness, never cut for scope.
       representative address-free helper candidates, representative gaps, and a
       synthetic complete conversion. This does not attach executable addresses,
       export wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
+- [x] Current runtime symbol native-export readiness gate:
+      `runtime_symbol_native_export_preflight()` is the checked safe boundary
+      after address-free target candidacy. It reports current helper candidates
+      as missing exported C ABI wrappers and carries allocation-specific blockers
+      from `runtime_allocation_native_export_preflight()`: missing
+      `unsafe extern "C"` wrapper, runtime-context ABI decoding, evaluator trap
+      transfer, typed pointer return materialization, and semantic-payload
+      initialization for `aos_alloc_cons`, `aos_alloc_lambda`, and
+      `aos_alloc_thunk`. `runtime_symbol_native_export_plan()` still rejects as
+      incomplete. This exports no functions, treats no Rust callable as ABI
+      callable, lowers no Cranelift IR, and calls no `JITBuilder::symbol`.
 - [x] Current `ratchet-jit` crate-boundary precursor:
       `ratchet-jit` is now a workspace crate with
       `#![deny(unsafe_op_in_unsafe_fn)]`, crate-level docs for the future unsafe

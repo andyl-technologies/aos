@@ -18,7 +18,9 @@ use thiserror::Error;
 
 use super::alloc::{
     RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint,
-    RuntimeAllocationRustCallableBinding, runtime_allocation_rust_callable_bindings,
+    RuntimeAllocationNativeExportBlocker, RuntimeAllocationNativeExportReadiness,
+    RuntimeAllocationRustCallableBinding, runtime_allocation_native_export_preflight,
+    runtime_allocation_rust_callable_bindings,
 };
 use super::barrier::{
     RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint,
@@ -565,6 +567,129 @@ pub fn runtime_symbol_native_target_candidate_plan() -> RuntimeSymbolNativeTarge
     runtime_symbol_native_target_candidate_preflight()?.into_native_target_candidate_plan()
 }
 
+/// Result returned when building native-export readiness metadata.
+pub type RuntimeSymbolNativeExportPreflightResult =
+    Result<RuntimeSymbolNativeExportPreflight, RuntimeSymbolNameError>;
+
+/// Result returned when requiring complete native-export metadata.
+pub type RuntimeSymbolNativeExportPlanResult =
+    Result<RuntimeSymbolNativeExportPlan, RuntimeSymbolNativeExportPlanError>;
+
+/// A failure while preparing complete native-export metadata.
+#[derive(Debug, Error)]
+pub enum RuntimeSymbolNativeExportPlanError {
+    /// The core runtime symbol or builtin call manifest could not be built.
+    #[error("failed to build runtime symbol native-export metadata")]
+    SymbolManifest {
+        /// The underlying stable-symbol manifest error.
+        #[from]
+        source: RuntimeSymbolNameError,
+    },
+    /// Some runtime symbols cannot yet be exported as native ABI targets.
+    #[error(
+        "runtime symbol native-export metadata is incomplete: {missing_count} symbol exports missing"
+    )]
+    Incomplete {
+        /// The number of symbols still missing native-export metadata.
+        missing_count: usize,
+        /// The full preflight report, including exported and missing symbols.
+        preflight: RuntimeSymbolNativeExportPreflight,
+    },
+}
+
+/// Builds a runtime-symbol report for exported native ABI readiness.
+///
+/// The report consumes [`runtime_symbol_native_target_candidate_preflight`],
+/// preserves runtime-symbol order, and records why every current native-target
+/// candidate still lacks an exported C ABI wrapper. This is the final safe gate
+/// before unsafe wrapper work: it does not export functions, attach addresses,
+/// register Cranelift symbols, or treat process-local Rust callables as ABI
+/// symbols.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest or the
+/// builtin call manifest cannot be built.
+pub fn runtime_symbol_native_export_preflight() -> RuntimeSymbolNativeExportPreflightResult {
+    let binding_manifest = runtime_symbol_binding_manifest()?;
+    let target_preflight = runtime_symbol_native_target_candidate_preflight()?;
+
+    Ok(project_native_export_preflight(
+        &binding_manifest,
+        &target_preflight,
+    ))
+}
+
+fn project_native_export_preflight(
+    binding_manifest: &[RuntimeSymbolBindingManifestEntry],
+    target_preflight: &RuntimeSymbolNativeTargetCandidatePreflight,
+) -> RuntimeSymbolNativeExportPreflight {
+    let target_candidates =
+        native_target_candidates_by_symbol(target_preflight.candidate_bindings());
+    let target_missing = native_target_missing_by_symbol(target_preflight.missing_bindings());
+    let allocation_preflight = runtime_allocation_native_export_preflight();
+    let allocation_readiness =
+        allocation_native_export_readiness_by_symbol(allocation_preflight.readiness());
+    let mut missing_bindings = Vec::new();
+
+    for entry in binding_manifest {
+        if let Some(candidate) = target_candidates.get(entry.symbol_name()) {
+            if let Some(helper_binding) =
+                RuntimeHelperBinding::from_symbol_name(candidate.symbol_name())
+            {
+                let allocation_blockers = match allocation_readiness.get(candidate.symbol_name()) {
+                    Some(record) => record.blockers(),
+                    None => &[],
+                };
+                missing_bindings.push(
+                    RuntimeSymbolNativeExportMissingBinding::exported_c_abi_wrapper(
+                        candidate.symbol_name().to_owned(),
+                        candidate.helper_role(),
+                        helper_binding.failure_convention(),
+                        allocation_blockers,
+                    ),
+                );
+            } else {
+                missing_bindings.push(
+                    RuntimeSymbolNativeExportMissingBinding::native_target_candidate(
+                        RuntimeSymbolNativeTargetCandidateMissingBinding::abi_signature(
+                            RuntimeSymbolAbiMissingBinding::from_binding_manifest_entry(entry),
+                        ),
+                    ),
+                );
+            }
+        } else if let Some(missing) = target_missing.get(entry.symbol_name()) {
+            missing_bindings.push(
+                RuntimeSymbolNativeExportMissingBinding::native_target_candidate(
+                    (*missing).clone(),
+                ),
+            );
+        } else {
+            missing_bindings.push(
+                RuntimeSymbolNativeExportMissingBinding::native_target_candidate(
+                    RuntimeSymbolNativeTargetCandidateMissingBinding::abi_signature(
+                        RuntimeSymbolAbiMissingBinding::from_binding_manifest_entry(entry),
+                    ),
+                ),
+            );
+        }
+    }
+
+    RuntimeSymbolNativeExportPreflight::new(Vec::new(), missing_bindings)
+}
+
+/// Builds the complete runtime-symbol native-export plan.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNativeExportPlanError::SymbolManifest`] if the core
+/// runtime symbol manifest or the builtin call manifest cannot be built.
+/// Returns [`RuntimeSymbolNativeExportPlanError::Incomplete`] while any runtime
+/// symbol still lacks exported native ABI metadata.
+pub fn runtime_symbol_native_export_plan() -> RuntimeSymbolNativeExportPlanResult {
+    runtime_symbol_native_export_preflight()?.into_native_export_plan()
+}
+
 /// Result returned when building runtime-symbol Rust-callable readiness metadata.
 pub type RuntimeSymbolRustCallablePreflightResult =
     Result<RuntimeSymbolRustCallablePreflight, RuntimeSymbolNameError>;
@@ -675,6 +800,33 @@ fn abi_missing_bindings_by_symbol(
     missing_bindings
         .iter()
         .map(|binding| (binding.symbol_name(), binding))
+        .collect()
+}
+
+fn native_target_candidates_by_symbol(
+    candidates: &[RuntimeSymbolNativeTargetCandidateBinding],
+) -> BTreeMap<&str, &RuntimeSymbolNativeTargetCandidateBinding> {
+    candidates
+        .iter()
+        .map(|candidate| (candidate.symbol_name(), candidate))
+        .collect()
+}
+
+fn native_target_missing_by_symbol(
+    missing_bindings: &[RuntimeSymbolNativeTargetCandidateMissingBinding],
+) -> BTreeMap<&str, &RuntimeSymbolNativeTargetCandidateMissingBinding> {
+    missing_bindings
+        .iter()
+        .map(|binding| (binding.symbol_name(), binding))
+        .collect()
+}
+
+fn allocation_native_export_readiness_by_symbol(
+    readiness: &[RuntimeAllocationNativeExportReadiness],
+) -> BTreeMap<&str, &RuntimeAllocationNativeExportReadiness> {
+    readiness
+        .iter()
+        .map(|record| (record.symbol_name(), record))
         .collect()
 }
 
@@ -1132,6 +1284,204 @@ impl RuntimeSymbolNativeTargetCandidatePreflight {
     }
 }
 
+/// A runtime symbol with native-export readiness metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolNativeExportBinding {
+    symbol_name: String,
+    role: RuntimeHelperRole,
+    failure_convention: RuntimeHelperFailureConvention,
+}
+
+impl RuntimeSymbolNativeExportBinding {
+    #[cfg(test)]
+    fn new(
+        symbol_name: String,
+        role: RuntimeHelperRole,
+        failure_convention: RuntimeHelperFailureConvention,
+    ) -> Self {
+        Self {
+            symbol_name,
+            role,
+            failure_convention,
+        }
+    }
+
+    /// Returns the stable runtime symbol name served by this metadata record.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the helper role covered by this metadata record.
+    pub const fn helper_role(&self) -> RuntimeHelperRole {
+        self.role
+    }
+
+    /// Returns the failure convention required by this metadata record.
+    pub const fn failure_convention(&self) -> RuntimeHelperFailureConvention {
+        self.failure_convention
+    }
+}
+
+/// One runtime symbol that cannot yet be exported as a native ABI target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolNativeExportMissingBinding {
+    /// The symbol is blocked before native-target candidate readiness.
+    MissingNativeTargetCandidate(RuntimeSymbolNativeTargetCandidateMissingBinding),
+    /// A helper candidate still lacks an exported C ABI wrapper.
+    MissingExportedCAbiWrapper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The helper role reserved by the core runtime ABI.
+        role: RuntimeHelperRole,
+        /// The native failure convention the wrapper must implement.
+        failure_convention: RuntimeHelperFailureConvention,
+        /// Allocation-specific blockers when this wrapper serves `aos_alloc_*`.
+        allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
+    },
+}
+
+impl RuntimeSymbolNativeExportMissingBinding {
+    fn native_target_candidate(binding: RuntimeSymbolNativeTargetCandidateMissingBinding) -> Self {
+        Self::MissingNativeTargetCandidate(binding)
+    }
+
+    fn exported_c_abi_wrapper(
+        symbol_name: String,
+        role: RuntimeHelperRole,
+        failure_convention: RuntimeHelperFailureConvention,
+        allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
+    ) -> Self {
+        Self::MissingExportedCAbiWrapper {
+            symbol_name,
+            role,
+            failure_convention,
+            allocation_blockers,
+        }
+    }
+
+    /// Returns the stable runtime symbol name that is not yet export-ready.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::MissingNativeTargetCandidate(binding) => binding.symbol_name(),
+            Self::MissingExportedCAbiWrapper { symbol_name, .. } => symbol_name,
+        }
+    }
+
+    /// Returns the earlier native-target candidate gap, when present.
+    pub const fn missing_native_target_candidate(
+        &self,
+    ) -> Option<&RuntimeSymbolNativeTargetCandidateMissingBinding> {
+        match self {
+            Self::MissingNativeTargetCandidate(binding) => Some(binding),
+            Self::MissingExportedCAbiWrapper { .. } => None,
+        }
+    }
+
+    /// Returns the helper role when the missing piece is an exported C ABI wrapper.
+    pub const fn missing_exported_c_abi_wrapper_role(&self) -> Option<RuntimeHelperRole> {
+        match self {
+            Self::MissingExportedCAbiWrapper { role, .. } => Some(*role),
+            Self::MissingNativeTargetCandidate(_) => None,
+        }
+    }
+
+    /// Returns the failure convention required by the missing C ABI wrapper.
+    pub const fn missing_exported_c_abi_failure_convention(
+        &self,
+    ) -> Option<RuntimeHelperFailureConvention> {
+        match self {
+            Self::MissingExportedCAbiWrapper {
+                failure_convention, ..
+            } => Some(*failure_convention),
+            Self::MissingNativeTargetCandidate(_) => None,
+        }
+    }
+
+    /// Returns allocation-specific blockers for a missing `aos_alloc_*` C ABI wrapper.
+    pub fn missing_exported_allocation_blockers(
+        &self,
+    ) -> Option<&'static [RuntimeAllocationNativeExportBlocker]> {
+        match self {
+            Self::MissingExportedCAbiWrapper {
+                allocation_blockers,
+                ..
+            } if !allocation_blockers.is_empty() => Some(*allocation_blockers),
+            Self::MissingExportedCAbiWrapper { .. } | Self::MissingNativeTargetCandidate(_) => None,
+        }
+    }
+}
+
+/// The complete set of runtime-symbol native-export metadata records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolNativeExportPlan {
+    export_bindings: Vec<RuntimeSymbolNativeExportBinding>,
+}
+
+impl RuntimeSymbolNativeExportPlan {
+    fn new(export_bindings: Vec<RuntimeSymbolNativeExportBinding>) -> Self {
+        Self { export_bindings }
+    }
+
+    /// Returns native-export metadata records in runtime symbol-manifest order.
+    pub fn export_bindings(&self) -> &[RuntimeSymbolNativeExportBinding] {
+        &self.export_bindings
+    }
+}
+
+/// A deterministic runtime-symbol report for exported native ABI readiness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolNativeExportPreflight {
+    export_bindings: Vec<RuntimeSymbolNativeExportBinding>,
+    missing_bindings: Vec<RuntimeSymbolNativeExportMissingBinding>,
+}
+
+impl RuntimeSymbolNativeExportPreflight {
+    fn new(
+        export_bindings: Vec<RuntimeSymbolNativeExportBinding>,
+        missing_bindings: Vec<RuntimeSymbolNativeExportMissingBinding>,
+    ) -> Self {
+        Self {
+            export_bindings,
+            missing_bindings,
+        }
+    }
+
+    /// Returns native-export metadata records in runtime symbol-manifest order.
+    pub fn export_bindings(&self) -> &[RuntimeSymbolNativeExportBinding] {
+        &self.export_bindings
+    }
+
+    /// Returns runtime symbols that still lack native-export readiness.
+    pub fn missing_bindings(&self) -> &[RuntimeSymbolNativeExportMissingBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every runtime symbol has exported native ABI metadata.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+
+    /// Converts a complete preflight report into native-export metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSymbolNativeExportPlanError::Incomplete`] when any
+    /// runtime symbol still lacks exported native ABI metadata.
+    pub fn into_native_export_plan(
+        self,
+    ) -> Result<RuntimeSymbolNativeExportPlan, RuntimeSymbolNativeExportPlanError> {
+        let missing_count = self.missing_bindings.len();
+        if missing_count == 0 {
+            Ok(RuntimeSymbolNativeExportPlan::new(self.export_bindings))
+        } else {
+            Err(RuntimeSymbolNativeExportPlanError::Incomplete {
+                missing_count,
+                preflight: self,
+            })
+        }
+    }
+}
+
 /// A deterministic runtime-symbol report for callable Rust storage wrappers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSymbolRustCallablePreflight {
@@ -1286,7 +1636,8 @@ mod tests {
 
     use super::*;
     use crate::runtime::alloc::{
-        runtime_allocation_abi_signatures, runtime_allocation_rust_callable_bindings,
+        RuntimeAllocationNativeExportBlocker, runtime_allocation_abi_signatures,
+        runtime_allocation_native_export_preflight, runtime_allocation_rust_callable_bindings,
     };
     use crate::runtime::barrier::{
         runtime_write_barrier_abi_signatures, runtime_write_barrier_rust_callable_bindings,
@@ -2132,6 +2483,181 @@ mod tests {
             missing
                 .missing_builtin_wrapper()
                 .is_some_and(|binding| binding.symbol_name() == "nix.builtin.derivationStrict")
+        }));
+    }
+
+    #[test]
+    fn runtime_symbol_native_export_preflight_reports_exported_wrapper_gaps() {
+        let export_preflight =
+            runtime_symbol_native_export_preflight().expect("native export preflight builds");
+        let target_preflight = runtime_symbol_native_target_candidate_preflight()
+            .expect("native target candidate preflight builds");
+        let exported_wrapper_gaps = export_preflight
+            .missing_bindings()
+            .iter()
+            .filter(|missing| missing.missing_exported_c_abi_wrapper_role().is_some())
+            .collect::<Vec<_>>();
+
+        assert!(export_preflight.export_bindings().is_empty());
+        assert!(!export_preflight.is_complete());
+        assert_eq!(
+            export_preflight.missing_bindings().len(),
+            target_preflight.candidate_bindings().len() + target_preflight.missing_bindings().len()
+        );
+        assert_eq!(
+            exported_wrapper_gaps.len(),
+            target_preflight.candidate_bindings().len()
+        );
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_alloc_attrs"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::Allocation)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
+        let allocation_preflight = runtime_allocation_native_export_preflight();
+        let attrs_allocation_blockers = allocation_preflight
+            .readiness_for_symbol("aos_alloc_attrs")
+            .expect("attrs allocation export readiness exists")
+            .blockers();
+        let thunk_allocation_blockers = allocation_preflight
+            .readiness_for_symbol("aos_alloc_thunk")
+            .expect("thunk allocation export readiness exists")
+            .blockers();
+        let attrs_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_alloc_attrs")
+            .expect("attrs export gap exists");
+        let thunk_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_alloc_thunk")
+            .expect("thunk export gap exists");
+
+        assert_eq!(
+            attrs_export_gap.missing_exported_allocation_blockers(),
+            Some(attrs_allocation_blockers)
+        );
+        assert!(
+            !attrs_export_gap
+                .missing_exported_allocation_blockers()
+                .expect("attrs allocation blockers exist")
+                .contains(
+                    &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                )
+        );
+        assert_eq!(
+            thunk_export_gap.missing_exported_allocation_blockers(),
+            Some(thunk_allocation_blockers)
+        );
+        assert!(
+            thunk_export_gap
+                .missing_exported_allocation_blockers()
+                .expect("thunk allocation blockers exist")
+                .contains(
+                    &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                )
+        );
+        assert!(exported_wrapper_gaps.iter().any(|missing| {
+            missing.symbol_name() == "aos_env_get"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::EnvironmentAccess)
+                && missing.missing_exported_c_abi_failure_convention()
+                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+        }));
+        assert!(export_preflight.missing_bindings().iter().any(|missing| {
+            missing
+                .missing_native_target_candidate()
+                .is_some_and(|gap| {
+                    gap.missing_abi_signature().is_some_and(|abi_gap| {
+                        abi_gap.symbol_name() == "aos_force"
+                            && abi_gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+                    })
+                })
+        }));
+        assert!(export_preflight.missing_bindings().iter().any(|missing| {
+            missing
+                .missing_native_target_candidate()
+                .is_some_and(|gap| {
+                    gap.missing_builtin_wrapper().is_some_and(|binding| {
+                        binding.symbol_name() == "nix.builtin.derivationStrict"
+                    })
+                })
+        }));
+    }
+
+    #[test]
+    fn runtime_symbol_native_export_preflight_preserves_runtime_symbol_order() {
+        let export_preflight =
+            runtime_symbol_native_export_preflight().expect("native export preflight builds");
+        let manifest_symbols = runtime_symbol_binding_manifest()
+            .expect("binding manifest builds")
+            .into_iter()
+            .map(|entry| entry.symbol_name().to_owned())
+            .collect::<Vec<_>>();
+        let export_symbols = export_preflight
+            .missing_bindings()
+            .iter()
+            .map(RuntimeSymbolNativeExportMissingBinding::symbol_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(export_symbols, manifest_symbols);
+    }
+
+    #[test]
+    fn runtime_symbol_native_export_preflight_converts_synthetic_report_to_plan() {
+        let export_binding = RuntimeSymbolNativeExportBinding::new(
+            "aos_alloc_attrs".to_owned(),
+            RuntimeHelperRole::Allocation,
+            RuntimeHelperFailureConvention::TrapToEvaluator,
+        );
+        let preflight =
+            RuntimeSymbolNativeExportPreflight::new(vec![export_binding.clone()], Vec::new());
+
+        let plan = preflight
+            .into_native_export_plan()
+            .expect("synthetic native-export metadata preflight converts");
+
+        assert_eq!(plan.export_bindings(), &[export_binding]);
+        assert_eq!(plan.export_bindings()[0].symbol_name(), "aos_alloc_attrs");
+        assert_eq!(
+            plan.export_bindings()[0].helper_role(),
+            RuntimeHelperRole::Allocation
+        );
+        assert_eq!(
+            plan.export_bindings()[0].failure_convention(),
+            RuntimeHelperFailureConvention::TrapToEvaluator
+        );
+    }
+
+    #[test]
+    fn runtime_symbol_native_export_plan_rejects_until_all_symbols_are_exported() {
+        let error = runtime_symbol_native_export_plan()
+            .expect_err("current native-export plan rejects incomplete metadata");
+        let RuntimeSymbolNativeExportPlanError::Incomplete {
+            missing_count,
+            preflight,
+        } = error
+        else {
+            panic!("expected incomplete native-export plan error");
+        };
+
+        assert_eq!(missing_count, preflight.missing_bindings().len());
+        assert!(!preflight.is_complete());
+        assert!(preflight.export_bindings().is_empty());
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_alloc_attrs"
+                && missing.missing_exported_c_abi_wrapper_role()
+                    == Some(RuntimeHelperRole::Allocation)
+        }));
+        assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing
+                .missing_native_target_candidate()
+                .is_some_and(|gap| {
+                    gap.missing_abi_signature().is_some_and(|abi_gap| {
+                        abi_gap.symbol_name() == "aos_force"
+                            && abi_gap.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+                    })
+                })
         }));
     }
 

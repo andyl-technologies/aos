@@ -1060,6 +1060,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata only: the addresses are not exported C ABI targets, not final
       `JITBuilder::symbol` registrations, and not a complete runtime-symbol
       registration plan.
+- [x] Current native-export readiness gate:
+      `runtime::alloc::runtime_allocation_native_export_preflight()` now records
+      the exact blockers that keep each frozen `aos_alloc_*` helper from being
+      an exported native ABI symbol: missing `unsafe extern "C"` wrapper,
+      runtime-context ABI decoding, evaluator trap transfer, typed pointer
+      return materialization, and the extra semantic-payload initialization gap
+      for `aos_alloc_cons`, `aos_alloc_lambda`, and `aos_alloc_thunk`.
+      `runtime::helpers::runtime_symbol_native_export_preflight()` lifts that
+      into the full runtime-symbol order, preserving earlier helper/builtin
+      candidate gaps and converting current address-free helper candidates into
+      explicit missing exported-wrapper gaps. The strict
+      `runtime_symbol_native_export_plan()` still rejects as incomplete. This is
+      safe readiness metadata only: no C ABI function is exported, no Rust
+      callable is treated as ABI-callable, no `JITBuilder::symbol` registration
+      occurs, and no native trap transfer or semantic object initialization is
+      implemented.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
