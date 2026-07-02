@@ -1851,6 +1851,25 @@ impl ScenarioDef {
             app_random_draw_cap,
         }
     }
+
+    /// Builds an opaque scenario definition from already-addressed components.
+    ///
+    /// This is the compatibility path for API adapters that receive an inline
+    /// scenario handle over a transport before the full scenario form lands on
+    /// the wire. Callers are responsible for supplying the content address that
+    /// corresponds to the seed and app-random policy.
+    #[must_use]
+    pub fn from_content_hash_seed_and_app_random_draw_cap(
+        id: ContentHash,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Self {
+        Self {
+            id,
+            seed,
+            app_random_draw_cap,
+        }
+    }
 }
 
 impl World {

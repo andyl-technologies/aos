@@ -1253,6 +1253,18 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiLifecycleUnary = import ./phase5-api-lifecycle-unary.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiLifecycleUnary";
+      taskIds = ["T-API-3"];
+      dependencies = [
+        phase5.apiSessionCommandMapping
+        phase5.sessionLifecycle
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

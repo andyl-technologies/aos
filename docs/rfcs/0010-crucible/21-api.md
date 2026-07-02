@@ -620,11 +620,23 @@ ran in-process against the double or over the wire against QEMU.
   and watch attach snapshots read `LiveQueryKind::Status`, and `Control`/`Send`
   accept exactly one session command per typed programmatic envelope. Lifecycle
   RPC execution remains T-API-3; streaming equivalence remains T-API-4.
-- [ ] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
+- [x] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
   (version + open-set capabilities), `ListScenarios`, `CreateSession` (scenario ref
   or inline def + seed + start-paused), `ListSessions`, `DestroySession`
   (epoch-guarded, idempotent) — each mapped to its session op (§21.2.1). —
   satisfies [API-5], [API-6], [API-7], [API-8]; spec §21.2, §21.2.1.
+  Completed by `checks.crucible.phase5.apiLifecycleUnary`:
+  `crucible-api::lifecycle` implements side-effect-free `Hello` and
+  `ListScenarios`, scenario-ref and inline `CreateSession` backed by a live
+  `SessionActor` and `SessionCommand::Start`, lock-free mirror-backed
+  `ListSessions`, and epoch-guarded/idempotent `DestroySession` via
+  `SessionCommand::Stop`. The shared `ControlClient` trait exposes those unary
+  methods, with `InProcessLifecycleClient` driving the actor registry directly
+  and `RpcControlClient` posting the corresponding HTTP/2 unary RPC paths.
+  Scenario-ref creation re-materializes canonical scenario material with the
+  request seed; inline RPC carries the scenario seed separately from the request
+  seed so mismatches are rejected. Streaming `Control`, `Watch`, and `Send`
+  remain T-API-4.
 - [ ] **T-API-4** Implement the bidirectional `Control` stream and the
   `Watch`+`Send` pair, asserting Watch+Send is capability-equivalent to bidi
   (full lifecycle drivable from either), with `Send` returning CommandResult +

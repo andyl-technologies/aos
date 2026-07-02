@@ -9,17 +9,27 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crucible_session::{LiveSnapshot, SessionCommand};
+use crucible::Seed;
+use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::event_log_stream::ControlPlaneEventLog;
+use crate::lifecycle::{
+    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
+    DestroySessionResponse, LifecycleApiError, ListScenariosResponse, ListSessionsResponse,
+    ScenarioSummary, SessionId, SessionRef, SessionSummary,
+};
 use crate::rpc_abi::{
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError,
     encode_rpc_hello_request, encode_rpc_hello_response, negotiate_rpc_protocol,
 };
 
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
+const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
+const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
+const LIST_SESSIONS_RPC_PATH: &str = "/crucible.rpc/list-sessions";
+const DESTROY_SESSION_RPC_PATH: &str = "/crucible.rpc/destroy-session";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
@@ -133,6 +143,19 @@ pub enum ControlClientError {
         #[from]
         source: RpcAbiError,
     },
+    /// Lifecycle unary API operation failed.
+    #[error("control client lifecycle operation failed: {source}")]
+    Lifecycle {
+        /// Underlying lifecycle API error.
+        #[from]
+        source: LifecycleApiError,
+    },
+    /// This client handle does not implement a lifecycle unary method.
+    #[error("control client does not support lifecycle method {method}")]
+    UnsupportedLifecycleMethod {
+        /// Unsupported lifecycle method name.
+        method: &'static str,
+    },
     /// Two client transports do not expose the same serialized wire model.
     #[error("control client wire models differ: left={left:?} right={right:?}")]
     WireModelMismatch {
@@ -184,6 +207,70 @@ pub trait ControlClient {
     /// Returns [`ControlClientError::RpcAbi`] when the client offers an
     /// incompatible protocol major version.
     fn hello(&self, request: HelloRequest) -> ControlClientFuture<'_, HelloResponse>;
+
+    /// Lists scenarios known by the control plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement lifecycle discovery.
+    fn list_scenarios(&self) -> ControlClientFuture<'_, ListScenariosResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "ListScenarios",
+            })
+        })
+    }
+
+    /// Creates a session through the lifecycle unary API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request,
+    /// the lifecycle server rejects the scenario, or this client handle does not
+    /// implement lifecycle creation.
+    fn create_session(
+        &self,
+        _request: CreateSessionRequest,
+    ) -> ControlClientFuture<'_, CreateSessionResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "CreateSession",
+            })
+        })
+    }
+
+    /// Lists sessions from the lifecycle registry and live mirrors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement lifecycle listing.
+    fn list_sessions(&self) -> ControlClientFuture<'_, ListSessionsResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "ListSessions",
+            })
+        })
+    }
+
+    /// Destroys a session through the lifecycle unary API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request,
+    /// the lifecycle server rejects the epoch, or this client handle does not
+    /// implement lifecycle destruction.
+    fn destroy_session(
+        &self,
+        _request: DestroySessionRequest,
+    ) -> ControlClientFuture<'_, DestroySessionResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "DestroySession",
+            })
+        })
+    }
 }
 
 /// Verifies that two client transports expose the same serialized wire model.
@@ -385,6 +472,35 @@ impl RpcControlClient {
     pub const fn endpoint(&self) -> &RpcEndpoint {
         &self.endpoint
     }
+
+    async fn post_rpc_body(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, ControlClientError> {
+        let response = self
+            .http
+            .post(self.endpoint.rpc_url(path))
+            .header(reqwest::header::CONTENT_TYPE, RPC_CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| ControlClientError::HttpRequest {
+                message: error.to_string(),
+            })?;
+        if !response.status().is_success() {
+            return Err(ControlClientError::HttpStatus {
+                status: response.status().as_u16(),
+            });
+        }
+        response
+            .bytes()
+            .await
+            .map(|body| body.to_vec())
+            .map_err(|error| ControlClientError::HttpRequest {
+                message: error.to_string(),
+            })
+    }
 }
 
 impl ControlClient for RpcControlClient {
@@ -399,28 +515,67 @@ impl ControlClient for RpcControlClient {
     fn hello(&self, request: HelloRequest) -> ControlClientFuture<'_, HelloResponse> {
         Box::pin(async move {
             let _version = negotiate_rpc_protocol(request.version)?;
-            let response = self
-                .http
-                .post(self.endpoint.rpc_url(HELLO_RPC_PATH))
-                .header(reqwest::header::CONTENT_TYPE, RPC_CONTENT_TYPE)
-                .body(self.wire_model.encode_hello_request(&request))
-                .send()
-                .await
-                .map_err(|error| ControlClientError::HttpRequest {
-                    message: error.to_string(),
-                })?;
-            if !response.status().is_success() {
-                return Err(ControlClientError::HttpStatus {
-                    status: response.status().as_u16(),
-                });
-            }
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| ControlClientError::HttpRequest {
-                    message: error.to_string(),
-                })?;
+            let body = self
+                .post_rpc_body(
+                    HELLO_RPC_PATH,
+                    self.wire_model.encode_hello_request(&request),
+                )
+                .await?;
             decode_hello_response(&body, self.transport())
+        })
+    }
+
+    fn list_scenarios(&self) -> ControlClientFuture<'_, ListScenariosResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    LIST_SCENARIOS_RPC_PATH,
+                    b"crucible.rpc/list-scenarios-request\n".to_vec(),
+                )
+                .await?;
+            decode_list_scenarios_response(&body)
+        })
+    }
+
+    fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> ControlClientFuture<'_, CreateSessionResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    CREATE_SESSION_RPC_PATH,
+                    encode_create_session_request(&request),
+                )
+                .await?;
+            decode_create_session_response(&body)
+        })
+    }
+
+    fn list_sessions(&self) -> ControlClientFuture<'_, ListSessionsResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    LIST_SESSIONS_RPC_PATH,
+                    b"crucible.rpc/list-sessions-request\n".to_vec(),
+                )
+                .await?;
+            decode_list_sessions_response(&body)
+        })
+    }
+
+    fn destroy_session(
+        &self,
+        request: DestroySessionRequest,
+    ) -> ControlClientFuture<'_, DestroySessionResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    DESTROY_SESSION_RPC_PATH,
+                    encode_destroy_session_request(&request),
+                )
+                .await?;
+            decode_destroy_session_response(&body)
         })
     }
 }
@@ -462,6 +617,242 @@ fn decode_hello_response(
         payload_kinds,
         transport,
     ))
+}
+
+fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/create-session-request\n");
+    match &request.source {
+        CreateSessionSource::ScenarioRef { name } => {
+            push_line(&mut output, "source", "scenario-ref");
+            push_line(&mut output, "name", name);
+        }
+        CreateSessionSource::Inline { scenario } => {
+            push_line(&mut output, "source", "inline");
+            push_line(&mut output, "scenario-id", &scenario.id().to_hex());
+            push_line(&mut output, "scenario-seed", &scenario.seed().to_hex());
+            push_line(
+                &mut output,
+                "app-random-draw-cap",
+                &scenario.app_random_draw_cap().to_string(),
+            );
+        }
+    }
+    push_line(&mut output, "seed", &request.seed.to_hex());
+    push_line(
+        &mut output,
+        "start-paused",
+        if request.start_paused {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    output.into_bytes()
+}
+
+fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/destroy-session-request\n");
+    push_session_ref(&mut output, request.session);
+    output.into_bytes()
+}
+
+fn decode_list_scenarios_response(
+    body: &[u8],
+) -> Result<ListScenariosResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/list-scenarios-response")?;
+    let mut scenarios = Vec::new();
+    for line in lines {
+        let value = parse_prefixed_line(Some(line), "scenario=")?;
+        let mut fields = value.splitn(3, '|');
+        let name = fields
+            .next()
+            .ok_or_else(|| rpc_decode("missing scenario name"))?;
+        let description = fields
+            .next()
+            .ok_or_else(|| rpc_decode("missing scenario description"))?;
+        let source_id = fields
+            .next()
+            .ok_or_else(|| rpc_decode("missing scenario source id"))?;
+        scenarios.push(ScenarioSummary {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            source_id: source_id.to_owned(),
+        });
+    }
+    Ok(ListScenariosResponse { scenarios })
+}
+
+fn decode_create_session_response(
+    body: &[u8],
+) -> Result<CreateSessionResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/create-session-response")?;
+    let session = parse_session_ref(&mut lines)?;
+    let state = parse_state_line(lines.next())?;
+    reject_trailing(lines.next())?;
+    Ok(CreateSessionResponse { session, state })
+}
+
+fn decode_list_sessions_response(body: &[u8]) -> Result<ListSessionsResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/list-sessions-response")?;
+    let mut sessions = Vec::new();
+    for line in lines {
+        let value = parse_prefixed_line(Some(line), "session=")?;
+        let mut fields = value.split('|');
+        let id = parse_u64_field(fields.next(), "session id")?;
+        let epoch = parse_u64_field(fields.next(), "session epoch")?;
+        let seed = parse_seed_field(fields.next(), "session seed")?;
+        let state = parse_state_field(fields.next(), "session state")?;
+        let event_log_len = parse_u64_field(fields.next(), "event log length")?;
+        if fields.next().is_some() {
+            return Err(rpc_decode("unexpected extra session summary fields"));
+        }
+        sessions.push(SessionSummary {
+            session: SessionRef::new(SessionId::new(id), epoch, seed),
+            state,
+            event_log_len,
+        });
+    }
+    Ok(ListSessionsResponse { sessions })
+}
+
+fn decode_destroy_session_response(
+    body: &[u8],
+) -> Result<DestroySessionResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/destroy-session-response")?;
+    let session = parse_session_ref(&mut lines)?;
+    let already_absent = parse_bool_line(lines.next(), "already-absent=")?;
+    let stopped = parse_bool_line(lines.next(), "stopped=")?;
+    reject_trailing(lines.next())?;
+    Ok(DestroySessionResponse {
+        session,
+        already_absent,
+        stopped,
+    })
+}
+
+fn response_text(body: &[u8]) -> Result<&str, ControlClientError> {
+    std::str::from_utf8(body).map_err(|error| ControlClientError::RpcDecode {
+        message: error.to_string(),
+    })
+}
+
+fn expect_header(line: Option<&str>, expected: &'static str) -> Result<(), ControlClientError> {
+    match line {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(rpc_decode(format!(
+            "unexpected RPC message header `{actual}`"
+        ))),
+        None => Err(rpc_decode("empty RPC response")),
+    }
+}
+
+fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let id = parse_u64_line(lines.next(), "session-id=")?;
+    let epoch = parse_u64_line(lines.next(), "epoch=")?;
+    let seed = parse_seed_line(lines.next(), "seed=")?;
+    Ok(SessionRef::new(SessionId::new(id), epoch, seed))
+}
+
+fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, ControlClientError> {
+    let value = parse_prefixed_line(line, prefix)?;
+    value
+        .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid integer `{value}` for `{prefix}`: {error}")))
+}
+
+fn parse_u64_field(value: Option<&str>, label: &'static str) -> Result<u64, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    value
+        .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid {label} `{value}`: {error}")))
+}
+
+fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, ControlClientError> {
+    let value = parse_prefixed_line(line, prefix)?;
+    parse_seed_hex(value)
+}
+
+fn parse_seed_field(value: Option<&str>, label: &'static str) -> Result<Seed, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    parse_seed_hex(value)
+}
+
+fn parse_seed_hex(value: &str) -> Result<Seed, ControlClientError> {
+    if value.len() != 64 {
+        return Err(rpc_decode(format!("seed hex has length {}", value.len())));
+    }
+    let mut bytes = [0; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        let pair = &value[start..start + 2];
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|error| rpc_decode(format!("invalid seed hex `{pair}`: {error}")))?;
+    }
+    Ok(Seed::from_bytes(bytes))
+}
+
+fn parse_state_line(line: Option<&str>) -> Result<LiveStateKind, ControlClientError> {
+    parse_state_field(Some(parse_prefixed_line(line, "state=")?), "state")
+}
+
+fn parse_state_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<LiveStateKind, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode(format!("missing {label}")))? {
+        "loaded" => Ok(LiveStateKind::Loaded),
+        "running" => Ok(LiveStateKind::Running),
+        "paused" => Ok(LiveStateKind::Paused),
+        "stopped" => Ok(LiveStateKind::Stopped),
+        value => Err(rpc_decode(format!("invalid {label} `{value}`"))),
+    }
+}
+
+fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, ControlClientError> {
+    match parse_prefixed_line(line, prefix)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(rpc_decode(format!("invalid bool `{value}` for `{prefix}`"))),
+    }
+}
+
+fn reject_trailing(line: Option<&str>) -> Result<(), ControlClientError> {
+    if line.is_some() {
+        return Err(rpc_decode("unexpected trailing fields in RPC response"));
+    }
+    Ok(())
+}
+
+fn push_session_ref(output: &mut String, session: SessionRef) {
+    push_line(output, "session-id", &session.id.value.to_string());
+    push_line(output, "epoch", &session.epoch.to_string());
+    push_line(output, "seed", &session.seed.to_hex());
+}
+
+fn push_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
+fn rpc_decode(message: impl Into<String>) -> ControlClientError {
+    ControlClientError::RpcDecode {
+        message: message.into(),
+    }
 }
 
 fn parse_current_version_line(line: Option<&str>) -> Result<ProtocolVersion, ControlClientError> {
