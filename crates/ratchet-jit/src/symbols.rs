@@ -1,13 +1,16 @@
-//! Address-free runtime-symbol inventory consumed by future JIT registration.
+//! Runtime-symbol inventory and registration-readiness metadata.
 //!
 //! The inventory in this module mirrors the stable runtime symbol manifest owned
 //! by `ratchet-core`. It gives future Cranelift setup code a local, documented
 //! entry point for the symbol names and roles it may declare, without attaching
 //! executable addresses or consulting the safe oracle's candidate-readiness
 //! reports. It also preflights which stable symbols can currently be declared
-//! with CLIF signatures without attaching addresses or creating a `JITModule`.
+//! with CLIF signatures, and which declarations have explicit opaque
+//! native-address candidate metadata, without dereferencing those addresses,
+//! exposing function pointers, calling `JITBuilder::symbol`, or creating a
+//! `JITModule`.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt, num::NonZeroUsize};
 
 use cranelift_codegen::ir::Signature;
 
@@ -282,6 +285,375 @@ impl From<RuntimeSymbolNameError> for JitRuntimeSymbolDeclarationError {
     }
 }
 
+/// An opaque native address prepared for future runtime-symbol registration.
+///
+/// This is address metadata only. The JIT crate stores the non-zero word so
+/// registration preflights can prove symbol/name/kind alignment without
+/// dereferencing it, converting it to a function pointer, or passing it to
+/// `JITBuilder::symbol`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JitRuntimeSymbolAddress {
+    raw: NonZeroUsize,
+}
+
+impl JitRuntimeSymbolAddress {
+    /// Wraps a non-zero native address word.
+    pub const fn new(raw: NonZeroUsize) -> Self {
+        Self { raw }
+    }
+
+    /// Returns the underlying non-zero native address word.
+    pub const fn as_nonzero_usize(self) -> NonZeroUsize {
+        self.raw
+    }
+}
+
+/// Native-address metadata supplied for one stable runtime symbol.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JitRuntimeSymbolAddressCandidate {
+    symbol_name: String,
+    kind: RuntimeSymbolKind,
+    address: JitRuntimeSymbolAddress,
+}
+
+impl JitRuntimeSymbolAddressCandidate {
+    /// Creates address metadata for a stable runtime symbol.
+    pub fn new(
+        symbol_name: String,
+        kind: RuntimeSymbolKind,
+        address: JitRuntimeSymbolAddress,
+    ) -> Self {
+        Self {
+            symbol_name,
+            kind,
+            address,
+        }
+    }
+
+    /// Returns the stable runtime symbol name served by the address.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the runtime symbol family served by the address.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        self.kind
+    }
+
+    /// Returns the opaque native address metadata.
+    pub const fn address(&self) -> JitRuntimeSymbolAddress {
+        self.address
+    }
+}
+
+/// A runtime symbol with both a CLIF declaration and native address metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JitRuntimeSymbolRegistrationBinding {
+    declaration: JitRuntimeSymbolDeclaration,
+    address: JitRuntimeSymbolAddress,
+}
+
+impl JitRuntimeSymbolRegistrationBinding {
+    fn new(declaration: JitRuntimeSymbolDeclaration, address: JitRuntimeSymbolAddress) -> Self {
+        Self {
+            declaration,
+            address,
+        }
+    }
+
+    /// Returns the stable runtime symbol name ready for future registration.
+    pub fn symbol_name(&self) -> &str {
+        self.declaration.symbol_name()
+    }
+
+    /// Returns the runtime symbol family served by this binding.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        self.declaration.kind()
+    }
+
+    /// Returns the CLIF signature that future module imports use.
+    pub const fn signature(&self) -> &Signature {
+        self.declaration.signature()
+    }
+
+    /// Returns the address-free declaration metadata paired with the address.
+    pub const fn declaration(&self) -> &JitRuntimeSymbolDeclaration {
+        &self.declaration
+    }
+
+    /// Returns the opaque native address metadata.
+    pub const fn address(&self) -> JitRuntimeSymbolAddress {
+        self.address
+    }
+}
+
+/// One stable runtime symbol that is not ready for native registration.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JitRuntimeSymbolRegistrationGap {
+    /// The symbol still lacks CLIF declaration metadata.
+    Declaration(JitRuntimeSymbolDeclarationGap),
+    /// The symbol has a CLIF declaration but no native address metadata.
+    MissingNativeAddress {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The runtime symbol family that needs an address.
+        kind: RuntimeSymbolKind,
+    },
+    /// Native address metadata was supplied for the wrong symbol family.
+    NativeAddressKindMismatch {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The symbol family declared by the CLIF metadata.
+        declaration_kind: RuntimeSymbolKind,
+        /// The symbol family claimed by the address candidate.
+        candidate_kind: RuntimeSymbolKind,
+    },
+}
+
+impl JitRuntimeSymbolRegistrationGap {
+    fn declaration(gap: JitRuntimeSymbolDeclarationGap) -> Self {
+        Self::Declaration(gap)
+    }
+
+    fn missing_native_address(declaration: &JitRuntimeSymbolDeclaration) -> Self {
+        Self::MissingNativeAddress {
+            symbol_name: declaration.symbol_name().to_owned(),
+            kind: declaration.kind(),
+        }
+    }
+
+    fn native_address_kind_mismatch(
+        declaration: &JitRuntimeSymbolDeclaration,
+        candidate: &JitRuntimeSymbolAddressCandidate,
+    ) -> Self {
+        Self::NativeAddressKindMismatch {
+            symbol_name: declaration.symbol_name().to_owned(),
+            declaration_kind: declaration.kind(),
+            candidate_kind: candidate.kind(),
+        }
+    }
+
+    /// Returns the stable runtime symbol name for this gap.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::Declaration(gap) => gap.symbol_name(),
+            Self::MissingNativeAddress { symbol_name, .. }
+            | Self::NativeAddressKindMismatch { symbol_name, .. } => symbol_name,
+        }
+    }
+
+    /// Returns the runtime symbol family that still blocks registration.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        match self {
+            Self::Declaration(gap) => gap.kind(),
+            Self::MissingNativeAddress { kind, .. } => *kind,
+            Self::NativeAddressKindMismatch {
+                declaration_kind, ..
+            } => *declaration_kind,
+        }
+    }
+
+    /// Returns the declaration gap when registration is blocked earlier.
+    pub const fn declaration_gap(&self) -> Option<&JitRuntimeSymbolDeclarationGap> {
+        match self {
+            Self::Declaration(gap) => Some(gap),
+            Self::MissingNativeAddress { .. } | Self::NativeAddressKindMismatch { .. } => None,
+        }
+    }
+
+    /// Returns the missing-address symbol family, when this gap has a declaration.
+    pub const fn missing_native_address_kind(&self) -> Option<RuntimeSymbolKind> {
+        match self {
+            Self::MissingNativeAddress { kind, .. } => Some(*kind),
+            Self::Declaration(_) | Self::NativeAddressKindMismatch { .. } => None,
+        }
+    }
+}
+
+/// Runtime-symbol readiness for future `JITBuilder::symbol` registration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JitRuntimeSymbolRegistrationPreflight {
+    bindings: Vec<JitRuntimeSymbolRegistrationBinding>,
+    gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+}
+
+impl JitRuntimeSymbolRegistrationPreflight {
+    fn new(
+        bindings: Vec<JitRuntimeSymbolRegistrationBinding>,
+        gaps: Vec<JitRuntimeSymbolRegistrationGap>,
+    ) -> Self {
+        Self { bindings, gaps }
+    }
+
+    /// Returns runtime symbols with declaration and address metadata.
+    pub fn bindings(&self) -> &[JitRuntimeSymbolRegistrationBinding] {
+        &self.bindings
+    }
+
+    /// Returns stable runtime symbols not ready for native registration.
+    pub fn gaps(&self) -> &[JitRuntimeSymbolRegistrationGap] {
+        &self.gaps
+    }
+
+    /// Returns true when every stable runtime symbol has registration metadata.
+    pub fn is_complete(&self) -> bool {
+        self.gaps.is_empty()
+    }
+
+    /// Returns the registration binding for `symbol_name`, when present.
+    pub fn binding_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitRuntimeSymbolRegistrationBinding> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.symbol_name() == symbol_name)
+    }
+
+    /// Returns the registration gap for `symbol_name`, when present.
+    pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolRegistrationGap> {
+        self.gaps
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    /// Converts a complete preflight into registration metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JitRuntimeSymbolRegistrationPlanError::Incomplete`] when any
+    /// runtime symbol still lacks registration metadata.
+    pub fn into_registration_plan(
+        self,
+    ) -> Result<JitRuntimeSymbolRegistrationPlan, JitRuntimeSymbolRegistrationPlanError> {
+        let missing_count = self.gaps.len();
+        if missing_count == 0 {
+            Ok(JitRuntimeSymbolRegistrationPlan::new(self.bindings))
+        } else {
+            Err(JitRuntimeSymbolRegistrationPlanError::Incomplete {
+                missing_count,
+                preflight: self,
+            })
+        }
+    }
+}
+
+/// Complete runtime-symbol metadata for a future `JITBuilder::symbol` pass.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JitRuntimeSymbolRegistrationPlan {
+    bindings: Vec<JitRuntimeSymbolRegistrationBinding>,
+}
+
+impl JitRuntimeSymbolRegistrationPlan {
+    fn new(bindings: Vec<JitRuntimeSymbolRegistrationBinding>) -> Self {
+        Self { bindings }
+    }
+
+    /// Returns runtime-symbol bindings in stable manifest order.
+    pub fn bindings(&self) -> &[JitRuntimeSymbolRegistrationBinding] {
+        &self.bindings
+    }
+
+    /// Returns the registration binding for `symbol_name`, when present.
+    pub fn binding_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitRuntimeSymbolRegistrationBinding> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.symbol_name() == symbol_name)
+    }
+}
+
+/// A failure while building native runtime-symbol registration metadata.
+#[derive(Debug)]
+pub enum JitRuntimeSymbolRegistrationError {
+    /// CLIF declaration metadata could not be built.
+    Declaration(JitRuntimeSymbolDeclarationError),
+    /// More than one native address candidate was supplied for one symbol.
+    DuplicateAddressCandidate {
+        /// The duplicated stable runtime symbol name.
+        symbol_name: String,
+    },
+    /// A native address candidate named a symbol outside the runtime manifest.
+    UnknownAddressCandidate {
+        /// The unknown runtime symbol name.
+        symbol_name: String,
+    },
+}
+
+impl fmt::Display for JitRuntimeSymbolRegistrationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Declaration(error) => write!(formatter, "{error}"),
+            Self::DuplicateAddressCandidate { symbol_name } => write!(
+                formatter,
+                "runtime symbol {symbol_name:?} has duplicate native address candidates"
+            ),
+            Self::UnknownAddressCandidate { symbol_name } => write!(
+                formatter,
+                "native address candidate {symbol_name:?} is not a stable runtime symbol"
+            ),
+        }
+    }
+}
+
+impl Error for JitRuntimeSymbolRegistrationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Declaration(error) => Some(error),
+            Self::DuplicateAddressCandidate { .. } | Self::UnknownAddressCandidate { .. } => None,
+        }
+    }
+}
+
+impl From<JitRuntimeSymbolDeclarationError> for JitRuntimeSymbolRegistrationError {
+    fn from(error: JitRuntimeSymbolDeclarationError) -> Self {
+        Self::Declaration(error)
+    }
+}
+
+/// A failure while building complete native runtime-symbol registration metadata.
+#[derive(Debug)]
+pub enum JitRuntimeSymbolRegistrationPlanError {
+    /// Registration preflight metadata could not be built.
+    Registration(JitRuntimeSymbolRegistrationError),
+    /// Some runtime symbols cannot yet be registered with native addresses.
+    Incomplete {
+        /// The number of runtime symbols still missing registration metadata.
+        missing_count: usize,
+        /// The preserved preflight report, including ready bindings and gaps.
+        preflight: JitRuntimeSymbolRegistrationPreflight,
+    },
+}
+
+impl fmt::Display for JitRuntimeSymbolRegistrationPlanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Registration(error) => write!(formatter, "{error}"),
+            Self::Incomplete { missing_count, .. } => write!(
+                formatter,
+                "runtime symbol native registration metadata is incomplete: {missing_count} symbol(s) missing"
+            ),
+        }
+    }
+}
+
+impl Error for JitRuntimeSymbolRegistrationPlanError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Registration(error) => Some(error),
+            Self::Incomplete { .. } => None,
+        }
+    }
+}
+
+impl From<JitRuntimeSymbolRegistrationError> for JitRuntimeSymbolRegistrationPlanError {
+    fn from(error: JitRuntimeSymbolRegistrationError) -> Self {
+        Self::Registration(error)
+    }
+}
+
 /// Builds address-free CLIF declaration readiness for stable runtime symbols.
 ///
 /// Callable builtin symbols receive CLIF signatures from the frozen core primop
@@ -344,6 +716,132 @@ pub fn jit_runtime_symbol_declaration_preflight()
     ))
 }
 
+/// Builds native registration readiness with no installed address candidates.
+///
+/// The report consumes the CLIF declaration preflight and preserves stable
+/// runtime-symbol order. In the current safe scaffold no native address table is
+/// installed, so every declaration becomes a missing-address gap while
+/// declaration gaps are preserved. This does not call `JITBuilder::symbol`,
+/// expose raw function pointers, or dereference address metadata.
+///
+/// # Errors
+///
+/// Returns [`JitRuntimeSymbolRegistrationError::Declaration`] if runtime-symbol
+/// declaration metadata cannot be built.
+pub fn jit_runtime_symbol_registration_preflight()
+-> Result<JitRuntimeSymbolRegistrationPreflight, JitRuntimeSymbolRegistrationError> {
+    jit_runtime_symbol_registration_preflight_with_candidates(&[])
+}
+
+/// Builds native registration readiness from explicit address candidates.
+///
+/// The report joins stable CLIF declarations with supplied native address
+/// metadata and preserves runtime-symbol manifest order. Declaration gaps,
+/// missing address candidates, and symbol-kind mismatches remain explicit gaps.
+/// This does not call `JITBuilder::symbol`, expose raw function pointers, or
+/// dereference address metadata.
+///
+/// # Errors
+///
+/// Returns [`JitRuntimeSymbolRegistrationError::Declaration`] if runtime-symbol
+/// declaration metadata cannot be built. Returns
+/// [`JitRuntimeSymbolRegistrationError::DuplicateAddressCandidate`] when two
+/// address candidates name the same runtime symbol. Returns
+/// [`JitRuntimeSymbolRegistrationError::UnknownAddressCandidate`] when an
+/// address candidate names a symbol outside the stable runtime manifest.
+pub fn jit_runtime_symbol_registration_preflight_with_candidates(
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitRuntimeSymbolRegistrationPreflight, JitRuntimeSymbolRegistrationError> {
+    let declaration_preflight = jit_runtime_symbol_declaration_preflight()?;
+    Ok(project_runtime_symbol_registration_preflight(
+        &declaration_preflight,
+        candidates,
+    )?)
+}
+
+/// Builds complete native registration metadata with no installed address table.
+///
+/// This strict gate currently returns an incomplete error because no safe
+/// native address candidates are installed and declaration gaps remain.
+///
+/// # Errors
+///
+/// Returns [`JitRuntimeSymbolRegistrationPlanError::Registration`] if the
+/// registration preflight cannot be built. Returns
+/// [`JitRuntimeSymbolRegistrationPlanError::Incomplete`] while any runtime
+/// symbol lacks declaration or address metadata.
+pub fn jit_runtime_symbol_registration_plan()
+-> Result<JitRuntimeSymbolRegistrationPlan, JitRuntimeSymbolRegistrationPlanError> {
+    jit_runtime_symbol_registration_plan_with_candidates(&[])
+}
+
+/// Builds complete native registration metadata from explicit address candidates.
+///
+/// # Errors
+///
+/// Returns [`JitRuntimeSymbolRegistrationPlanError::Registration`] if the
+/// registration preflight cannot be built. Returns
+/// [`JitRuntimeSymbolRegistrationPlanError::Incomplete`] while any runtime
+/// symbol lacks declaration or address metadata.
+pub fn jit_runtime_symbol_registration_plan_with_candidates(
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitRuntimeSymbolRegistrationPlan, JitRuntimeSymbolRegistrationPlanError> {
+    let preflight = jit_runtime_symbol_registration_preflight_with_candidates(candidates)?;
+    Ok(preflight.into_registration_plan()?)
+}
+
+fn project_runtime_symbol_registration_preflight(
+    declaration_preflight: &JitRuntimeSymbolDeclarationPreflight,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitRuntimeSymbolRegistrationPreflight, JitRuntimeSymbolRegistrationError> {
+    let declarations = declarations_by_symbol(declaration_preflight.declarations());
+    let declaration_gaps = declaration_gaps_by_symbol(declaration_preflight.gaps());
+    let address_candidates = address_candidates_by_symbol(candidates)?;
+    let manifest = runtime_symbol_manifest().map_err(JitRuntimeSymbolDeclarationError::from)?;
+    let manifest_symbols = manifest
+        .iter()
+        .map(|symbol| (symbol.name(), ()))
+        .collect::<BTreeMap<_, _>>();
+    let mut bindings = Vec::new();
+    let mut gaps = Vec::new();
+
+    for candidate in candidates {
+        if !manifest_symbols.contains_key(candidate.symbol_name()) {
+            return Err(JitRuntimeSymbolRegistrationError::UnknownAddressCandidate {
+                symbol_name: candidate.symbol_name().to_owned(),
+            });
+        }
+    }
+
+    for symbol in manifest {
+        if let Some(declaration) = declarations.get(symbol.name()) {
+            if let Some(candidate) = address_candidates.get(symbol.name()) {
+                if candidate.kind() == declaration.kind() {
+                    bindings.push(JitRuntimeSymbolRegistrationBinding::new(
+                        (*declaration).clone(),
+                        candidate.address(),
+                    ));
+                } else {
+                    gaps.push(
+                        JitRuntimeSymbolRegistrationGap::native_address_kind_mismatch(
+                            declaration,
+                            candidate,
+                        ),
+                    );
+                }
+            } else {
+                gaps.push(JitRuntimeSymbolRegistrationGap::missing_native_address(
+                    declaration,
+                ));
+            }
+        } else if let Some(gap) = declaration_gaps.get(symbol.name()) {
+            gaps.push(JitRuntimeSymbolRegistrationGap::declaration((*gap).clone()));
+        }
+    }
+
+    Ok(JitRuntimeSymbolRegistrationPreflight::new(bindings, gaps))
+}
+
 fn builtin_bindings_by_symbol(
     bindings: &[RuntimeBuiltinCallBinding],
 ) -> BTreeMap<&str, &RuntimeBuiltinCallBinding> {
@@ -357,6 +855,42 @@ fn builtin_gaps_by_symbol(
     gaps: &[RuntimeBuiltinCallMissingBinding],
 ) -> BTreeMap<&str, &RuntimeBuiltinCallMissingBinding> {
     gaps.iter().map(|gap| (gap.symbol_name(), gap)).collect()
+}
+
+fn declarations_by_symbol(
+    declarations: &[JitRuntimeSymbolDeclaration],
+) -> BTreeMap<&str, &JitRuntimeSymbolDeclaration> {
+    declarations
+        .iter()
+        .map(|declaration| (declaration.symbol_name(), declaration))
+        .collect()
+}
+
+fn declaration_gaps_by_symbol(
+    gaps: &[JitRuntimeSymbolDeclarationGap],
+) -> BTreeMap<&str, &JitRuntimeSymbolDeclarationGap> {
+    gaps.iter().map(|gap| (gap.symbol_name(), gap)).collect()
+}
+
+fn address_candidates_by_symbol(
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<BTreeMap<&str, &JitRuntimeSymbolAddressCandidate>, JitRuntimeSymbolRegistrationError> {
+    let mut candidates_by_symbol = BTreeMap::new();
+
+    for candidate in candidates {
+        if candidates_by_symbol
+            .insert(candidate.symbol_name(), candidate)
+            .is_some()
+        {
+            return Err(
+                JitRuntimeSymbolRegistrationError::DuplicateAddressCandidate {
+                    symbol_name: candidate.symbol_name().to_owned(),
+                },
+            );
+        }
+    }
+
+    Ok(candidates_by_symbol)
 }
 
 fn declaration_for_builtin_binding(
@@ -398,6 +932,8 @@ fn declaration_for_runtime_signature(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use ratchet_core::{
         RuntimeCallableKind, RuntimeHelperRole, RuntimeSymbolKind, runtime_builtin_call_preflight,
         runtime_helper_call_signature, runtime_helper_call_signatures,
@@ -406,6 +942,18 @@ mod tests {
 
     use super::*;
     use crate::abi::clif_signature_for_runtime_call;
+
+    fn synthetic_address(raw: usize) -> JitRuntimeSymbolAddress {
+        JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).expect("test address is non-zero"))
+    }
+
+    fn synthetic_address_candidate(
+        symbol_name: &str,
+        kind: RuntimeSymbolKind,
+        raw: usize,
+    ) -> JitRuntimeSymbolAddressCandidate {
+        JitRuntimeSymbolAddressCandidate::new(symbol_name.to_owned(), kind, synthetic_address(raw))
+    }
 
     #[test]
     fn jit_runtime_symbol_inventory_mirrors_core_manifest() {
@@ -581,5 +1129,208 @@ mod tests {
                 symbol.name()
             );
         }
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_reports_missing_native_addresses() {
+        let declaration_preflight = jit_runtime_symbol_declaration_preflight()
+            .expect("JIT symbol declaration preflight builds");
+        let preflight = jit_runtime_symbol_registration_preflight()
+            .expect("JIT symbol registration preflight builds");
+
+        assert!(preflight.bindings().is_empty());
+        assert!(!preflight.is_complete());
+        assert_eq!(
+            preflight.gaps().len(),
+            declaration_preflight.declarations().len() + declaration_preflight.gaps().len()
+        );
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_alloc_attrs"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                ..
+            })
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("nix.builtin.derivationStrict"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Builtin,
+                ..
+            })
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_force"),
+            Some(JitRuntimeSymbolRegistrationGap::Declaration(
+                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                    role: RuntimeHelperRole::ForcingControl,
+                    ..
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_binds_synthetic_candidates_in_manifest_order() {
+        let candidates = [
+            synthetic_address_candidate(
+                "nix.builtin.derivationStrict",
+                RuntimeSymbolKind::Builtin,
+                2,
+            ),
+            synthetic_address_candidate(
+                "aos_alloc_attrs",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                1,
+            ),
+        ];
+        let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
+            .expect("JIT symbol registration preflight builds");
+        let binding_symbols = preflight
+            .bindings()
+            .iter()
+            .map(JitRuntimeSymbolRegistrationBinding::symbol_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            binding_symbols,
+            vec!["aos_alloc_attrs", "nix.builtin.derivationStrict"]
+        );
+        assert_eq!(
+            preflight
+                .binding_for_symbol("aos_alloc_attrs")
+                .expect("allocation helper candidate binds")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            1
+        );
+        assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
+        assert!(
+            preflight
+                .gap_for_symbol("aos_force")
+                .and_then(JitRuntimeSymbolRegistrationGap::declaration_gap)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_reports_kind_mismatches() {
+        let candidates = [synthetic_address_candidate(
+            "aos_alloc_attrs",
+            RuntimeSymbolKind::Builtin,
+            1,
+        )];
+        let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
+            .expect("JIT symbol registration preflight builds");
+
+        assert!(preflight.binding_for_symbol("aos_alloc_attrs").is_none());
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_alloc_attrs"),
+            Some(JitRuntimeSymbolRegistrationGap::NativeAddressKindMismatch {
+                declaration_kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+                candidate_kind: RuntimeSymbolKind::Builtin,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_keeps_declaration_gaps_before_addresses() {
+        let candidates = [synthetic_address_candidate(
+            "aos_force",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+            1,
+        )];
+        let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
+            .expect("JIT symbol registration preflight builds");
+
+        assert!(preflight.binding_for_symbol("aos_force").is_none());
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_force"),
+            Some(JitRuntimeSymbolRegistrationGap::Declaration(
+                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                    role: RuntimeHelperRole::ForcingControl,
+                    ..
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_rejects_duplicate_candidates() {
+        let candidates = [
+            synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 1),
+            synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 2),
+        ];
+        let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
+        else {
+            panic!("duplicate address candidates must be rejected");
+        };
+
+        assert!(matches!(
+            error,
+            JitRuntimeSymbolRegistrationError::DuplicateAddressCandidate { symbol_name }
+                if symbol_name == "aos_alloc_attrs"
+        ));
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_rejects_unknown_candidates() {
+        let candidates = [synthetic_address_candidate(
+            "aos_not_a_runtime_symbol",
+            RuntimeSymbolKind::Builtin,
+            1,
+        )];
+        let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
+        else {
+            panic!("unknown address candidates must be rejected");
+        };
+
+        assert!(matches!(
+            error,
+            JitRuntimeSymbolRegistrationError::UnknownAddressCandidate { symbol_name }
+                if symbol_name == "aos_not_a_runtime_symbol"
+        ));
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_plan_refuses_current_address_gaps() {
+        let Err(error) = jit_runtime_symbol_registration_plan() else {
+            panic!("missing native addresses must block complete registration plans");
+        };
+
+        let JitRuntimeSymbolRegistrationPlanError::Incomplete {
+            missing_count,
+            preflight,
+        } = error
+        else {
+            panic!("expected incomplete registration plan");
+        };
+
+        assert_eq!(missing_count, preflight.gaps().len());
+        assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_some());
+        assert!(
+            preflight
+                .gap_for_symbol("nix.builtin.derivationStrict")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn jit_runtime_symbol_registration_preflight_converts_synthetic_complete_report_to_plan() {
+        let declaration_preflight = jit_runtime_symbol_declaration_preflight()
+            .expect("JIT symbol declaration preflight builds");
+        let declaration = declaration_preflight
+            .declaration_for_symbol("aos_alloc_attrs")
+            .expect("allocation helper declaration exists")
+            .clone();
+        let binding = JitRuntimeSymbolRegistrationBinding::new(declaration, synthetic_address(1));
+        let preflight = JitRuntimeSymbolRegistrationPreflight::new(vec![binding.clone()], vec![]);
+        let plan = preflight
+            .into_registration_plan()
+            .expect("synthetic complete registration preflight converts");
+
+        assert_eq!(plan.bindings(), &[binding]);
+        assert!(plan.binding_for_symbol("aos_alloc_attrs").is_some());
     }
 }

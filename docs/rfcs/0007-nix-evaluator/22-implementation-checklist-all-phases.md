@@ -6628,6 +6628,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       helpers. This is declaration metadata only: no `JITModule`,
       `JITBuilder::symbol`, executable address, exported wrapper, relocation, or
       native call is implemented.
+- [x] Current JIT symbol-registration preflight precursor:
+      `ratchet-jit::symbols::jit_runtime_symbol_registration_preflight()`
+      consumes the CLIF declaration preflight and joins it with explicit
+      native-address candidate metadata. The default safe scaffold installs no
+      address table, so currently every declaration reports a missing native
+      address while declaration gaps remain preserved in stable runtime-symbol
+      order. Tests pin missing-address gaps for callable builtins and
+      core-owned helpers, declaration-gap preservation, synthetic candidate
+      binding order, kind-mismatch handling, duplicate-candidate rejection, and
+      unknown-candidate rejection, plus the incomplete-plan gate. This is
+      registration-readiness metadata only: it does not call
+      `JITBuilder::symbol`, expose raw function pointers, dereference native
+      addresses, export wrappers, finalize code, or call native code.
 - [x] Current JIT module-readiness precursor:
       `ratchet-jit::module::jit_module_readiness_preflight_for_artifact()`
       composes a verified CLIF artifact with the address-free JIT runtime-symbol

@@ -9,13 +9,15 @@
 //! verified CLIF bodies for the first literal Core-IR and constant-thunk smoke
 //! tests, [`module`] composes artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
-//! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`,
-//! [`tier`] names the first safe tier-up policy, [`warmup`] keeps the
-//! copy-and-patch hedge measurable, and [`safety`] records the unsafe-boundary
-//! discipline.
-//! Runtime-symbol candidate reports currently remain in `ratchet-oracle`; a
-//! later shared metadata layer can move them below both crates without making
-//! the JIT crate depend on the safe oracle stack.
+//! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
+//! and preflights future native-address registration metadata, [`tier`] names
+//! the first safe tier-up policy, [`warmup`] keeps the copy-and-patch hedge
+//! measurable, and [`safety`] records the unsafe-boundary discipline.
+//! Runtime-symbol semantic candidate reports currently remain in
+//! `ratchet-oracle`; [`symbols`] owns only JIT-local declaration and opaque
+//! native-address registration readiness. A later shared metadata layer can move
+//! semantic candidate classification below both crates without making the JIT
+//! crate depend on the safe oracle stack.
 //!
 //! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
 //! finalization, and `JITBuilder::symbol` registration are future work inside
@@ -72,9 +74,16 @@ pub use safety::{
     JitUnsafeDiscipline, jit_unsafe_discipline,
 };
 pub use symbols::{
-    JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError, JitRuntimeSymbolDeclarationGap,
+    JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitRuntimeSymbolDeclaration,
+    JitRuntimeSymbolDeclarationError, JitRuntimeSymbolDeclarationGap,
     JitRuntimeSymbolDeclarationPreflight, JitRuntimeSymbolInventory,
+    JitRuntimeSymbolRegistrationBinding, JitRuntimeSymbolRegistrationError,
+    JitRuntimeSymbolRegistrationGap, JitRuntimeSymbolRegistrationPlan,
+    JitRuntimeSymbolRegistrationPlanError, JitRuntimeSymbolRegistrationPreflight,
     jit_runtime_symbol_declaration_preflight, jit_runtime_symbol_inventory,
+    jit_runtime_symbol_registration_plan, jit_runtime_symbol_registration_plan_with_candidates,
+    jit_runtime_symbol_registration_preflight,
+    jit_runtime_symbol_registration_preflight_with_candidates,
 };
 pub use tier::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpDecision, TierUpDemandHint,
