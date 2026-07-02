@@ -25,7 +25,7 @@ fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
 
 fn assert_abi_version_field() {
     assert_eq!(RPC_PROTOCOL_MAJOR, 1);
-    assert_eq!(RPC_PROTOCOL_MINOR, 1);
+    assert_eq!(RPC_PROTOCOL_MINOR, 2);
     assert_eq!(RPC_PROTOCOL_PATCH, 0);
     assert_eq!(RPC_PROTOCOL_BUILD, "crucible-rpc-abi-v1");
     assert_eq!(RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION);
@@ -72,8 +72,10 @@ fn assert_frozen_golden_vectors() {
             "attached-with-reproduction",
             "get-reproduction-request",
             "get-reproduction-response",
-            "send-command-request",
-            "send-command-response",
+            "send-request",
+            "send-response",
+            "send-response-rejected-not-found",
+            "rpc-error-invalid-state",
             "event-fault-activated",
         ],
     );
@@ -103,7 +105,8 @@ fn assert_frozen_golden_vectors() {
                 assert_eq!(payload_kinds, RPC_OPEN_SET_PAYLOAD_KINDS);
             }
             RpcGoldenVectorMessage::CommandResponse { .. }
-            | RpcGoldenVectorMessage::GetReproductionResponse { .. } => saw_response = true,
+            | RpcGoldenVectorMessage::GetReproductionResponse { .. }
+            | RpcGoldenVectorMessage::RpcError { .. } => saw_response = true,
             RpcGoldenVectorMessage::Event { .. } => saw_event = true,
             RpcGoldenVectorMessage::Attached { version, .. } => {
                 saw_attached_version = true;
@@ -146,19 +149,19 @@ fn rpc_golden_vectors_freeze_literal_wire_bytes() {
 fn assert_structure_aware_fuzz_corpus() {
     assert_vector_bytes(
         "hello-request",
-        b"crucible.rpc/hello-request\nversion=1.1.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
+        b"crucible.rpc/hello-request\nversion=1.2.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
     );
     assert_vector_bytes(
         "hello-response",
-        b"crucible.rpc/hello-response\nversion=1.1.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        b"crucible.rpc/hello-response\nversion=1.2.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_vector_bytes(
         "attached",
-        b"crucible.rpc/attached\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        b"crucible.rpc/attached\nversion=1.2.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
     );
     assert_vector_bytes(
         "attached-with-reproduction",
-        b"crucible.rpc/attached-with-reproduction\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        b"crucible.rpc/attached-with-reproduction\nversion=1.2.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     );
     assert_vector_bytes(
         "get-reproduction-request",
@@ -169,12 +172,20 @@ fn assert_structure_aware_fuzz_corpus() {
         b"crucible.rpc/get-reproduction-response\nsession-id=42\nsession-epoch=7\ncommand-sequence=1\ncommand-kind=crucible.cmd.pause\ncommand-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nscheduler-control=none\nresult=accepted\n",
     );
     assert_vector_bytes(
-        "send-command-request",
-        b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=crucible.cmd.continue\n",
+        "send-request",
+        b"crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed=000000000000000000000000000000000000000000000000000000000000004d\nexpected-epoch=7\ncommand-id=9001\ncommand=crucible.cmd.continue\n",
     );
     assert_vector_bytes(
-        "send-command-response",
-        b"crucible.rpc/send-command-response\nrequest-id=9001\nstatus=ok\n",
+        "send-response",
+        b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\n",
+    );
+    assert_vector_bytes(
+        "send-response-rejected-not-found",
+        b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\n",
+    );
+    assert_vector_bytes(
+        "rpc-error-invalid-state",
+        b"crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
     );
     assert_vector_bytes(
         "event-fault-activated",

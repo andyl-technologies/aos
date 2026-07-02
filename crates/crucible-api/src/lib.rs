@@ -72,7 +72,7 @@ pub use rpc_abi::{
     RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, RPC_PROTOCOL_VERSION, RpcAbiError, RpcAttachMode,
     RpcEventClass, RpcGoldenVector, RpcGoldenVectorMessage, RpcStatusCode,
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
-    negotiate_rpc_protocol,
+    negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
 pub use session_mapping::{
     API_COMMAND_MAPPINGS, API_METHOD_MAPPINGS, ApiCommandMapping, ApiDispatch, ApiMappingError,

@@ -22,7 +22,7 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 /// RPC protocol major version for wire-incompatible changes.
 pub const RPC_PROTOCOL_MAJOR: u16 = 1;
 /// RPC protocol minor version for backward-compatible additions.
-pub const RPC_PROTOCOL_MINOR: u16 = 1;
+pub const RPC_PROTOCOL_MINOR: u16 = 2;
 /// RPC protocol patch version for compatible fixes.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
@@ -39,7 +39,7 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 1,
+    minor: 2,
     patch: 0,
     build: "crucible-rpc-abi-v1",
 };
@@ -152,19 +152,38 @@ pub enum RpcGoldenVectorMessage {
     },
     /// Mutating session command request.
     CommandRequest {
-        /// Client request identifier.
-        request_id: u64,
-        /// Expected server-monotonic session epoch.
+        /// Stable session identifier assigned by the control plane.
+        session_id: u64,
+        /// Server-monotonic session epoch.
         session_epoch: u64,
+        /// Hex-encoded deterministic session seed.
+        seed: &'static str,
+        /// Expected epoch guard supplied by the caller.
+        expected_epoch: u64,
+        /// Client command correlation identifier.
+        command_id: u64,
         /// Open-set command kind.
         command_kind: &'static str,
     },
     /// Mutating session command response.
     CommandResponse {
-        /// Client request identifier being answered.
-        request_id: u64,
-        /// Typed RPC status for the command.
+        /// Client command correlation identifier being answered.
+        command_id: u64,
+        /// Open-set command kind being answered.
+        command_kind: &'static str,
+        /// Typed RPC status for the command result.
         status: RpcStatusCode,
+        /// Encoded state update payload, or `none`.
+        state_update: &'static str,
+    },
+    /// Typed non-success RPC error response.
+    RpcError {
+        /// Closed status code returned by the endpoint.
+        status: RpcStatusCode,
+        /// Stable machine-readable error reason.
+        reason: &'static str,
+        /// Stable detail lines following the reason.
+        details: &'static [&'static str],
     },
     /// Event-log or observational stream event.
     Event {
@@ -228,7 +247,7 @@ pub enum RpcAbiError {
 }
 
 /// Frozen RPC golden-vector corpus in stable ABI-conformance order.
-pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
+pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
     RpcGoldenVector {
         name: "hello-request",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
@@ -236,7 +255,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
             client_name: "crucible-api-golden-client",
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/hello-request\nversion=1.1.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
+        bytes: b"crucible.rpc/hello-request\nversion=1.2.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
     },
     RpcGoldenVector {
         name: "hello-response",
@@ -246,7 +265,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=1.1.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        bytes: b"crucible.rpc/hello-response\nversion=1.2.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -257,7 +276,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
             mode: RpcAttachMode::Control,
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/attached\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        bytes: b"crucible.rpc/attached\nversion=1.2.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\n",
     },
     RpcGoldenVector {
         name: "attached-with-reproduction",
@@ -273,7 +292,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
                 "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
             scheduler_control: "none",
         },
-        bytes: b"crucible.rpc/attached-with-reproduction\nversion=1.1.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        bytes: b"crucible.rpc/attached-with-reproduction\nversion=1.2.0+crucible-rpc-abi-v1\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     },
     RpcGoldenVector {
         name: "get-reproduction-request",
@@ -300,23 +319,49 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 9] = [
         bytes: b"crucible.rpc/get-reproduction-response\nsession-id=42\nsession-epoch=7\ncommand-sequence=1\ncommand-kind=crucible.cmd.pause\ncommand-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nscheduler-control=none\nresult=accepted\n",
     },
     RpcGoldenVector {
-        name: "send-command-request",
+        name: "send-request",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         message: RpcGoldenVectorMessage::CommandRequest {
-            request_id: 9001,
+            session_id: 42,
             session_epoch: 7,
+            seed: "000000000000000000000000000000000000000000000000000000000000004d",
+            expected_epoch: 7,
+            command_id: 9001,
             command_kind: "crucible.cmd.continue",
         },
-        bytes: b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=crucible.cmd.continue\n",
+        bytes: b"crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed=000000000000000000000000000000000000000000000000000000000000004d\nexpected-epoch=7\ncommand-id=9001\ncommand=crucible.cmd.continue\n",
     },
     RpcGoldenVector {
-        name: "send-command-response",
+        name: "send-response",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         message: RpcGoldenVectorMessage::CommandResponse {
-            request_id: 9001,
+            command_id: 9001,
+            command_kind: "crucible.cmd.continue",
             status: RpcStatusCode::Ok,
+            state_update: "none",
         },
-        bytes: b"crucible.rpc/send-command-response\nrequest-id=9001\nstatus=ok\n",
+        bytes: b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\n",
+    },
+    RpcGoldenVector {
+        name: "send-response-rejected-not-found",
+        protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+        message: RpcGoldenVectorMessage::CommandResponse {
+            command_id: 9002,
+            command_kind: "crucible.cmd.remove-breakpoint",
+            status: RpcStatusCode::NotFound,
+            state_update: "none",
+        },
+        bytes: b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\n",
+    },
+    RpcGoldenVector {
+        name: "rpc-error-invalid-state",
+        protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
+        message: RpcGoldenVectorMessage::RpcError {
+            status: RpcStatusCode::InvalidState,
+            reason: "streaming-epoch-mismatch",
+            details: &["expected=8", "actual=7"],
+        },
+        bytes: b"crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
     },
     RpcGoldenVector {
         name: "event-fault-activated",
@@ -439,22 +484,55 @@ pub fn encode_rpc_message(message: RpcGoldenVectorMessage) -> Vec<u8> {
             output.into_bytes()
         }
         RpcGoldenVectorMessage::CommandRequest {
-            request_id,
+            session_id,
             session_epoch,
+            seed,
+            expected_epoch,
+            command_id,
             command_kind,
         } => {
             let mut output = String::new();
-            output.push_str("crucible.rpc/send-command-request\n");
-            push_u64_line(&mut output, "request-id", request_id);
-            push_u64_line(&mut output, "session-epoch", session_epoch);
-            push_str_line(&mut output, "command-kind", command_kind);
+            output.push_str("crucible.rpc/send-request\n");
+            push_u64_line(&mut output, "session-id", session_id);
+            push_u64_line(&mut output, "epoch", session_epoch);
+            push_str_line(&mut output, "seed", seed);
+            push_u64_line(&mut output, "expected-epoch", expected_epoch);
+            push_u64_line(&mut output, "command-id", command_id);
+            push_str_line(&mut output, "command", command_kind);
             output.into_bytes()
         }
-        RpcGoldenVectorMessage::CommandResponse { request_id, status } => {
+        RpcGoldenVectorMessage::CommandResponse {
+            command_id,
+            command_kind,
+            status,
+            state_update,
+        } => {
             let mut output = String::new();
-            output.push_str("crucible.rpc/send-command-response\n");
-            push_u64_line(&mut output, "request-id", request_id);
-            push_str_line(&mut output, "status", status_code_wire_name(status));
+            output.push_str("crucible.rpc/send-response\n");
+            push_u64_line(&mut output, "command-id", command_id);
+            push_str_line(&mut output, "command", command_kind);
+            let status = if status == RpcStatusCode::Ok {
+                String::from("accepted")
+            } else {
+                format!("rejected:{}", rpc_status_code_wire_name(status))
+            };
+            push_str_line(&mut output, "status", &status);
+            push_str_line(&mut output, "state-update", state_update);
+            output.into_bytes()
+        }
+        RpcGoldenVectorMessage::RpcError {
+            status,
+            reason,
+            details,
+        } => {
+            let mut output = String::new();
+            output.push_str("crucible.rpc/error\n");
+            push_str_line(&mut output, "status", rpc_status_code_wire_name(status));
+            push_str_line(&mut output, "reason", reason);
+            for detail in details {
+                output.push_str(detail);
+                output.push('\n');
+            }
             output.into_bytes()
         }
         RpcGoldenVectorMessage::Event {
@@ -562,7 +640,9 @@ fn attach_mode_wire_name(mode: RpcAttachMode) -> &'static str {
     }
 }
 
-fn status_code_wire_name(status: RpcStatusCode) -> &'static str {
+/// Returns the stable wire spelling for an RPC status code.
+#[must_use]
+pub const fn rpc_status_code_wire_name(status: RpcStatusCode) -> &'static str {
     match status {
         RpcStatusCode::Ok => "ok",
         RpcStatusCode::InvalidState => "invalid-state",
@@ -570,6 +650,20 @@ fn status_code_wire_name(status: RpcStatusCode) -> &'static str {
         RpcStatusCode::InvalidArgument => "invalid-argument",
         RpcStatusCode::Unsupported => "unsupported",
         RpcStatusCode::Internal => "internal",
+    }
+}
+
+/// Parses a stable RPC status-code wire spelling.
+#[must_use]
+pub fn rpc_status_code_from_wire_name(value: &str) -> Option<RpcStatusCode> {
+    match value {
+        "ok" => Some(RpcStatusCode::Ok),
+        "invalid-state" => Some(RpcStatusCode::InvalidState),
+        "not-found" => Some(RpcStatusCode::NotFound),
+        "invalid-argument" => Some(RpcStatusCode::InvalidArgument),
+        "unsupported" => Some(RpcStatusCode::Unsupported),
+        "internal" => Some(RpcStatusCode::Internal),
+        _ => None,
     }
 }
 

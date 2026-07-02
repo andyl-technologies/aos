@@ -8,14 +8,19 @@
 
 use std::sync::Arc;
 
+use crucible::{
+    BackendError, DebugAttachReport, DebugGotoReport, DebugNonCanonicalBranchReport,
+    DebugReverseContinueReport, DebugReverseStepReport, EngineError, FaultTag, SchedulerError,
+};
 use crucible_session::{
-    LifecycleStateKind, LifecycleTransition, LiveQueryKind, LiveSnapshot, LiveStateKind,
-    SessionCommand, SessionCommandKind, SessionEventLogStream, SessionReproductionLog,
+    BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
+    LiveSnapshot, LiveStateKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
+    SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
     SessionStateTransitionStreamError, lifecycle_transition,
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SessionEventLogFrame, SessionEventLogSnapshot,
@@ -23,7 +28,7 @@ use crate::event_log_stream::{
 };
 use crate::lifecycle::{ReproductionCommandRecord, SessionRef};
 use crate::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
-use crate::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION};
+use crate::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION, RpcStatusCode};
 use crate::session_mapping::{
     API_COMMAND_MAPPINGS, ApiDispatch, ApiMethod, CommandDispatchCardinality, method_mapping,
 };
@@ -296,6 +301,43 @@ pub struct StreamingStateUpdateFrame {
 pub enum CommandRejectionKind {
     /// The command is not valid in the session's current lifecycle state.
     InvalidState,
+    /// The command referenced an absent checkpoint, breakpoint, fault, or session object.
+    NotFound,
+    /// The command payload was malformed or failed schema validation.
+    InvalidArgument,
+    /// The command, fault, or breakpoint kind is not advertised by capabilities.
+    Unsupported,
+    /// The backend or oracle failed while evaluating the command.
+    Internal,
+}
+
+impl CommandRejectionKind {
+    /// Returns the closed RPC status code corresponding to this rejection.
+    #[must_use]
+    pub const fn rpc_status(self) -> RpcStatusCode {
+        match self {
+            Self::InvalidState => RpcStatusCode::InvalidState,
+            Self::NotFound => RpcStatusCode::NotFound,
+            Self::InvalidArgument => RpcStatusCode::InvalidArgument,
+            Self::Unsupported => RpcStatusCode::Unsupported,
+            Self::Internal => RpcStatusCode::Internal,
+        }
+    }
+}
+
+impl TryFrom<RpcStatusCode> for CommandRejectionKind {
+    type Error = ();
+
+    fn try_from(value: RpcStatusCode) -> Result<Self, Self::Error> {
+        match value {
+            RpcStatusCode::InvalidState => Ok(Self::InvalidState),
+            RpcStatusCode::NotFound => Ok(Self::NotFound),
+            RpcStatusCode::InvalidArgument => Ok(Self::InvalidArgument),
+            RpcStatusCode::Unsupported => Ok(Self::Unsupported),
+            RpcStatusCode::Internal => Ok(Self::Internal),
+            RpcStatusCode::Ok => Err(()),
+        }
+    }
 }
 
 /// Terminal status for a command result.
@@ -363,6 +405,51 @@ pub struct SendResponse {
     pub state_update: Option<StateUpdate>,
 }
 
+enum CommandReplyObserver {
+    FaultTag(oneshot::Receiver<Result<FaultTag, SessionError>>),
+    Unit(oneshot::Receiver<Result<(), SessionError>>),
+    BreakpointId(oneshot::Receiver<Result<BreakpointId, SessionError>>),
+    BreakpointRemoval(oneshot::Receiver<Result<bool, SessionError>>),
+    Savepoint(oneshot::Receiver<Result<SavepointInfo, SessionError>>),
+    Fork(oneshot::Receiver<Result<SessionHandle, SessionError>>),
+    Query(oneshot::Receiver<Result<QueryResult, SessionError>>),
+    DebugAttach(oneshot::Receiver<Result<DebugAttachReport, SessionError>>),
+    DebugGoto(oneshot::Receiver<Result<DebugGotoReport, SessionError>>),
+    DebugReverseStep(oneshot::Receiver<Result<DebugReverseStepReport, SessionError>>),
+    DebugReverseContinue(oneshot::Receiver<Result<DebugReverseContinueReport, SessionError>>),
+    DebugForkNonCanonical(oneshot::Receiver<Result<DebugNonCanonicalBranchReport, SessionError>>),
+}
+
+impl CommandReplyObserver {
+    async fn status(
+        self,
+        command: SessionCommandKind,
+    ) -> Result<CommandResultStatus, StreamingApiError> {
+        let rejected = match self {
+            Self::FaultTag(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::BreakpointId(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::BreakpointRemoval(receiver) => match await_reply(receiver, command).await? {
+                Ok(true) => None,
+                Ok(false) => Some(CommandRejectionKind::NotFound),
+                Err(error) => Some(session_error_rejection_kind(&error)),
+            },
+            Self::Savepoint(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Fork(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Query(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::DebugAttach(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::DebugGoto(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::DebugReverseStep(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::DebugReverseContinue(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::DebugForkNonCanonical(receiver) => rejected_from_reply(receiver, command).await?,
+        };
+        Ok(match rejected {
+            Some(reason) => CommandResultStatus::Rejected { reason },
+            None => CommandResultStatus::Accepted,
+        })
+    }
+}
+
 /// Error returned by streaming API operations.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StreamingApiError {
@@ -388,10 +475,10 @@ pub enum StreamingApiError {
         /// Actual live epoch.
         actual: u64,
     },
-    /// The actor command channel closed before the command could be sent.
+    /// The actor command channel closed before the command could be sent or acknowledged.
     #[error("streaming command channel closed for {command:?}")]
     CommandChannelClosed {
-        /// Command kind that could not be sent.
+        /// Command kind that could not be sent or acknowledged.
         command: SessionCommandKind,
     },
     /// The live mirror did not publish the expected state in the yield budget.
@@ -742,6 +829,212 @@ fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
     }
 }
 
+fn command_with_reply_observer(
+    command: SessionCommand,
+) -> (SessionCommand, Option<CommandReplyObserver>) {
+    let (command, observer) = match command {
+        SessionCommand::InjectFault { spec, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::InjectFault { spec, reply },
+                Some(CommandReplyObserver::FaultTag(receiver)),
+            )
+        }
+        SessionCommand::HealFault { tag, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::HealFault { tag, reply },
+                Some(CommandReplyObserver::Unit(receiver)),
+            )
+        }
+        SessionCommand::SetBreakpoint { spec, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::SetBreakpoint { spec, reply },
+                Some(CommandReplyObserver::BreakpointId(receiver)),
+            )
+        }
+        SessionCommand::RemoveBreakpoint { id, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::RemoveBreakpoint { id, reply },
+                Some(CommandReplyObserver::BreakpointRemoval(receiver)),
+            )
+        }
+        SessionCommand::CreateSavepoint { label, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::CreateSavepoint { label, reply },
+                Some(CommandReplyObserver::Savepoint(receiver)),
+            )
+        }
+        SessionCommand::Fork { from, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::Fork { from, reply },
+                Some(CommandReplyObserver::Fork(receiver)),
+            )
+        }
+        SessionCommand::Query { kind, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::Query { kind, reply },
+                Some(CommandReplyObserver::Query(receiver)),
+            )
+        }
+        SessionCommand::AttachGdb { node, listen, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::AttachGdb {
+                    node,
+                    listen,
+                    reply,
+                },
+                Some(CommandReplyObserver::DebugAttach(receiver)),
+            )
+        }
+        SessionCommand::DebugGoto { request, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::DebugGoto { request, reply },
+                Some(CommandReplyObserver::DebugGoto(receiver)),
+            )
+        }
+        SessionCommand::DebugReverseStep { request, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::DebugReverseStep { request, reply },
+                Some(CommandReplyObserver::DebugReverseStep(receiver)),
+            )
+        }
+        SessionCommand::DebugReverseContinue { request, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::DebugReverseContinue { request, reply },
+                Some(CommandReplyObserver::DebugReverseContinue(receiver)),
+            )
+        }
+        SessionCommand::DebugForkNonCanonical { request, .. } => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::DebugForkNonCanonical { request, reply },
+                Some(CommandReplyObserver::DebugForkNonCanonical(receiver)),
+            )
+        }
+        command => (command, None),
+    };
+    match observer {
+        Some(observer) => (
+            SessionCommand::acknowledged(command, CommandReply::discard()),
+            Some(observer),
+        ),
+        None => {
+            let (reply, receiver) = CommandReply::channel();
+            (
+                SessionCommand::acknowledged(command, reply),
+                Some(CommandReplyObserver::Unit(receiver)),
+            )
+        }
+    }
+}
+
+async fn rejected_from_reply<T>(
+    receiver: oneshot::Receiver<Result<T, SessionError>>,
+    command: SessionCommandKind,
+) -> Result<Option<CommandRejectionKind>, StreamingApiError> {
+    match await_reply(receiver, command).await? {
+        Ok(_) => Ok(None),
+        Err(error) => Ok(Some(session_error_rejection_kind(&error))),
+    }
+}
+
+async fn await_reply<T>(
+    receiver: oneshot::Receiver<Result<T, SessionError>>,
+    command: SessionCommandKind,
+) -> Result<Result<T, SessionError>, StreamingApiError> {
+    receiver
+        .await
+        .map_err(|_| StreamingApiError::CommandChannelClosed { command })
+}
+
+fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
+    match error {
+        SessionError::InvalidTransition { .. }
+        | SessionError::InvalidEngineState { .. }
+        | SessionError::DebugAttachRequired { .. }
+        | SessionError::DebugNonCanonicalBranchRequired { .. } => {
+            CommandRejectionKind::InvalidState
+        }
+        SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
+        SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,
+        SessionError::UnsupportedBreakpointAction { .. }
+        | SessionError::UnsupportedBreakpointFault { .. } => CommandRejectionKind::Unsupported,
+        SessionError::Engine(error) => engine_error_rejection_kind(error),
+        SessionError::Scheduler(error) => scheduler_error_rejection_kind(error),
+        SessionError::ChannelClosed
+        | SessionError::EventLogOffsetRegression { .. }
+        | SessionError::EventLogOffsetMismatch { .. }
+        | SessionError::ControlReplayBoundaryMismatch { .. }
+        | SessionError::ControlReplayFrontierMismatch { .. }
+        | SessionError::ControlReplayBatchMismatch { .. }
+        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => CommandRejectionKind::Internal,
+    }
+}
+
+fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
+    match error {
+        EngineError::CheckpointNotRecorded { .. }
+        | EngineError::MissingBakedGenesis { .. }
+        | EngineError::PlanFaultUnknownNode { .. }
+        | EngineError::PlanFaultUnknownLink { .. }
+        | EngineError::PlanFaultUnknownLinkId { .. }
+        | EngineError::PlanFaultUnknownDevice { .. }
+        | EngineError::PlanHealUnknownTag { .. }
+        | EngineError::PropertyPredicateUnknownNode { .. }
+        | EngineError::PropertyPredicateUnknownAssertion { .. }
+        | EngineError::DebugAttachUnknownNode { .. }
+        | EngineError::DebugTargetResolverFailureNotFound { .. }
+        | EngineError::DebugTimeTravelCoordinateNotFound { .. }
+        | EngineError::DebugTimeTravelUnknownNode { .. } => CommandRejectionKind::NotFound,
+        EngineError::NotImplemented { .. }
+        | EngineError::WorldNodeUnsupportedWorkload { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
+        | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
+        | EngineError::PlanFaultUnsupportedParam { .. }
+        | EngineError::DebugBreakpointRequiresAllowMutate { .. }
+        | EngineError::EventLogReplayUnsupported { .. } => CommandRejectionKind::Unsupported,
+        EngineError::SchedulePrefix(error) => schedule_error_rejection_kind(error),
+        _ => CommandRejectionKind::Internal,
+    }
+}
+
+fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandRejectionKind {
+    let _ = error;
+    CommandRejectionKind::InvalidArgument
+}
+
+fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
+    match error {
+        SchedulerError::NotImplemented { .. } => CommandRejectionKind::Unsupported,
+        SchedulerError::Backend(error) => backend_error_rejection_kind(error),
+        SchedulerError::BoundaryViolation { .. } => CommandRejectionKind::Internal,
+        SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
+            CommandRejectionKind::InvalidArgument
+        }
+    }
+}
+
+const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionKind {
+    match error {
+        BackendError::NotImplemented { .. } | BackendError::Unsupported { .. } => {
+            CommandRejectionKind::Unsupported
+        }
+        BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
+    }
+}
+
 async fn recv_api_state_update(
     session: SessionRef,
     state_updates: &mut SessionStateTransitionStream,
@@ -791,32 +1084,27 @@ async fn dispatch_command(
     session: SessionRef,
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
-    max_actor_yields: u64,
+    _max_actor_yields: u64,
     command_id: u64,
     command: SessionCommand,
 ) -> Result<SendResponse, StreamingApiError> {
     let before = live.read().state_kind;
     let command_kind = SessionCommandKind::from(&command);
     let transition = lifecycle_transition(lifecycle_state(before), command_kind);
-    let result = match transition {
-        LifecycleTransition::Accepted { .. } => CommandResult {
-            command_id,
-            command_kind,
-            status: CommandResultStatus::Accepted,
-        },
-        LifecycleTransition::Rejected => {
-            return Ok(SendResponse {
-                result: CommandResult {
-                    command_id,
-                    command_kind,
-                    status: CommandResultStatus::Rejected {
-                        reason: CommandRejectionKind::InvalidState,
-                    },
+    if let LifecycleTransition::Rejected = transition {
+        return Ok(SendResponse {
+            result: CommandResult {
+                command_id,
+                command_kind,
+                status: CommandResultStatus::Rejected {
+                    reason: CommandRejectionKind::InvalidState,
                 },
-                state_update: None,
-            });
-        }
-    };
+            },
+            state_update: None,
+        });
+    }
+
+    let (command, reply_observer) = command_with_reply_observer(command);
 
     sender
         .send(command)
@@ -825,39 +1113,36 @@ async fn dispatch_command(
             command: command_kind,
         })?;
 
-    let state_update = match transition {
-        LifecycleTransition::Accepted { to } => {
+    let status = match reply_observer {
+        Some(observer) => observer.status(command_kind).await?,
+        None => CommandResultStatus::Accepted,
+    };
+    let result = CommandResult {
+        command_id,
+        command_kind,
+        status,
+    };
+
+    let state_update = match (transition, result.status) {
+        (LifecycleTransition::Accepted { to }, CommandResultStatus::Accepted) => {
             let expected = live_state(to);
             if expected == before {
                 None
             } else {
-                Some(wait_for_state(session, live, command_kind, expected, max_actor_yields).await?)
+                Some(StateUpdate {
+                    session,
+                    state: expected,
+                })
             }
         }
-        LifecycleTransition::Rejected => None,
+        (LifecycleTransition::Rejected, _) => None,
+        (_, CommandResultStatus::Rejected { .. }) => None,
     };
 
     Ok(SendResponse {
         result,
         state_update,
     })
-}
-
-async fn wait_for_state(
-    session: SessionRef,
-    live: &Arc<LiveSnapshot>,
-    command: SessionCommandKind,
-    expected: LiveStateKind,
-    max_actor_yields: u64,
-) -> Result<StateUpdate, StreamingApiError> {
-    for _ in 0..max_actor_yields {
-        let state = live.read().state_kind;
-        if state == expected {
-            return Ok(StateUpdate { session, state });
-        }
-        tokio::task::yield_now().await;
-    }
-    Err(StreamingApiError::StateDidNotAdvance { command, expected })
 }
 
 const fn lifecycle_state(state: LiveStateKind) -> LifecycleStateKind {

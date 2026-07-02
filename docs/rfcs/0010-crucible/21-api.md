@@ -724,10 +724,16 @@ ran in-process against the double or over the wire against QEMU.
   stale expected epochs fail before actor dispatch, attach snapshots and unary
   reads agree, and an injected intervention driven interactively through
   `Control` matches the same scripted `Send` schedule.
-- [ ] **T-API-10** Implement the typed command-rejection and RPC-status taxonomy
+- [x] **T-API-10** Implement the typed command-rejection and RPC-status taxonomy
   (INVALID_STATE/NOT_FOUND/INVALID_ARGUMENT/UNSUPPORTED/INTERNAL), total and
   side-effect-free, never closing the stream. — satisfies [API-24]; spec §21.5.3;
   cross-ref 20 §11.
+  Completed by `checks.crucible.phase5.apiCommandStatusTaxonomy`: `CommandResult`
+  rejections now use the closed five-code taxonomy and map to the same
+  `RpcStatusCode` set used by transport errors. The HTTP/2 client decodes typed
+  lifecycle and streaming failures for epoch mismatch, missing scenarios, and
+  missing sessions without closing live streams; rejected `Send` commands remain
+  side-effect-free and subsequent commands on the stream still run.
 - [x] **T-API-11** Implement explicit protocol versioning (major.minor.patch +
   build) in Hello/Attached, major-bump on wire-incompatible change, detect+refuse
   on major mismatch. — satisfies [API-25]; spec §21.6.

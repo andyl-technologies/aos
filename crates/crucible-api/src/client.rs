@@ -31,8 +31,9 @@ use crate::open_set::{
     OpenSetPayload, open_set_command_kind, session_command_for_open_set_command_kind,
 };
 use crate::rpc_abi::{
-    ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError,
+    ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError, RpcStatusCode,
     encode_rpc_hello_request, encode_rpc_hello_response, negotiate_rpc_protocol,
+    rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
 use crate::session_mapping::{API_COMMAND_MAPPINGS, api_command_for_session_command};
 use crate::streaming::{
@@ -497,6 +498,14 @@ pub enum ControlClientError {
     HttpStatus {
         /// Numeric HTTP status code.
         status: u16,
+    },
+    /// The RPC endpoint returned a typed non-success status.
+    #[error("RPC control request failed with {status:?}: {message}")]
+    RpcStatus {
+        /// Closed RPC status returned by the endpoint.
+        status: RpcStatusCode,
+        /// Deterministic status detail.
+        message: String,
     },
     /// The RPC response body could not be decoded.
     #[error("failed to decode control RPC response: {message}")]
@@ -1376,23 +1385,28 @@ fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClien
     let text = response_text(body)?;
     let mut lines = text.lines();
     expect_header(lines.next(), "crucible.rpc/error")?;
-    match parse_prefixed_line(lines.next(), "code=")? {
-        "failed-precondition" => decode_failed_precondition(lines),
-        "session-closed:epoch-mismatch" => decode_session_closed_epoch_mismatch(lines),
-        value => Err(rpc_decode(format!("unknown RPC error code `{value}`"))),
+    let status = parse_rpc_status_line(lines.next())?;
+    if status == RpcStatusCode::Ok {
+        return Err(rpc_decode("RPC error response used success status"));
+    }
+    match parse_prefixed_line(lines.next(), "reason=")? {
+        "epoch-mismatch" => decode_lifecycle_epoch_mismatch(status, lines),
+        "streaming-epoch-mismatch" => decode_streaming_epoch_mismatch(status, lines),
+        "scenario-not-found" => decode_scenario_not_found(status, lines),
+        "lifecycle-session-not-found" => decode_lifecycle_session_not_found(status, lines),
+        "streaming-session-not-found" => decode_streaming_session_not_found(status, lines),
+        reason => decode_generic_rpc_status(status, reason, lines),
     }
 }
 
-fn decode_failed_precondition<'a, I>(mut lines: I) -> Result<ControlClientError, ControlClientError>
+fn decode_lifecycle_epoch_mismatch<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
 where
     I: Iterator<Item = &'a str>,
 {
-    let reason = parse_prefixed_line(lines.next(), "reason=")?;
-    if reason != "epoch-mismatch" {
-        return Err(rpc_decode(format!(
-            "unknown failed-precondition reason `{reason}`"
-        )));
-    }
+    require_rpc_error_status(status, RpcStatusCode::InvalidState, "epoch-mismatch")?;
     let session_id = SessionId::new(parse_u64_line(lines.next(), "session-id=")?);
     let expected = parse_u64_line(lines.next(), "expected=")?;
     let actual = parse_u64_line(lines.next(), "actual=")?;
@@ -1406,18 +1420,108 @@ where
     })
 }
 
-fn decode_session_closed_epoch_mismatch<'a, I>(
+fn decode_streaming_epoch_mismatch<'a, I>(
+    status: RpcStatusCode,
     mut lines: I,
 ) -> Result<ControlClientError, ControlClientError>
 where
     I: Iterator<Item = &'a str>,
 {
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::InvalidState,
+        "streaming-epoch-mismatch",
+    )?;
     let expected = parse_u64_line(lines.next(), "expected=")?;
     let actual = parse_u64_line(lines.next(), "actual=")?;
     reject_trailing(lines.next())?;
     Ok(ControlClientError::Streaming {
         source: StreamingApiError::EpochMismatch { expected, actual },
     })
+}
+
+fn decode_scenario_not_found<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(status, RpcStatusCode::NotFound, "scenario-not-found")?;
+    let name = parse_hex_string_line(lines.next(), "name=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::ScenarioNotFound { name },
+    })
+}
+
+fn decode_lifecycle_session_not_found<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::NotFound,
+        "lifecycle-session-not-found",
+    )?;
+    let session = parse_session_ref(&mut lines)?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::SessionNotFound { session },
+    })
+}
+
+fn decode_streaming_session_not_found<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::NotFound,
+        "streaming-session-not-found",
+    )?;
+    let session = parse_session_ref(&mut lines)?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Streaming {
+        source: StreamingApiError::SessionNotFound { session },
+    })
+}
+
+fn decode_generic_rpc_status<'a, I>(
+    status: RpcStatusCode,
+    reason: &str,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let message = match lines.next() {
+        Some(line) => parse_hex_string_line(Some(line), "message=")?,
+        None => reason.to_owned(),
+    };
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::RpcStatus { status, message })
+}
+
+fn require_rpc_error_status(
+    actual: RpcStatusCode,
+    expected: RpcStatusCode,
+    reason: &'static str,
+) -> Result<(), ControlClientError> {
+    if actual != expected {
+        return Err(rpc_decode(format!(
+            "RPC error `{reason}` used status `{}` instead of `{}`",
+            rpc_status_code_wire_name(actual),
+            rpc_status_code_wire_name(expected),
+        )));
+    }
+    Ok(())
 }
 
 fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError> {
@@ -1925,13 +2029,32 @@ fn parse_command_kind_line(
 fn parse_command_status_line(
     line: Option<&str>,
 ) -> Result<CommandResultStatus, ControlClientError> {
-    match parse_prefixed_line(line, "status=")? {
-        "accepted" => Ok(CommandResultStatus::Accepted),
-        "rejected:invalid-state" => Ok(CommandResultStatus::Rejected {
-            reason: CommandRejectionKind::InvalidState,
-        }),
-        value => Err(rpc_decode(format!("unknown command status `{value}`"))),
+    let value = parse_prefixed_line(line, "status=")?;
+    if value == "accepted" {
+        return Ok(CommandResultStatus::Accepted);
     }
+    let Some(rejected) = value.strip_prefix("rejected:") else {
+        return Err(rpc_decode(format!("unknown command status `{value}`")));
+    };
+    let status = rpc_status_code_from_wire_name(rejected)
+        .ok_or_else(|| rpc_decode(format!("unknown command rejection status `{rejected}`")))?;
+    let reason = CommandRejectionKind::try_from(status)
+        .map_err(|()| rpc_decode("accepted status cannot be a command rejection"))?;
+    Ok(CommandResultStatus::Rejected { reason })
+}
+
+fn parse_rpc_status_line(line: Option<&str>) -> Result<RpcStatusCode, ControlClientError> {
+    let value = parse_prefixed_line(line, "status=")?;
+    rpc_status_code_from_wire_name(value)
+        .ok_or_else(|| rpc_decode(format!("unknown RPC status `{value}`")))
+}
+
+fn parse_hex_string_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<String, ControlClientError> {
+    let value = parse_prefixed_line(line, prefix)?;
+    parse_hex_string(value)
 }
 
 fn parse_state_update_line(line: Option<&str>) -> Result<Option<StateUpdate>, ControlClientError> {

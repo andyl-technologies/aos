@@ -7,27 +7,32 @@ use std::time::Duration;
 
 use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EventAttributeValue,
-    EventDiagnosticPayload, EventLevel, EventLogOffset, GenesisCheckpoint, QuantumLoop,
-    QuantumOutcome, QuantumRequest, RngDecision, RngStreamId, ScenarioDef, SchedulerError,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, Seed, TemporalGraph, VirtualTime,
+    BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, GdbAttachInfo,
+    GdbListen, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, RngDecision,
+    RngStreamId, ScenarioDef, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    Seed, TemporalGraph, VirtualTime,
 };
 use crucible_api::{
     API_COMMAND_MAPPINGS, AttachRequest, Attached, CommandRejectionKind, CommandResultStatus,
     ControlClient, ControlClientError, ControlPlaneEventLog, ControlStream, ControlTransportKind,
     ControlWireModel, CreateSessionRequest, CreateSessionResponse, DestroySessionRequest,
-    DestroySessionResponse, EventLogCursor, GetReproductionRequest, GetReproductionResponse,
-    HelloRequest, InProcessControlClient, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventSource,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ReproductionCommandRecord,
-    ReproductionCommandResult, RpcControlClient, RpcEndpoint, RpcTransportProtocol,
-    ScenarioCatalogEntry, SendRequest, SendResponse, SessionId, SessionRef, StateUpdate,
-    StreamingApiError, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame, WatchStream,
-    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
-    open_set_command_kind, session_command_for_open_set_command_kind,
+    DestroySessionResponse, EventLogCursor, GOLDEN_RPC_VECTORS, GetReproductionRequest,
+    GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessStreamingSession,
+    LifecycleApiError, LifecycleControlPlane, ListScenariosResponse, ListSessionsResponse,
+    OpenSetAttributeValue, OpenSetEventSource, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
+    ReproductionCommandRecord, ReproductionCommandResult, RpcControlClient, RpcEndpoint,
+    RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest, SendResponse,
+    SessionId, SessionRef, StateUpdate, StreamingApiError, StreamingEventFrame, StreamingFrame,
+    StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model, encode_rpc_hello_request,
+    encode_rpc_hello_response, open_set_command_kind, rpc_status_code_wire_name,
+    session_command_for_open_set_command_kind,
 };
 use crucible_session::test_support::append_event_log_entries_for_test;
-use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
+use crucible_session::{
+    CheckpointRef, CommandReply, Engine, LiveStateKind, SessionActor, SessionCommand,
+    SessionCommandKind, SessionError, SessionRunReport,
+};
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc};
 
@@ -81,6 +86,23 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         .unwrap_or_else(|error| panic!("RPC list scenarios should decode: {error}"));
     assert_eq!(scenarios.scenarios.len(), 1);
     assert_eq!(scenarios.scenarios[0].name, "api-control-client-scenario");
+    assert_command_rejection_taxonomy_is_closed();
+
+    let missing_scenario_error = rpc
+        .create_session(CreateSessionRequest::scenario_ref(
+            "missing-api-control-client-scenario",
+            Seed::from_u64(77),
+        ))
+        .await
+        .expect_err("RPC unknown scenario should decode as typed NOT_FOUND");
+    assert_eq!(
+        missing_scenario_error,
+        ControlClientError::Lifecycle {
+            source: LifecycleApiError::ScenarioNotFound {
+                name: String::from("missing-api-control-client-scenario"),
+            },
+        },
+    );
 
     let created = rpc
         .create_session(
@@ -93,6 +115,22 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(created.session.id.value, 1);
     assert_eq!(created.session.epoch, 1);
     assert_eq!(created.session.seed, Seed::from_u64(77));
+    assert_raw_send_error(
+        &rpc_server.endpoint(),
+        raw_send_body(created.session, 901, "crucible.cmd.no-such-command"),
+        "unsupported",
+        "unsupported",
+    )
+    .await;
+    assert_raw_send_error(
+        &rpc_server.endpoint(),
+        String::from(
+            "crucible.rpc/send-request\nsession-id=not-an-integer\nepoch=1\nseed=00\nexpected-epoch=none\ncommand-id=902\ncommand=crucible.cmd.continue\n",
+        ),
+        "invalid-argument",
+        "invalid-argument",
+    )
+    .await;
 
     let sessions = rpc
         .list_sessions()
@@ -303,8 +341,33 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     );
     assert!(rejected_start.state_update.is_none());
 
+    let rejected_remove = rpc
+        .send_command(SendRequest::new(
+            created.session,
+            105,
+            SessionCommandKind::RemoveBreakpoint
+                .representative_command()
+                .unwrap_or_else(|| panic!("RemoveBreakpoint has a representative payload")),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Send RemoveBreakpoint should decode: {error}"));
+    assert_eq!(
+        rejected_remove.result.status,
+        CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::NotFound,
+        },
+    );
+    assert!(rejected_remove.state_update.is_none());
+    assert_raw_send_rejection(
+        &rpc_server.endpoint(),
+        raw_send_body(created.session, 106, "crucible.cmd.remove-breakpoint"),
+        "crucible.cmd.remove-breakpoint",
+        "not-found",
+    )
+    .await;
+
     let stream_stopped = rpc
-        .send_command(SendRequest::new(created.session, 105, SessionCommand::Stop))
+        .send_command(SendRequest::new(created.session, 107, SessionCommand::Stop))
         .await
         .unwrap_or_else(|error| panic!("RPC Send Stop should decode: {error}"));
     assert_eq!(stream_stopped.result.status, CommandResultStatus::Accepted);
@@ -320,6 +383,31 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(destroyed.session, created.session);
     assert!(!destroyed.stopped);
     assert!(destroyed.already_absent);
+
+    let missing_reproduction_error = rpc
+        .get_reproduction(GetReproductionRequest::new(created.session))
+        .await
+        .expect_err("RPC GetReproduction on absent session should decode as typed NOT_FOUND");
+    assert_eq!(
+        missing_reproduction_error,
+        ControlClientError::Lifecycle {
+            source: LifecycleApiError::SessionNotFound {
+                session: created.session,
+            },
+        },
+    );
+    let missing_watch_error = match rpc.watch_attach(AttachRequest::new(created.session)).await {
+        Ok(_) => panic!("RPC Watch on absent session should reject"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        missing_watch_error,
+        ControlClientError::Streaming {
+            source: StreamingApiError::SessionNotFound {
+                session: created.session,
+            },
+        },
+    );
 
     let inline_scenario = generated_scenario(78);
     let inline_created = rpc
@@ -458,10 +546,13 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         ))
         .await
         .expect_err("RPC inline seed mismatch should reject");
-    assert_eq!(
+    assert!(matches!(
         mismatch_error,
-        crucible_api::ControlClientError::HttpStatus { status: 400 }
-    );
+        ControlClientError::RpcStatus {
+            status: RpcStatusCode::InvalidArgument,
+            ref message,
+        } if message.contains("scenario seed mismatch")
+    ));
     let sessions_after_rejected_inline = rpc
         .list_sessions()
         .await
@@ -472,6 +563,250 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(
         in_process.live_snapshot().read().event_log_len,
         in_process.event_log().current_cursor().next_sequence
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_stream() {
+    let (streaming, actor, session) =
+        streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 90);
+    let actor_task = tokio::spawn(actor.run());
+
+    let started = streaming
+        .send(SendRequest::new(session, 1, SessionCommand::Start))
+        .await
+        .unwrap_or_else(|error| panic!("initial Start should be accepted: {error}"));
+    assert_eq!(started.result.status, CommandResultStatus::Accepted);
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        2,
+        SessionCommand::Start,
+        CommandRejectionKind::InvalidState,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 3).await;
+
+    let reproduction_before_missing_remove = streaming.reproduction_log().snapshot();
+    let event_tail_before_missing_remove = streaming.event_log().current_cursor();
+    assert_rejected_send(
+        &streaming,
+        session,
+        4,
+        SessionCommand::RemoveBreakpoint {
+            id: 404,
+            reply: CommandReply::discard(),
+        },
+        CommandRejectionKind::NotFound,
+    )
+    .await;
+    assert_eq!(
+        streaming.reproduction_log().snapshot(),
+        reproduction_before_missing_remove,
+        "running missing-breakpoint rejection must not record reproduction control",
+    );
+    assert_eq!(
+        streaming.event_log().current_cursor(),
+        event_tail_before_missing_remove,
+        "running missing-breakpoint rejection must not append event-log control",
+    );
+    assert_accepted_query_after_rejection(&streaming, session, 5).await;
+
+    let paused = streaming
+        .send(SendRequest::new(session, 6, SessionCommand::Pause))
+        .await
+        .unwrap_or_else(|error| panic!("Pause after rejected Start should be accepted: {error}"));
+    assert_eq!(paused.result.status, CommandResultStatus::Accepted);
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        7,
+        SessionCommand::RemoveBreakpoint {
+            id: 404,
+            reply: CommandReply::discard(),
+        },
+        CommandRejectionKind::NotFound,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 8).await;
+
+    let missing_checkpoint = ContentHash::from_bytes(b"missing-api-command-status-checkpoint");
+    assert_rejected_send(
+        &streaming,
+        session,
+        9,
+        SessionCommand::Fork {
+            from: CheckpointRef::Checkpoint(missing_checkpoint),
+            reply: CommandReply::discard(),
+        },
+        CommandRejectionKind::NotFound,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 10).await;
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        11,
+        attach_gdb_command("taxonomy-unsupported"),
+        CommandRejectionKind::Unsupported,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 12).await;
+
+    stop_streaming_actor(streaming, session, 13, actor_task).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_process_send_maps_backend_rejections_to_invalid_argument() {
+    let (streaming, actor, session) = streaming_session_fixture(RejectingGdbLoop { quanta: 0 }, 91);
+    let actor_task = tokio::spawn(actor.run());
+    start_and_pause_streaming_actor(&streaming, session).await;
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        3,
+        attach_gdb_command("taxonomy-invalid-argument"),
+        CommandRejectionKind::InvalidArgument,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 4).await;
+
+    stop_streaming_actor(streaming, session, 5, actor_task).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_process_send_maps_internal_command_failures_without_closing_stream() {
+    let (streaming, actor, session) = streaming_session_fixture(InternalGdbLoop { quanta: 0 }, 92);
+    let actor_task = tokio::spawn(actor.run());
+    start_and_pause_streaming_actor(&streaming, session).await;
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        3,
+        attach_gdb_command("taxonomy-internal"),
+        CommandRejectionKind::Internal,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 4).await;
+
+    stop_streaming_actor(streaming, session, 5, actor_task).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_process_send_observes_payload_free_actor_failures() {
+    let (streaming, actor, session) = streaming_session_fixture(
+        RejectingOnceShutdownLoop {
+            quanta: 0,
+            shutdown_rejections: 1,
+        },
+        93,
+    );
+    let actor_task = tokio::spawn(actor.run());
+    start_and_pause_streaming_actor(&streaming, session).await;
+
+    assert_rejected_send(
+        &streaming,
+        session,
+        3,
+        SessionCommand::Stop,
+        CommandRejectionKind::InvalidArgument,
+    )
+    .await;
+    assert_accepted_query_after_rejection(&streaming, session, 4).await;
+
+    stop_streaming_actor(streaming, session, 5, actor_task).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
+    let session = SessionRef::new(SessionId::new(77), 3, Seed::from_u64(7700));
+    for reason in [
+        CommandRejectionKind::InvalidState,
+        CommandRejectionKind::NotFound,
+        CommandRejectionKind::InvalidArgument,
+        CommandRejectionKind::Unsupported,
+        CommandRejectionKind::Internal,
+    ] {
+        let server = spawn_scripted_send_server(vec![
+            scripted_send_response(
+                axum::http::StatusCode::OK,
+                send_response_body(
+                    1,
+                    SessionCommandKind::Start,
+                    CommandResultStatus::Rejected { reason },
+                ),
+            ),
+            scripted_send_response(
+                axum::http::StatusCode::OK,
+                send_response_body(2, SessionCommandKind::Query, CommandResultStatus::Accepted),
+            ),
+        ])
+        .await;
+        let client = RpcControlClient::new(RpcEndpoint::http2(server.endpoint()))
+            .unwrap_or_else(|error| panic!("scripted RPC client should build: {error}"));
+        let rejected = client
+            .send_command(SendRequest::new(session, 1, SessionCommand::Start))
+            .await
+            .unwrap_or_else(|error| panic!("scripted rejected send should decode: {error}"));
+        assert_eq!(
+            rejected.result.status,
+            CommandResultStatus::Rejected { reason },
+        );
+        let accepted = client
+            .send_command(SendRequest::new(
+                session,
+                2,
+                SessionCommand::query_snapshot(),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("scripted send after rejection should decode: {error}"));
+        assert_eq!(accepted.result.status, CommandResultStatus::Accepted);
+    }
+
+    let golden_rejection = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        String::from_utf8(golden_vector_bytes("send-response-rejected-not-found").to_vec())
+            .unwrap_or_else(|error| panic!("golden send response should be UTF-8: {error}")),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(golden_rejection.endpoint()))
+        .unwrap_or_else(|error| panic!("golden rejection RPC client should build: {error}"));
+    let decoded = client
+        .send_command(SendRequest::new(session, 9002, SessionCommand::Start))
+        .await
+        .unwrap_or_else(|error| panic!("golden rejected send should decode: {error}"));
+    assert_eq!(
+        decoded.result.status,
+        CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::NotFound,
+        },
+    );
+
+    let golden_error = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::PRECONDITION_FAILED,
+        String::from_utf8(golden_vector_bytes("rpc-error-invalid-state").to_vec())
+            .unwrap_or_else(|error| panic!("golden error response should be UTF-8: {error}")),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(golden_error.endpoint()))
+        .unwrap_or_else(|error| panic!("golden error RPC client should build: {error}"));
+    let error = client
+        .send_command(SendRequest::new(session, 8, SessionCommand::Start))
+        .await
+        .expect_err("golden invalid-state RPC error should decode");
+    assert_eq!(
+        error,
+        ControlClientError::Streaming {
+            source: StreamingApiError::EpochMismatch {
+                expected: 8,
+                actual: 7,
+            },
+        },
     );
 }
 
@@ -505,6 +840,100 @@ fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
 
 fn assert_control_client_trait<C: ControlClient>(client: &C) {
     assert_eq!(client.wire_model(), ControlWireModel::current());
+}
+
+fn assert_command_rejection_taxonomy_is_closed() {
+    let mappings = [
+        (
+            CommandRejectionKind::InvalidState,
+            RpcStatusCode::InvalidState,
+        ),
+        (CommandRejectionKind::NotFound, RpcStatusCode::NotFound),
+        (
+            CommandRejectionKind::InvalidArgument,
+            RpcStatusCode::InvalidArgument,
+        ),
+        (
+            CommandRejectionKind::Unsupported,
+            RpcStatusCode::Unsupported,
+        ),
+        (CommandRejectionKind::Internal, RpcStatusCode::Internal),
+    ];
+    for (reason, status) in mappings {
+        assert_eq!(reason.rpc_status(), status);
+        assert_eq!(CommandRejectionKind::try_from(status), Ok(reason));
+    }
+    assert!(CommandRejectionKind::try_from(RpcStatusCode::Ok).is_err());
+}
+
+fn raw_send_body(session: SessionRef, command_id: u64, command: &str) -> String {
+    format!(
+        "crucible.rpc/send-request\nsession-id={}\nepoch={}\nseed={}\nexpected-epoch=none\ncommand-id={}\ncommand={}\n",
+        session.id.value,
+        session.epoch,
+        session.seed.to_hex(),
+        command_id,
+        command,
+    )
+}
+
+async fn assert_raw_send_error(
+    endpoint: &str,
+    body: String,
+    expected_status: &str,
+    expected_reason: &str,
+) {
+    let http = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap_or_else(|error| panic!("raw RPC client should build: {error}"));
+    let response = http
+        .post(format!(
+            "{}/crucible.rpc/send",
+            endpoint.trim_end_matches('/')
+        ))
+        .body(body)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("raw send request should complete: {error}"));
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|error| panic!("raw send error body should decode: {error}"));
+    assert!(text.starts_with("crucible.rpc/error\n"));
+    assert!(text.contains(&format!("status={expected_status}\n")));
+    assert!(text.contains(&format!("reason={expected_reason}\n")));
+}
+
+async fn assert_raw_send_rejection(
+    endpoint: &str,
+    body: String,
+    expected_command: &str,
+    expected_status: &str,
+) {
+    let http = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap_or_else(|error| panic!("raw RPC client should build: {error}"));
+    let response = http
+        .post(format!(
+            "{}/crucible.rpc/send",
+            endpoint.trim_end_matches('/')
+        ))
+        .body(body)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("raw send request should complete: {error}"));
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|error| panic!("raw send response body should decode: {error}"));
+    assert!(text.starts_with("crucible.rpc/send-response\n"));
+    assert!(text.contains(&format!("command={expected_command}\n")));
+    assert!(text.contains(&format!("status=rejected:{expected_status}\n")));
+    assert!(text.contains("state-update=none\n"));
 }
 
 fn assert_reproduction_pause_record(record: &ReproductionCommandRecord, at_sequence: u64) {
@@ -627,6 +1056,94 @@ impl Http2LifecycleServer {
             );
         }
     }
+}
+
+#[derive(Clone)]
+struct ScriptedSendResponse {
+    status: axum::http::StatusCode,
+    body: String,
+}
+
+struct ScriptedSendServer {
+    endpoint: String,
+}
+
+impl ScriptedSendServer {
+    fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+fn scripted_send_response(status: axum::http::StatusCode, body: String) -> ScriptedSendResponse {
+    ScriptedSendResponse { status, body }
+}
+
+async fn spawn_scripted_send_server(responses: Vec<ScriptedSendResponse>) -> ScriptedSendServer {
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("scripted send listener should bind: {error}"));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("scripted send listener should report address: {error}"));
+    let saw_http2 = Arc::new(AtomicBool::new(false));
+    let responses = Arc::new(Mutex::new(std::collections::VecDeque::from(responses)));
+    let responses_for_send = Arc::clone(&responses);
+    let saw_http2_for_send = Arc::clone(&saw_http2);
+    let app = Router::new().route(
+        "/crucible.rpc/send",
+        post(move |request: Request<Body>| {
+            let responses = Arc::clone(&responses_for_send);
+            let saw_http2 = Arc::clone(&saw_http2_for_send);
+            async move {
+                let _ = read_rpc_body(request, saw_http2).await;
+                match responses.lock().await.pop_front() {
+                    Some(response) => http2_response(response.status, response.body),
+                    None => typed_rpc_status_response(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        RpcStatusCode::Internal,
+                        "internal",
+                        "scripted send response exhausted",
+                    ),
+                }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .unwrap_or_else(|error| panic!("scripted send server should run: {error}"));
+    });
+    ScriptedSendServer {
+        endpoint: format!("http://{addr}"),
+    }
+}
+
+fn send_response_body(
+    command_id: u64,
+    command: SessionCommandKind,
+    status: CommandResultStatus,
+) -> String {
+    let mut output = String::from("crucible.rpc/send-response\n");
+    push_wire_line(&mut output, "command-id", &command_id.to_string());
+    push_wire_line(&mut output, "command", &command_name(command));
+    push_wire_line(&mut output, "status", &command_status_wire(status));
+    push_wire_line(&mut output, "state-update", "none");
+    output
+}
+
+fn golden_vector_bytes(name: &str) -> &'static [u8] {
+    GOLDEN_RPC_VECTORS
+        .iter()
+        .find(|vector| vector.name == name)
+        .unwrap_or_else(|| panic!("missing RPC golden vector {name}"))
+        .bytes
 }
 
 type TestLifecyclePlane =
@@ -848,7 +1365,7 @@ async fn handle_create_session(
     let response = match control_plane.lock().await.create_session(create).await {
         Ok(response) => response,
         Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+            return lifecycle_error_response(error);
         }
     };
     http2_response(
@@ -894,16 +1411,7 @@ async fn handle_destroy_session(
 
     let response = match control_plane.lock().await.destroy_session(destroy).await {
         Ok(response) => response,
-        Err(LifecycleApiError::EpochMismatch {
-            session_id,
-            expected,
-            actual,
-        }) => {
-            return lifecycle_epoch_mismatch_response(session_id, expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return lifecycle_error_response(error),
     };
     http2_response(
         axum::http::StatusCode::OK,
@@ -930,16 +1438,7 @@ async fn handle_get_reproduction(
         .get_reproduction(get_reproduction)
     {
         Ok(response) => response,
-        Err(LifecycleApiError::EpochMismatch {
-            session_id,
-            expected,
-            actual,
-        }) => {
-            return lifecycle_epoch_mismatch_response(session_id, expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return lifecycle_error_response(error),
     };
     http2_response(
         axum::http::StatusCode::OK,
@@ -961,21 +1460,11 @@ async fn handle_control_attach(
     };
     let streaming = match control_plane.lock().await.streaming_session(attach.session) {
         Ok(streaming) => streaming,
-        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
-            return streaming_epoch_mismatch_response(expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return streaming_error_response(error),
     };
     let control = match streaming.control(attach) {
         Ok(control) => control,
-        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
-            return streaming_epoch_mismatch_response(expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return streaming_error_response(error),
     };
     http2_stream_response(control_event_body(control))
 }
@@ -1002,21 +1491,11 @@ async fn handle_watch_attach(
     };
     let streaming = match control_plane.lock().await.streaming_session(attach.session) {
         Ok(streaming) => streaming,
-        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
-            return streaming_epoch_mismatch_response(expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return streaming_error_response(error),
     };
     let watch = match streaming.watch(attach) {
         Ok(watch) => watch,
-        Err(StreamingApiError::EpochMismatch { expected, actual }) => {
-            return streaming_epoch_mismatch_response(expected, actual);
-        }
-        Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
-        }
+        Err(error) => return streaming_error_response(error),
     };
     http2_stream_response(watch_event_body(watch))
 }
@@ -1039,7 +1518,7 @@ async fn handle_streaming_send(
     };
     let send = match parse_send_request(&body) {
         Ok(send) => send,
-        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+        Err(error) => return send_parse_error_response(&error),
     };
     let response = match control_plane
         .lock()
@@ -1048,16 +1527,31 @@ async fn handle_streaming_send(
         .await
     {
         Ok(response) => response,
-        Err(ControlClientError::Streaming {
-            source: StreamingApiError::EpochMismatch { expected, actual },
-        }) => {
-            return streaming_epoch_mismatch_response(expected, actual);
-        }
+        Err(ControlClientError::Streaming { source }) => return streaming_error_response(source),
         Err(error) => {
-            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+            return typed_rpc_status_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                crucible_api::RpcStatusCode::Internal,
+                "internal",
+                &error.to_string(),
+            );
         }
     };
     http2_response(axum::http::StatusCode::OK, encode_send_response(&response))
+}
+
+fn send_parse_error_response(error: &str) -> axum::response::Response {
+    let (status, reason) = if error.starts_with("unknown command")
+        || error.contains("has no representative payload")
+    {
+        (crucible_api::RpcStatusCode::Unsupported, "unsupported")
+    } else {
+        (
+            crucible_api::RpcStatusCode::InvalidArgument,
+            "invalid-argument",
+        )
+    };
+    typed_rpc_status_response(axum::http::StatusCode::BAD_REQUEST, status, reason, error)
 }
 
 async fn read_rpc_body(
@@ -1140,13 +1634,76 @@ fn encode_get_reproduction_response(response: &GetReproductionResponse) -> Strin
     output
 }
 
+fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
+    match error {
+        LifecycleApiError::EpochMismatch {
+            session_id,
+            expected,
+            actual,
+        } => lifecycle_epoch_mismatch_response(session_id, expected, actual),
+        LifecycleApiError::ScenarioNotFound { name } => {
+            let mut output = String::from("crucible.rpc/error\n");
+            push_wire_line(&mut output, "status", "not-found");
+            push_wire_line(&mut output, "reason", "scenario-not-found");
+            push_wire_line(&mut output, "name", &hex_encode(name.as_bytes()));
+            http2_response(axum::http::StatusCode::NOT_FOUND, output)
+        }
+        LifecycleApiError::SessionNotFound { session } => {
+            lifecycle_session_not_found_response(session)
+        }
+        LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            crucible_api::RpcStatusCode::InvalidArgument,
+            "invalid-argument",
+            &error.to_string(),
+        ),
+        LifecycleApiError::RpcAbi { .. }
+        | LifecycleApiError::GenesisGraph { .. }
+        | LifecycleApiError::CommandChannelClosed { .. }
+        | LifecycleApiError::StateDidNotAdvance { .. }
+        | LifecycleApiError::ActorJoin { .. }
+        | LifecycleApiError::ActorFailed { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            crucible_api::RpcStatusCode::Internal,
+            "internal",
+            &error.to_string(),
+        ),
+    }
+}
+
+fn streaming_error_response(error: StreamingApiError) -> axum::response::Response {
+    match error {
+        StreamingApiError::EpochMismatch { expected, actual } => {
+            streaming_epoch_mismatch_response(expected, actual)
+        }
+        StreamingApiError::SessionNotFound { session } => {
+            streaming_session_not_found_response(session)
+        }
+        StreamingApiError::SessionMismatch { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            crucible_api::RpcStatusCode::InvalidArgument,
+            "invalid-argument",
+            &error.to_string(),
+        ),
+        StreamingApiError::CommandChannelClosed { .. }
+        | StreamingApiError::StateDidNotAdvance { .. }
+        | StreamingApiError::EventStreamLagged { .. }
+        | StreamingApiError::StateUpdateStreamLagged { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            crucible_api::RpcStatusCode::Internal,
+            "internal",
+            &error.to_string(),
+        ),
+    }
+}
+
 fn lifecycle_epoch_mismatch_response(
     session_id: SessionId,
     expected: u64,
     actual: u64,
 ) -> axum::response::Response {
     let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "code", "failed-precondition");
+    push_wire_line(&mut output, "status", "invalid-state");
     push_wire_line(&mut output, "reason", "epoch-mismatch");
     push_wire_line(&mut output, "session-id", &session_id.value.to_string());
     push_wire_line(&mut output, "expected", &expected.to_string());
@@ -1154,12 +1711,42 @@ fn lifecycle_epoch_mismatch_response(
     http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
 }
 
+fn lifecycle_session_not_found_response(session: SessionRef) -> axum::response::Response {
+    let mut output = String::from("crucible.rpc/error\n");
+    push_wire_line(&mut output, "status", "not-found");
+    push_wire_line(&mut output, "reason", "lifecycle-session-not-found");
+    push_session_ref(&mut output, session);
+    http2_response(axum::http::StatusCode::NOT_FOUND, output)
+}
+
+fn streaming_session_not_found_response(session: SessionRef) -> axum::response::Response {
+    let mut output = String::from("crucible.rpc/error\n");
+    push_wire_line(&mut output, "status", "not-found");
+    push_wire_line(&mut output, "reason", "streaming-session-not-found");
+    push_session_ref(&mut output, session);
+    http2_response(axum::http::StatusCode::NOT_FOUND, output)
+}
+
 fn streaming_epoch_mismatch_response(expected: u64, actual: u64) -> axum::response::Response {
     let mut output = String::from("crucible.rpc/error\n");
-    push_wire_line(&mut output, "code", "session-closed:epoch-mismatch");
+    push_wire_line(&mut output, "status", "invalid-state");
+    push_wire_line(&mut output, "reason", "streaming-epoch-mismatch");
     push_wire_line(&mut output, "expected", &expected.to_string());
     push_wire_line(&mut output, "actual", &actual.to_string());
     http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
+}
+
+fn typed_rpc_status_response(
+    http_status: axum::http::StatusCode,
+    status: crucible_api::RpcStatusCode,
+    reason: &'static str,
+    message: &str,
+) -> axum::response::Response {
+    let mut output = String::from("crucible.rpc/error\n");
+    push_wire_line(&mut output, "status", rpc_status_code_wire_name(status));
+    push_wire_line(&mut output, "reason", reason);
+    push_wire_line(&mut output, "message", &hex_encode(message.as_bytes()));
+    http2_response(http_status, output)
 }
 
 fn encode_attached_response(attached: &Attached) -> String {
@@ -1275,18 +1862,25 @@ fn encode_send_response(response: &SendResponse) -> String {
     push_wire_line(
         &mut output,
         "status",
-        match response.result.status {
-            CommandResultStatus::Accepted => "accepted",
-            CommandResultStatus::Rejected {
-                reason: CommandRejectionKind::InvalidState,
-            } => "rejected:invalid-state",
-        },
+        &command_status_wire(response.result.status),
     );
     match response.state_update {
         Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
         None => push_wire_line(&mut output, "state-update", "none"),
     }
     output
+}
+
+fn command_status_wire(status: CommandResultStatus) -> String {
+    match status {
+        CommandResultStatus::Accepted => String::from("accepted"),
+        CommandResultStatus::Rejected { reason } => {
+            format!(
+                "rejected:{}",
+                rpc_status_code_wire_name(reason.rpc_status())
+            )
+        }
+    }
 }
 
 fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
@@ -1732,6 +2326,121 @@ fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop
     (client, actor)
 }
 
+fn streaming_session_fixture<L>(
+    quantum_loop: L,
+    seed: u64,
+) -> (InProcessStreamingSession, SessionActor<L>, SessionRef)
+where
+    L: QuantumLoop + Send + 'static,
+{
+    let scenario = generated_scenario(seed);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let engine = Engine::new(config, graph, quantum_loop);
+    let (sender, receiver) = mpsc::channel::<SessionCommand>(16);
+    let actor = SessionActor::new(engine, receiver);
+    let session = SessionRef::new(SessionId::new(1), 1, scenario.seed());
+    let streaming = InProcessStreamingSession::new(
+        session,
+        sender,
+        actor.live_snapshot(),
+        ControlPlaneEventLog::new(actor.event_log()),
+        actor.reproduction_log(),
+        actor.state_transition_bus(),
+    );
+    (streaming, actor, session)
+}
+
+async fn start_and_pause_streaming_actor(
+    streaming: &InProcessStreamingSession,
+    session: SessionRef,
+) {
+    let started = streaming
+        .send(SendRequest::new(session, 1, SessionCommand::Start))
+        .await
+        .unwrap_or_else(|error| panic!("Start should be accepted: {error}"));
+    assert_eq!(started.result.status, CommandResultStatus::Accepted);
+    let paused = streaming
+        .send(SendRequest::new(session, 2, SessionCommand::Pause))
+        .await
+        .unwrap_or_else(|error| panic!("Pause should be accepted: {error}"));
+    assert_eq!(paused.result.status, CommandResultStatus::Accepted);
+}
+
+async fn stop_streaming_actor(
+    streaming: InProcessStreamingSession,
+    session: SessionRef,
+    command_id: u64,
+    actor_task: tokio::task::JoinHandle<Result<SessionRunReport, SessionError>>,
+) {
+    let stopped = streaming
+        .send(SendRequest::new(session, command_id, SessionCommand::Stop))
+        .await
+        .unwrap_or_else(|error| panic!("Stop should be accepted after rejection: {error}"));
+    assert_eq!(stopped.result.status, CommandResultStatus::Accepted);
+    let report = actor_task
+        .await
+        .unwrap_or_else(|error| panic!("actor task should join: {error}"))
+        .unwrap_or_else(|error| panic!("actor should stop cleanly: {error}"));
+    assert!(matches!(
+        report.final_snapshot.state,
+        crucible_session::EngineState::Stopped { .. }
+    ));
+}
+
+async fn assert_rejected_send(
+    streaming: &InProcessStreamingSession,
+    session: SessionRef,
+    command_id: u64,
+    command: SessionCommand,
+    reason: CommandRejectionKind,
+) {
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        streaming.send(SendRequest::new(session, command_id, command)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("send should not hang waiting for command acknowledgement"))
+    .unwrap_or_else(|error| panic!("send should return typed rejection: {error}"));
+    assert_eq!(response.result.command_id, command_id);
+    assert_eq!(
+        response.result.status,
+        CommandResultStatus::Rejected { reason }
+    );
+    assert!(response.state_update.is_none());
+}
+
+async fn assert_accepted_query_after_rejection(
+    streaming: &InProcessStreamingSession,
+    session: SessionRef,
+    command_id: u64,
+) {
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        streaming.send(SendRequest::new(
+            session,
+            command_id,
+            SessionCommand::query_snapshot(),
+        )),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("query after rejected command should not hang"))
+    .unwrap_or_else(|error| panic!("query after rejected command should succeed: {error}"));
+    assert_eq!(response.result.status, CommandResultStatus::Accepted);
+    assert!(response.state_update.is_none());
+}
+
+fn attach_gdb_command(node_name: &str) -> SessionCommand {
+    SessionCommand::AttachGdb {
+        node: NodeId {
+            name: node_name.to_owned(),
+        },
+        listen: GdbListen::new("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("test gdb listen should be valid: {error}")),
+        reply: CommandReply::discard(),
+    }
+}
+
 fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
     let frontier = VirtualTime { ticks: quantum };
     let causal = condition_payload_entry_for_test(
@@ -1788,6 +2497,108 @@ impl QuantumLoop for ServerQuantumLoop {
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
         })
+    }
+}
+
+struct RejectingGdbLoop {
+    quanta: u64,
+}
+
+impl QuantumLoop for RejectingGdbLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        _node: NodeId,
+        _listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        Err(BackendError::Rejected {
+            message: String::from("test backend rejected gdb attach"),
+        }
+        .into())
+    }
+}
+
+struct InternalGdbLoop {
+    quanta: u64,
+}
+
+impl QuantumLoop for InternalGdbLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        _node: NodeId,
+        _listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("test internal command failure"),
+        })
+    }
+}
+
+struct RejectingOnceShutdownLoop {
+    quanta: u64,
+    shutdown_rejections: u64,
+}
+
+impl QuantumLoop for RejectingOnceShutdownLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        if self.shutdown_rejections == 0 {
+            return Ok(());
+        }
+        self.shutdown_rejections = self.shutdown_rejections.saturating_sub(1);
+        Err(BackendError::Rejected {
+            message: String::from("test backend rejected shutdown"),
+        }
+        .into())
     }
 }
 
