@@ -110,7 +110,7 @@
       }
       {
         label = "bounded quantum step";
-        needle = "self.engine.step_quantum()?;";
+        needle = "let _outcome = self.engine.step_quantum()?;";
       }
       {
         label = "cooperative inter-quantum yield";

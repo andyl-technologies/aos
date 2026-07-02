@@ -120,7 +120,7 @@
       }
       {
         label = "single bounded quantum";
-        needle = "self.engine.step_quantum()?;";
+        needle = "let _outcome = self.engine.step_quantum()?;";
       }
       {
         label = "breakpoint ownership test";

@@ -126,8 +126,20 @@
         needle = "pub const fn lifecycle_transition";
       }
       {
-        label = "unsupported step names rejecting state";
-        needle = "UnsupportedStepMode {\n        /// The state that rejected the step mode.";
+        label = "event step lifecycle kind";
+        needle = "StepEvent";
+      }
+      {
+        label = "assertion step lifecycle kind";
+        needle = "StepAssertion";
+      }
+      {
+        label = "timer step lifecycle kind";
+        needle = "StepTimer";
+      }
+      {
+        label = "duration step lifecycle kind";
+        needle = "StepDuration";
       }
       {
         label = "closed state/reason/outcome/command test";

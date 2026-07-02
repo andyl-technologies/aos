@@ -23,8 +23,9 @@ use std::sync::{Arc, Mutex};
 use crucible::{
     Action, Checkpoint, Condition, Configuration, ContentHash, ControlOperation,
     ControlOperationKind, DebugReverseStepGrain, Decision, EngineError, Fault, FaultTag,
-    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, Schedule, SchedulerError,
-    SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
+    ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, Schedule,
+    ScheduledEventPayload, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SimDuration, TemporalGraph, VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -329,8 +330,6 @@ impl From<&Outcome> for OutcomeKind {
 /// A bounded step mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StepMode {
-    /// Advance to the next instruction-scale coordinate.
-    Instruction,
     /// Advance exactly one scheduler quantum.
     Quantum,
     /// Advance to the next scheduler event coordinate.
@@ -339,29 +338,111 @@ pub enum StepMode {
     Assertion,
     /// Advance to the next timer coordinate.
     Timer,
+    /// Advance to the first quantum boundary at or past the virtual duration.
+    Duration(SimDuration),
 }
 
 impl StepMode {
-    /// The closed forward step-mode set mirrored by debug reverse-step.
+    /// Default deterministic duration used to include [`Self::Duration`] in
+    /// closed-vocabulary tests.
+    pub const DEFAULT_DURATION: SimDuration = SimDuration { nanos: 1 };
+
+    /// The closed forward step-mode set.
     pub const ALL: [Self; 5] = [
-        Self::Instruction,
         Self::Quantum,
         Self::Event,
         Self::Assertion,
         Self::Timer,
+        Self::Duration(Self::DEFAULT_DURATION),
     ];
 
-    /// Returns the reverse-step grain that mirrors this forward mode.
+    /// Returns the reverse-step grain that mirrors this forward mode, when the
+    /// debug vocabulary has an exact grain.
     #[must_use]
-    pub const fn reverse_grain(self) -> DebugReverseStepGrain {
+    pub const fn reverse_grain(self) -> Option<DebugReverseStepGrain> {
         match self {
-            Self::Instruction => DebugReverseStepGrain::Instruction,
-            Self::Quantum => DebugReverseStepGrain::Quantum,
-            Self::Event => DebugReverseStepGrain::Event,
-            Self::Assertion => DebugReverseStepGrain::Assertion,
-            Self::Timer => DebugReverseStepGrain::Timer,
+            Self::Quantum => Some(DebugReverseStepGrain::Quantum),
+            Self::Event => Some(DebugReverseStepGrain::Event),
+            Self::Assertion => Some(DebugReverseStepGrain::Assertion),
+            Self::Timer => Some(DebugReverseStepGrain::Timer),
+            Self::Duration(_) => None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActiveStep {
+    mode: StepMode,
+    target_frontier: Option<VirtualTime>,
+}
+
+impl ActiveStep {
+    fn new(mode: StepMode, start_frontier: VirtualTime) -> Self {
+        let target_frontier = match mode {
+            StepMode::Duration(duration) => Some(VirtualTime {
+                ticks: start_frontier.ticks.saturating_add(duration.nanos),
+            }),
+            StepMode::Quantum | StepMode::Event | StepMode::Assertion | StepMode::Timer => None,
+        };
+        Self {
+            mode,
+            target_frontier,
+        }
+    }
+
+    fn is_complete(self, outcome: &QuantumOutcome) -> bool {
+        match self.mode {
+            StepMode::Quantum => true,
+            StepMode::Event => outcome
+                .event_log_entries
+                .iter()
+                .any(entry_is_resolved_external_event),
+            StepMode::Assertion => outcome
+                .event_log_entries
+                .iter()
+                .any(entry_is_assertion_state_change),
+            StepMode::Timer => outcome.event_log_entries.iter().any(entry_is_timer_fire),
+            StepMode::Duration(_) => self
+                .target_frontier
+                .is_some_and(|target| outcome.frontier >= target),
+        }
+    }
+}
+
+fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -> bool {
+    match entry.payload() {
+        SchedulerEventLogPayload::ResolvedHappening(event) => matches!(
+            &event.payload,
+            ScheduledEventPayload::BackendInput(_)
+                | ScheduledEventPayload::IoCompletion(_)
+                | ScheduledEventPayload::FaultActivation(_)
+                | ScheduledEventPayload::ProbabilisticFault(_)
+        ),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::NetworkDelivered {
+            ..
+        })
+        | SchedulerEventLogPayload::Observable(ObservableEventPayload::IoCompletion { .. }) => true,
+        _ => false,
+    }
+}
+
+fn entry_is_assertion_state_change(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged { .. })
+    )
+}
+
+fn entry_is_timer_fire(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::TriggerFired(firing)
+            if condition_summary_is_timer_fire(firing.condition_summary())
+    )
+}
+
+fn condition_summary_is_timer_fire(summary: &str) -> bool {
+    summary.lines().any(|line| line.trim() == "predicate=timer")
 }
 
 /// Actor-local breakpoint identifier.
@@ -726,8 +807,14 @@ pub enum SessionCommandKind {
     Pause,
     /// Execute a supported quantum step.
     StepQuantum,
-    /// Execute a step mode whose executor is intentionally pending.
-    StepUnsupported,
+    /// Execute an event-boundary step.
+    StepEvent,
+    /// Execute an assertion-boundary step.
+    StepAssertion,
+    /// Execute a timer-boundary step.
+    StepTimer,
+    /// Execute a virtual-duration step.
+    StepDuration,
     /// Transition to a terminal operator-stopped state.
     Stop,
     /// Inject legacy deterministic control.
@@ -756,12 +843,15 @@ impl SessionCommandKind {
     /// This covers the RFC §4 command surface plus the current implementation's
     /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
     /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
         Self::StepQuantum,
-        Self::StepUnsupported,
+        Self::StepEvent,
+        Self::StepAssertion,
+        Self::StepTimer,
+        Self::StepDuration,
         Self::Stop,
         Self::Inject,
         Self::InjectFault,
@@ -789,8 +879,17 @@ impl SessionCommandKind {
             Self::StepQuantum => SessionCommand::Step {
                 mode: StepMode::Quantum,
             },
-            Self::StepUnsupported => SessionCommand::Step {
-                mode: StepMode::Instruction,
+            Self::StepEvent => SessionCommand::Step {
+                mode: StepMode::Event,
+            },
+            Self::StepAssertion => SessionCommand::Step {
+                mode: StepMode::Assertion,
+            },
+            Self::StepTimer => SessionCommand::Step {
+                mode: StepMode::Timer,
+            },
+            Self::StepDuration => SessionCommand::Step {
+                mode: StepMode::Duration(StepMode::DEFAULT_DURATION),
             },
             Self::Stop => SessionCommand::Stop,
             Self::Inject => SessionCommand::Inject,
@@ -836,7 +935,18 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::Step {
                 mode: StepMode::Quantum,
             } => Self::StepQuantum,
-            SessionCommand::Step { .. } => Self::StepUnsupported,
+            SessionCommand::Step {
+                mode: StepMode::Event,
+            } => Self::StepEvent,
+            SessionCommand::Step {
+                mode: StepMode::Assertion,
+            } => Self::StepAssertion,
+            SessionCommand::Step {
+                mode: StepMode::Timer,
+            } => Self::StepTimer,
+            SessionCommand::Step {
+                mode: StepMode::Duration(_),
+            } => Self::StepDuration,
             SessionCommand::Snapshot => Self::Snapshot,
             SessionCommand::Fork { .. } => Self::Fork,
             SessionCommand::Inject => Self::Inject,
@@ -885,7 +995,10 @@ pub const fn lifecycle_transition(
             Command::Continue
             | Command::Pause
             | Command::StepQuantum
-            | Command::StepUnsupported
+            | Command::StepEvent
+            | Command::StepAssertion
+            | Command::StepTimer
+            | Command::StepDuration
             | Command::Inject
             | Command::InjectFault
             | Command::HealFault
@@ -893,7 +1006,37 @@ pub const fn lifecycle_transition(
             | Command::Fork,
         ) => Rejected,
 
-        (State::Running, Command::Pause | Command::StepQuantum) => Accepted { to: State::Paused },
+        (
+            State::Running,
+            Command::StepQuantum
+            | Command::StepEvent
+            | Command::StepAssertion
+            | Command::StepTimer
+            | Command::StepDuration,
+        ) => Accepted { to: State::Running },
+        (State::Running, Command::Pause) => Accepted { to: State::Paused },
+        (
+            State::Paused,
+            Command::Continue
+            | Command::StepQuantum
+            | Command::StepEvent
+            | Command::StepAssertion
+            | Command::StepTimer
+            | Command::StepDuration,
+        ) => Accepted { to: State::Running },
+        (
+            State::Paused,
+            Command::Pause
+            | Command::Snapshot
+            | Command::Fork
+            | Command::Inject
+            | Command::InjectFault
+            | Command::HealFault
+            | Command::SetBreakpoint
+            | Command::RemoveBreakpoint
+            | Command::CreateSavepoint
+            | Command::Query,
+        ) => Accepted { to: State::Paused },
         (State::Running, Command::Stop) => Accepted { to: State::Stopped },
         (
             State::Running,
@@ -906,28 +1049,10 @@ pub const fn lifecycle_transition(
             | Command::CreateSavepoint
             | Command::Query,
         ) => Accepted { to: State::Running },
-        (
-            State::Running,
-            Command::Start | Command::Continue | Command::StepUnsupported | Command::Fork,
-        ) => Rejected,
+        (State::Running, Command::Start | Command::Continue | Command::Fork) => Rejected,
 
-        (State::Paused, Command::Continue) => Accepted { to: State::Running },
-        (
-            State::Paused,
-            Command::Pause
-            | Command::StepQuantum
-            | Command::Snapshot
-            | Command::Fork
-            | Command::Inject
-            | Command::InjectFault
-            | Command::HealFault
-            | Command::SetBreakpoint
-            | Command::RemoveBreakpoint
-            | Command::CreateSavepoint
-            | Command::Query,
-        ) => Accepted { to: State::Paused },
         (State::Paused, Command::Stop) => Accepted { to: State::Stopped },
-        (State::Paused, Command::Start | Command::StepUnsupported) => Rejected,
+        (State::Paused, Command::Start) => Rejected,
 
         (
             State::Stopped,
@@ -943,7 +1068,10 @@ pub const fn lifecycle_transition(
             | Command::Continue
             | Command::Pause
             | Command::StepQuantum
-            | Command::StepUnsupported
+            | Command::StepEvent
+            | Command::StepAssertion
+            | Command::StepTimer
+            | Command::StepDuration
             | Command::Inject
             | Command::InjectFault
             | Command::HealFault
@@ -1628,6 +1756,7 @@ pub struct Engine<L> {
     runtime: Option<RuntimeState>,
     runtime_instantiated: bool,
     state: EngineState,
+    active_step: Option<ActiveStep>,
     graph: TemporalGraph,
     breakpoints: BreakpointSet,
     quantum_loop: L,
@@ -1648,6 +1777,7 @@ impl<L> Engine<L> {
             runtime: None,
             runtime_instantiated: false,
             state: EngineState::Loaded,
+            active_step: None,
             graph,
             breakpoints: BreakpointSet::new(),
             quantum_loop,
@@ -1917,6 +2047,7 @@ impl<L: QuantumLoop> Engine<L> {
             }
             SessionCommand::Continue => {
                 if matches!(self.state, EngineState::Paused { .. }) {
+                    self.active_step = None;
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
                 } else {
@@ -1925,6 +2056,7 @@ impl<L: QuantumLoop> Engine<L> {
             }
             SessionCommand::Pause => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.active_step = None;
                     self.state = EngineState::Paused {
                         reason: PauseReason::UserRequested,
                     };
@@ -1936,21 +2068,8 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::Step { mode } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if *mode != StepMode::Quantum {
-                        return Err(SessionError::UnsupportedStepMode {
-                            state: self.state.clone(),
-                            mode: *mode,
-                        });
-                    }
-                    let previous = self.state.clone();
+                    self.active_step = Some(ActiveStep::new(*mode, self.frontier));
                     self.state = EngineState::Running;
-                    if let Err(error) = self.step_quantum() {
-                        self.state = previous;
-                        return Err(error);
-                    }
-                    self.state = EngineState::Paused {
-                        reason: PauseReason::StepComplete { mode: *mode },
-                    };
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -2045,6 +2164,7 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
+                    self.active_step = None;
                     self.state = EngineState::Stopped {
                         outcome: Outcome::Stopped,
                     };
@@ -2123,6 +2243,14 @@ impl<L: QuantumLoop> Engine<L> {
         self.quanta = self.quanta.saturating_add(1);
         self.pending_event_log_entries
             .extend(outcome.event_log_entries.iter().cloned());
+        if let Some(step) = self.active_step {
+            if step.is_complete(&outcome) {
+                self.state = EngineState::Paused {
+                    reason: PauseReason::StepComplete { mode: step.mode },
+                };
+                self.active_step = None;
+            }
+        }
 
         Ok(outcome)
     }
@@ -2173,14 +2301,6 @@ pub enum SessionError {
         emitted: u64,
         /// Event-log entry count returned by the scheduler.
         next: u64,
-    },
-    /// A forward step mode is part of the debug vocabulary but has no executor yet.
-    #[error("step mode {mode:?} is not implemented by the forward session executor in {state:?}")]
-    UnsupportedStepMode {
-        /// The state that rejected the step mode.
-        state: EngineState,
-        /// Step mode that cannot be executed by the forward session actor yet.
-        mode: StepMode,
     },
 }
 
@@ -2312,7 +2432,7 @@ impl<L: QuantumLoop> SessionActor<L> {
                 }
 
                 let pending_control = self.engine.pending_control_len() as u64;
-                self.engine.step_quantum()?;
+                let _outcome = self.engine.step_quantum()?;
                 let entries = self.engine.drain_event_log_entries();
                 self.event_log.append_entries(&entries);
                 self.control_acknowledgements = self
@@ -2398,55 +2518,126 @@ impl<L: QuantumLoop> SessionActor<L> {
 mod tests {
     use super::*;
     use crucible::{
-        Checkpoint, CheckpointKind, DebugReverseStepGrain, Decision, DeliveryOrderDecision,
-        EventKey, GenesisCheckpoint, NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind,
-        Seed, VirtualTime, step,
+        Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind,
+        ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, DebugReverseStepGrain,
+        Decision, DeliveryOrderDecision, Event, EventGraph, EventGraphState, EventId, EventKey,
+        GenesisCheckpoint, LogLevel, NodeId, Predicate, ScenarioDef, ScheduledEvent,
+        ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, Seed, TimerId,
+        TriggerActionApplication, VirtualTime, step,
     };
 
     #[test]
-    fn step_modes_mirror_debug_reverse_grains() {
-        let reverse = StepMode::ALL
-            .into_iter()
-            .map(StepMode::reverse_grain)
-            .collect::<Vec<_>>();
-
+    fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
         assert_eq!(
-            reverse,
-            Vec::from(DebugReverseStepGrain::ALL),
-            "forward and reverse debug step vocabularies must stay in lockstep"
+            StepMode::ALL,
+            [
+                StepMode::Quantum,
+                StepMode::Event,
+                StepMode::Assertion,
+                StepMode::Timer,
+                StepMode::Duration(StepMode::DEFAULT_DURATION),
+            ]
+        );
+        assert_eq!(
+            StepMode::ALL
+                .into_iter()
+                .filter_map(StepMode::reverse_grain)
+                .collect::<Vec<_>>(),
+            vec![
+                DebugReverseStepGrain::Quantum,
+                DebugReverseStepGrain::Event,
+                DebugReverseStepGrain::Assertion,
+                DebugReverseStepGrain::Timer,
+            ]
+        );
+        assert_eq!(
+            StepMode::Duration(SimDuration { nanos: 10 }).reverse_grain(),
+            None,
+            "duration is a forward-only step bound until the debug model has a duration grain"
         );
     }
 
     #[test]
-    fn non_quantum_step_modes_are_vocabulary_until_forward_executors_exist() {
+    fn engine_step_modes_start_bounded_execution_for_forward_vocabulary() {
         let scenario = generated_scenario(22);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
-        let mut engine = Engine::new(config, graph, StubLoop);
-        if let Err(error) = engine.apply_command(SessionCommand::Start) {
-            panic!("start should instantiate runtime: {error}");
-        }
-        let before = engine.snapshot();
-
-        for mode in [
-            StepMode::Instruction,
-            StepMode::Event,
-            StepMode::Assertion,
-            StepMode::Timer,
-        ] {
-            let error = match engine.apply_command(SessionCommand::Step { mode }) {
-                Ok(_) => panic!("unsupported step mode should not execute as a quantum"),
-                Err(error) => error,
+        for mode in StepMode::ALL {
+            let mut engine = Engine::new(config.clone(), graph.clone(), StubLoop);
+            if let Err(error) = engine.apply_command(SessionCommand::Start) {
+                panic!("start should instantiate runtime: {error}");
+            }
+            let snapshot = match engine.apply_command(SessionCommand::Step { mode }) {
+                Ok(snapshot) => snapshot,
+                Err(error) => panic!("{mode:?} step should be accepted: {error}"),
             };
-            assert_eq!(engine.snapshot(), before);
-            assert_eq!(
-                error,
-                SessionError::UnsupportedStepMode {
-                    state: before.state.clone(),
-                    mode,
-                }
-            );
+            assert_eq!(snapshot.state, EngineState::Running);
+            assert_eq!(engine.quanta(), 0);
+            assert_eq!(engine.active_step.map(|step| step.mode), Some(mode));
         }
+    }
+
+    #[test]
+    fn engine_step_modes_complete_from_quantum_outcomes() {
+        let cases = vec![
+            (
+                22,
+                StepMode::Event,
+                ScriptedStepLoop::with_payload(2, resolved_backend_input_payload(2)),
+            ),
+            (
+                23,
+                StepMode::Assertion,
+                ScriptedStepLoop::with_payload(2, assertion_state_change_payload()),
+            ),
+            (
+                24,
+                StepMode::Timer,
+                ScriptedStepLoop::with_payload(2, timer_fire_payload(2)),
+            ),
+            (
+                25,
+                StepMode::Duration(SimDuration { nanos: 2 }),
+                ScriptedStepLoop::default(),
+            ),
+        ];
+
+        for (seed, mode, quantum_loop) in cases {
+            assert_engine_step_completes_after_second_quantum(seed, mode, quantum_loop);
+        }
+    }
+
+    #[test]
+    fn timer_step_ignores_timer_actions_without_timer_predicate_fire() {
+        let scenario = generated_scenario(26);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payload(2, timer_action_payload(2)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime before timer action test: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Step {
+            mode: StepMode::Timer,
+        }) {
+            panic!("timer step should start bounded execution: {error}");
+        }
+
+        for iteration in 0..2 {
+            if let Err(error) = engine.step_quantum() {
+                panic!("timer action test quantum {iteration} should run: {error}");
+            }
+        }
+
+        assert_eq!(engine.quanta(), 2);
+        assert_eq!(engine.state(), &EngineState::Running);
+        assert_eq!(
+            engine.active_step.map(|step| step.mode),
+            Some(StepMode::Timer)
+        );
     }
 
     #[test]
@@ -2486,7 +2677,10 @@ mod tests {
                 SessionCommandKind::Continue,
                 SessionCommandKind::Pause,
                 SessionCommandKind::StepQuantum,
-                SessionCommandKind::StepUnsupported,
+                SessionCommandKind::StepEvent,
+                SessionCommandKind::StepAssertion,
+                SessionCommandKind::StepTimer,
+                SessionCommandKind::StepDuration,
                 SessionCommandKind::Stop,
                 SessionCommandKind::Inject,
                 SessionCommandKind::InjectFault,
@@ -2548,7 +2742,7 @@ mod tests {
         assert_eq!(
             lifecycle_transition(LifecycleStateKind::Running, SessionCommandKind::StepQuantum),
             LifecycleTransition::Accepted {
-                to: LifecycleStateKind::Paused,
+                to: LifecycleStateKind::Running,
             }
         );
         assert_eq!(
@@ -3120,6 +3314,86 @@ mod tests {
         }
     }
 
+    async fn assert_actor_step_completes_after_second_quantum(
+        seed: u64,
+        mode: StepMode,
+        quantum_loop: ScriptedStepLoop,
+    ) {
+        let scenario = generated_scenario(seed);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, quantum_loop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime before scripted step: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = sender.send(SessionCommand::Step { mode }).await {
+            panic!("{mode:?} step should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("{mode:?} step should start bounded execution: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 0);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+
+        if let Err(error) = actor.run_once().await {
+            panic!("{mode:?} step should stay running before the stop boundary: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 1);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+
+        if let Err(error) = actor.run_once().await {
+            panic!("{mode:?} step should complete at its deterministic boundary: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 2);
+        assert_eq!(actor.engine().configuration().schedule.len(), 2);
+        assert_eq!(
+            actor.engine().state(),
+            &EngineState::Paused {
+                reason: PauseReason::StepComplete { mode },
+            }
+        );
+    }
+
+    fn assert_engine_step_completes_after_second_quantum(
+        seed: u64,
+        mode: StepMode,
+        quantum_loop: ScriptedStepLoop,
+    ) {
+        let scenario = generated_scenario(seed);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, quantum_loop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime before scripted engine step: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Step { mode }) {
+            panic!("{mode:?} step should start bounded execution: {error}");
+        }
+        assert_eq!(engine.state(), &EngineState::Running);
+        assert_eq!(engine.quanta(), 0);
+
+        if let Err(error) = engine.step_quantum() {
+            panic!("{mode:?} step should stay running before the stop boundary: {error}");
+        }
+        assert_eq!(engine.quanta(), 1);
+        assert_eq!(engine.state(), &EngineState::Running);
+
+        if let Err(error) = engine.step_quantum() {
+            panic!("{mode:?} step should complete at its deterministic boundary: {error}");
+        }
+        assert_eq!(engine.quanta(), 2);
+        assert_eq!(
+            engine.state(),
+            &EngineState::Paused {
+                reason: PauseReason::StepComplete { mode },
+            }
+        );
+        assert_eq!(engine.active_step, None);
+    }
+
     fn assert_rejection_names_state_and_command(
         error: SessionError,
         expected_state: EngineState,
@@ -3129,14 +3403,6 @@ mod tests {
             SessionError::InvalidTransition { state, command } => {
                 assert_eq!(state, expected_state);
                 assert_eq!(command, expected_command);
-            }
-            SessionError::UnsupportedStepMode { state, mode } => {
-                assert_eq!(state, expected_state);
-                assert_eq!(
-                    expected_command,
-                    SessionCommand::Step { mode },
-                    "unsupported step rejection should name the rejected command mode"
-                );
             }
             other => panic!("unexpected rejection type: {other}"),
         }
@@ -3458,19 +3724,44 @@ mod tests {
         let graph = graph_with_baked_genesis(&scenario);
         let engine = Engine::new(config, graph, AppendingLoop::default());
         let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
         for command in [
             SessionCommand::Start,
             SessionCommand::Step {
                 mode: StepMode::Quantum,
             },
-            SessionCommand::Stop,
         ] {
             if let Err(error) = sender.send(command).await {
                 panic!("command should enqueue: {error}");
             }
         }
 
-        let report = match SessionActor::new(engine, receiver).run().await {
+        if let Err(error) = actor.run_once().await {
+            panic!("start command should instantiate runtime: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("step command should start bounded execution: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 0);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+        if let Err(error) = actor.run_once().await {
+            panic!("quantum step should complete after one scheduler boundary: {error}");
+        }
+        assert_eq!(actor.engine().quanta(), 1);
+        assert_eq!(actor.yielded_after_quanta(), 1);
+        assert_eq!(
+            actor.engine().state(),
+            &EngineState::Paused {
+                reason: PauseReason::StepComplete {
+                    mode: StepMode::Quantum,
+                }
+            }
+        );
+
+        if let Err(error) = sender.send(SessionCommand::Stop).await {
+            panic!("stop should enqueue after step completion: {error}");
+        }
+        let report = match actor.run().await {
             Ok(report) => report,
             Err(error) => panic!("actor should stop after command-driven step: {error}"),
         };
@@ -3517,6 +3808,14 @@ mod tests {
         {
             panic!("quantum step should enqueue: {error}");
         }
+        if let Err(error) = actor.run_once().await {
+            panic!("running quantum step should start bounded execution: {error}");
+        }
+        assert_eq!(actor.control_acknowledgements(), 0);
+        assert_eq!(actor.engine().pending_control_len(), 1);
+        assert_eq!(actor.engine().quanta(), 0);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+
         if let Err(error) = actor.run_once().await {
             panic!("running quantum step should drain pending control: {error}");
         }
@@ -3582,6 +3881,14 @@ mod tests {
             panic!("quantum step should enqueue: {error}");
         }
         if let Err(error) = actor.run_once().await {
+            panic!("paused quantum step should start bounded execution: {error}");
+        }
+        assert_eq!(actor.control_acknowledgements(), 1);
+        assert_eq!(actor.engine().pending_control_len(), 1);
+        assert_eq!(actor.engine().quanta(), 0);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+
+        if let Err(error) = actor.run_once().await {
             panic!("paused quantum step should drain pending control: {error}");
         }
 
@@ -3596,6 +3903,93 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn session_actor_step_modes_stop_on_deterministic_boundaries() {
+        let cases = vec![
+            (
+                30,
+                StepMode::Event,
+                ScriptedStepLoop::with_payload(2, resolved_backend_input_payload(2)),
+            ),
+            (
+                31,
+                StepMode::Assertion,
+                ScriptedStepLoop::with_payload(2, assertion_state_change_payload()),
+            ),
+            (
+                32,
+                StepMode::Timer,
+                ScriptedStepLoop::with_payload(2, timer_fire_payload(2)),
+            ),
+            (
+                33,
+                StepMode::Duration(SimDuration { nanos: 2 }),
+                ScriptedStepLoop::default(),
+            ),
+        ];
+
+        for (seed, mode, quantum_loop) in cases {
+            assert_actor_step_completes_after_second_quantum(seed, mode, quantum_loop).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn session_actor_step_modes_are_interruptible_by_pause_and_stop() {
+        for command in [SessionCommand::Pause, SessionCommand::Stop] {
+            let scenario = generated_scenario(34);
+            let config = Configuration::genesis(scenario.clone());
+            let graph = graph_with_baked_genesis(&scenario);
+            let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+            if let Err(error) = engine.apply_command(SessionCommand::Start) {
+                panic!("start should instantiate runtime before interruptible step: {error}");
+            }
+            let (sender, receiver) = mpsc::channel(4);
+            let mut actor = SessionActor::new(engine, receiver);
+            if let Err(error) = sender
+                .send(SessionCommand::Step {
+                    mode: StepMode::Duration(SimDuration { nanos: 8 }),
+                })
+                .await
+            {
+                panic!("duration step should enqueue: {error}");
+            }
+
+            if let Err(error) = actor.run_once().await {
+                panic!("duration step should start bounded execution: {error}");
+            }
+            if let Err(error) = actor.run_once().await {
+                panic!("first duration-step quantum should run: {error}");
+            }
+            assert_eq!(actor.engine().quanta(), 1);
+            assert!(matches!(actor.engine().state(), EngineState::Running));
+
+            if let Err(error) = sender.send(command.clone()).await {
+                panic!("interrupt command should enqueue: {error}");
+            }
+            if let Err(error) = actor.run_once().await {
+                panic!("interrupt command should be serviced before the next quantum: {error}");
+            }
+
+            assert_eq!(actor.engine().quanta(), 1);
+            assert_eq!(actor.engine().active_step, None);
+            match command {
+                SessionCommand::Pause => assert!(matches!(
+                    actor.engine().state(),
+                    EngineState::Paused {
+                        reason: PauseReason::UserRequested
+                    }
+                )),
+                SessionCommand::Stop => assert!(matches!(
+                    actor.engine().state(),
+                    EngineState::Stopped {
+                        outcome: Outcome::Stopped
+                    }
+                )),
+                _ => panic!("test only covers pause and stop interrupts"),
+            }
+        }
     }
 
     #[test]
@@ -3750,6 +4144,87 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ScriptedStepLoop {
+        quanta: u64,
+        event_log_entries: u64,
+        payloads_by_quantum: std::collections::BTreeMap<u64, Vec<SchedulerEventLogPayload>>,
+    }
+
+    impl ScriptedStepLoop {
+        fn with_payload(quantum: u64, payload: SchedulerEventLogPayload) -> Self {
+            let mut payloads_by_quantum = std::collections::BTreeMap::new();
+            payloads_by_quantum.insert(quantum, vec![payload]);
+            Self {
+                quanta: 0,
+                event_log_entries: 0,
+                payloads_by_quantum,
+            }
+        }
+    }
+
+    impl QuantumLoop for ScriptedStepLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            self.quanta = self.quanta.saturating_add(1);
+            let at = VirtualTime { ticks: self.quanta };
+            let entries = if let Some(payloads) = self.payloads_by_quantum.remove(&self.quanta) {
+                payloads
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, payload)| {
+                        crucible::test_support::condition_payload_entry_for_test(
+                            self.event_log_entries + usize_to_u64(index),
+                            at,
+                            payload,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![crucible::test_support::condition_boundary_entry_for_test(
+                    self.event_log_entries,
+                    at,
+                    crucible::SchedulerEvaluationBoundaryKind::Quantum,
+                )]
+            };
+            self.event_log_entries = self
+                .event_log_entries
+                .saturating_add(usize_to_u64(entries.len()));
+            let decision = generated_decision(self.quanta);
+            let configuration = step(&request.configuration, decision.clone());
+            Ok(QuantumOutcome {
+                configuration,
+                frontier: at,
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: entries,
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::new(
+                    Default::default(),
+                    0,
+                    self.event_log_entries,
+                ),
+            })
+        }
+    }
+
+    struct NoLeaves;
+
+    impl ConditionLeafOracle for NoLeaves {
+        fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+            match leaf {
+                ConditionLeaf::Named { .. } | ConditionLeaf::GuestMarker { .. } => {
+                    panic!("session step-mode tests should not evaluate host leaf predicates")
+                }
+            }
+        }
+    }
+
+    #[derive(Default)]
     struct AppendingLoop {
         quanta: u64,
     }
@@ -3868,6 +4343,80 @@ mod tests {
             VirtualTime { ticks: sequence },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
         )
+    }
+
+    fn resolved_backend_input_payload(seed: u64) -> SchedulerEventLogPayload {
+        let node = scheduler_node("node-a");
+        SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
+            key: ScheduledEventKey::from_parts(
+                VirtualTime { ticks: seed },
+                node.clone(),
+                node.clone(),
+                seed,
+            ),
+            payload: ScheduledEventPayload::BackendInput(BackendInput {
+                node: node.node,
+                payload: vec![1, 2, 3],
+            }),
+        })
+    }
+
+    fn assertion_state_change_payload() -> SchedulerEventLogPayload {
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
+            name: AssertionId::from_name("session-step-assertion"),
+            state: AssertionPhase::Satisfied,
+        })
+    }
+
+    fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {
+        let timer = TimerId {
+            name: String::from("session-step-timer"),
+        };
+        let graph = EventGraph::new(vec![
+            Event::once(
+                EventId::from_name("session-step-arm-timer"),
+                None,
+                Action::arm_timer(timer.clone(), SimDuration { nanos: sequence }),
+            ),
+            Event::once(
+                EventId::from_name("session-step-timer"),
+                Some(Predicate::timer(timer.clone())),
+                Action::Log {
+                    level: LogLevel::Info,
+                    message: String::from("session step timer fired"),
+                },
+            ),
+        ])
+        .unwrap_or_else(|error| panic!("timer fire event graph should build: {error}"));
+        let mut graph_state = EventGraphState::new();
+        let mut timer_fires = std::collections::BTreeMap::new();
+        timer_fires.insert(timer, VirtualTime { ticks: sequence });
+        let mut pass = ConditionEvaluationPass::from_log_prefix(
+            crucible::test_support::condition_prefix_at_quantum_boundary_for_test(sequence),
+            NoLeaves,
+        )
+        .with_timer_fires(timer_fires);
+        let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+        let Some(firing) = firings
+            .iter()
+            .find(|firing| condition_summary_is_timer_fire(firing.condition_summary()))
+            .cloned()
+        else {
+            panic!("timer fire event graph should produce a timer predicate firing");
+        };
+        SchedulerEventLogPayload::TriggerFired(firing)
+    }
+
+    fn timer_action_payload(sequence: u64) -> SchedulerEventLogPayload {
+        SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+            sequence,
+            event: EventId::from_name("session-step-timer"),
+            at: VirtualTime { ticks: sequence },
+            path: Vec::new(),
+            action: Action::cancel_timer(TimerId {
+                name: String::from("session-step-timer"),
+            }),
+        })
     }
 
     fn generated_decision(seed: u64) -> Decision {

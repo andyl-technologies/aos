@@ -1153,6 +1153,12 @@ in rec {
       taskIds = ["T-SESS-4"];
       dependencies = [phase5.sessionLifecycle];
     };
+    sessionStepModes = import ./phase5-session-step-modes.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionStepModes";
+      taskIds = ["T-SESS-5"];
+      dependencies = [phase5.sessionCommandSet];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

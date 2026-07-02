@@ -213,6 +213,10 @@ long-held locks.
   breakpoint insert/remove, savepoints, fork, and query, maps them into the
   session engine, scheduler control queue, and temporal graph, and verifies
   successful and rejected oneshot replies.
+  `T-SESS-5` is green through `checks.crucible.phase5.sessionStepModes`, which
+  adds engine-owned active-step state for quantum/event/assertion/timer/duration
+  forward steps, pauses only at deterministic event-log or virtual-time stop
+  points, and verifies pause/stop interruption between bounded quanta.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
