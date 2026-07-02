@@ -1160,9 +1160,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       Tests cover low-level dirty-card clearing, no-partial-clear on stale commit
       buffers, boundary remembered-edge dry-run clearing of the owned card
       table, and sibling boundary preflights clearing independent daemon-wide
-      copies. This is still an owned-buffer dry-run only: mutating the live
-      evaluator/daemon card table and installing the Tier-B collector remain
-      open.
+      copies. This remains an owned-buffer dry-run for object bytes, forwarding
+      slots, reference storage, and remembered-set publication; outcome-owned
+      live card-table clearing is covered by the next row, while evaluator/daemon
+      collector installation remains open.
+- [x] Current boundary live-card-table clearing bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
+      derives the same boundary commit dry run and clears the outcome-owned
+      daemon card table only after every recorded allocator tier has validated
+      and applied its owned synthetic commit buffers. The returned report keeps
+      duplicated owned dry-run card clears separate from the single live
+      outcome-card-table clear, and failed planning or commit validation leaves
+      the live table unchanged. Tests cover remembered-edge and dirty old-field
+      boundary successes, multi-card live clears, empty-boundary no-clear
+      behavior, and a missing-dirty-card failure that preserves the original live
+      dirty-card marker. This is still not a full live collector commit: live
+      root/field mutation, live object bytes, forwarding headers,
+      evaluator-owned remembered-set publication, object-generation mutation,
+      semispace ownership, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -1895,9 +1910,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       remembered-set buffers. Boundary preflights expose per-generation
       object-payload byte totals, and the dry-run summary reports those totals
       alongside rewritten root/heap-field counts and lower-level commit counts.
-      These helpers still do not bind live object-byte buffers, live root/field
-      storage, live forwarding slots, or evaluator-owned remembered-set storage;
-      reserve semispace storage; or commit live mutations.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
+      then gates a single outcome-owned card-table clear on the same successful
+      owned dry-run validation. These helpers still do not bind live object-byte
+      buffers, live root/field storage, live forwarding slots, or
+      evaluator-owned remembered-set storage; reserve semispace storage; or
+      commit those live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1912,10 +1930,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
       stress-disabled outcomes, boundary owned reference-writeback, synthetic
-      commit-buffer application, and single-call owned commit dry-run, stale
-      same-domain poll rejection, and stack cleanup after force/primop failures.
-      This still does not infer arbitrary
-      Rust locals without explicit value-stack registration, bind mutable
+      commit-buffer application, single-call owned commit dry-run,
+      outcome-owned live card-table clearing after successful dry-run
+      validation, stale same-domain poll rejection, and stack cleanup after
+      force/primop failures. This still does not infer arbitrary Rust locals
+      without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
       remain open in the full precise-root row above.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.

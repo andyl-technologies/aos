@@ -1114,6 +1114,46 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus mutation of the outcome-owned daemon card table.
+///
+/// This report preserves the full owned dry-run artifacts and separately records
+/// the one live dirty-card clear applied to [`EvalOutcome`]'s card table after
+/// all preflight validation and owned-buffer applications succeeded. It still
+/// does not mutate live roots, heap fields, object bytes, forwarding slots,
+/// remembered-set storage, object generations, or semispace storage.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    card_table_clear_report: GcCardTableClearReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        card_table_clear_report: GcCardTableClearReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            card_table_clear_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated the live card-table clear.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the report for the outcome-owned daemon card-table clear.
+    pub const fn card_table_clear_report(&self) -> GcCardTableClearReport {
+        self.card_table_clear_report
+    }
+
+    /// Returns how many dirty-card markers were cleared from live outcome state.
+    pub const fn card_table_dirty_cards_cleared(&self) -> usize {
+        self.card_table_clear_report.dirty_cards()
+    }
+}
+
 /// Aggregate counts and payload bytes from owned boundary minor-GC dry runs.
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
@@ -1816,6 +1856,43 @@ impl EvalOutcome {
     ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
         self.gc_stress_boundary_minor_gc_commit_preflights(promotion_policy, bases)?
             .apply_owned_commit_dry_run()
+    }
+
+    /// Runs a boundary minor-GC dry run and clears the outcome-owned card table.
+    ///
+    /// The method first derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. Only after every
+    /// recorded allocator tier has validated and applied its owned synthetic
+    /// commit buffers does it clear this outcome's daemon card table. Empty
+    /// boundary scans do not clear the table.
+    ///
+    /// This is a live card-table clearing bridge for GC-stress boundary
+    /// experiments, not a full collector commit. It still does not bind live
+    /// object-byte buffers, mutate live roots or heap fields, publish the
+    /// outcome-owned remembered set, install forwarding pointers, mutate object
+    /// generations, reserve semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails. When an error is returned, this outcome's card
+    /// table is left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        let card_table_clear_report = if dry_run.is_empty() {
+            GcCardTableClearReport::default()
+        } else {
+            self.thunk_resolve_card_table.clear_dirty_cards()
+        };
+
+        Ok(EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun::new(
+            dry_run,
+            card_table_clear_report,
+        ))
     }
 
     fn gc_stress_boundary_minor_gc_commit_preflight(

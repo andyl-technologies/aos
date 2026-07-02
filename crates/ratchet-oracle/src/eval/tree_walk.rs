@@ -82,13 +82,14 @@ use crate::compile::{
     IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness, resolve,
 };
 use crate::heap::{
-    AllocationRegionFacts, GcCardTable, GenerationalGcError, GenerationalGcTier, HeapMemoryBudget,
-    MinorGcCommitReport, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
-    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcObjectCopyPlan,
-    MinorGcOwnedDestinationStorage, MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcSourceObjectBytes, NurseryObjectLayout, RegionEffect,
-    RegionLifetime, RegionPlacement, RegionPlacementReason, RegionPlan, RegionRuntimeTier,
-    RegionSharing, RememberedSet, ResolvedValueGeneration,
+    AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GenerationalGcError,
+    GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport, MinorGcDestinationBases,
+    MinorGcDestinationPlacementPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcObjectCopyPlan, MinorGcOwnedDestinationStorage,
+    MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcSourceObjectBytes, NurseryObjectLayout, RegionEffect, RegionLifetime, RegionPlacement,
+    RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedSet,
+    ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};

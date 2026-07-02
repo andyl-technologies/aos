@@ -21,6 +21,17 @@ fn static_gc_address(address_bits: usize) -> GcHeapAddress {
     GcHeapAddress::new(address_bits).expect("static address is a valid GC address")
 }
 
+fn next_dirty_card_source(card_table: &GcCardTable) -> GcHeapAddress {
+    let next_index = card_table
+        .dirty_cards()
+        .iter()
+        .map(|card| card.index())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    static_gc_address(next_index.saturating_mul(card_table.card_size_bytes()))
+}
+
 fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
     scan.scan().roots().iter().any(|scan_root| {
         scan_root.source() == &EvalRootSource::ValueStack { slot: 0 }
@@ -1117,7 +1128,7 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         .derivation_snapshot()
         .expect("derivation snapshot succeeds");
     let stats = evaluator.stats_snapshot();
-    let outcome = EvalOutcome {
+    let mut outcome = EvalOutcome {
         value: forced,
         heap: evaluator.heap,
         stats,
@@ -1247,6 +1258,31 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     );
     assert!(summary.remembered_set_source_edges() > 0);
     assert!(summary.remembered_set_published_edges() > 0);
+
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    let extra_card_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(extra_card_source)
+        .expect("extra live dirty card marks");
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 2);
+    let live_card_table_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("remembered boundary dry-run clears outcome card table");
+    assert_eq!(
+        live_card_table_dry_run
+            .dry_run()
+            .summary()
+            .card_table_dirty_cards_cleared(),
+        live_card_table_dry_run
+            .card_table_dirty_cards_cleared()
+            .saturating_mul(live_card_table_dry_run.dry_run().len())
+    );
+    assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 2);
+    assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
 #[test]
@@ -1276,7 +1312,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     card_table
         .mark_source(gc_address(permanent_parent))
         .expect("permanent parent card marks");
-    let outcome = EvalOutcome {
+    let mut outcome = EvalOutcome {
         value: permanent_parent,
         heap: evaluator.heap,
         stats,
@@ -1429,6 +1465,23 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     );
     assert_eq!(dry_worker_report.remembered_set_source_edges(), 0);
     assert_eq!(dry_worker_report.remembered_set_published_edges(), 1);
+
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    let live_card_table_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("dirty old-field boundary dry-run clears outcome card table");
+    assert_eq!(
+        live_card_table_dry_run
+            .dry_run()
+            .summary()
+            .card_table_dirty_cards_cleared(),
+        summary.card_table_dirty_cards_cleared()
+    );
+    assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 1);
+    assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
 #[test]
@@ -1495,6 +1548,89 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
                 .snapshot()
                 .card_index_for_source(edge.source()),
         }
+    );
+}
+
+#[test]
+fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options.set_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark source thunk permanent");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(forced)
+        .expect("forced value builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    let remembered_set = evaluator.thunk_resolve_remembered_set;
+    let edge = remembered_set.edges()[0];
+    let wrong_card_source = static_gc_address(0x4000_0000);
+    let mut wrong_card_table = GcCardTable::default();
+    wrong_card_table
+        .mark_source(wrong_card_source)
+        .expect("wrong card marks");
+    let mut outcome = EvalOutcome {
+        value: forced,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: remembered_set,
+        thunk_resolve_card_table: wrong_card_table,
+        memory_budget_action: None,
+        cheap_memory_budget_plan: None,
+        cheap_memory_advice_report: None,
+        gc_stress_boundary_scans,
+    };
+
+    let error = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect_err("missing dirty source card rejects before live clear");
+
+    assert_eq!(
+        error,
+        EvalHeapError::MissingCollectorPollDirtyCard {
+            source_address: edge.source(),
+            target_address: edge.target(),
+            card_index: outcome
+                .thunk_resolve_card_table()
+                .snapshot()
+                .card_index_for_source(edge.source()),
+        }
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards()[0].source(),
+        wrong_card_source
     );
 }
 
@@ -1596,7 +1732,7 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
 #[test]
 fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
     let ir = lower("x: x");
-    let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
+    let mut outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
     let preflights = outcome
         .gc_stress_boundary_minor_gc_commit_preflights(
             MinorGcPromotionPolicy::new(2),
@@ -1632,6 +1768,28 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
     assert!(dry_run.preflights().is_empty());
     assert!(dry_run.reference_writebacks().is_empty());
     assert!(dry_run.commit_applications().is_empty());
+
+    let unrelated_dirty_source = static_gc_address(0x1000_0000);
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(unrelated_dirty_source)
+        .expect("unrelated dirty card marks");
+    let live_card_table_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary dry run succeeds without clearing live cards");
+    assert!(live_card_table_dry_run.dry_run().is_empty());
+    assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 0);
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards()[0].source(),
+        unrelated_dirty_source
+    );
 }
 
 #[test]
