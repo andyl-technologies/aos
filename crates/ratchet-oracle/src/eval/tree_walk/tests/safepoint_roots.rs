@@ -21,6 +21,14 @@ fn static_gc_address(address_bits: usize) -> GcHeapAddress {
     GcHeapAddress::new(address_bits).expect("static address is a valid GC address")
 }
 
+fn resolved_heap_destination_address(value: ResolvedValueGeneration) -> Option<GcHeapAddress> {
+    let ResolvedValueGeneration::Heap { address, .. } = value else {
+        return None;
+    };
+
+    Some(address)
+}
+
 fn next_dirty_card_source(card_table: &GcCardTable) -> GcHeapAddress {
     let next_index = card_table
         .dirty_cards()
@@ -30,6 +38,58 @@ fn next_dirty_card_source(card_table: &GcCardTable) -> GcHeapAddress {
         .unwrap_or(0)
         .saturating_add(1);
     static_gc_address(next_index.saturating_mul(card_table.card_size_bytes()))
+}
+
+fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options.set_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark source thunk permanent");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(forced)
+        .expect("forced value builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    (
+        EvalOutcome {
+            value: forced,
+            heap: evaluator.heap,
+            stats,
+            attr_telemetry: evaluator.attr_telemetry,
+            trace_output: evaluator.trace_output,
+            warning_output: evaluator.warning_output,
+            impure_input_trace: evaluator.impure_input_trace,
+            impure_input_trace_complete: evaluator.impure_input_trace_complete,
+            persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+            derivations,
+            thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+            thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+            memory_budget_action: None,
+            cheap_memory_budget_plan: None,
+            cheap_memory_advice_report: None,
+            gc_stress_boundary_scans,
+        },
+        thunk_value,
+    )
 }
 
 fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
@@ -1159,53 +1219,8 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
 
 #[test]
 fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
-    let ir = lower("{ a = x: x; }");
-    let a = symbol_for(&ir, b"a");
-    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
-    options.set_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational);
-    let mut evaluator = TreeWalk::with_options(&ir, options);
-    let root = evaluator.eval_root().expect("attrset evaluates");
-    let thunk_value = {
-        let attrs = evaluator
-            .heap()
-            .get_attrs(root)
-            .expect("root is an attrset");
-        attrs.get(a).expect("a exists")
-    };
-    evaluator
-        .heap
-        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
-        .expect("test can mark source thunk permanent");
-    let forced = evaluator
-        .force_value(ir.root, Span::new(0, 0), thunk_value)
-        .expect("thunk force succeeds");
-    assert_eq!(forced.tag(), ValueTag::Lambda);
-
-    let gc_stress_boundary_scans = evaluator
-        .gc_stress_boundary_scans(forced)
-        .expect("forced value builds boundary scans");
-    let derivations = evaluator
-        .derivation_snapshot()
-        .expect("derivation snapshot succeeds");
-    let stats = evaluator.stats_snapshot();
-    let mut outcome = EvalOutcome {
-        value: forced,
-        heap: evaluator.heap,
-        stats,
-        attr_telemetry: evaluator.attr_telemetry,
-        trace_output: evaluator.trace_output,
-        warning_output: evaluator.warning_output,
-        impure_input_trace: evaluator.impure_input_trace,
-        impure_input_trace_complete: evaluator.impure_input_trace_complete,
-        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
-        derivations,
-        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
-        thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
-        memory_budget_action: None,
-        cheap_memory_budget_plan: None,
-        cheap_memory_advice_report: None,
-        gc_stress_boundary_scans,
-    };
+    let (mut outcome, thunk_value) = boundary_remembered_edge_outcome();
+    assert_eq!(outcome.value().tag(), ValueTag::Lambda);
     assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
 
     let nursery_base = static_gc_address(0x1000_0000);
@@ -1326,27 +1341,6 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         .mark_source(extra_card_source)
         .expect("extra live dirty card marks");
     assert_eq!(outcome.thunk_resolve_card_table().len(), 2);
-    let remembered_set_before_reject = outcome.thunk_resolve_remembered_set().clone();
-    let card_table_before_reject = outcome.thunk_resolve_card_table().clone();
-    let publish_error = outcome
-        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
-            MinorGcPromotionPolicy::new(2),
-            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
-        )
-        .expect_err("sibling boundary preflights cannot publish one live remembered set");
-    assert_eq!(
-        publish_error,
-        EvalHeapError::BoundaryMinorGcLiveRememberedSetMultipleTiers { tiers: 2 }
-    );
-    assert_eq!(
-        outcome.thunk_resolve_remembered_set(),
-        &remembered_set_before_reject
-    );
-    assert_eq!(
-        outcome.thunk_resolve_card_table(),
-        &card_table_before_reject
-    );
-
     let live_card_table_dry_run = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
             MinorGcPromotionPolicy::new(2),
@@ -1364,6 +1358,96 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     );
     assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 2);
     assert!(outcome.thunk_resolve_card_table().is_empty());
+
+    let (mut merge_outcome, _) = boundary_remembered_edge_outcome();
+    let extra_card_source = next_dirty_card_source(merge_outcome.thunk_resolve_card_table());
+    merge_outcome
+        .thunk_resolve_card_table
+        .mark_source(extra_card_source)
+        .expect("extra merge live dirty card marks");
+    assert_eq!(merge_outcome.thunk_resolve_card_table().len(), 2);
+    let live_remembered_set_dry_run = merge_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("sibling boundary preflights merge one live remembered set");
+    assert!(live_remembered_set_dry_run.remembered_set_published());
+    assert_eq!(
+        live_remembered_set_dry_run.card_table_dirty_cards_cleared(),
+        2
+    );
+    assert!(merge_outcome.thunk_resolve_card_table().is_empty());
+    let live_worker_commit = live_remembered_set_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live worker commit records");
+    let live_permanent_commit = live_remembered_set_dry_run
+        .dry_run()
+        .commit_applications()
+        .permanent_shared()
+        .expect("live permanent commit records");
+    let mut overlapping_relocations = 0usize;
+    let mut merged_relocations = Vec::new();
+    for worker_slot in live_worker_commit.forwarding_slots() {
+        if let Some(forwarded) = worker_slot.forwarded_value() {
+            merged_relocations.push((worker_slot.source(), forwarded));
+        }
+        for permanent_slot in live_permanent_commit.forwarding_slots() {
+            if worker_slot.source() == permanent_slot.source() {
+                overlapping_relocations = overlapping_relocations.saturating_add(1);
+                assert_eq!(
+                    worker_slot.forwarded_value(),
+                    permanent_slot.forwarded_value()
+                );
+            }
+        }
+    }
+    for permanent_slot in live_permanent_commit.forwarding_slots() {
+        let Some(forwarded) = permanent_slot.forwarded_value() else {
+            continue;
+        };
+        if merged_relocations
+            .iter()
+            .any(|(source, _)| *source == permanent_slot.source())
+        {
+            continue;
+        }
+        if let Some(forwarded_address) = resolved_heap_destination_address(forwarded) {
+            assert!(!merged_relocations.iter().any(|(_, destination)| {
+                resolved_heap_destination_address(*destination) == Some(forwarded_address)
+            }));
+        }
+        merged_relocations.push((permanent_slot.source(), forwarded));
+    }
+    for (_, destination) in &merged_relocations {
+        let ResolvedValueGeneration::Heap { address, .. } = destination else {
+            continue;
+        };
+        assert!(
+            !merged_relocations
+                .iter()
+                .any(|(source, _)| source == address)
+        );
+    }
+    assert!(overlapping_relocations > 0);
+    let mut expected_merged_remembered_set =
+        RememberedSet::with_epoch(live_worker_commit.remembered_set().epoch());
+    for edge in live_worker_commit.remembered_set().edges() {
+        expected_merged_remembered_set
+            .record(*edge)
+            .expect("worker edge records in expected merge");
+    }
+    for edge in live_permanent_commit.remembered_set().edges() {
+        expected_merged_remembered_set
+            .record(*edge)
+            .expect("permanent edge records in expected merge");
+    }
+    assert_eq!(
+        merge_outcome.thunk_resolve_remembered_set(),
+        &expected_merged_remembered_set
+    );
 }
 
 #[test]

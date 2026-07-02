@@ -890,6 +890,306 @@ fn clone_boundary_remembered_set(
     Ok(cloned)
 }
 
+fn boundary_minor_gc_merged_remembered_set(
+    applications: &EvalGcStressBoundaryMinorGcCommitApplications,
+    source_epoch: RememberedSetEpoch,
+) -> Result<Option<RememberedSet>, EvalHeapError> {
+    let mut merged = None;
+    let mut relocations = Vec::new();
+    merge_boundary_minor_gc_remembered_set_application(
+        &mut merged,
+        &mut relocations,
+        applications.worker(),
+        source_epoch,
+    )?;
+    merge_boundary_minor_gc_remembered_set_application(
+        &mut merged,
+        &mut relocations,
+        applications.permanent_shared(),
+        source_epoch,
+    )?;
+    Ok(merged)
+}
+
+fn merge_boundary_minor_gc_remembered_set_application(
+    merged: &mut Option<RememberedSet>,
+    relocations: &mut Vec<(GcHeapAddress, ResolvedValueGeneration)>,
+    application: Option<&EvalGcStressBoundaryMinorGcCommitApplication>,
+    source_epoch: RememberedSetEpoch,
+) -> Result<(), EvalHeapError> {
+    let Some(application) = application else {
+        return Ok(());
+    };
+
+    let expected_next_epoch = source_epoch.checked_next()?;
+    let report = application.report();
+    if report.remembered_set_source_epoch() != source_epoch {
+        return Err(
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetSourceEpochMismatch {
+                expected: source_epoch,
+                actual: report.remembered_set_source_epoch(),
+            },
+        );
+    }
+    if report.remembered_set_next_epoch() != expected_next_epoch {
+        return Err(
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetNextEpochMismatch {
+                expected: expected_next_epoch,
+                actual: report.remembered_set_next_epoch(),
+            },
+        );
+    }
+
+    let application_set = application.remembered_set();
+    if application_set.epoch() != expected_next_epoch {
+        return Err(
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetNextEpochMismatch {
+                expected: expected_next_epoch,
+                actual: application_set.epoch(),
+            },
+        );
+    }
+    validate_boundary_minor_gc_relocations_match(relocations, application.forwarding_slots())?;
+
+    match merged {
+        Some(merged_set) => {
+            if merged_set.epoch() != application_set.epoch() {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcLiveRememberedSetNextEpochMismatch {
+                        expected: merged_set.epoch(),
+                        actual: application_set.epoch(),
+                    },
+                );
+            }
+            for edge in application_set.edges() {
+                merged_set.record(*edge)?;
+            }
+        }
+        None => {
+            let mut merged_set = RememberedSet::with_epoch(expected_next_epoch);
+            for edge in application_set.edges() {
+                merged_set.record(*edge)?;
+            }
+            *merged = Some(merged_set);
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_boundary_minor_gc_relocations_match(
+    relocations: &mut Vec<(GcHeapAddress, ResolvedValueGeneration)>,
+    forwarding_slots: &[MinorGcForwardingSlot],
+) -> Result<(), EvalHeapError> {
+    let mut application_sources = Vec::new();
+    for slot in forwarding_slots {
+        if slot.forwarded_value().is_none() {
+            continue;
+        }
+        let entries = application_sources.len().checked_add(1).ok_or(
+            EvalHeapError::RootScanLengthOverflow {
+                table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+            },
+        )?;
+        application_sources.try_reserve_exact(1).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+                entries,
+            }
+        })?;
+        application_sources.push(slot.source());
+    }
+
+    for slot in forwarding_slots {
+        let Some(forwarded) = slot.forwarded_value() else {
+            continue;
+        };
+        validate_boundary_minor_gc_source_not_destination(slot.source(), relocations)?;
+        validate_boundary_minor_gc_destination_not_source(
+            forwarded,
+            relocations,
+            &application_sources,
+        )?;
+        if let Some((_, expected)) = relocations
+            .iter()
+            .find(|(source, _)| *source == slot.source())
+        {
+            if *expected != forwarded {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcLiveRememberedSetRelocationMismatch {
+                        source_address: slot.source(),
+                        expected: *expected,
+                        actual: forwarded,
+                    },
+                );
+            }
+            continue;
+        }
+        if let Some(forwarded_address) = resolved_heap_address(forwarded) {
+            if let Some((existing_source, _)) = relocations.iter().find(|(_, destination)| {
+                resolved_heap_address(*destination) == Some(forwarded_address)
+            }) {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcLiveRememberedSetDestinationCollision {
+                        source_address: slot.source(),
+                        existing_source_address: *existing_source,
+                        destination: forwarded,
+                    },
+                );
+            }
+        }
+        let entries =
+            relocations
+                .len()
+                .checked_add(1)
+                .ok_or(EvalHeapError::RootScanLengthOverflow {
+                    table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+                })?;
+        relocations
+            .try_reserve_exact(1)
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+                entries,
+            })?;
+        relocations.push((slot.source(), forwarded));
+    }
+    Ok(())
+}
+
+fn validate_boundary_minor_gc_source_not_destination(
+    source: GcHeapAddress,
+    relocations: &[(GcHeapAddress, ResolvedValueGeneration)],
+) -> Result<(), EvalHeapError> {
+    let Some((_, destination)) = relocations
+        .iter()
+        .find(|(_, destination)| resolved_heap_address(*destination) == Some(source))
+    else {
+        return Ok(());
+    };
+
+    Err(
+        EvalHeapError::BoundaryMinorGcLiveRememberedSetDestinationSourceCollision {
+            source_address: source,
+            destination: *destination,
+        },
+    )
+}
+
+fn validate_boundary_minor_gc_destination_not_source(
+    forwarded: ResolvedValueGeneration,
+    relocations: &[(GcHeapAddress, ResolvedValueGeneration)],
+    application_sources: &[GcHeapAddress],
+) -> Result<(), EvalHeapError> {
+    let Some(destination) = resolved_heap_address(forwarded) else {
+        return Ok(());
+    };
+
+    if relocations.iter().any(|(source, _)| *source == destination)
+        || application_sources
+            .iter()
+            .any(|source| *source == destination)
+    {
+        return Err(
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetDestinationSourceCollision {
+                source_address: destination,
+                destination: forwarded,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn resolved_heap_address(value: ResolvedValueGeneration) -> Option<GcHeapAddress> {
+    let ResolvedValueGeneration::Heap { address, .. } = value else {
+        return None;
+    };
+
+    Some(address)
+}
+
+#[cfg(test)]
+mod live_remembered_set_merge_tests {
+    use super::*;
+    use crate::heap::HeapGeneration;
+
+    fn address(bits: usize) -> GcHeapAddress {
+        GcHeapAddress::new(bits).expect("test address is non-zero")
+    }
+
+    fn heap(address: GcHeapAddress, generation: HeapGeneration) -> ResolvedValueGeneration {
+        ResolvedValueGeneration::Heap {
+            address,
+            generation,
+        }
+    }
+
+    #[test]
+    fn rejects_distinct_sources_with_same_destination_address() {
+        let source = address(0x1000);
+        let sibling_source = address(0x2000);
+        let destination = address(0x3000);
+        let mut relocations = Vec::new();
+        let worker_slots = [MinorGcForwardingSlot::with_forwarded_value(
+            source,
+            heap(destination, HeapGeneration::Young),
+        )];
+        validate_boundary_minor_gc_relocations_match(&mut relocations, &worker_slots)
+            .expect("first relocation is accepted");
+
+        let permanent_slots = [MinorGcForwardingSlot::with_forwarded_value(
+            sibling_source,
+            heap(destination, HeapGeneration::Old),
+        )];
+        let err = validate_boundary_minor_gc_relocations_match(&mut relocations, &permanent_slots)
+            .expect_err("same destination address is rejected");
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetDestinationCollision {
+                source_address,
+                existing_source_address,
+                destination: ResolvedValueGeneration::Heap {
+                    address,
+                    generation: HeapGeneration::Old,
+                },
+            } if source_address == sibling_source
+                && existing_source_address == source
+                && address == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_previous_destination_as_later_source() {
+        let source = address(0x1000);
+        let middle = address(0x2000);
+        let destination = address(0x3000);
+        let mut relocations = Vec::new();
+        let worker_slots = [MinorGcForwardingSlot::with_forwarded_value(
+            source,
+            heap(middle, HeapGeneration::Young),
+        )];
+        validate_boundary_minor_gc_relocations_match(&mut relocations, &worker_slots)
+            .expect("first relocation is accepted");
+
+        let permanent_slots = [MinorGcForwardingSlot::with_forwarded_value(
+            middle,
+            heap(destination, HeapGeneration::Old),
+        )];
+        let err = validate_boundary_minor_gc_relocations_match(&mut relocations, &permanent_slots)
+            .expect_err("previous destination cannot become a later source");
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcLiveRememberedSetDestinationSourceCollision {
+                source_address,
+                destination: ResolvedValueGeneration::Heap {
+                    address,
+                    generation: HeapGeneration::Young,
+                },
+            } if source_address == middle && address == middle
+        ));
+    }
+}
+
 fn clone_boundary_root_writeback_slots(
     slots: &[AllocationCollectorPollRootWritebackSlot],
 ) -> Result<Vec<AllocationCollectorPollRootWritebackSlot>, EvalHeapError> {
@@ -1154,13 +1454,14 @@ impl EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
     }
 }
 
-/// Boundary commit dry run plus single-tier live remembered-set publication.
+/// Boundary commit dry run plus live remembered-set publication.
 ///
 /// This report preserves the owned dry-run artifacts and records the live
-/// outcome-state mutations applied after validation. Remembered-set publication
-/// is only defined for zero or one boundary commit application; sibling worker
-/// and permanent-shared applications are rejected because they are projections
-/// from the same source epoch rather than sequential live commits.
+/// outcome-state mutations applied after validation. Sibling worker and
+/// permanent-shared applications are merged into one next-epoch remembered set
+/// after validating that their survivor relocations form one coherent merged
+/// map, because they are parallel projections from the same source epoch rather
+/// than sequential live commits.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -1943,16 +2244,15 @@ impl EvalOutcome {
         ))
     }
 
-    /// Runs a single-tier boundary dry run and publishes outcome-owned GC state.
+    /// Runs a boundary dry run and publishes outcome-owned GC state.
     ///
     /// This method derives the same owned commit dry run as
-    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. When exactly one
-    /// allocator tier produced a commit application, it replaces this outcome's
-    /// remembered set with that application's validated next remembered set and
-    /// then clears this outcome's daemon card table. Empty boundary scans leave
-    /// both live structures unchanged. Multiple sibling boundary applications
-    /// are rejected before live mutation because they share the same source
-    /// remembered-set epoch.
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. When one or more
+    /// allocator tiers produced commit applications, it validates that sibling
+    /// survivor relocations form one coherent merged map, merges their
+    /// validated next remembered sets, replaces this outcome's remembered set
+    /// with the merged next-epoch set, and then clears this outcome's daemon
+    /// card table. Empty boundary scans leave both live structures unchanged.
     ///
     /// This is still a live metadata bridge, not a full collector commit. It
     /// does not bind live object-byte buffers, mutate roots or heap fields,
@@ -1962,9 +2262,10 @@ impl EvalOutcome {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
-    /// buffer application fails, if the boundary produced multiple sibling
-    /// commit applications, or if the planned remembered set cannot be cloned
-    /// into outcome-owned storage. When an error is returned, this outcome's
+    /// buffer application fails, if sibling commit applications do not consume
+    /// the outcome-owned source epoch, publish the same next epoch, or agree on
+    /// one coherent survivor relocation map, or if the merged remembered set
+    /// cannot reserve storage. When an error is returned, this outcome's
     /// remembered set and card table are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
         &mut self,
@@ -1972,22 +2273,10 @@ impl EvalOutcome {
         bases: MinorGcDestinationBases,
     ) -> Result<EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun, EvalHeapError> {
         let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
-        let remembered_set = match (
-            dry_run.commit_applications().worker(),
-            dry_run.commit_applications().permanent_shared(),
-        ) {
-            (None, None) => None,
-            (Some(application), None) | (None, Some(application)) => {
-                Some(clone_boundary_remembered_set(application.remembered_set())?)
-            }
-            (Some(_), Some(_)) => {
-                return Err(
-                    EvalHeapError::BoundaryMinorGcLiveRememberedSetMultipleTiers {
-                        tiers: dry_run.len(),
-                    },
-                );
-            }
-        };
+        let remembered_set = boundary_minor_gc_merged_remembered_set(
+            dry_run.commit_applications(),
+            self.thunk_resolve_remembered_set.epoch(),
+        )?;
 
         let remembered_set_published = remembered_set.is_some();
         let card_table_clear_report = if let Some(remembered_set) = remembered_set {

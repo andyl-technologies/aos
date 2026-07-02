@@ -22,7 +22,8 @@ use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaRegionPopReport, ArenaStats};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, RememberedSetEpoch,
+    ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{
@@ -634,13 +635,59 @@ pub enum EvalHeapError {
         /// The caller-supplied reference value.
         actual: ResolvedValueGeneration,
     },
-    /// Boundary live remembered-set publication received sibling preflights.
+    /// Boundary live remembered-set publication saw an unexpected source epoch.
     #[error(
-        "boundary minor-GC live remembered-set publication requires zero or one tier, found {tiers}"
+        "boundary minor-GC live remembered-set source epoch {actual} does not match outcome epoch {expected}"
     )]
-    BoundaryMinorGcLiveRememberedSetMultipleTiers {
-        /// The number of sibling boundary commit applications.
-        tiers: usize,
+    BoundaryMinorGcLiveRememberedSetSourceEpochMismatch {
+        /// The epoch held by the outcome-owned remembered set.
+        expected: RememberedSetEpoch,
+        /// The source epoch consumed by the boundary commit application.
+        actual: RememberedSetEpoch,
+    },
+    /// Boundary live remembered-set publication saw an unexpected next epoch.
+    #[error(
+        "boundary minor-GC live remembered-set next epoch {actual} does not match expected next epoch {expected}"
+    )]
+    BoundaryMinorGcLiveRememberedSetNextEpochMismatch {
+        /// The epoch expected for merged live remembered-set publication.
+        expected: RememberedSetEpoch,
+        /// The next epoch published by the boundary commit application.
+        actual: RememberedSetEpoch,
+    },
+    /// Boundary sibling dry-runs disagreed about an overlapping relocation.
+    #[error(
+        "boundary minor-GC live remembered-set merge relocation mismatch for source {source_address:?}: expected {expected:?}, found {actual:?}"
+    )]
+    BoundaryMinorGcLiveRememberedSetRelocationMismatch {
+        /// The from-space survivor address present in both sibling applications.
+        source_address: GcHeapAddress,
+        /// The first relocation value recorded for the source.
+        expected: ResolvedValueGeneration,
+        /// The sibling relocation value recorded for the source.
+        actual: ResolvedValueGeneration,
+    },
+    /// Boundary sibling dry-runs mapped different sources to one destination.
+    #[error(
+        "boundary minor-GC live remembered-set merge destination collision for {destination:?}: source {source_address:?} conflicts with {existing_source_address:?}"
+    )]
+    BoundaryMinorGcLiveRememberedSetDestinationCollision {
+        /// The from-space survivor address currently being validated.
+        source_address: GcHeapAddress,
+        /// The earlier from-space survivor address that uses the same destination.
+        existing_source_address: GcHeapAddress,
+        /// The duplicate relocation value.
+        destination: ResolvedValueGeneration,
+    },
+    /// Boundary sibling dry-runs mapped a survivor into from-space.
+    #[error(
+        "boundary minor-GC live remembered-set merge destination {destination:?} collides with live source {source_address:?}"
+    )]
+    BoundaryMinorGcLiveRememberedSetDestinationSourceCollision {
+        /// The from-space survivor address also used as a destination.
+        source_address: GcHeapAddress,
+        /// The relocation value whose address collides with the source set.
+        destination: ResolvedValueGeneration,
     },
     /// A caller-supplied root value list did not contain one value per copied
     /// root reference slot.

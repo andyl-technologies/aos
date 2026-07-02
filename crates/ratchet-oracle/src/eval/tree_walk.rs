@@ -82,14 +82,14 @@ use crate::compile::{
     IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness, resolve,
 };
 use crate::heap::{
-    AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GenerationalGcError,
+    AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcHeapAddress, GenerationalGcError,
     GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport, MinorGcDestinationBases,
     MinorGcDestinationPlacementPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
     MinorGcObjectCopyPlan, MinorGcOwnedDestinationStorage,
     MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
     MinorGcSourceObjectBytes, NurseryObjectLayout, RegionEffect, RegionLifetime, RegionPlacement,
     RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedSet,
-    ResolvedValueGeneration,
+    RememberedSetEpoch, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};

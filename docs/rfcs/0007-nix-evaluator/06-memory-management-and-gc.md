@@ -1146,8 +1146,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       rewrite/writeback metadata, old-field metadata capture, and rescan
       publication of unremembered targets. This remains a planning bridge only:
       live root/field mutation, semispace ownership, and collector dispatch
-      remain open; single-tier live card-table and remembered-set bridges are
-      covered below.
+      remain open; live card-table and remembered-set bridges are covered below.
 - [x] Current allocation-poll card-table commit-buffer precursor:
       boundary commit preflights now carry an owned fallible clone of the
       daemon-wide card-table snapshot, and
@@ -1177,22 +1176,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
       root/field mutation, live object bytes, forwarding headers,
-      multi-tier remembered-set publication, object-generation mutation,
-      semispace ownership, and Tier-B dispatch remain open.
+      object-generation mutation, semispace ownership, and Tier-B dispatch
+      remain open.
 - [x] Current boundary live remembered-set publication bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
-      derives the same boundary commit dry run, rejects sibling worker/permanent
-      applications before live mutation, leaves empty outcomes unchanged, and
-      for single-tier outcomes publishes the validated next remembered set into
+      derives the same boundary commit dry run, leaves empty outcomes unchanged,
+      and for non-empty outcomes publishes a next-epoch remembered set into
       outcome-owned state before clearing the outcome-owned daemon card table.
-      The returned report records whether publication happened and how many live
-      dirty cards were cleared. Tests cover single-tier worker and
-      permanent-shared publication with live-card clearing, multi-tier rejection
-      without remembered-set or card-table mutation, and empty-boundary
-      no-mutation behavior. This is still not a full live collector commit:
-      live root/field mutation, live object bytes, forwarding headers,
-      object-generation mutation, semispace ownership, multi-tier live
-      publication, and Tier-B dispatch remain open.
+      Sibling worker/permanent applications are merged by unioning their
+      validated next remembered-set edges at the shared next epoch, after first
+      verifying that sibling survivor forwarding slots form a coherent merged
+      relocation map: overlapping sources must agree and distinct sources must
+      not collide on one destination, and destination addresses must be disjoint
+      from the merged source set. The returned report records whether
+      publication happened and how many live dirty cards were cleared. Tests
+      cover single-tier worker and permanent-shared publication with live-card
+      clearing, multi-tier merge publication with observed raw relocation-map
+      coherence and live-card clearing, and empty-boundary no-mutation behavior.
+      This is still not a full live collector commit: live root/field mutation,
+      live object bytes, forwarding headers, object-generation mutation,
+      semispace ownership, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -1929,12 +1932,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation, and
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
-      publishes a single-tier outcome-owned remembered set after the same dry
-      run while rejecting sibling worker/permanent applications. These helpers
-      still do not bind live object-byte buffers, live root/field storage, live
-      forwarding slots, object-generation metadata, multi-tier remembered-set
-      publication, or semispace storage, and they do not commit those live
-      mutations.
+      publishes an outcome-owned remembered set after the same dry run, merging
+      sibling worker/permanent next sets when both tiers produced applications.
+      These helpers still do not bind live object-byte buffers, live root/field
+      storage, live forwarding slots, object-generation metadata, or semispace
+      storage, and they do not commit those live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1951,8 +1953,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       stress-disabled outcomes, boundary owned reference-writeback, synthetic
       commit-buffer application, single-call owned commit dry-run,
       outcome-owned live card-table clearing after successful dry-run
-      validation, single-tier live remembered-set publication and multi-tier
-      rejection, stale same-domain poll rejection, and stack cleanup after
+      validation, single-tier and multi-tier live remembered-set publication,
+      stale same-domain poll rejection, and stack cleanup after
       force/primop failures. This still does not infer arbitrary Rust locals
       without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
