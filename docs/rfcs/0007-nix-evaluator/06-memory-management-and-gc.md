@@ -946,50 +946,55 @@ GC must be observationally invisible (§8): every item is gated by the different
       Cranelift registration, object-generation mutation, or Tier-B collector
       installation is implemented here.
 - [x] Current runtime-helper binding-manifest precursor:
-      `ratchet-oracle::runtime::helpers` now combines the allocation and
-      write-barrier helper families into one safe `RuntimeHelperBinding`
-      inventory. Each binding carries the frozen helper symbol, core helper
-      role, family-specific ABI signature, and failure convention, and resolves
-      back from symbol text. The current allocation and write-barrier helpers are
-      pinned as `TrapToEvaluator`: they return only on success and future native
-      wrappers must transfer failures to evaluator trap/error machinery instead
-      of returning null pointers or sentinels. Tests prove the manifest exactly
-      covers the currently bound
-      `RuntimeHelperRole::Allocation` and `RuntimeHelperRole::WriteBarrier`
-      symbols from `ratchet-core`, preserves the allocation/write-barrier ABI
-      inventories, pins the helper failure convention by symbol, and rejects
-      helper roles that still have no safe runtime binding. This is a
-      registration manifest only; it does not export `unsafe extern "C"`
-      functions, implement trap transfer, register Cranelift symbols, or add
-      bindings for forcing/call/attr/error helpers.
+      `ratchet-oracle::runtime::helpers` now combines the allocation,
+      environment-access, and write-barrier helper families into one safe
+      `RuntimeHelperBinding` inventory. Each binding carries the frozen helper
+      symbol, core helper role, family-specific ABI signature, and failure
+      convention, and resolves back from symbol text. The current allocation,
+      environment-access, and write-barrier helpers are pinned as
+      `TrapToEvaluator`: they return only on success and future native wrappers
+      must transfer failures to evaluator trap/error machinery instead of
+      returning null pointers or sentinels. Tests prove the manifest exactly
+      covers the currently bound `RuntimeHelperRole::Allocation`,
+      `RuntimeHelperRole::EnvironmentAccess`, and
+      `RuntimeHelperRole::WriteBarrier` symbols from `ratchet-core`, preserves
+      the allocation/environment-access/write-barrier ABI inventories, pins the
+      helper failure convention by symbol, and rejects helper roles that still
+      have no safe runtime binding. This is a registration manifest only; it
+      does not export `unsafe extern "C"` functions, implement trap transfer,
+      register Cranelift symbols, or add bindings for forcing/call/attr/error
+      helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
-      allocation and write-barrier Rust-callable storage-wrapper addresses into
-      the helper-family layer, while
+      allocation, environment-access, and write-barrier Rust-callable
+      storage-wrapper addresses into the helper-family layer, while
       `runtime_helper_rust_callable_preflight()` reports whether any currently
       bound helper family still lacks such a callable. The preflight is now
-      complete for the currently bound allocation/write-barrier helper set.
-      Tests prove family inventory parity, safe-helper metadata round trips,
-      exact callable coverage, and the empty missing-binding report. This is
-      still helper-family Rust metadata only: no exported C ABI symbols,
-      Cranelift registration, unbound forcing/call/attr/error helpers, builtin
-      addresses, or complete runtime-symbol registration plan is implemented.
+      complete for the currently bound allocation, environment-access, and
+      write-barrier helper set. Tests prove family inventory parity, safe-helper
+      metadata round trips, exact callable coverage, and the empty
+      missing-binding report. This is still helper-family Rust metadata only: no
+      exported C ABI symbols, Cranelift registration, unbound
+      forcing/call/attr/error helpers, builtin addresses, or complete
+      runtime-symbol registration plan is implemented.
 - [x] Current runtime symbol binding-manifest precursor:
       `runtime::helpers::runtime_symbol_binding_manifest()` consumes
       `ratchet-core`'s full helper/builtin runtime symbol manifest and preserves
       its deterministic order while classifying each symbol as a currently bound
-      allocation/write-barrier helper, an unbound future helper role, or a
-      builtin. Tests pin order parity with the core manifest, exact safe-helper
-      coverage, representative unbound helper roles, and builtin classification.
-      This is binding-status metadata only; it attaches no function pointers,
-      exports no native wrappers, performs no Cranelift registration, and leaves
+      allocation/environment-access/write-barrier helper, an unbound future
+      helper role, or a builtin. Tests pin order parity with the core manifest,
+      exact safe-helper coverage including `aos_env_get`, representative
+      unbound helper roles, and builtin classification. This is binding-status
+      metadata only; it attaches no function pointers, exports no native
+      wrappers, performs no Cranelift registration, and leaves
       forcing/call/attr/error helpers plus all builtin bodies unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `runtime::helpers::runtime_symbol_registration_preflight()` converts the
       binding-status manifest into a deterministic readiness report: current
-      allocation/write-barrier helper bindings stay in runtime-manifest order,
-      and every missing helper or builtin binding is reported in the same stable
-      order. `runtime_symbol_registration_plan()` is the stricter gate and
+      allocation/environment-access/write-barrier helper bindings stay in
+      runtime-manifest order, and every missing helper or builtin binding is
+      reported in the same stable order. `runtime_symbol_registration_plan()` is
+      the stricter gate and
       currently returns an incomplete-registration error until all helper and
       builtin executable bindings exist. Tests cover helper readiness, sorted
       missing symbols, representative forcing/call helper gaps, a builtin gap,
@@ -999,9 +1004,10 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current runtime symbol ABI-signature preflight precursor:
       `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines the
       oracle helper ABI metadata with `ratchet-core` builtin call-shape metadata
-      in stable runtime symbol order. It attaches allocation and write-barrier
-      helper signatures plus callable builtin `RuntimeCallSignature` metadata,
-      while leaving unbound helper roles and value-only builtin symbols as gaps.
+      in stable runtime symbol order. It attaches allocation, environment-access,
+      and write-barrier helper signatures plus callable builtin
+      `RuntimeCallSignature` metadata, while leaving unbound helper roles and
+      value-only builtin symbols as gaps.
       Tests pin helper parity with the safe registration preflight, builtin
       parity with the builtin call preflight, exact binding/gap projection
       order, representative callable builtin metadata, and current
@@ -1022,10 +1028,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       `runtime::helpers::runtime_symbol_native_target_candidate_preflight()` combines the
       runtime symbol manifest, helper ABI metadata, helper Rust-callable
       availability, and builtin call-shape metadata into a target-readiness
-      report. It records allocation/write-barrier helpers as address-free
-      symbol/role wrapper-generation candidates and reports unbound helpers, value-only
-      builtins, and callable builtins with no wrapper body as gaps. Tests pin
-      exact projection order, helper-callable parity, representative
+      report. It records allocation/environment-access/write-barrier helpers as
+      address-free symbol/role wrapper-generation candidates and reports unbound
+      helpers, value-only builtins, and callable builtins with no wrapper body as
+      gaps. Tests pin exact projection order, helper-callable parity, representative
       helper/value-only gaps, all callable builtin wrapper gaps, and the absence
       of helper-callable gaps today. This is readiness metadata only: no
       executable addresses, exported wrappers, `JITBuilder::symbol`
@@ -1045,11 +1051,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches
       process-local Rust-callable helper metadata for the currently covered
-      allocation/write-barrier helper symbols while reporting unbound helper and
-      builtin symbols as gaps. Tests prove helper-callable order matches the
-      helper-family callable inventory, callable helper symbols line up with the
-      safe registration preflight, and missing symbols remain identical to the
-      existing incomplete registration report. This is Rust-callable readiness
+      allocation/environment-access/write-barrier helper symbols while reporting
+      unbound helper and builtin symbols as gaps. Tests prove helper-callable
+      order matches the helper-family callable inventory, callable helper symbols
+      line up with the safe registration preflight, and missing symbols remain
+      identical to the existing incomplete registration report. This is
+      Rust-callable readiness
       metadata only: the addresses are not exported C ABI targets, not final
       `JITBuilder::symbol` registrations, and not a complete runtime-symbol
       registration plan.

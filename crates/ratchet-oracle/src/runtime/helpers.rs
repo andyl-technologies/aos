@@ -1,11 +1,11 @@
 //! Safe runtime-helper binding inventory for future native registration.
 //!
-//! The allocation and write-barrier modules each own their frozen helper
-//! symbols, ABI signatures, and safe Rust dispatch tables. This module combines
-//! those helper families into one registration-oriented manifest so later
-//! Cranelift or C-ABI glue can consume a single inventory without guessing from
-//! symbol text. It does not export native functions or install symbols in a JIT
-//! module.
+//! The allocation, environment-access, and write-barrier modules each own their
+//! frozen helper symbols, ABI signatures, and safe Rust dispatch tables. This
+//! module combines those helper families into one registration-oriented manifest
+//! so later Cranelift or C-ABI glue can consume a single inventory without
+//! guessing from symbol text. It does not export native functions or install
+//! symbols in a JIT module.
 
 use std::collections::BTreeMap;
 
@@ -24,6 +24,10 @@ use super::barrier::{
     RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint,
     RuntimeWriteBarrierRustCallableBinding, runtime_write_barrier_rust_callable_bindings,
 };
+use super::env::{
+    RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint, RuntimeEnvAccessRustCallableBinding,
+    runtime_env_access_rust_callable_bindings,
+};
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
 pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
@@ -34,6 +38,7 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocRaw.abi_signature()),
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocString.abi_signature()),
     RuntimeHelperBinding::Allocation(RuntimeAllocationEntryPoint::AosAllocThunk.abi_signature()),
+    RuntimeHelperBinding::EnvironmentAccess(RuntimeEnvAccessEntryPoint::AosEnvGet.abi_signature()),
     RuntimeHelperBinding::WriteBarrier(
         RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
     ),
@@ -54,6 +59,11 @@ pub fn runtime_helper_rust_callable_bindings() -> Vec<RuntimeHelperRustCallableB
         .into_iter()
         .map(RuntimeHelperRustCallableBinding::Allocation)
         .collect::<Vec<_>>();
+    bindings.extend(
+        runtime_env_access_rust_callable_bindings()
+            .into_iter()
+            .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
+    );
     bindings.extend(
         runtime_write_barrier_rust_callable_bindings()
             .into_iter()
@@ -673,6 +683,8 @@ fn abi_missing_bindings_by_symbol(
 pub enum RuntimeHelperRustCallableBinding {
     /// An allocation helper backed by `runtime::alloc` storage-wrapper dispatch.
     Allocation(RuntimeAllocationRustCallableBinding),
+    /// An environment-access helper backed by `runtime::env` storage-wrapper dispatch.
+    EnvironmentAccess(RuntimeEnvAccessRustCallableBinding),
     /// A write-barrier helper backed by `runtime::barrier` storage-wrapper dispatch.
     WriteBarrier(RuntimeWriteBarrierRustCallableBinding),
 }
@@ -682,6 +694,7 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn symbol_name(self) -> &'static str {
         match self {
             Self::Allocation(binding) => binding.symbol_name(),
+            Self::EnvironmentAccess(binding) => binding.symbol_name(),
             Self::WriteBarrier(binding) => binding.symbol_name(),
         }
     }
@@ -690,6 +703,7 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn role(self) -> RuntimeHelperRole {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
+            Self::EnvironmentAccess(_) => RuntimeHelperRole::EnvironmentAccess,
             Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
         }
     }
@@ -699,6 +713,9 @@ impl RuntimeHelperRustCallableBinding {
         match self {
             Self::Allocation(binding) => {
                 RuntimeHelperBinding::Allocation(binding.entrypoint().abi_signature())
+            }
+            Self::EnvironmentAccess(binding) => {
+                RuntimeHelperBinding::EnvironmentAccess(binding.entrypoint().abi_signature())
             }
             Self::WriteBarrier(binding) => {
                 RuntimeHelperBinding::WriteBarrier(binding.entrypoint().abi_signature())
@@ -710,14 +727,22 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn allocation_callable(self) -> Option<RuntimeAllocationRustCallableBinding> {
         match self {
             Self::Allocation(binding) => Some(binding),
-            Self::WriteBarrier(_) => None,
+            Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
+        }
+    }
+
+    /// Returns the environment-access callable when this binding serves environment access.
+    pub const fn env_access_callable(self) -> Option<RuntimeEnvAccessRustCallableBinding> {
+        match self {
+            Self::EnvironmentAccess(binding) => Some(binding),
+            Self::Allocation(_) | Self::WriteBarrier(_) => None,
         }
     }
 
     /// Returns the write-barrier callable when this binding serves a barrier.
     pub const fn write_barrier_callable(self) -> Option<RuntimeWriteBarrierRustCallableBinding> {
         match self {
-            Self::Allocation(_) => None,
+            Self::Allocation(_) | Self::EnvironmentAccess(_) => None,
             Self::WriteBarrier(binding) => Some(binding),
         }
     }
@@ -1154,6 +1179,8 @@ pub enum RuntimeHelperFailureConvention {
 pub enum RuntimeHelperBinding {
     /// A heap allocation helper routed through `runtime::alloc`.
     Allocation(RuntimeAllocationAbiSignature),
+    /// An environment-access helper routed through `runtime::env`.
+    EnvironmentAccess(RuntimeEnvAccessAbiSignature),
     /// A write-barrier helper routed through `runtime::barrier`.
     WriteBarrier(RuntimeWriteBarrierAbiSignature),
 }
@@ -1163,6 +1190,7 @@ impl RuntimeHelperBinding {
     pub const fn symbol_name(self) -> &'static str {
         match self {
             Self::Allocation(signature) => signature.symbol_name(),
+            Self::EnvironmentAccess(signature) => signature.symbol_name(),
             Self::WriteBarrier(signature) => signature.symbol_name(),
         }
     }
@@ -1171,6 +1199,7 @@ impl RuntimeHelperBinding {
     pub const fn role(self) -> RuntimeHelperRole {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
+            Self::EnvironmentAccess(_) => RuntimeHelperRole::EnvironmentAccess,
             Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
         }
     }
@@ -1178,7 +1207,7 @@ impl RuntimeHelperBinding {
     /// Returns the native failure convention for this helper binding.
     pub const fn failure_convention(self) -> RuntimeHelperFailureConvention {
         match self {
-            Self::Allocation(_) | Self::WriteBarrier(_) => {
+            Self::Allocation(_) | Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => {
                 RuntimeHelperFailureConvention::TrapToEvaluator
             }
         }
@@ -1190,6 +1219,11 @@ impl RuntimeHelperBinding {
             Self::Allocation(signature) => Some(RuntimeHelperRustCallableBinding::Allocation(
                 signature.entrypoint().rust_callable_binding(),
             )),
+            Self::EnvironmentAccess(signature) => {
+                Some(RuntimeHelperRustCallableBinding::EnvironmentAccess(
+                    signature.entrypoint().rust_callable_binding(),
+                ))
+            }
             Self::WriteBarrier(signature) => Some(RuntimeHelperRustCallableBinding::WriteBarrier(
                 signature.entrypoint().rust_callable_binding(),
             )),
@@ -1201,6 +1235,10 @@ impl RuntimeHelperBinding {
         RuntimeAllocationAbiSignature::from_symbol_name(symbol_name)
             .map(Self::Allocation)
             .or_else(|| {
+                RuntimeEnvAccessAbiSignature::from_symbol_name(symbol_name)
+                    .map(Self::EnvironmentAccess)
+            })
+            .or_else(|| {
                 RuntimeWriteBarrierAbiSignature::from_symbol_name(symbol_name)
                     .map(Self::WriteBarrier)
             })
@@ -1210,14 +1248,22 @@ impl RuntimeHelperBinding {
     pub const fn allocation_signature(self) -> Option<RuntimeAllocationAbiSignature> {
         match self {
             Self::Allocation(signature) => Some(signature),
-            Self::WriteBarrier(_) => None,
+            Self::EnvironmentAccess(_) | Self::WriteBarrier(_) => None,
+        }
+    }
+
+    /// Returns the environment-access ABI signature when this binding serves environment access.
+    pub const fn env_access_signature(self) -> Option<RuntimeEnvAccessAbiSignature> {
+        match self {
+            Self::EnvironmentAccess(signature) => Some(signature),
+            Self::Allocation(_) | Self::WriteBarrier(_) => None,
         }
     }
 
     /// Returns the write-barrier ABI signature when this binding serves a barrier.
     pub const fn write_barrier_signature(self) -> Option<RuntimeWriteBarrierAbiSignature> {
         match self {
-            Self::Allocation(_) => None,
+            Self::Allocation(_) | Self::EnvironmentAccess(_) => None,
             Self::WriteBarrier(signature) => Some(signature),
         }
     }
@@ -1244,6 +1290,9 @@ mod tests {
     };
     use crate::runtime::barrier::{
         runtime_write_barrier_abi_signatures, runtime_write_barrier_rust_callable_bindings,
+    };
+    use crate::runtime::env::{
+        runtime_env_access_abi_signatures, runtime_env_access_rust_callable_bindings,
     };
 
     fn expected_runtime_symbol_abi_signature_projection(
@@ -1316,7 +1365,9 @@ mod tests {
             .filter(|symbol| {
                 matches!(
                     symbol.role(),
-                    RuntimeHelperRole::Allocation | RuntimeHelperRole::WriteBarrier
+                    RuntimeHelperRole::Allocation
+                        | RuntimeHelperRole::EnvironmentAccess
+                        | RuntimeHelperRole::WriteBarrier
                 )
             })
             .map(|symbol| (symbol.name(), symbol.role()))
@@ -1332,6 +1383,11 @@ mod tests {
             .copied()
             .filter_map(RuntimeHelperBinding::allocation_signature)
             .collect::<Vec<_>>();
+        let env_access_signatures = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .filter_map(RuntimeHelperBinding::env_access_signature)
+            .collect::<Vec<_>>();
         let write_barrier_signatures = runtime_helper_bindings()
             .iter()
             .copied()
@@ -1341,6 +1397,10 @@ mod tests {
         assert_eq!(
             allocation_signatures.as_slice(),
             runtime_allocation_abi_signatures()
+        );
+        assert_eq!(
+            env_access_signatures.as_slice(),
+            runtime_env_access_abi_signatures()
         );
         assert_eq!(
             write_barrier_signatures.as_slice(),
@@ -1380,16 +1440,19 @@ mod tests {
                 binding.0
             );
         }
-        assert!(
+        assert_eq!(
+            RuntimeHelperBinding::from_symbol_name("aos_env_get")
+                .and_then(RuntimeHelperBinding::core_call_signature)
+                .map(|signature| {
+                    let RuntimeCallableKind::Helper { symbol } = signature.callable() else {
+                        panic!("helper call signature must carry helper callable metadata");
+                    };
+                    (symbol.name(), signature)
+                }),
             core_signatures
                 .iter()
-                .any(|(symbol_name, _)| *symbol_name == "aos_env_get")
-        );
-        assert!(
-            runtime_helper_bindings()
-                .iter()
-                .all(|binding| binding.symbol_name() != "aos_env_get"),
-            "env-get has core ABI metadata but no Rust-callable binding yet"
+                .copied()
+                .find(|(symbol_name, _)| *symbol_name == "aos_env_get")
         );
     }
 
@@ -1433,6 +1496,10 @@ mod tests {
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
                 (
+                    "aos_env_get",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
                     "aos_gc_write_barrier",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
@@ -1447,6 +1514,11 @@ mod tests {
             .into_iter()
             .map(RuntimeHelperRustCallableBinding::Allocation)
             .collect::<Vec<_>>();
+        expected_callables.extend(
+            runtime_env_access_rust_callable_bindings()
+                .into_iter()
+                .map(RuntimeHelperRustCallableBinding::EnvironmentAccess),
+        );
         expected_callables.extend(
             runtime_write_barrier_rust_callable_bindings()
                 .into_iter()
@@ -1476,10 +1548,17 @@ mod tests {
             match callable.role() {
                 RuntimeHelperRole::Allocation => {
                     assert!(callable.allocation_callable().is_some());
+                    assert!(callable.env_access_callable().is_none());
+                    assert!(callable.write_barrier_callable().is_none());
+                }
+                RuntimeHelperRole::EnvironmentAccess => {
+                    assert!(callable.allocation_callable().is_none());
+                    assert!(callable.env_access_callable().is_some());
                     assert!(callable.write_barrier_callable().is_none());
                 }
                 RuntimeHelperRole::WriteBarrier => {
                     assert!(callable.allocation_callable().is_none());
+                    assert!(callable.env_access_callable().is_none());
                     assert!(callable.write_barrier_callable().is_some());
                 }
                 role => panic!("unexpected callable helper role: {role:?}"),
@@ -1511,7 +1590,9 @@ mod tests {
         for symbol in runtime_helper_symbols().iter().copied().filter(|symbol| {
             !matches!(
                 symbol.role(),
-                RuntimeHelperRole::Allocation | RuntimeHelperRole::WriteBarrier
+                RuntimeHelperRole::Allocation
+                    | RuntimeHelperRole::EnvironmentAccess
+                    | RuntimeHelperRole::WriteBarrier
             )
         }) {
             assert_eq!(
@@ -1570,6 +1651,14 @@ mod tests {
     fn runtime_symbol_binding_manifest_marks_unbound_helpers_and_builtins() {
         let manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
 
+        assert!(matches!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "aos_env_get")
+                .map(RuntimeSymbolBindingManifestEntry::status),
+            Some(RuntimeSymbolBindingStatus::BoundHelper(binding))
+                if binding.role() == RuntimeHelperRole::EnvironmentAccess
+        ));
         assert_eq!(
             manifest
                 .iter()
@@ -1723,6 +1812,17 @@ mod tests {
                 .signature_bindings()
                 .iter()
                 .any(|binding| {
+                    binding.helper_binding().is_some_and(|helper| {
+                        helper.symbol_name() == "aos_env_get"
+                            && helper.role() == RuntimeHelperRole::EnvironmentAccess
+                    })
+                })
+        );
+        assert!(
+            signature_preflight
+                .signature_bindings()
+                .iter()
+                .any(|binding| {
                     binding.builtin_call_binding().is_some_and(|builtin| {
                         builtin.symbol_name() == "nix.builtin.derivationStrict"
                             && builtin.arity() == 1
@@ -1855,6 +1955,9 @@ mod tests {
             match target.helper_role() {
                 RuntimeHelperRole::Allocation => {
                     assert!(target.symbol_name().starts_with("aos_alloc_"))
+                }
+                RuntimeHelperRole::EnvironmentAccess => {
+                    assert_eq!(target.symbol_name(), "aos_env_get")
                 }
                 RuntimeHelperRole::WriteBarrier => {
                     assert_eq!(target.symbol_name(), "aos_gc_write_barrier")
@@ -2014,6 +2117,10 @@ mod tests {
         assert!(preflight.candidate_bindings().iter().any(|candidate| {
             candidate.symbol_name() == "aos_alloc_attrs"
                 && candidate.helper_role() == RuntimeHelperRole::Allocation
+        }));
+        assert!(preflight.candidate_bindings().iter().any(|candidate| {
+            candidate.symbol_name() == "aos_env_get"
+                && candidate.helper_role() == RuntimeHelperRole::EnvironmentAccess
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
             missing.missing_abi_signature().is_some_and(|gap| {

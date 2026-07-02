@@ -815,8 +815,9 @@ harness, never cut for scope.
       symbols, bind builtin bodies, or make compiled artifacts relinkable.
 - [x] Current runtime symbol registration-preflight precursor:
       `runtime_symbol_registration_preflight()` derives a deterministic
-      readiness report from the binding manifest: bindable allocation and
-      write-barrier helpers stay in runtime-manifest order, and missing
+      readiness report from the binding manifest: bindable allocation,
+      environment-access, and write-barrier helpers stay in runtime-manifest
+      order, and missing
       helper/builtin bindings are reported in stable symbol order. The checked
       `runtime_symbol_registration_plan()` currently returns an incomplete
       registration error until forcing/call/attr/error helpers and builtin
@@ -826,14 +827,14 @@ harness, never cut for scope.
       attach addresses, export wrappers, or relink compiled artifacts.
 - [x] Current runtime symbol ABI-signature preflight precursor:
       `runtime_symbol_abi_signature_preflight()` combines the oracle's
-      allocation/write-barrier helper ABI metadata with `ratchet-core`'s builtin
-      call-shape metadata in stable runtime symbol order. Callable builtin
-      symbols now carry their frozen `RuntimeCallSignature` metadata in this
-      preflight, while unbound helper roles, including environment access, and
-      value-only builtin symbols remain missing. Tests prove helper parity with
-      the safe registration preflight, builtin parity with the builtin call
-      preflight, exact binding/gap projection order, representative callable
-      builtin metadata, and current helper/value-only gaps. This is not
+      allocation/environment-access/write-barrier helper ABI metadata with
+      `ratchet-core`'s builtin call-shape metadata in stable runtime symbol
+      order. Callable builtin symbols now carry their frozen
+      `RuntimeCallSignature` metadata in this preflight, while unbound helper
+      roles and value-only builtin symbols remain missing. Tests prove helper
+      parity with the safe registration preflight, builtin parity with the
+      builtin call preflight, exact binding/gap projection order, representative
+      callable builtin metadata, and current helper/value-only gaps. This is not
       executable ABI registration: no
       addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
       lowering, or compiled artifact relinking are implemented.
@@ -842,10 +843,9 @@ harness, never cut for scope.
       into a checked completeness gate: callers receive a
       `RuntimeSymbolAbiSignaturePlan` only once every runtime symbol has
       signature metadata. Today it returns an incomplete-plan error carrying the
-      preflight because environment/forcing/call/attr/error helpers and
-      value-only builtins remain gaps. Tests pin the missing count,
-      representative helper and value-only builtin gaps, preserved callable
-      builtin metadata, and a
+      preflight because forcing/call/attr/error helpers and value-only builtins
+      remain gaps. Tests pin the missing count, representative helper and
+      value-only builtin gaps, preserved callable builtin metadata, and a
       synthetic complete conversion path. This is metadata gating only; no
       addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
       lowering, or compiled artifact relinking are implemented.
@@ -853,13 +853,13 @@ harness, never cut for scope.
       `runtime_symbol_native_target_candidate_preflight()` combines the stable symbol
       manifest, helper ABI signatures, helper Rust-callable availability, and
       builtin call-shape metadata into a target-readiness report. Helper symbols
-      with allocation/write-barrier callables are address-free symbol/role
-      wrapper-generation candidates;
-      environment/forcing/call/attr/error helpers, value-only builtins, and
-      callable builtins without wrapper bodies remain gaps. Tests prove exact
-      projection order, helper-callable parity, representative helper/value-only
-      gaps, all callable builtin wrapper gaps, and the absence of helper-callable
-      gaps today. This is readiness metadata only; no addresses, exported wrappers,
+      with allocation/environment-access/write-barrier callables are
+      address-free symbol/role wrapper-generation candidates;
+      forcing/call/attr/error helpers, value-only builtins, and callable builtins
+      without wrapper bodies remain gaps. Tests prove exact projection order,
+      helper-callable parity, representative helper/value-only gaps, all callable
+      builtin wrapper gaps, and the absence of helper-callable gaps today. This
+      is readiness metadata only; no addresses, exported wrappers,
       `JITBuilder::symbol` calls, Cranelift lowering, or compiled artifact
       relinking are implemented.
 - [x] Current runtime symbol native-target candidate plan precursor:
@@ -905,13 +905,13 @@ harness, never cut for scope.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata
-      for currently covered allocation/write-barrier helpers, while keeping
-      forcing/call/attr/error helpers and builtins in the missing-binding set.
-      Tests prove helper-callable order, helper-symbol parity with the safe
-      preflight, and gap parity with the incomplete registration report. This is
-      not executable ABI registration: the addresses are Rust-callable metadata
-      only, not exported wrappers, `JITBuilder::symbol` entries, or relinkable
-      compiled-artifact targets.
+      for currently covered allocation/environment-access/write-barrier helpers,
+      while keeping forcing/call/attr/error helpers and builtins in the
+      missing-binding set. Tests prove helper-callable order, helper-symbol
+      parity with the safe preflight, and gap parity with the incomplete
+      registration report. This is not executable ABI registration: the
+      addresses are Rust-callable metadata only, not exported wrappers,
+      `JITBuilder::symbol` entries, or relinkable compiled-artifact targets.
 - [x] Current allocation ABI-signature precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
       success-path native parameter and typed pointer-result shape for every
@@ -932,11 +932,12 @@ harness, never cut for scope.
       install a Tier-B table, or relink compiled artifacts.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
-      allocation and write-barrier helper as `TrapToEvaluator`, meaning the
-      native ABI has no null-pointer or sentinel failure result: helpers return
-      only on success, while allocation or barrier failures must transfer to
-      evaluator trap/error machinery. Tests pin the convention for each
-      `aos_alloc_*` and `aos_gc_write_barrier` symbol. This remains metadata
+      allocation, environment-access, and write-barrier helper as
+      `TrapToEvaluator`, meaning the native ABI has no null-pointer or sentinel
+      failure result: helpers return only on success, while allocation,
+      environment-access, or barrier failures must transfer to evaluator
+      trap/error machinery. Tests pin the convention for each `aos_alloc_*`,
+      `aos_env_get`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol`
       registration, and native startup binding remain open.
 

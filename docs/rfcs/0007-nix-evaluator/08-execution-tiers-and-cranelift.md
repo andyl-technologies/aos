@@ -957,13 +957,14 @@ harness, never cut for scope.
 - [x] Current runtime symbol binding-manifest precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
       consumes the core runtime symbol manifest and preserves its order while
-      classifying each symbol as a currently bound allocation/write-barrier
-      helper, an unbound future helper role, or a builtin. Tests cross-check
-      core-manifest order, exact safe-helper binding coverage, representative
-      unbound helpers such as `aos_force` and `aos_apply`, and a representative
-      builtin symbol. This is binding-status metadata only; it attaches no
-      function pointers, exports no wrappers, registers no Cranelift symbols,
-      and leaves builtin/forcing/call/attr/error helper addresses unbound.
+      classifying each symbol as a currently bound allocation,
+      environment-access, or write-barrier helper, an unbound future helper role,
+      or a builtin. Tests cross-check core-manifest order, exact safe-helper
+      binding coverage including `aos_env_get`, representative unbound helpers
+      such as `aos_force` and `aos_apply`, and a representative builtin symbol.
+      This is binding-status metadata only; it attaches no function pointers,
+      exports no wrappers, registers no Cranelift symbols, and leaves
+      builtin/forcing/call/attr/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -980,10 +981,10 @@ harness, never cut for scope.
       `runtime_symbol_abi_signature_preflight()` combines safe helper binding
       metadata with core-owned helper `RuntimeCallSignature` metadata and builtin
       call-shape metadata in stable runtime symbol order:
-      allocation/write-barrier helpers are bindable only when the corresponding
-      core helper signature exists, callable builtin `RuntimeCallSignature`
-      entries are bindable metadata, and unbound helper roles plus value-only
-      builtin symbols stay in the gap report. Tests pin helper parity with the
+      allocation, environment-access, and write-barrier helpers are bindable only
+      when the corresponding core helper signature exists, callable builtin
+      `RuntimeCallSignature` entries are bindable metadata, and unbound helper
+      roles plus value-only builtin symbols stay in the gap report. Tests pin helper parity with the
       safe registration preflight, core signature coverage for every currently
       bound helper, builtin parity with the builtin call preflight, exact
       binding/gap projection order, representative callable builtin metadata,
@@ -1085,15 +1086,14 @@ harness, never cut for scope.
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability
       with the signature-covered helper/builtin set into a target-readiness
-      report. Allocation/write-barrier helpers are address-free symbol/role
-      candidates for later wrapper generation, while ABI-signature gaps,
-      value-only builtins, and callable builtins without wrapper bodies stay in
-      the gap report. Tests prove exact projection order from ABI-signature
-      metadata, helper-callable parity, representative helper/value-only gaps,
-      all callable builtin wrapper gaps, and no current helper-callable gaps.
-      This does not attach executable addresses, export wrappers, lower
-      Cranelift IR, or call
-      `JITBuilder::symbol`.
+      report. Allocation, environment-access, and write-barrier helpers are
+      address-free symbol/role candidates for later wrapper generation, while
+      ABI-signature gaps, value-only builtins, and callable builtins without
+      wrapper bodies stay in the gap report. Tests prove exact projection order
+      from ABI-signature metadata, helper-callable parity, representative
+      helper/value-only gaps, all callable builtin wrapper gaps, and no current
+      helper-callable gaps. This does not attach executable addresses, export
+      wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol native-target candidate plan precursor:
       `runtime_symbol_native_target_candidate_plan()` is the checked completeness
       gate over the address-free candidate preflight. It returns a
@@ -1233,10 +1233,11 @@ harness, never cut for scope.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the
-      currently covered allocation/write-barrier helpers and reporting the same
-      unbound helper/builtin gaps as the safe registration preflight. Tests pin
-      helper-callable order, symbol parity with the safe helper preflight, and
-      gap parity with the incomplete registration report. This is not
+      currently covered allocation, environment-access, and write-barrier
+      helpers and reporting the same unbound helper/builtin gaps as the safe
+      registration preflight. Tests pin helper-callable order, symbol parity with
+      the safe helper preflight, and gap parity with the incomplete registration
+      report. This is not
       `JITBuilder::symbol` registration: the addresses are Rust-callable
       storage-wrapper metadata only, not exported C ABI targets or final native
       call targets.
@@ -1259,12 +1260,13 @@ harness, never cut for scope.
       transfer, and Tier-B vtable installation remain open.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
-      allocation and write-barrier helper as `TrapToEvaluator`, so the native ABI
-      has no null-pointer or sentinel failure result: helpers return only on
-      success, while allocation or barrier failures must transfer to evaluator
-      trap/error machinery. Tests pin the convention for each `aos_alloc_*` and
-      `aos_gc_write_barrier` symbol. This remains metadata only; exported
-      wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
+      allocation, environment-access, and write-barrier helper as
+      `TrapToEvaluator`, so the native ABI has no null-pointer or sentinel
+      failure result: helpers return only on success, while allocation,
+      environment-access, or barrier failures must transfer to evaluator
+      trap/error machinery. Tests pin the convention for each `aos_alloc_*`,
+      `aos_env_get`, and `aos_gc_write_barrier` symbol. This remains metadata
+      only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
