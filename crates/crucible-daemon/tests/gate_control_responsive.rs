@@ -30,7 +30,6 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
 
     for operation in [
         ControlOperationKind::Snapshot,
-        ControlOperationKind::Fork,
         ControlOperationKind::Inject,
         ControlOperationKind::Query,
         ControlOperationKind::Pause,
@@ -47,7 +46,6 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
         fixture.observed_control_operations(),
         vec![
             SchedulerControlOperationKind::Snapshot,
-            SchedulerControlOperationKind::Fork,
             SchedulerControlOperationKind::Inject,
             SchedulerControlOperationKind::Query,
         ]
@@ -59,7 +57,7 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
     assert_eq!(DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, 1);
     assert_eq!(report.bound_quanta, DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND);
     assert_eq!(report.observations, acknowledgements.len());
-    assert_eq!(report.required_operations_observed, 5);
+    assert_eq!(report.required_operations_observed, 4);
     assert!(report.max_acknowledgement_delta_quanta <= 1);
 
     fixture.stop().await;
@@ -69,7 +67,6 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
 fn gate_control_responsive_daemon_rejects_required_operation_rejection() {
     let acknowledgements = [
         applied_acknowledgement(ControlOperationKind::Snapshot, 10),
-        applied_acknowledgement(ControlOperationKind::Fork, 11),
         ControlOperationAcknowledgement::new(
             ControlOperationKind::Inject,
             ControlSessionState::Running,
@@ -205,14 +202,11 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: vec![decision],
-            event_log_entries: vec![crucible::SchedulerEventLogEntry::evaluation_boundary(
-                self.quanta - 1,
-                VirtualTime { ticks: self.quanta },
-                crucible::SchedulerEvaluationBoundaryKind::Quantum,
-            )],
+            event_log_entries: Vec::new(),
             event_log_segment_bytes: vec![b'x'],
+            event_log_segment_text: String::from("x"),
             event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
-            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
         })
     }
 }

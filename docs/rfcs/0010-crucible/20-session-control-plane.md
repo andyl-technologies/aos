@@ -1068,12 +1068,24 @@ pub enum SessionError {
     `gate_control_responsive` target observes mailbox-free live progress and
     one-quantum stop acknowledgement. `checks.crucible.phase1.executionEngineStateMachine`
     and `checks.crucible.phase1.executionLiveSnapshot` gate the task.
-- [ ] **T-SESS-3** Implement the lifecycle state machine (closed run-states
+- [x] **T-SESS-3** Implement the lifecycle state machine (closed run-states
   Loaded/Running/Paused/Stopped; `PauseReason` and `Outcome` types) and the
   total (state, command) transition table; build the exhaustive/property model
   proving no command sequence wedges it and exercise it under
   `gate:scheduler-liveness`. — satisfies [SESS-4], [SESS-5], [SESS-6], [SESS-29];
   spec §2, §2.1, §11.
+  - Completed by `checks.crucible.phase5.sessionLifecycle`: `crucible-session`
+    now carries closed lifecycle, pause-reason, outcome, and command-kind enums;
+    a pure `lifecycle_transition` table is total over every state and the full
+    §4 command-kind lifecycle model, including set/remove breakpoint and
+    create-savepoint kinds. Focused tests prove representative command coverage,
+    RFC table cells such as `Running + Fork = Rejected`, bounded command-sequence
+    closure, generated command-stream closure, agreement for current
+    `Engine::apply_command` pairs, and side-effect-free typed rejection paths
+    that name the rejecting state and command. The check depends on
+    `checks.crucible.phase3.gates.schedulerLiveness`; the reply-carrying §4
+    command payloads and operation mappings remain tracked by unchecked
+    `T-SESS-4`.
 - [ ] **T-SESS-4** Implement the closed command set (start/continue/pause/step/
   stop/inject_fault/heal_fault/set+remove breakpoint/create_savepoint/fork/query)
   with `reply` oneshots, mapping each to its model/graph/scheduler operation

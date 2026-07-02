@@ -132,6 +132,35 @@ impl LiveStateKind {
     }
 }
 
+/// Closed run-state kind used by the lifecycle transition model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LifecycleStateKind {
+    /// Configuration is loaded, but no runtime has been instantiated yet.
+    Loaded,
+    /// The actor is actively stepping bounded scheduler quanta.
+    Running,
+    /// The actor is idle at a quantum boundary.
+    Paused,
+    /// The actor reached a terminal state.
+    Stopped,
+}
+
+impl LifecycleStateKind {
+    /// The closed lifecycle state set.
+    pub const ALL: [Self; 4] = [Self::Loaded, Self::Running, Self::Paused, Self::Stopped];
+}
+
+impl From<&EngineState> for LifecycleStateKind {
+    fn from(state: &EngineState) -> Self {
+        match state {
+            EngineState::Loaded => Self::Loaded,
+            EngineState::Running => Self::Running,
+            EngineState::Paused { .. } => Self::Paused,
+            EngineState::Stopped { .. } => Self::Stopped,
+        }
+    }
+}
+
 /// Why a session paused at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PauseReason {
@@ -149,6 +178,40 @@ pub enum PauseReason {
         /// The completed step mode.
         mode: StepMode,
     },
+}
+
+/// Closed pause-reason kind set used by lifecycle model checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PauseReasonKind {
+    /// Runtime was instantiated.
+    Instantiated,
+    /// User requested a pause.
+    UserRequested,
+    /// Breakpoint suspended the run.
+    Breakpoint,
+    /// Bounded step completed.
+    StepComplete,
+}
+
+impl PauseReasonKind {
+    /// The closed pause-reason vocabulary.
+    pub const ALL: [Self; 4] = [
+        Self::Instantiated,
+        Self::UserRequested,
+        Self::Breakpoint,
+        Self::StepComplete,
+    ];
+}
+
+impl From<&PauseReason> for PauseReasonKind {
+    fn from(reason: &PauseReason) -> Self {
+        match reason {
+            PauseReason::Instantiated => Self::Instantiated,
+            PauseReason::UserRequested => Self::UserRequested,
+            PauseReason::Breakpoint { .. } => Self::Breakpoint,
+            PauseReason::StepComplete { .. } => Self::StepComplete,
+        }
+    }
 }
 
 /// Actor-owned breakpoint registry for a live session.
@@ -200,6 +263,44 @@ pub enum Outcome {
     },
     /// The operator stopped the run.
     Stopped,
+}
+
+/// Closed terminal-outcome kind set used by lifecycle model checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OutcomeKind {
+    /// Run completed successfully.
+    Passed,
+    /// One or more properties failed.
+    Failed,
+    /// Run hit its configured budget.
+    Timeout,
+    /// Backend crashed outside modeled faults.
+    Crashed,
+    /// Operator stopped the run.
+    Stopped,
+}
+
+impl OutcomeKind {
+    /// The closed terminal-outcome vocabulary.
+    pub const ALL: [Self; 5] = [
+        Self::Passed,
+        Self::Failed,
+        Self::Timeout,
+        Self::Crashed,
+        Self::Stopped,
+    ];
+}
+
+impl From<&Outcome> for OutcomeKind {
+    fn from(outcome: &Outcome) -> Self {
+        match outcome {
+            Outcome::Passed => Self::Passed,
+            Outcome::Failed { .. } => Self::Failed,
+            Outcome::Timeout => Self::Timeout,
+            Outcome::Crashed { .. } => Self::Crashed,
+            Outcome::Stopped => Self::Stopped,
+        }
+    }
 }
 
 /// A bounded step mode.
@@ -302,12 +403,233 @@ impl SessionCommand {
         matches!(
             self,
             Self::Snapshot
-                | Self::Fork
                 | Self::Inject
                 | Self::InjectFault { .. }
                 | Self::HealFault { .. }
                 | Self::Query
         )
+    }
+}
+
+/// Payload-free command kind used by the lifecycle transition model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SessionCommandKind {
+    /// Instantiate the loaded configuration.
+    Start,
+    /// Continue a paused session.
+    Continue,
+    /// Pause a running or already-paused session.
+    Pause,
+    /// Execute a supported quantum step.
+    StepQuantum,
+    /// Execute a step mode whose executor is intentionally pending.
+    StepUnsupported,
+    /// Transition to a terminal operator-stopped state.
+    Stop,
+    /// Inject legacy deterministic control.
+    Inject,
+    /// Inject a typed fault.
+    InjectFault,
+    /// Heal a typed fault.
+    HealFault,
+    /// Add a predicate breakpoint.
+    SetBreakpoint,
+    /// Remove a predicate breakpoint.
+    RemoveBreakpoint,
+    /// Materialize a savepoint at a boundary.
+    CreateSavepoint,
+    /// Fork at a valid boundary.
+    Fork,
+    /// Query the session.
+    Query,
+    /// Capture a boundary snapshot through the current implementation shim.
+    Snapshot,
+}
+
+impl SessionCommandKind {
+    /// The lifecycle command-kind set.
+    ///
+    /// This covers the RFC §4 command surface plus the current implementation's
+    /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
+    /// shims with the reply-carrying command payloads.
+    pub const ALL: [Self; 15] = [
+        Self::Start,
+        Self::Continue,
+        Self::Pause,
+        Self::StepQuantum,
+        Self::StepUnsupported,
+        Self::Stop,
+        Self::Inject,
+        Self::InjectFault,
+        Self::HealFault,
+        Self::SetBreakpoint,
+        Self::RemoveBreakpoint,
+        Self::CreateSavepoint,
+        Self::Fork,
+        Self::Query,
+        Self::Snapshot,
+    ];
+
+    /// Returns a representative engine command for kinds implemented by the
+    /// current [`SessionCommand`] enum.
+    ///
+    /// Missing values correspond to T-SESS-4 command-payload work, not to
+    /// missing lifecycle states.
+    #[must_use]
+    pub fn representative_command(self) -> Option<SessionCommand> {
+        let command = match self {
+            Self::Start => SessionCommand::Start,
+            Self::Continue => SessionCommand::Continue,
+            Self::Pause => SessionCommand::Pause,
+            Self::StepQuantum => SessionCommand::Step {
+                mode: StepMode::Quantum,
+            },
+            Self::StepUnsupported => SessionCommand::Step {
+                mode: StepMode::Instruction,
+            },
+            Self::Stop => SessionCommand::Stop,
+            Self::Inject => SessionCommand::Inject,
+            Self::InjectFault => SessionCommand::InjectFault {
+                tag: FaultTag::from_name("lifecycle-model"),
+                fault: Fault::Node(crucible::NodeFault::Crash {
+                    node: crucible::NodeId {
+                        name: String::from("node-a"),
+                    },
+                    restart: crucible::RestartPolicy::StayDown,
+                }),
+            },
+            Self::HealFault => SessionCommand::HealFault {
+                tag: FaultTag::from_name("lifecycle-model"),
+            },
+            Self::SetBreakpoint | Self::RemoveBreakpoint | Self::CreateSavepoint => return None,
+            Self::Fork => SessionCommand::Fork,
+            Self::Query => SessionCommand::Query,
+            Self::Snapshot => SessionCommand::Snapshot,
+        };
+        Some(command)
+    }
+}
+
+impl From<&SessionCommand> for SessionCommandKind {
+    fn from(command: &SessionCommand) -> Self {
+        match command {
+            SessionCommand::Start => Self::Start,
+            SessionCommand::Continue => Self::Continue,
+            SessionCommand::Pause => Self::Pause,
+            SessionCommand::Step {
+                mode: StepMode::Quantum,
+            } => Self::StepQuantum,
+            SessionCommand::Step { .. } => Self::StepUnsupported,
+            SessionCommand::Snapshot => Self::Snapshot,
+            SessionCommand::Fork => Self::Fork,
+            SessionCommand::Inject => Self::Inject,
+            SessionCommand::InjectFault { .. } => Self::InjectFault,
+            SessionCommand::HealFault { .. } => Self::HealFault,
+            SessionCommand::Stop => Self::Stop,
+            SessionCommand::Query => Self::Query,
+        }
+    }
+}
+
+/// Pure lifecycle-model decision for one `(state, command)` pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LifecycleTransition {
+    /// The command is accepted and moves, or remains in, a lifecycle state.
+    Accepted {
+        /// Lifecycle state after applying the command.
+        to: LifecycleStateKind,
+    },
+    /// The command is rejected and leaves the lifecycle state unchanged.
+    Rejected,
+}
+
+/// Evaluates the total lifecycle transition table for command kinds.
+#[must_use]
+pub const fn lifecycle_transition(
+    state: LifecycleStateKind,
+    command: SessionCommandKind,
+) -> LifecycleTransition {
+    use LifecycleStateKind as State;
+    use LifecycleTransition::{Accepted, Rejected};
+    use SessionCommandKind as Command;
+
+    match (state, command) {
+        (State::Loaded, Command::Start) => Accepted { to: State::Paused },
+        (
+            State::Loaded,
+            Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query | Command::Snapshot,
+        ) => Accepted { to: State::Loaded },
+        (State::Loaded, Command::Stop) => Accepted { to: State::Stopped },
+        (
+            State::Loaded,
+            Command::Continue
+            | Command::Pause
+            | Command::StepQuantum
+            | Command::StepUnsupported
+            | Command::Inject
+            | Command::InjectFault
+            | Command::HealFault
+            | Command::CreateSavepoint
+            | Command::Fork,
+        ) => Rejected,
+
+        (State::Running, Command::Pause | Command::StepQuantum) => Accepted { to: State::Paused },
+        (State::Running, Command::Stop) => Accepted { to: State::Stopped },
+        (
+            State::Running,
+            Command::Snapshot
+            | Command::Inject
+            | Command::InjectFault
+            | Command::HealFault
+            | Command::SetBreakpoint
+            | Command::RemoveBreakpoint
+            | Command::CreateSavepoint
+            | Command::Query,
+        ) => Accepted { to: State::Running },
+        (
+            State::Running,
+            Command::Start | Command::Continue | Command::StepUnsupported | Command::Fork,
+        ) => Rejected,
+
+        (State::Paused, Command::Continue) => Accepted { to: State::Running },
+        (
+            State::Paused,
+            Command::Pause
+            | Command::StepQuantum
+            | Command::Snapshot
+            | Command::Fork
+            | Command::Inject
+            | Command::InjectFault
+            | Command::HealFault
+            | Command::SetBreakpoint
+            | Command::RemoveBreakpoint
+            | Command::CreateSavepoint
+            | Command::Query,
+        ) => Accepted { to: State::Paused },
+        (State::Paused, Command::Stop) => Accepted { to: State::Stopped },
+        (State::Paused, Command::Start | Command::StepUnsupported) => Rejected,
+
+        (
+            State::Stopped,
+            Command::SetBreakpoint
+            | Command::RemoveBreakpoint
+            | Command::Snapshot
+            | Command::Fork
+            | Command::Query,
+        ) => Accepted { to: State::Stopped },
+        (
+            State::Stopped,
+            Command::Start
+            | Command::Continue
+            | Command::Pause
+            | Command::StepQuantum
+            | Command::StepUnsupported
+            | Command::Inject
+            | Command::InjectFault
+            | Command::HealFault
+            | Command::CreateSavepoint
+            | Command::Stop,
+        ) => Rejected,
     }
 }
 
@@ -1268,10 +1590,13 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::Step { mode } => {
-                if matches!(self.state, EngineState::Paused { .. }) {
+            SessionCommand::Step { mode } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
                     if *mode != StepMode::Quantum {
-                        return Err(SessionError::UnsupportedStepMode { mode: *mode });
+                        return Err(SessionError::UnsupportedStepMode {
+                            state: self.state.clone(),
+                            mode: *mode,
+                        });
                     }
                     let previous = self.state.clone();
                     self.state = EngineState::Running;
@@ -1283,10 +1608,11 @@ impl<L: QuantumLoop> Engine<L> {
                         reason: PauseReason::StepComplete { mode: *mode },
                     };
                     Ok(self.snapshot())
-                } else {
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
                     Err(self.invalid_transition(command.clone()))
                 }
-            }
+            },
             SessionCommand::Snapshot => {
                 if matches!(self.state, EngineState::Running) {
                     self.admit_control_operation(ControlOperationKind::Snapshot);
@@ -1294,13 +1620,10 @@ impl<L: QuantumLoop> Engine<L> {
                 Ok(self.snapshot())
             }
             SessionCommand::Fork => match self.state {
-                EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
-                    if matches!(self.state, EngineState::Running) {
-                        self.admit_control_operation(ControlOperationKind::Fork);
-                    }
-                    Ok(self.snapshot())
+                EngineState::Paused { .. } | EngineState::Stopped { .. } => Ok(self.snapshot()),
+                EngineState::Running | EngineState::Loaded => {
+                    Err(self.invalid_transition(command.clone()))
                 }
-                EngineState::Loaded => Err(self.invalid_transition(command.clone())),
             },
             SessionCommand::Inject => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
@@ -1463,8 +1786,10 @@ pub enum SessionError {
         next: u64,
     },
     /// A forward step mode is part of the debug vocabulary but has no executor yet.
-    #[error("step mode {mode:?} is not implemented by the forward session executor")]
+    #[error("step mode {mode:?} is not implemented by the forward session executor in {state:?}")]
     UnsupportedStepMode {
+        /// The state that rejected the step mode.
+        state: EngineState,
         /// Step mode that cannot be executed by the forward session actor yet.
         mode: StepMode,
     },
@@ -1633,12 +1958,19 @@ impl<L: QuantumLoop> SessionActor<L> {
 
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
         let quanta_before = self.engine.quanta();
+        let pending_control_before = self.engine.pending_control_len() as u64;
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
         self.engine.apply_command(command)?;
         let entries = self.engine.drain_event_log_entries();
         self.event_log.append_entries(&entries);
+        let pending_control_after = self.engine.pending_control_len() as u64;
+        if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {
+            self.control_acknowledgements = self
+                .control_acknowledgements
+                .saturating_add(pending_control_before - pending_control_after);
+        }
         if control_acknowledged && !quantum_ack {
             self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
         }
@@ -1708,7 +2040,236 @@ mod tests {
                 Err(error) => error,
             };
             assert_eq!(engine.snapshot(), before);
-            assert_eq!(error, SessionError::UnsupportedStepMode { mode });
+            assert_eq!(
+                error,
+                SessionError::UnsupportedStepMode {
+                    state: before.state.clone(),
+                    mode,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
+        assert_eq!(
+            LifecycleStateKind::ALL,
+            [
+                LifecycleStateKind::Loaded,
+                LifecycleStateKind::Running,
+                LifecycleStateKind::Paused,
+                LifecycleStateKind::Stopped,
+            ]
+        );
+        assert_eq!(
+            PauseReasonKind::ALL,
+            [
+                PauseReasonKind::Instantiated,
+                PauseReasonKind::UserRequested,
+                PauseReasonKind::Breakpoint,
+                PauseReasonKind::StepComplete,
+            ]
+        );
+        assert_eq!(
+            OutcomeKind::ALL,
+            [
+                OutcomeKind::Passed,
+                OutcomeKind::Failed,
+                OutcomeKind::Timeout,
+                OutcomeKind::Crashed,
+                OutcomeKind::Stopped,
+            ]
+        );
+        assert_eq!(
+            SessionCommandKind::ALL,
+            [
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Pause,
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::StepUnsupported,
+                SessionCommandKind::Stop,
+                SessionCommandKind::Inject,
+                SessionCommandKind::InjectFault,
+                SessionCommandKind::HealFault,
+                SessionCommandKind::SetBreakpoint,
+                SessionCommandKind::RemoveBreakpoint,
+                SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Fork,
+                SessionCommandKind::Query,
+                SessionCommandKind::Snapshot,
+            ]
+        );
+        assert_eq!(
+            PauseReasonKind::from(&PauseReason::Breakpoint { id: 7 }),
+            PauseReasonKind::Breakpoint
+        );
+        assert_eq!(
+            PauseReasonKind::from(&PauseReason::StepComplete {
+                mode: StepMode::Quantum,
+            }),
+            PauseReasonKind::StepComplete
+        );
+        assert_eq!(
+            OutcomeKind::from(&Outcome::Failed {
+                violations: vec![String::from("v")]
+            }),
+            OutcomeKind::Failed
+        );
+        assert_eq!(
+            OutcomeKind::from(&Outcome::Crashed {
+                detail: String::from("crash")
+            }),
+            OutcomeKind::Crashed
+        );
+    }
+
+    #[test]
+    fn lifecycle_transition_model_is_total_for_representative_commands() {
+        for state in LifecycleStateKind::ALL {
+            for command in SessionCommandKind::ALL {
+                match lifecycle_transition(state, command) {
+                    LifecycleTransition::Accepted { to } => {
+                        assert!(LifecycleStateKind::ALL.contains(&to));
+                    }
+                    LifecycleTransition::Rejected => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lifecycle_transition_model_matches_rfc_section_table_cells() {
+        assert_eq!(
+            lifecycle_transition(LifecycleStateKind::Loaded, SessionCommandKind::Start),
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Paused,
+            }
+        );
+        assert_eq!(
+            lifecycle_transition(LifecycleStateKind::Running, SessionCommandKind::StepQuantum),
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Paused,
+            }
+        );
+        assert_eq!(
+            lifecycle_transition(LifecycleStateKind::Running, SessionCommandKind::Fork),
+            LifecycleTransition::Rejected
+        );
+        assert_eq!(
+            lifecycle_transition(
+                LifecycleStateKind::Running,
+                SessionCommandKind::CreateSavepoint
+            ),
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Running,
+            }
+        );
+        assert_eq!(
+            lifecycle_transition(
+                LifecycleStateKind::Paused,
+                SessionCommandKind::SetBreakpoint
+            ),
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Paused,
+            }
+        );
+        assert_eq!(
+            lifecycle_transition(
+                LifecycleStateKind::Stopped,
+                SessionCommandKind::RemoveBreakpoint
+            ),
+            LifecycleTransition::Accepted {
+                to: LifecycleStateKind::Stopped,
+            }
+        );
+        assert_eq!(
+            lifecycle_transition(
+                LifecycleStateKind::Loaded,
+                SessionCommandKind::CreateSavepoint
+            ),
+            LifecycleTransition::Rejected
+        );
+    }
+
+    #[test]
+    fn lifecycle_transition_model_command_sequences_never_wedge() {
+        let mut frontier = LifecycleStateKind::ALL.to_vec();
+        for _ in 0..5 {
+            let mut next_frontier = Vec::new();
+            for state in frontier {
+                for command in SessionCommandKind::ALL {
+                    let next = match lifecycle_transition(state, command) {
+                        LifecycleTransition::Accepted { to } => to,
+                        LifecycleTransition::Rejected => state,
+                    };
+                    assert!(LifecycleStateKind::ALL.contains(&next));
+                    next_frontier.push(next);
+                }
+            }
+            frontier = next_frontier;
+        }
+    }
+
+    #[test]
+    fn scheduler_liveness_generated_command_streams_exercise_lifecycle_table() {
+        let mut state = LifecycleStateKind::Loaded;
+        for seed in 0..64_u64 {
+            for step in 0..128_u64 {
+                let index = deterministic_command_index(seed, step);
+                let command = SessionCommandKind::ALL[index];
+                let next = match lifecycle_transition(state, command) {
+                    LifecycleTransition::Accepted { to } => to,
+                    LifecycleTransition::Rejected => state,
+                };
+                assert!(LifecycleStateKind::ALL.contains(&next));
+                state = next;
+            }
+            state = LifecycleStateKind::ALL[seed as usize % LifecycleStateKind::ALL.len()];
+        }
+    }
+
+    #[test]
+    fn engine_transition_table_matches_lifecycle_model_for_current_commands() {
+        for state in LifecycleStateKind::ALL {
+            for command_kind in SessionCommandKind::ALL {
+                if !current_engine_lifecycle_pair_is_realized(state, command_kind) {
+                    continue;
+                }
+                let Some(command) = command_kind.representative_command() else {
+                    continue;
+                };
+                let mut engine = engine_with_lifecycle_state(state);
+                let before = engine.snapshot();
+                let model = lifecycle_transition(state, command_kind);
+                let result = engine.apply_command(command.clone());
+
+                match model {
+                    LifecycleTransition::Accepted { to } => {
+                        let snapshot = match result {
+                            Ok(snapshot) => snapshot,
+                            Err(error) => {
+                                panic!("{state:?} + {command_kind:?} should be accepted: {error}");
+                            }
+                        };
+                        assert_eq!(LifecycleStateKind::from(&snapshot.state), to);
+                        assert_eq!(LifecycleStateKind::from(engine.state()), to);
+                    }
+                    LifecycleTransition::Rejected => {
+                        let error = match result {
+                            Ok(snapshot) => {
+                                panic!(
+                                    "{state:?} + {command_kind:?} should reject, got {:?}",
+                                    snapshot.state
+                                );
+                            }
+                            Err(error) => error,
+                        };
+                        assert_eq!(engine.snapshot(), before);
+                        assert_rejection_names_state_and_command(error, before.state, command);
+                    }
+                }
+            }
         }
     }
 
@@ -1854,6 +2415,72 @@ mod tests {
             panic!("source should contain section end {end}");
         };
         &tail[..end_index]
+    }
+
+    fn deterministic_command_index(seed: u64, step: u64) -> usize {
+        let mixed = seed
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(step.wrapping_mul(0xbf58_476d_1ce4_e5b9));
+        (mixed as usize) % SessionCommandKind::ALL.len()
+    }
+
+    fn current_engine_lifecycle_pair_is_realized(
+        _state: LifecycleStateKind,
+        command: SessionCommandKind,
+    ) -> bool {
+        !matches!(
+            command,
+            SessionCommandKind::SetBreakpoint
+                | SessionCommandKind::RemoveBreakpoint
+                | SessionCommandKind::CreateSavepoint
+        )
+    }
+
+    fn engine_with_lifecycle_state(state: LifecycleStateKind) -> Engine<AppendingLoop> {
+        let seed = match state {
+            LifecycleStateKind::Loaded => 9_001,
+            LifecycleStateKind::Running => 9_002,
+            LifecycleStateKind::Paused => 9_003,
+            LifecycleStateKind::Stopped => 9_004,
+        };
+        let scenario = generated_scenario(seed);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, AppendingLoop::default());
+        engine.state = match state {
+            LifecycleStateKind::Loaded => EngineState::Loaded,
+            LifecycleStateKind::Running => EngineState::Running,
+            LifecycleStateKind::Paused => EngineState::Paused {
+                reason: PauseReason::Instantiated,
+            },
+            LifecycleStateKind::Stopped => EngineState::Stopped {
+                outcome: Outcome::Stopped,
+            },
+        };
+        engine.runtime_instantiated = !matches!(state, LifecycleStateKind::Loaded);
+        engine
+    }
+
+    fn assert_rejection_names_state_and_command(
+        error: SessionError,
+        expected_state: EngineState,
+        expected_command: SessionCommand,
+    ) {
+        match error {
+            SessionError::InvalidTransition { state, command } => {
+                assert_eq!(state, expected_state);
+                assert_eq!(command, expected_command);
+            }
+            SessionError::UnsupportedStepMode { state, mode } => {
+                assert_eq!(state, expected_state);
+                assert_eq!(
+                    expected_command,
+                    SessionCommand::Step { mode },
+                    "unsupported step rejection should name the rejected command mode"
+                );
+            }
+            other => panic!("unexpected rejection type: {other}"),
+        }
     }
 
     #[test]
@@ -2197,6 +2824,119 @@ mod tests {
                 outcome: Outcome::Stopped
             }
         );
+    }
+
+    #[tokio::test]
+    async fn session_actor_command_driven_step_acknowledges_preexisting_running_controls() {
+        let scenario = generated_scenario(24);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, AppendingLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+            panic!("snapshot should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("snapshot command should be accepted while running: {error}");
+        }
+        assert_eq!(actor.control_acknowledgements(), 0);
+        assert_eq!(actor.engine().pending_control_len(), 1);
+
+        if let Err(error) = sender
+            .send(SessionCommand::Step {
+                mode: StepMode::Quantum,
+            })
+            .await
+        {
+            panic!("quantum step should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("running quantum step should drain pending control: {error}");
+        }
+
+        assert_eq!(actor.control_acknowledgements(), 1);
+        assert_eq!(actor.engine().pending_control_len(), 0);
+        assert_eq!(actor.engine().quanta(), 1);
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Paused {
+                reason: PauseReason::StepComplete {
+                    mode: StepMode::Quantum
+                }
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_actor_paused_step_acknowledges_preexisting_running_controls() {
+        let scenario = generated_scenario(25);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, AppendingLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue should enter running state: {error}");
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+            panic!("snapshot should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("snapshot command should be accepted while running: {error}");
+        }
+        assert_eq!(actor.control_acknowledgements(), 0);
+        assert_eq!(actor.engine().pending_control_len(), 1);
+
+        if let Err(error) = sender.send(SessionCommand::Pause).await {
+            panic!("pause should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("pause command should be accepted while running: {error}");
+        }
+        assert_eq!(actor.control_acknowledgements(), 1);
+        assert_eq!(actor.engine().pending_control_len(), 1);
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Paused {
+                reason: PauseReason::UserRequested
+            }
+        ));
+
+        if let Err(error) = sender
+            .send(SessionCommand::Step {
+                mode: StepMode::Quantum,
+            })
+            .await
+        {
+            panic!("quantum step should enqueue: {error}");
+        }
+        if let Err(error) = actor.run_once().await {
+            panic!("paused quantum step should drain pending control: {error}");
+        }
+
+        assert_eq!(actor.control_acknowledgements(), 2);
+        assert_eq!(actor.engine().pending_control_len(), 0);
+        assert_eq!(actor.engine().quanta(), 1);
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Paused {
+                reason: PauseReason::StepComplete {
+                    mode: StepMode::Quantum
+                }
+            }
+        ));
     }
 
     #[test]
