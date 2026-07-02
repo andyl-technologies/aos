@@ -119,7 +119,9 @@ impl ParallelThunkWaitCell {
                 }
                 ParallelThunkClaim::ForeignPending { .. }
                 | ParallelThunkClaim::ForeignAwaited { .. } => {
-                    if let Some(result) = self.wait_for_foreign_terminal(worker)? {
+                    if let Some((result, _wait_registered)) =
+                        self.wait_for_foreign_terminal(worker)?
+                    {
                         return Ok(result);
                     }
                 }
@@ -127,25 +129,104 @@ impl ParallelThunkWaitCell {
         }
     }
 
+    /// Claims the thunk, runs advisory ready work, then waits if still blocked.
+    ///
+    /// This is a small wait-or-steal ordering precursor for §3.3. When the
+    /// thunk is owned by another worker, `run_ready_work` is called before this
+    /// method enters the wait-cell path. The closure is responsible for the
+    /// eventual scheduler policy: drain local work first, then attempt peer
+    /// steals, and return [`ParallelThunkReadyWork::Idle`] only after its scan
+    /// has no ready work. This type cannot prove that the scan was exhaustive or
+    /// hold a scheduler park token; the final scheduler integration must supply
+    /// those guarantees. After each reported local or stolen work item, the
+    /// thunk state is rechecked. If the owner published a terminal state while
+    /// that work ran, this method returns without registering a waiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkWaitError::State`] if the state word contains an
+    /// unsupported encoding or reports an impossible transition. Waiter lock
+    /// poisoning is deliberately recovered on this path so registered waiters
+    /// can still observe terminal states.
+    pub fn claim_or_run_ready_then_wait(
+        &self,
+        worker: ParallelThunkWorkerId,
+        mut run_ready_work: impl FnMut() -> ParallelThunkReadyWork,
+    ) -> Result<ParallelThunkWorkWait<'_>, ParallelThunkWaitError> {
+        let mut report = ParallelThunkContentionReport::default();
+
+        loop {
+            match self.state.try_claim(worker)? {
+                ParallelThunkClaim::Claimed(guard) => {
+                    return Ok(ParallelThunkWorkWait::new(
+                        ParallelThunkWait::Claimed(ParallelThunkWaitGuard {
+                            cell: self,
+                            guard: Some(guard),
+                        }),
+                        report,
+                    ));
+                }
+                ParallelThunkClaim::AlreadyForced => {
+                    return Ok(ParallelThunkWorkWait::new(
+                        ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced),
+                        report,
+                    ));
+                }
+                ParallelThunkClaim::AlreadyFailed => {
+                    return Ok(ParallelThunkWorkWait::new(
+                        ParallelThunkWait::Terminal(ParallelThunkTerminalState::Failed),
+                        report,
+                    ));
+                }
+                ParallelThunkClaim::SelfCycle { owner } => {
+                    return Ok(ParallelThunkWorkWait::new(
+                        ParallelThunkWait::SelfCycle { owner },
+                        report,
+                    ));
+                }
+                ParallelThunkClaim::ForeignPending { .. }
+                | ParallelThunkClaim::ForeignAwaited { .. } => match run_ready_work() {
+                    ParallelThunkReadyWork::RanLocal => {
+                        report.local_work_runs = report.local_work_runs.saturating_add(1);
+                    }
+                    ParallelThunkReadyWork::StolePeer => {
+                        report.stolen_work_runs = report.stolen_work_runs.saturating_add(1);
+                    }
+                    ParallelThunkReadyWork::Idle => {
+                        if let Some((result, wait_registered)) =
+                            self.wait_for_foreign_terminal(worker)?
+                        {
+                            report.wait_registered = wait_registered;
+                            return Ok(ParallelThunkWorkWait::new(result, report));
+                        }
+                    }
+                },
+            }
+        }
+    }
+
     fn wait_for_foreign_terminal(
         &self,
         worker: ParallelThunkWorkerId,
-    ) -> Result<Option<ParallelThunkWait<'_>>, ParallelThunkWaitError> {
+    ) -> Result<Option<(ParallelThunkWait<'_>, bool)>, ParallelThunkWaitError> {
         let mut waiters = self.lock_waiters_for_wait();
         match self.state.mark_awaited(worker)? {
             ParallelThunkAwait::Unclaimed => Ok(None),
-            ParallelThunkAwait::AlreadyForced => Ok(Some(ParallelThunkWait::Terminal(
-                ParallelThunkTerminalState::Forced,
+            ParallelThunkAwait::AlreadyForced => Ok(Some((
+                ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced),
+                false,
             ))),
-            ParallelThunkAwait::AlreadyFailed => Ok(Some(ParallelThunkWait::Terminal(
-                ParallelThunkTerminalState::Failed,
+            ParallelThunkAwait::AlreadyFailed => Ok(Some((
+                ParallelThunkWait::Terminal(ParallelThunkTerminalState::Failed),
+                false,
             ))),
             ParallelThunkAwait::SelfCycle { owner } => {
-                Ok(Some(ParallelThunkWait::SelfCycle { owner }))
+                Ok(Some((ParallelThunkWait::SelfCycle { owner }, false)))
             }
             ParallelThunkAwait::Awaited { owner, .. } => {
                 waiters.wait_registrations = waiters.wait_registrations.saturating_add(1);
-                self.wait_until_terminal(waiters, worker, owner).map(Some)
+                self.wait_until_terminal(waiters, worker, owner)
+                    .map(|result| Some((result, true)))
             }
         }
     }
@@ -226,6 +307,42 @@ impl ParallelThunkWaitCell {
     }
 }
 
+/// Ready work attempted while a foreign worker owns a thunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParallelThunkReadyWork {
+    /// A local ready task was executed.
+    RanLocal,
+    /// A peer ready task was stolen and executed.
+    StolePeer,
+    /// The hook reports no local or stolen work is available.
+    Idle,
+}
+
+/// Counters collected while handling contention on a foreign-owned thunk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParallelThunkContentionReport {
+    local_work_runs: usize,
+    stolen_work_runs: usize,
+    wait_registered: bool,
+}
+
+impl ParallelThunkContentionReport {
+    /// Returns how many local ready work items ran before returning.
+    pub const fn local_work_runs(self) -> usize {
+        self.local_work_runs
+    }
+
+    /// Returns how many peer work items were stolen before returning.
+    pub const fn stolen_work_runs(self) -> usize {
+        self.stolen_work_runs
+    }
+
+    /// Returns whether the wait-cell registration path was entered.
+    pub const fn wait_registered(self) -> bool {
+        self.wait_registered
+    }
+}
+
 /// Result of claiming or waiting on a parallel thunk wait cell.
 #[must_use = "a claimed parallel thunk must be published as forced or failed"]
 #[derive(Debug)]
@@ -239,6 +356,46 @@ pub enum ParallelThunkWait<'a> {
         /// The worker that owns the recursive force.
         owner: ParallelThunkWorkerId,
     },
+}
+
+/// Result and contention report from a wait-or-steal precursor call.
+///
+/// This wrapper may carry a worker-affine claim guard and is intentionally not
+/// [`Send`]:
+///
+/// ```compile_fail
+/// use ratchet_oracle::eval::ParallelThunkWorkWait;
+///
+/// fn assert_send<T: Send>() {}
+///
+/// assert_send::<ParallelThunkWorkWait<'static>>();
+/// ```
+#[must_use = "a claimed parallel thunk must be published as forced or failed"]
+#[derive(Debug)]
+pub struct ParallelThunkWorkWait<'a> {
+    result: ParallelThunkWait<'a>,
+    report: ParallelThunkContentionReport,
+}
+
+impl<'a> ParallelThunkWorkWait<'a> {
+    fn new(result: ParallelThunkWait<'a>, report: ParallelThunkContentionReport) -> Self {
+        Self { result, report }
+    }
+
+    /// Returns the claim, terminal state, or self-cycle classification.
+    pub const fn result(&self) -> &ParallelThunkWait<'a> {
+        &self.result
+    }
+
+    /// Returns the contention-avoidance report.
+    pub const fn report(&self) -> ParallelThunkContentionReport {
+        self.report
+    }
+
+    /// Consumes the outcome into its result and report.
+    pub fn into_parts(self) -> (ParallelThunkWait<'a>, ParallelThunkContentionReport) {
+        (self.result, self.report)
+    }
 }
 
 /// A live wait-cell claim that wakes registered waiters on publication.
@@ -492,6 +649,230 @@ mod tests {
                 notifications: 1,
             }
         );
+    }
+
+    #[test]
+    fn ready_work_runs_before_parking_and_can_observe_terminal_publish() {
+        let cell = ParallelThunkWaitCell::new();
+        let owner = worker(1);
+
+        let ParallelThunkWait::Claimed(guard) = cell
+            .claim_or_wait_for_terminal(owner)
+            .expect("owner claims")
+        else {
+            panic!("owner should claim suspended cell");
+        };
+        let mut owner_guard = Some(guard);
+        let mut step = 0;
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait(worker(2), || {
+                step += 1;
+                match step {
+                    1 => ParallelThunkReadyWork::RanLocal,
+                    2 => {
+                        owner_guard
+                            .take()
+                            .expect("owner guard is present")
+                            .publish_forced()
+                            .expect("owner publishes while stolen work runs");
+                        ParallelThunkReadyWork::StolePeer
+                    }
+                    _ => ParallelThunkReadyWork::Idle,
+                }
+            })
+            .expect("wait-or-steal precursor completes");
+
+        let (result, report) = outcome.into_parts();
+        assert!(matches!(
+            result,
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
+        assert_eq!(
+            cell.stats().expect("stats are readable"),
+            ParallelThunkWaitStats {
+                wait_registrations: 0,
+                notifications: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn idle_after_terminal_publish_returns_without_wait_registration() {
+        let cell = ParallelThunkWaitCell::new();
+        let owner = worker(1);
+
+        let ParallelThunkWait::Claimed(guard) = cell
+            .claim_or_wait_for_terminal(owner)
+            .expect("owner claims")
+        else {
+            panic!("owner should claim suspended cell");
+        };
+        let mut owner_guard = Some(guard);
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait(worker(2), || {
+                owner_guard
+                    .take()
+                    .expect("owner guard is present")
+                    .publish_forced()
+                    .expect("owner publishes before idle wait");
+                ParallelThunkReadyWork::Idle
+            })
+            .expect("wait-or-steal precursor completes");
+
+        let (result, report) = outcome.into_parts();
+        assert!(matches!(
+            result,
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert_eq!(report.local_work_runs(), 0);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(!report.wait_registered());
+        assert_eq!(
+            cell.stats().expect("stats are readable"),
+            ParallelThunkWaitStats {
+                wait_registrations: 0,
+                notifications: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn idle_ready_work_parks_until_terminal_publish() {
+        let cell = Arc::new(ParallelThunkWaitCell::new());
+        let owner_ready = Arc::new(Barrier::new(3));
+        let publish_ready = Arc::new(Barrier::new(2));
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let owner_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            let publish_ready = Arc::clone(&publish_ready);
+            thread::spawn(move || {
+                let ParallelThunkWait::Claimed(guard) = cell
+                    .claim_or_wait_for_terminal(worker(1))
+                    .expect("owner claims")
+                else {
+                    panic!("owner should claim suspended cell");
+                };
+                owner_ready.wait();
+                publish_ready.wait();
+                guard.publish_forced().expect("owner publishes forced");
+            })
+        };
+
+        let waiter_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            thread::spawn(move || {
+                owner_ready.wait();
+                let outcome = cell
+                    .claim_or_run_ready_then_wait(worker(2), || ParallelThunkReadyWork::Idle)
+                    .expect("waiter observes terminal");
+                let (result, report) = outcome.into_parts();
+                let ParallelThunkWait::Terminal(terminal_state) = result else {
+                    panic!("waiter should observe a terminal state");
+                };
+                result_tx
+                    .send((terminal_state, report))
+                    .expect("result send succeeds");
+            })
+        };
+
+        owner_ready.wait();
+        wait_until_registered(&cell, 1);
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        publish_ready.wait();
+        let (terminal_state, report) = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter wakes");
+
+        assert_eq!(terminal_state, ParallelThunkTerminalState::Forced);
+        assert_eq!(report.local_work_runs(), 0);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(report.wait_registered());
+        owner_thread.join().expect("owner joins");
+        waiter_thread.join().expect("waiter joins");
+        assert_eq!(
+            cell.stats().expect("stats are readable"),
+            ParallelThunkWaitStats {
+                wait_registrations: 1,
+                notifications: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn ready_work_repeats_until_idle_before_wait_registration() {
+        let cell = Arc::new(ParallelThunkWaitCell::new());
+        let owner_ready = Arc::new(Barrier::new(3));
+        let publish_ready = Arc::new(Barrier::new(2));
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let owner_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            let publish_ready = Arc::clone(&publish_ready);
+            thread::spawn(move || {
+                let ParallelThunkWait::Claimed(guard) = cell
+                    .claim_or_wait_for_terminal(worker(1))
+                    .expect("owner claims")
+                else {
+                    panic!("owner should claim suspended cell");
+                };
+                owner_ready.wait();
+                publish_ready.wait();
+                guard.publish_forced().expect("owner publishes forced");
+            })
+        };
+
+        let waiter_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            thread::spawn(move || {
+                owner_ready.wait();
+                let mut step = 0;
+                let outcome = cell
+                    .claim_or_run_ready_then_wait(worker(2), || {
+                        step += 1;
+                        match step {
+                            1 | 3 => ParallelThunkReadyWork::RanLocal,
+                            2 => ParallelThunkReadyWork::StolePeer,
+                            _ => ParallelThunkReadyWork::Idle,
+                        }
+                    })
+                    .expect("waiter observes terminal");
+                let (result, report) = outcome.into_parts();
+                let ParallelThunkWait::Terminal(terminal_state) = result else {
+                    panic!("waiter should observe a terminal state");
+                };
+                result_tx
+                    .send((terminal_state, report))
+                    .expect("result send succeeds");
+            })
+        };
+
+        owner_ready.wait();
+        wait_until_registered(&cell, 1);
+        publish_ready.wait();
+        let (terminal_state, report) = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter wakes");
+
+        assert_eq!(terminal_state, ParallelThunkTerminalState::Forced);
+        assert_eq!(report.local_work_runs(), 2);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(report.wait_registered());
+        owner_thread.join().expect("owner joins");
+        waiter_thread.join().expect("waiter joins");
     }
 
     #[test]

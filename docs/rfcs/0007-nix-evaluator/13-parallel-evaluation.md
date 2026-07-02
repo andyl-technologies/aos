@@ -794,6 +794,21 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       peer work before parking, store values/errors, implement the final
       lock-free waiter list, integrate with the evaluator scheduler, or satisfy
       the loom/Miri/TSan gate (§3.6).
+- [x] Current wait-or-steal ordering precursor:
+      `ParallelThunkWaitCell::claim_or_run_ready_then_wait` accepts a
+      caller-supplied ready-work hook and, on a foreign-owned thunk, rechecks the
+      thunk after each reported local task or stolen peer task before registering
+      a waiter and entering the blocking wait-cell path. Its contention report
+      records local work runs, stolen work runs, and whether a waiter was
+      registered. Unit tests prove that terminal publication observed while
+      ready work runs avoids waiter registration, that terminal publication
+      between an idle report and waiter marking is reported as no registration,
+      and that multiple reported local/stolen work items run before an idle hook
+      registers and wakes through the safe waiter path. This is an
+      ordering/readiness layer only: the hook is not the final Chase-Lev/rayon
+      scheduler, cannot prove the caller exhausted real worker deques or peer
+      steals, does not hold a scheduler park token, and still uses the blocking
+      wait-cell precursor rather than a lock-free waiter list.
 - [ ] Tag-test fast path: WHNF-tagged values return by inspection with no atomic load/CAS; only a tag miss enters the protocol (§3.4) — **P3.5**, `C-12`; co-designed with the pointer-tag work (`M-4`/`S-6`).
 
 ### L1 — coarse top-level parallelism (§4)

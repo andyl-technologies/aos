@@ -37,8 +37,9 @@ pub use thunk_cas::{
     ParallelThunkTerminalState, ParallelThunkWorkerId,
 };
 pub use thunk_wait::{
-    ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard,
-    ParallelThunkWaitStats,
+    ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,
+    ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard, ParallelThunkWaitStats,
+    ParallelThunkWorkWait,
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
