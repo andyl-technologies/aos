@@ -25,8 +25,8 @@ use clap_complete::Shell;
 use crucible::DagStore;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
-    InProcessLifecycleClient, LifecycleControlPlane, QuiescentLifecycleLoop, RpcControlClient,
-    RpcEndpoint, serve_lifecycle_http2,
+    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
+    RpcControlClient, RpcEndpoint, serve_lifecycle_http2_with_mode,
 };
 use crucible_session::{
     CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
@@ -452,6 +452,9 @@ struct ServeArgs {
     /// Bind daemon listener.
     #[arg(long, value_name = "addr", default_value = "127.0.0.1:9000")]
     listen: String,
+    /// Reject state-mutating API calls.
+    #[arg(long, action = ArgAction::SetTrue)]
+    read_only: bool,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -4318,14 +4321,24 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;
         let address = listener.local_addr()?;
         if !cli.quiet {
-            println!("crucible: serving API daemon at http://{address}");
+            let mode = if args.read_only {
+                "read-only"
+            } else {
+                "read-write"
+            };
+            println!("crucible: serving API daemon at http://{address} mode={mode}");
         }
         let control_plane = LifecycleControlPlane::new(
             "crucible-cli-daemon",
             Vec::new(),
             |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
         );
-        serve_lifecycle_http2(listener, control_plane).await?;
+        let mode = if args.read_only {
+            LifecycleServerMode::read_only()
+        } else {
+            LifecycleServerMode::read_write()
+        };
+        serve_lifecycle_http2_with_mode(listener, control_plane, mode).await?;
         Ok(())
     })
 }
@@ -7749,7 +7762,7 @@ mod tests {
                     Vec::new(),
                     |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
                 );
-                let _server = serve_lifecycle_http2(listener, control_plane).await;
+                let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
             });
         });
         Ok(address.to_string())
@@ -8155,7 +8168,10 @@ mod tests {
             ),
             ("selftest", &["--gates <list>"]),
             ("replay", &["ARTIFACT", "--check <original-log>"]),
-            ("serve", &["--listen <addr>", "--store <path>"]),
+            (
+                "serve",
+                &["--listen <addr>", "--store <path>", "--read-only"],
+            ),
         ] {
             let help = command
                 .find_subcommand_mut(name)
@@ -8183,7 +8199,7 @@ mod tests {
                 "--bisect",
                 "other.crucible",
             ],
-            vec!["crucible", "serve", "--read-only"],
+            vec!["crucible", "serve", "--max-sessions", "2"],
         ] {
             assert!(
                 Cli::try_parse_from(argv).is_err(),
@@ -8196,6 +8212,12 @@ mod tests {
             panic!("expected serve command");
         };
         assert_eq!(args.listen, "127.0.0.1:9001");
+
+        let read_only_serve = Cli::parse_from(["crucible", "serve", "--read-only"]);
+        let Commands::Serve(args) = read_only_serve.command else {
+            panic!("expected serve command");
+        };
+        assert!(args.read_only);
     }
 
     #[test]
