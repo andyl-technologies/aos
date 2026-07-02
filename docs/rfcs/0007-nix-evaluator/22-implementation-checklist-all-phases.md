@@ -5303,6 +5303,17 @@ and helps the oracle directly.
       only: it does not export C ABI wrappers, make addresses serializable or
       relinkable, cast finalized code pointers, dereference registered
       addresses, call native code, or complete runtime-symbol registration.
+- [x] Current `aos-nix` runtime-symbol registration preflight bridge:
+      `aos_nix::jit::nix_jit_runtime_symbol_registration_preflight()`
+      builds the oracle-derived address-candidate preflight and immediately
+      feeds it through `ratchet-jit` runtime-symbol registration readiness,
+      returning a report that owns both sides of the handoff. Tests prove
+      allocation-helper, `aos_env_get`, and `aos_gc_write_barrier`
+      binding/address parity and preserve the current `aos_force` registration
+      gap. This is safe integration preflight metadata only: it does not call
+      `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
+      helper addresses, call native code, or complete runtime-symbol
+      registration.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and drives the registered-symbol

@@ -1337,6 +1337,15 @@ harness, never cut for scope.
       addresses are not exported C ABI wrappers, not serialized or relinkable
       native targets, and no finalized code pointer or registered helper address
       is cast, dereferenced, or called.
+- [x] Current `aos-nix` runtime-symbol registration preflight bridge:
+      `aos_nix::jit::nix_jit_runtime_symbol_registration_preflight()`
+      owns the oracle-derived address-candidate preflight beside the
+      `ratchet-jit` registration preflight built from those candidates. Tests pin
+      allocation-helper, `aos_env_get`, and `aos_gc_write_barrier`
+      binding/address parity and the current `aos_force` gap. This is still
+      readiness metadata only: it does not call `JITBuilder::symbol`, export C
+      ABI wrappers, finalize code, dereference helper addresses, or call native
+      code.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and delegates to the

@@ -117,6 +117,57 @@ fn jit_runtime_symbol_allocation_candidates_feed_jit_registration_preflight() {
 }
 
 #[test]
+fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
+    let registration = nix_jit_runtime_symbol_registration_preflight()
+        .expect("Nix JIT registration preflight builds");
+    let candidates = registration.address_candidate_preflight();
+
+    for symbol_name in EXPECTED_ALLOCATION_SYMBOLS {
+        assert!(
+            registration
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == candidates
+                        .address_candidate_for(symbol_name)
+                        .expect("allocation candidate exists")
+                        .address())
+        );
+        assert!(registration.gap_for_symbol(symbol_name).is_none());
+    }
+
+    assert!(
+        registration
+            .binding_for_symbol("aos_env_get")
+            .is_some_and(|binding| binding.address()
+                == candidates
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(registration.gap_for_symbol("aos_env_get").is_none());
+    assert!(
+        registration
+            .binding_for_symbol("aos_gc_write_barrier")
+            .is_some_and(|binding| binding.address()
+                == candidates
+                    .address_candidate_for("aos_gc_write_barrier")
+                    .expect("write-barrier candidate exists")
+                    .address())
+    );
+    assert!(
+        registration
+            .gap_for_symbol("aos_gc_write_barrier")
+            .is_none()
+    );
+    assert!(registration.gap_for_symbol("aos_force").is_some());
+    assert!(!registration.is_complete());
+    assert_eq!(
+        registration.registration_preflight().bindings().len(),
+        registration.bindings().len()
+    );
+}
+
+#[test]
 fn jit_runtime_symbol_address_candidates_feed_registered_env_promotion() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
