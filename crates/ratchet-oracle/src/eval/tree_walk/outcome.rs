@@ -1154,6 +1154,54 @@ impl EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus single-tier live remembered-set publication.
+///
+/// This report preserves the owned dry-run artifacts and records the live
+/// outcome-state mutations applied after validation. Remembered-set publication
+/// is only defined for zero or one boundary commit application; sibling worker
+/// and permanent-shared applications are rejected because they are projections
+/// from the same source epoch rather than sequential live commits.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    remembered_set_published: bool,
+    card_table_clear_report: GcCardTableClearReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        remembered_set_published: bool,
+        card_table_clear_report: GcCardTableClearReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            remembered_set_published,
+            card_table_clear_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated live-state mutation.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns whether the outcome-owned remembered set was replaced.
+    pub const fn remembered_set_published(&self) -> bool {
+        self.remembered_set_published
+    }
+
+    /// Returns the report for the outcome-owned daemon card-table clear.
+    pub const fn card_table_clear_report(&self) -> GcCardTableClearReport {
+        self.card_table_clear_report
+    }
+
+    /// Returns how many dirty-card markers were cleared from live outcome state.
+    pub const fn card_table_dirty_cards_cleared(&self) -> usize {
+        self.card_table_clear_report.dirty_cards()
+    }
+}
+
 /// Aggregate counts and payload bytes from owned boundary minor-GC dry runs.
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
@@ -1893,6 +1941,69 @@ impl EvalOutcome {
             dry_run,
             card_table_clear_report,
         ))
+    }
+
+    /// Runs a single-tier boundary dry run and publishes outcome-owned GC state.
+    ///
+    /// This method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. When exactly one
+    /// allocator tier produced a commit application, it replaces this outcome's
+    /// remembered set with that application's validated next remembered set and
+    /// then clears this outcome's daemon card table. Empty boundary scans leave
+    /// both live structures unchanged. Multiple sibling boundary applications
+    /// are rejected before live mutation because they share the same source
+    /// remembered-set epoch.
+    ///
+    /// This is still a live metadata bridge, not a full collector commit. It
+    /// does not bind live object-byte buffers, mutate roots or heap fields,
+    /// install forwarding pointers, mutate object generations, reserve
+    /// semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if the boundary produced multiple sibling
+    /// commit applications, or if the planned remembered set cannot be cloned
+    /// into outcome-owned storage. When an error is returned, this outcome's
+    /// remembered set and card table are left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        let remembered_set = match (
+            dry_run.commit_applications().worker(),
+            dry_run.commit_applications().permanent_shared(),
+        ) {
+            (None, None) => None,
+            (Some(application), None) | (None, Some(application)) => {
+                Some(clone_boundary_remembered_set(application.remembered_set())?)
+            }
+            (Some(_), Some(_)) => {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcLiveRememberedSetMultipleTiers {
+                        tiers: dry_run.len(),
+                    },
+                );
+            }
+        };
+
+        let remembered_set_published = remembered_set.is_some();
+        let card_table_clear_report = if let Some(remembered_set) = remembered_set {
+            self.thunk_resolve_remembered_set = remembered_set;
+            self.thunk_resolve_card_table.clear_dirty_cards()
+        } else {
+            GcCardTableClearReport::default()
+        };
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun::new(
+                dry_run,
+                remembered_set_published,
+                card_table_clear_report,
+            ),
+        )
     }
 
     fn gc_stress_boundary_minor_gc_commit_preflight(

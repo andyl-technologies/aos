@@ -5628,9 +5628,9 @@ and helps the oracle directly.
       unremembered survivor expansion for copied and promoted targets,
       dirty-old-field rewrite/writeback metadata, old-field metadata capture,
       and rescan publication of unremembered targets. This remains a planning
-      bridge only; live root/field
-      mutation, live card-table clearing, semispace ownership, and collector
-      dispatch remain open.
+      bridge only; live root/field mutation, semispace ownership, and collector
+      dispatch remain open; single-tier live card-table and remembered-set
+      bridges are covered below.
 - [x] Current allocation-poll card-table commit-buffer precursor:
       boundary commit preflights now carry an owned fallible clone of the
       daemon-wide card-table snapshot, and
@@ -5660,8 +5660,22 @@ and helps the oracle directly.
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
       root/field mutation, live object bytes, forwarding headers,
-      evaluator-owned remembered-set publication, object-generation mutation,
+      multi-tier remembered-set publication, object-generation mutation,
       semispace ownership, and Tier-B dispatch remain open.
+- [x] Current boundary live remembered-set publication bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
+      derives the same boundary commit dry run, rejects sibling worker/permanent
+      applications before live mutation, leaves empty outcomes unchanged, and
+      for single-tier outcomes publishes the validated next remembered set into
+      outcome-owned state before clearing the outcome-owned daemon card table.
+      The returned report records whether publication happened and how many live
+      dirty cards were cleared. Unit tests cover single-tier worker and
+      permanent-shared publication with live-card clearing, multi-tier rejection
+      without remembered-set or card-table mutation, and empty-boundary
+      no-mutation behavior. This is still not a full live collector commit:
+      live root/field mutation, live object bytes, forwarding headers,
+      object-generation mutation, semispace ownership, multi-tier live
+      publication, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6199,10 +6213,14 @@ and helps the oracle directly.
       alongside rewritten root/heap-field counts and lower-level commit counts.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
-      owned dry-run validation. These helpers still do not bind live object-byte
-      buffers, live root/field storage, live forwarding slots, or
-      evaluator-owned remembered-set storage; reserve semispace storage; or
-      commit those live mutations.
+      owned dry-run validation, and
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
+      publishes a single-tier outcome-owned remembered set after the same dry
+      run while rejecting sibling worker/permanent applications. These helpers
+      still do not bind live object-byte buffers, live root/field storage, live
+      forwarding slots, object-generation metadata, multi-tier remembered-set
+      publication, or semispace storage, and they do not commit those live
+      mutations.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
@@ -6221,7 +6239,8 @@ and helps the oracle directly.
       stress-disabled outcomes, boundary owned reference-writeback, synthetic
       commit-buffer application, single-call owned commit dry-run,
       outcome-owned live card-table clearing after successful dry-run
-      validation, stale same-domain poll rejection, recursive-force cleanup, and
+      validation, single-tier live remembered-set publication and multi-tier
+      rejection, stale same-domain poll rejection, recursive-force cleanup, and
       first-class primop error cleanup. This remains a root-set
       precursor: arbitrary Rust locals still need explicit value-stack
       registration, and mutable relocation slots, collector invocation, and JIT

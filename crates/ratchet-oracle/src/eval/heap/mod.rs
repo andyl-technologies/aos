@@ -634,6 +634,14 @@ pub enum EvalHeapError {
         /// The caller-supplied reference value.
         actual: ResolvedValueGeneration,
     },
+    /// Boundary live remembered-set publication received sibling preflights.
+    #[error(
+        "boundary minor-GC live remembered-set publication requires zero or one tier, found {tiers}"
+    )]
+    BoundaryMinorGcLiveRememberedSetMultipleTiers {
+        /// The number of sibling boundary commit applications.
+        tiers: usize,
+    },
     /// A caller-supplied root value list did not contain one value per copied
     /// root reference slot.
     #[error(

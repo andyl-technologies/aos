@@ -685,7 +685,7 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
 #[test]
 fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
     let ir = lower("x: x");
-    let outcome = eval_whnf_owned_with_options(
+    let mut outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
@@ -795,6 +795,32 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
             generation: HeapGeneration::Young,
         }]
     );
+
+    let live_dirty_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(live_dirty_source)
+        .expect("single-tier live dirty card marks");
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+
+    let live_state_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run publishes live remembered set");
+    let live_worker_commit = live_state_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live worker commit records");
+    assert!(live_state_dry_run.remembered_set_published());
+    assert_eq!(live_state_dry_run.card_table_dirty_cards_cleared(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set(),
+        live_worker_commit.remembered_set()
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 0);
 }
 
 #[test]
@@ -875,7 +901,7 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
 #[test]
 fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     let ir = lower("\"stress\"");
-    let outcome = eval_whnf_owned_with_options(
+    let mut outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
@@ -985,6 +1011,40 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
         }
     )));
     assert!(commit_application.remembered_set().is_empty());
+
+    let live_dirty_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(live_dirty_source)
+        .expect("permanent single-tier live dirty card marks");
+    let live_state_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("single-tier permanent dry-run publishes live remembered set");
+    assert!(
+        live_state_dry_run
+            .dry_run()
+            .commit_applications()
+            .worker()
+            .is_none()
+    );
+    let live_permanent_commit = live_state_dry_run
+        .dry_run()
+        .commit_applications()
+        .permanent_shared()
+        .expect("live permanent commit records");
+    assert!(live_state_dry_run.remembered_set_published());
+    assert_eq!(live_state_dry_run.card_table_dirty_cards_cleared(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set(),
+        live_permanent_commit.remembered_set()
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 0);
 }
 
 #[test]
@@ -1266,6 +1326,27 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         .mark_source(extra_card_source)
         .expect("extra live dirty card marks");
     assert_eq!(outcome.thunk_resolve_card_table().len(), 2);
+    let remembered_set_before_reject = outcome.thunk_resolve_remembered_set().clone();
+    let card_table_before_reject = outcome.thunk_resolve_card_table().clone();
+    let publish_error = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("sibling boundary preflights cannot publish one live remembered set");
+    assert_eq!(
+        publish_error,
+        EvalHeapError::BoundaryMinorGcLiveRememberedSetMultipleTiers { tiers: 2 }
+    );
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set(),
+        &remembered_set_before_reject
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table(),
+        &card_table_before_reject
+    );
+
     let live_card_table_dry_run = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
             MinorGcPromotionPolicy::new(2),
@@ -1790,6 +1871,24 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         outcome.thunk_resolve_card_table().dirty_cards()[0].source(),
         unrelated_dirty_source
     );
+    let remembered_set_before_empty = outcome.thunk_resolve_remembered_set().clone();
+    let empty_live_state_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary dry run leaves live GC metadata alone");
+    assert!(empty_live_state_dry_run.dry_run().is_empty());
+    assert!(!empty_live_state_dry_run.remembered_set_published());
+    assert_eq!(empty_live_state_dry_run.card_table_dirty_cards_cleared(), 0);
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set(),
+        &remembered_set_before_empty
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
 }
 
 #[test]
