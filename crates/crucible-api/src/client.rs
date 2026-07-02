@@ -11,9 +11,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crucible::{ContentHash, EventLevel, Seed, VirtualTime};
+use crucible::{
+    ContentHash, EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Seed, VirtualTime,
+};
 use crucible_session::{
-    LiveSnapshot, LiveStateKind, OutcomeKind, SessionCommand, SessionCommandKind,
+    LifecycleStateKind, LiveSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
+    SessionCommand, SessionCommandKind,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -474,6 +477,12 @@ pub enum ControlClientError {
     UnsupportedLifecycleMethod {
         /// Unsupported lifecycle method name.
         method: &'static str,
+    },
+    /// The RPC transport cannot represent this command payload.
+    #[error("control RPC command is unsupported: {message}")]
+    UnsupportedRpcCommand {
+        /// Deterministic unsupported-command detail.
+        message: String,
     },
     /// Two client transports do not expose the same serialized wire model.
     #[error("control client wire models differ: left={left:?} right={right:?}")]
@@ -1052,6 +1061,7 @@ impl ControlClient for RpcControlClient {
 
     fn control_send(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
         Box::pin(async move {
+            validate_rpc_send_request(&request)?;
             let body = self
                 .post_rpc_body(CONTROL_SEND_RPC_PATH, encode_send_request(&request))
                 .await?;
@@ -1071,6 +1081,7 @@ impl ControlClient for RpcControlClient {
 
     fn send_command(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
         Box::pin(async move {
+            validate_rpc_send_request(&request)?;
             let body = self
                 .post_rpc_body(SEND_COMMAND_RPC_PATH, encode_send_request(&request))
                 .await?;
@@ -1287,7 +1298,36 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     let command_kind = open_set_command_kind(command_kind)
         .unwrap_or_else(|| format!("crucible.cmd.{}", command_kind_name(command_kind)));
     push_line(&mut output, "command", &command_kind);
+    if let SessionCommand::Query { kind, .. } = &request.command {
+        push_line(&mut output, "query", &query_kind_request_wire(kind));
+    }
     output.into_bytes()
+}
+
+fn validate_rpc_send_request(request: &SendRequest) -> Result<(), ControlClientError> {
+    if matches!(
+        &request.command,
+        SessionCommand::Query {
+            kind: QueryKind::Snapshot,
+            ..
+        }
+    ) {
+        return Err(ControlClientError::UnsupportedRpcCommand {
+            message: String::from("snapshot query is not supported by the RPC wire format"),
+        });
+    }
+    Ok(())
+}
+
+fn query_kind_request_wire(kind: &QueryKind) -> String {
+    match kind {
+        QueryKind::Snapshot => String::from("snapshot"),
+        QueryKind::State => String::from("state"),
+        QueryKind::EventLogLength => String::from("event-log-length"),
+        QueryKind::ExecutionFingerprint { node } => {
+            format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
+        }
+    }
 }
 
 fn decode_list_scenarios_response(
@@ -1583,6 +1623,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
     let command_kind = parse_command_kind_line(lines.next(), "command=")?;
     let status = parse_command_status_line(lines.next())?;
     let state_update = parse_state_update_line(lines.next())?;
+    let query_result = parse_query_result_line(lines.next())?;
     reject_trailing(lines.next())?;
     Ok(SendResponse {
         result: CommandResult {
@@ -1591,6 +1632,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
             status,
         },
         state_update,
+        query_result,
     })
 }
 
@@ -1697,6 +1739,24 @@ fn parse_u64_field(value: Option<&str>, label: &'static str) -> Result<u64, Cont
     value
         .parse::<u64>()
         .map_err(|error| rpc_decode(format!("invalid {label} `{value}`: {error}")))
+}
+
+fn parse_usize_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<usize, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    value
+        .parse::<usize>()
+        .map_err(|error| rpc_decode(format!("invalid {label} `{value}`: {error}")))
+}
+
+fn parse_hex_string_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<String, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    parse_hex_string(value)
 }
 
 fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, ControlClientError> {
@@ -1869,6 +1929,19 @@ fn parse_state_field(
     }
 }
 
+fn parse_lifecycle_state_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<LifecycleStateKind, ControlClientError> {
+    match value.ok_or_else(|| rpc_decode(format!("missing {label}")))? {
+        "loaded" => Ok(LifecycleStateKind::Loaded),
+        "running" => Ok(LifecycleStateKind::Running),
+        "paused" => Ok(LifecycleStateKind::Paused),
+        "stopped" => Ok(LifecycleStateKind::Stopped),
+        value => Err(rpc_decode(format!("invalid {label} `{value}`"))),
+    }
+}
+
 fn parse_outcome_field(
     value: Option<&str>,
     label: &'static str,
@@ -1901,6 +1974,14 @@ fn parse_content_hash_field(
             Ok(Some(ContentHash { bytes }))
         }
     }
+}
+
+fn parse_required_content_hash_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<ContentHash, ControlClientError> {
+    parse_content_hash_field(value, label)?
+        .ok_or_else(|| rpc_decode(format!("missing required {label}")))
 }
 
 fn parse_capabilities_line(
@@ -2123,6 +2204,53 @@ fn parse_state_update_line(line: Option<&str>) -> Result<Option<StateUpdate>, Co
     }))
 }
 
+fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, ControlClientError> {
+    let value = parse_prefixed_line(line, "query-result=")?;
+    if value == "none" {
+        return Ok(None);
+    }
+    let mut fields = value.split('|');
+    match fields
+        .next()
+        .ok_or_else(|| rpc_decode("missing query result kind"))?
+    {
+        "state" => {
+            let state = parse_lifecycle_state_field(fields.next(), "query result state")?;
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::State(state)))
+        }
+        "event-log-length" => {
+            let len = parse_usize_field(fields.next(), "query result event log length")?;
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::EventLogLength(len)))
+        }
+        "execution-fingerprint" => {
+            let node = NodeId {
+                name: parse_hex_string_field(fields.next(), "query result fingerprint node")?,
+            };
+            let at = VirtualTime {
+                ticks: parse_u64_field(fields.next(), "query result fingerprint time")?,
+            };
+            let hash =
+                parse_required_content_hash_field(fields.next(), "query result fingerprint hash")?;
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::ExecutionFingerprint(FingerprintSample {
+                node,
+                at,
+                fingerprint: ExecutionFingerprint { hash },
+            })))
+        }
+        kind => Err(rpc_decode(format!("unknown query result kind `{kind}`"))),
+    }
+}
+
+fn reject_extra_query_result_fields(field: Option<&str>) -> Result<(), ControlClientError> {
+    if field.is_some() {
+        return Err(rpc_decode("unexpected extra query result fields"));
+    }
+    Ok(())
+}
+
 fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, ControlClientError> {
     match parse_prefixed_line(line, prefix)? {
         "true" => Ok(true),
@@ -2149,6 +2277,16 @@ fn push_line(output: &mut String, key: &str, value: &str) {
     output.push('=');
     output.push_str(value);
     output.push('\n');
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn rpc_decode(message: impl Into<String>) -> ControlClientError {

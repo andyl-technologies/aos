@@ -27,7 +27,10 @@ use crucible_api::{
     InProcessLifecycleClient, LifecycleControlPlane, QuiescentLifecycleLoop, RpcControlClient,
     RpcEndpoint, serve_lifecycle_http2,
 };
-use crucible_session::{LiveStateKind, OutcomeKind, SessionCommand, SessionCommandKind};
+use crucible_session::{
+    CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind,
+};
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -224,7 +227,23 @@ enum RunSaveOnArg {
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct VerifyArgs {}
+struct VerifyArgs {
+    /// Scenario file or content hash.
+    #[arg(value_name = "SCENARIO")]
+    scenario: Option<String>,
+    /// Number of independent reductions to compare.
+    #[arg(long, value_name = "n", default_value_t = 2)]
+    runs: usize,
+    /// Run under hostile host-condition profiles.
+    #[arg(long, action = ArgAction::SetTrue)]
+    adversarial: bool,
+    /// Localize the first divergence.
+    #[arg(long, action = ArgAction::SetTrue)]
+    bisect: bool,
+    /// Compare two existing reproduction artifacts.
+    #[arg(long, value_names = ["A", "B"], num_args = 2)]
+    compare: Vec<PathBuf>,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SelftestArgs {}
@@ -1023,6 +1042,7 @@ const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 = crucible_api::STREAMING_COMMAND_MA
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunInvocationPlan {
     scenario: RunScenarioRef,
+    request_seed: Option<crucible::Seed>,
     terminal_condition: RunTerminalCondition,
     max_virtual_time: Option<String>,
     max_virtual_time_ticks: Option<u64>,
@@ -1033,6 +1053,8 @@ struct RunInvocationPlan {
     startup_commands: Vec<SessionCommandKind>,
     initial_control_commands: Vec<SessionCommandKind>,
     accepted_interactive_commands: Vec<SessionCommandKind>,
+    observer_profile: VerifyHostProfile,
+    collect_execution_fingerprints: bool,
     bounded_ack_quanta: u64,
     outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
     invalid_scenario_exit_code: i32,
@@ -1042,10 +1064,12 @@ struct RunInvocationPlan {
 enum RunScenarioRef {
     File {
         path: PathBuf,
+        form: crucible::ScenarioDefForm,
         scenario: crucible::ScenarioDef,
     },
     Stored {
         reference: crucible::ContentHash,
+        form: crucible::ScenarioDefForm,
         scenario: crucible::ScenarioDef,
     },
 }
@@ -1070,7 +1094,153 @@ impl RunScenarioRef {
             Self::File { scenario, .. } | Self::Stored { scenario, .. } => scenario,
         }
     }
+
+    fn scenario_form(&self) -> &crucible::ScenarioDefForm {
+        match self {
+            Self::File { form, .. } | Self::Stored { form, .. } => form,
+        }
+    }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyInvocationPlan {
+    mode: VerifyMode,
+    requested_runs: usize,
+    reductions: Vec<VerifyReductionPlan>,
+    compare_canonical_logs: bool,
+    compare_fingerprint_streams: bool,
+    pairwise_byte_identity: bool,
+    bisection_on_divergence: bool,
+    print_bisection_state_dump: bool,
+    writes_side_artifacts_on_divergence: bool,
+    applies_hostile_condition_matrix: bool,
+    outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
+}
+
+impl VerifyInvocationPlan {
+    fn scenario(&self) -> Option<&RunScenarioRef> {
+        match &self.mode {
+            VerifyMode::RunScenario { scenario } => Some(scenario),
+            VerifyMode::CompareArtifacts { .. } => None,
+        }
+    }
+
+    fn surface_shape_is_consistent(&self) -> bool {
+        let expected_reductions = match &self.mode {
+            VerifyMode::RunScenario { .. } => {
+                self.requested_runs
+                    .saturating_mul(if self.applies_hostile_condition_matrix {
+                        VERIFY_HOSTILE_PROFILES.len()
+                    } else {
+                        1
+                    })
+            }
+            VerifyMode::CompareArtifacts { .. } => 2,
+        };
+        self.requested_runs > 0
+            && self.reductions.len() == expected_reductions
+            && self.compare_canonical_logs
+            && self.compare_fingerprint_streams
+            && self.pairwise_byte_identity
+            && self.writes_side_artifacts_on_divergence
+            && (!self.applies_hostile_condition_matrix
+                || self
+                    .reductions
+                    .iter()
+                    .any(|reduction| reduction.host_profile != VERIFY_BASELINE_PROFILE))
+            && self
+                .outcome_exit_codes
+                .contains(&(BackendCommandStatus::Passed, 0))
+            && self
+                .outcome_exit_codes
+                .contains(&(BackendCommandStatus::Failed, 1))
+            && self
+                .outcome_exit_codes
+                .contains(&(BackendCommandStatus::Crashed, 3))
+            && self
+                .outcome_exit_codes
+                .contains(&(BackendCommandStatus::Timeout, 2))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VerifyMode {
+    RunScenario { scenario: RunScenarioRef },
+    CompareArtifacts { left: PathBuf, right: PathBuf },
+}
+
+impl VerifyMode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RunScenario { .. } => "run-scenario",
+            Self::CompareArtifacts { .. } => "compare-artifacts",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyReductionPlan {
+    index: usize,
+    run_index: usize,
+    host_profile: VerifyHostProfile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VerifyHostProfile {
+    label: &'static str,
+    poll_order: VerifyPollOrder,
+    event_timeout_ms: u64,
+    state_timeout_ms: u64,
+    pre_poll_yields: u8,
+    post_poll_yields: u8,
+}
+
+impl VerifyHostProfile {
+    const fn label(self) -> &'static str {
+        self.label
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerifyPollOrder {
+    EventThenState,
+    StateThenEvent,
+}
+
+const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile {
+    label: "baseline",
+    poll_order: VerifyPollOrder::EventThenState,
+    event_timeout_ms: 1,
+    state_timeout_ms: 10,
+    pre_poll_yields: 0,
+    post_poll_yields: 1,
+};
+const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
+    VerifyHostProfile {
+        label: "randomized-host-scheduler",
+        poll_order: VerifyPollOrder::StateThenEvent,
+        event_timeout_ms: 1,
+        state_timeout_ms: 10,
+        pre_poll_yields: 2,
+        post_poll_yields: 3,
+    },
+    VerifyHostProfile {
+        label: "wall-clock-jitter",
+        poll_order: VerifyPollOrder::EventThenState,
+        event_timeout_ms: 3,
+        state_timeout_ms: 7,
+        pre_poll_yields: 1,
+        post_poll_yields: 2,
+    },
+    VerifyHostProfile {
+        label: "varied-core-count",
+        poll_order: VerifyPollOrder::StateThenEvent,
+        event_timeout_ms: 2,
+        state_timeout_ms: 5,
+        pre_poll_yields: 3,
+        post_poll_yields: 1,
+    },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RunTerminalCondition {
@@ -1114,6 +1284,81 @@ impl RunSavePolicy {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SimBackendLifecycleLoop {
+    backend: crucible::SimBackend,
+    quanta: u64,
+    event_log_events: u64,
+}
+
+#[cfg(test)]
+impl SimBackendLifecycleLoop {
+    fn diagnostic_entry(
+        &self,
+        frontier: crucible::VirtualTime,
+    ) -> crucible::SchedulerEventLogEntry {
+        let mut details = BTreeMap::new();
+        details.insert(
+            String::from("quantum"),
+            crucible::EventAttributeValue::U64(self.quanta),
+        );
+        crucible::SchedulerEventLogEntry::diagnostic(
+            self.event_log_events,
+            frontier,
+            crucible::EventDiagnosticPayload::new(
+                "crucible.cli.sim-backend-lifecycle",
+                crucible::EventLevel::Info,
+                details,
+            ),
+        )
+    }
+}
+
+#[cfg(test)]
+impl crucible::QuantumLoop for SimBackendLifecycleLoop {
+    fn drive_quantum(
+        &mut self,
+        request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        let frontier = crucible::VirtualTime { ticks: self.quanta };
+        crucible::SimulationBackend::step_to(&mut self.backend, frontier)?;
+        let event_log_entries = vec![self.diagnostic_entry(frontier)];
+        self.event_log_events = self
+            .event_log_events
+            .saturating_add(event_log_entries.len() as u64);
+        Ok(crucible::QuantumOutcome {
+            configuration: request.configuration,
+            frontier,
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries,
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.event_log_events,
+            ),
+            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+        })
+    }
+
+    fn sample_fingerprint(
+        &mut self,
+        node: crucible::NodeId,
+    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        crucible::SimulationBackend::fingerprint(&mut self.backend, node).map_err(Into::into)
+    }
+
+    fn shutdown(&mut self) -> Result<(), crucible::SchedulerError> {
+        crucible::SimulationBackend::shutdown(&mut self.backend).map_err(Into::into)
+    }
+}
+
 fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocationPlan, CliError> {
     let scenario = resolve_run_scenario(args.scenario.as_deref(), store_root)?;
     if args.max_quanta == Some(0) {
@@ -1152,6 +1397,7 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
 
     Ok(RunInvocationPlan {
         scenario,
+        request_seed: None,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
         max_virtual_time_ticks: args
@@ -1165,6 +1411,8 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
         startup_commands,
         initial_control_commands,
         accepted_interactive_commands,
+        observer_profile: VERIFY_BASELINE_PROFILE,
+        collect_execution_fingerprints: false,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
             (
@@ -1188,12 +1436,133 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
     })
 }
 
+fn plan_verify_invocation(
+    args: &VerifyArgs,
+    store_root: &Path,
+) -> Result<VerifyInvocationPlan, CliError> {
+    if args.runs == 0 {
+        return Err(usage_error("--runs must be greater than zero"));
+    }
+    if args.compare.len() != 0 && args.compare.len() != 2 {
+        return Err(usage_error("--compare requires exactly two artifacts"));
+    }
+    let mode = if args.compare.is_empty() {
+        VerifyMode::RunScenario {
+            scenario: resolve_command_scenario("verify", args.scenario.as_deref(), store_root)?,
+        }
+    } else {
+        if args.scenario.is_some() {
+            return Err(usage_error(
+                "verify accepts either SCENARIO or --compare A B, not both",
+            ));
+        }
+        if args.adversarial {
+            return Err(usage_error(
+                "--adversarial applies only to fresh verify reductions, not --compare",
+            ));
+        }
+        if args.runs != 2 {
+            return Err(usage_error(
+                "--runs is ignored by --compare; omit it or use --runs 2",
+            ));
+        }
+        VerifyMode::CompareArtifacts {
+            left: args.compare[0].clone(),
+            right: args.compare[1].clone(),
+        }
+    };
+    let reductions = verify_reduction_plans(args.runs, args.adversarial, &mode);
+    let plan = VerifyInvocationPlan {
+        mode,
+        requested_runs: args.runs,
+        reductions,
+        compare_canonical_logs: true,
+        compare_fingerprint_streams: true,
+        pairwise_byte_identity: true,
+        bisection_on_divergence: true,
+        print_bisection_state_dump: args.bisect,
+        writes_side_artifacts_on_divergence: true,
+        applies_hostile_condition_matrix: args.adversarial,
+        outcome_exit_codes: vec![
+            (
+                BackendCommandStatus::Passed,
+                CliError::Outcome(BackendCommandStatus::Passed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Failed,
+                CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Timeout,
+                CliError::Outcome(BackendCommandStatus::Timeout).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Crashed,
+                CliError::Outcome(BackendCommandStatus::Crashed).exit_code(),
+            ),
+        ],
+    };
+    if !plan.surface_shape_is_consistent() {
+        return Err(CliError::Backend(
+            "verify planner is internally inconsistent".to_string(),
+        ));
+    }
+    Ok(plan)
+}
+
+fn verify_reduction_plans(
+    runs: usize,
+    adversarial: bool,
+    mode: &VerifyMode,
+) -> Vec<VerifyReductionPlan> {
+    if matches!(mode, VerifyMode::CompareArtifacts { .. }) {
+        return vec![
+            VerifyReductionPlan {
+                index: 0,
+                run_index: 0,
+                host_profile: VERIFY_BASELINE_PROFILE,
+            },
+            VerifyReductionPlan {
+                index: 1,
+                run_index: 1,
+                host_profile: VERIFY_BASELINE_PROFILE,
+            },
+        ];
+    }
+    let profiles = if adversarial {
+        VERIFY_HOSTILE_PROFILES
+    } else {
+        &[VERIFY_BASELINE_PROFILE]
+    };
+    let mut reductions = Vec::with_capacity(runs.saturating_mul(profiles.len()));
+    for run_index in 0..runs {
+        for host_profile in profiles {
+            reductions.push(VerifyReductionPlan {
+                index: reductions.len(),
+                run_index,
+                host_profile: *host_profile,
+            });
+        }
+    }
+    reductions
+}
+
 fn resolve_run_scenario(
     scenario: Option<&str>,
     store_root: &Path,
 ) -> Result<RunScenarioRef, CliError> {
+    resolve_command_scenario("run", scenario, store_root)
+}
+
+fn resolve_command_scenario(
+    command: &'static str,
+    scenario: Option<&str>,
+    store_root: &Path,
+) -> Result<RunScenarioRef, CliError> {
     let Some(raw) = scenario else {
-        return Err(usage_error("run requires a SCENARIO argument"));
+        return Err(usage_error(format!(
+            "{command} requires a SCENARIO argument"
+        )));
     };
     let value = raw.trim();
     if value.is_empty()
@@ -1225,9 +1594,11 @@ fn resolve_run_scenario(
                 store.root().display()
             ))
         })?;
-        let scenario = parse_run_scenario_bytes(value, &bytes)?;
+        let form = parse_run_scenario_bytes(value, &bytes)?;
+        let scenario = form.scenario_def();
         return Ok(RunScenarioRef::Stored {
             reference: reference.hash(),
+            form,
             scenario,
         });
     }
@@ -1246,25 +1617,62 @@ fn resolve_run_scenario(
     let bytes = fs::read(path).map_err(|error| {
         invalid_scenario(format!("scenario `{value}` could not be read: {error}"))
     })?;
-    let scenario = parse_run_scenario_bytes(value, &bytes)?;
+    let form = parse_run_scenario_bytes(value, &bytes)?;
+    let scenario = form.scenario_def();
     Ok(RunScenarioRef::File {
         path: path.to_path_buf(),
+        form,
         scenario,
     })
 }
 
-fn parse_run_scenario_bytes(label: &str, bytes: &[u8]) -> Result<crucible::ScenarioDef, CliError> {
+fn parse_run_scenario_bytes(
+    label: &str,
+    bytes: &[u8],
+) -> Result<crucible::ScenarioDefForm, CliError> {
     let text = std::str::from_utf8(bytes).map_err(|error| {
         invalid_scenario(format!(
             "scenario `{label}` is not UTF-8 canonical TOML: {error}"
         ))
     })?;
-    let form = crucible::ScenarioDefForm::from_canonical_toml(text).map_err(|error| {
+    crucible::ScenarioDefForm::from_canonical_toml(text).map_err(|error| {
         invalid_scenario(format!(
             "scenario `{label}` failed canonical TOML build/validation: {error}"
         ))
+    })
+}
+
+fn reseed_run_scenario_ref(
+    scenario: &RunScenarioRef,
+    seed: crucible::Seed,
+) -> Result<RunScenarioRef, CliError> {
+    let form = scenario.scenario_form();
+    let seeded_form = crucible::ScenarioDefForm::from_components_with_app_random_draw_cap(
+        form.world(),
+        form.plan(),
+        form.properties(),
+        seed,
+        form.app_random_draw_cap(),
+    )
+    .map_err(|error| {
+        backend_error(format!(
+            "verify could not rematerialize scenario for seed {}: {error}",
+            seed.to_hex()
+        ))
     })?;
-    Ok(form.scenario_def())
+    let seeded_scenario = seeded_form.scenario_def();
+    Ok(match scenario {
+        RunScenarioRef::File { path, .. } => RunScenarioRef::File {
+            path: path.clone(),
+            form: seeded_form,
+            scenario: seeded_scenario,
+        },
+        RunScenarioRef::Stored { reference, .. } => RunScenarioRef::Stored {
+            reference: *reference,
+            form: seeded_form,
+            scenario: seeded_scenario,
+        },
+    })
 }
 
 fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
@@ -2461,6 +2869,7 @@ struct BackendCommandOutcome {
     canonical_log_digest: String,
     artifact_digest: String,
     reproduction_artifact: Option<Vec<u8>>,
+    side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
 }
 
 impl BackendCommandOutcome {
@@ -2529,6 +2938,7 @@ trait BackendCommandRunner {
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
+        verify_plan: Option<&VerifyInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 
     fn run_remote(
@@ -2538,6 +2948,7 @@ trait BackendCommandRunner {
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
+        verify_plan: Option<&VerifyInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 }
 
@@ -2552,7 +2963,30 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
+        verify_plan: Option<&VerifyInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
+        if let Some(verify_plan) = verify_plan {
+            return match (&verify_plan.mode, backend) {
+                (VerifyMode::CompareArtifacts { .. }, _) => {
+                    let report = verify_compare_artifacts(verify_plan, Some(backend))?;
+                    finish_verify_workflow_outcome(
+                        thin_plan,
+                        backend_plan,
+                        ergonomics_plan,
+                        verify_plan,
+                        report,
+                    )
+                }
+                (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Double) => {
+                    Err(fresh_verify_unavailable_error("local double"))
+                }
+                (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Qemu { .. }) => {
+                    Err(backend_error(
+                        "verify with local QEMU requires an RFC-0010 execution-fingerprint runner; shared-memory quantum fingerprints are not sufficient",
+                    ))
+                }
+            };
+        }
         if matches!(backend, ResolvedLocalBackend::Double) {
             if let Some(run_plan) = run_plan {
                 return run_local_double_workflow(
@@ -2577,9 +3011,22 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         backend_plan: &BackendSelectionPlan,
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
+        verify_plan: Option<&VerifyInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
         if let Some(run_plan) = run_plan {
             return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
+        }
+        if let Some(verify_plan) = verify_plan {
+            if matches!(verify_plan.mode, VerifyMode::RunScenario { .. }) {
+                return Err(fresh_verify_unavailable_error("remote daemon"));
+            }
+            return run_remote_verify_workflow(
+                daemon,
+                thin_plan,
+                backend_plan,
+                ergonomics_plan,
+                verify_plan,
+            );
         }
         Ok(backend_command_outcome(
             thin_plan,
@@ -2589,11 +3036,18 @@ impl BackendCommandRunner for NullBackendCommandRunner {
     }
 }
 
+fn fresh_verify_unavailable_error(target: &str) -> CliError {
+    backend_error(format!(
+        "fresh verify reductions for {target} require an RFC-0010 backend-grade verifier; use `verify --compare A B` until execution-fingerprint streams and divergence bisection are backed by real run artifacts"
+    ))
+}
+
 fn execute_backend_routed_command(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: Option<&RunInvocationPlan>,
+    verify_plan: Option<&VerifyInvocationPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
     if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
@@ -2612,12 +3066,22 @@ fn execute_backend_routed_command(
         &backend_plan.resolved_backend,
         &backend_plan.daemon,
     ) {
-        (BackendExecutionTarget::Local, Some(backend), None) => {
-            runner.run_local(backend, thin_plan, backend_plan, ergonomics_plan, run_plan)
-        }
-        (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => {
-            runner.run_remote(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan)
-        }
+        (BackendExecutionTarget::Local, Some(backend), None) => runner.run_local(
+            backend,
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            run_plan,
+            verify_plan,
+        ),
+        (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => runner.run_remote(
+            daemon,
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            run_plan,
+            verify_plan,
+        ),
         _ => Err(CliError::Backend(
             "CLI backend route is internally inconsistent".to_string(),
         )),
@@ -2636,8 +3100,68 @@ struct RunWorkflowReport {
     budget_timed_out: bool,
     state_updates: Vec<String>,
     streamed_events: Vec<String>,
+    streamed_event_frames: Vec<Vec<u8>>,
+    execution_fingerprints: Vec<crucible::FingerprintSample>,
     acknowledged_commands: Vec<SessionCommandKind>,
     watch_statuses: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyWorkflowReport {
+    witnesses: Vec<VerifyRunWitness>,
+    divergence: Option<VerifyDivergenceReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyRunWitness {
+    reduction: VerifyReductionPlan,
+    canonical_log: Vec<CanonicalLogEntry>,
+    canonical_log_bytes: Vec<u8>,
+    fingerprint_samples: Vec<VerifyFingerprintSample>,
+    fingerprint_stream: Vec<u8>,
+    state_dump: String,
+    artifact: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyFingerprintSample {
+    index: u64,
+    instruction: u64,
+    node: String,
+    digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifyDivergenceReport {
+    left: usize,
+    right: usize,
+    mismatch: VerifyMismatchKind,
+    first_different_decision: Option<usize>,
+    first_different_fingerprint_sample: Option<usize>,
+    first_different_instruction: u64,
+    node: Option<String>,
+    first_different_byte: usize,
+    left_state_digest: String,
+    right_state_digest: String,
+    left_state_dump: String,
+    right_state_dump: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerifyMismatchKind {
+    CanonicalLog,
+    FingerprintStream,
+    CanonicalLogAndFingerprintStream,
+}
+
+impl VerifyMismatchKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CanonicalLog => "canonical-log",
+            Self::FingerprintStream => "fingerprint-stream",
+            Self::CanonicalLogAndFingerprintStream => "canonical-log+fingerprint-stream",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2693,6 +3217,40 @@ fn run_remote_workflow(
         runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
     };
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
+}
+
+fn run_remote_verify_workflow(
+    daemon: &str,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    verify_plan: &VerifyInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = match &verify_plan.mode {
+        VerifyMode::RunScenario { .. } => {
+            let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
+                .map_err(control_client_error)?;
+            runtime.block_on(run_control_client_verify_workflow_async(
+                &client,
+                verify_plan,
+                backend_plan.resolved_backend.as_ref(),
+                ergonomics_plan,
+            ))?
+        }
+        VerifyMode::CompareArtifacts { .. } => {
+            verify_compare_artifacts(verify_plan, backend_plan.resolved_backend.as_ref())?
+        }
+    };
+    finish_verify_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        verify_plan,
+        report,
+    )
 }
 
 fn daemon_rpc_endpoint(daemon: &str) -> String {
@@ -2764,6 +3322,856 @@ fn finish_run_workflow_outcome(
         outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     }
     Ok(outcome)
+}
+
+fn finish_verify_workflow_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    verify_plan: &VerifyInvocationPlan,
+    report: VerifyWorkflowReport,
+) -> Result<BackendCommandOutcome, CliError> {
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    outcome.stdout.push(format!(
+        "verify-plan\tmode={}\truns={}\treductions={}\tadversarial={}\tbisect={}",
+        verify_plan.mode.label(),
+        verify_plan.requested_runs,
+        report.witnesses.len(),
+        verify_plan.applies_hostile_condition_matrix,
+        verify_plan.bisection_on_divergence
+    ));
+    for witness in &report.witnesses {
+        let canonical_log_digest = content_address_bytes(&witness.canonical_log_bytes);
+        let fingerprint_digest = content_address_bytes(&witness.fingerprint_stream);
+        outcome.stdout.push(format!(
+            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}",
+            witness.reduction.index,
+            witness.reduction.run_index,
+            witness.reduction.host_profile.label(),
+            canonical_log_digest,
+            fingerprint_digest
+        ));
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("verify"),
+            kind: String::from("independent_reduction"),
+            summary: format!(
+                "index={} run={} profile={} canonical_log={} fingerprint={}",
+                witness.reduction.index,
+                witness.reduction.run_index,
+                witness.reduction.host_profile.label(),
+                canonical_log_digest,
+                fingerprint_digest
+            ),
+        });
+    }
+    if let Some(divergence) = report.divergence {
+        outcome.status = BackendCommandStatus::Failed;
+        outcome.exit_code = outcome.status.exit_code();
+        outcome.stdout.push(format!(
+            "verify-divergence\tleft={}\tright={}\tmismatch={}\tfirst_decision={}\tfirst_fingerprint_sample={}\tfirst_instruction={}\tnode={}\tbyte={}",
+            divergence.left,
+            divergence.right,
+            divergence.mismatch.label(),
+            divergence
+                .first_different_decision
+                .map(|decision| decision.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_fingerprint_sample
+                .map(|sample| sample.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence.first_different_instruction,
+            divergence.node.as_deref().unwrap_or("unknown"),
+            divergence.first_different_byte
+        ));
+        if verify_plan.print_bisection_state_dump {
+            outcome.stdout.push(format!(
+                "verify-bisect-state\tleft_state={}\tright_state={}\tleft_dump={}\tright_dump={}",
+                divergence.left_state_digest,
+                divergence.right_state_digest,
+                divergence.left_state_dump,
+                divergence.right_state_dump
+            ));
+        }
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: divergence
+                .node
+                .clone()
+                .unwrap_or_else(|| String::from("verify")),
+            kind: String::from("verify_divergence_bisection"),
+            summary: format!(
+                "left={} right={} mismatch={} first_instruction={} byte={}",
+                divergence.left,
+                divergence.right,
+                divergence.mismatch.label(),
+                divergence.first_different_instruction,
+                divergence.first_different_byte
+            ),
+        });
+        let left = report
+            .witnesses
+            .get(divergence.left)
+            .ok_or_else(|| backend_error("verify divergence left side is out of range"))?;
+        let right = report
+            .witnesses
+            .get(divergence.right)
+            .ok_or_else(|| backend_error("verify divergence right side is out of range"))?;
+        outcome.side_reproduction_artifacts = vec![
+            (String::from("left"), left.artifact.clone()),
+            (String::from("right"), right.artifact.clone()),
+        ];
+        let mut artifact_material = Vec::new();
+        artifact_material.extend_from_slice(&left.artifact);
+        artifact_material.extend_from_slice(&right.artifact);
+        outcome.artifact_digest = content_address_bytes(&artifact_material);
+    } else {
+        outcome.stdout.push(format!(
+            "verify-result\tstatus=passed\treductions={}\tcanonical_log={}\tfingerprint={}",
+            report.witnesses.len(),
+            report
+                .witnesses
+                .first()
+                .map(|witness| content_address_bytes(&witness.canonical_log_bytes))
+                .unwrap_or_else(|| content_address_bytes(b"verify-empty-log")),
+            report
+                .witnesses
+                .first()
+                .map(|witness| content_address_bytes(&witness.fingerprint_stream))
+                .unwrap_or_else(|| content_address_bytes(b"verify-empty-fingerprint"))
+        ));
+    }
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(outcome)
+}
+
+async fn run_control_client_verify_workflow_async<C>(
+    client: &C,
+    verify_plan: &VerifyInvocationPlan,
+    backend: Option<&ResolvedLocalBackend>,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+) -> Result<VerifyWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let Some(scenario) = verify_plan.scenario() else {
+        return Err(backend_error(
+            "verify compare mode must not enter the live control-client workflow",
+        ));
+    };
+    let mut witnesses = Vec::with_capacity(verify_plan.reductions.len());
+    let request_seed = ergonomics_plan
+        .map(|plan| crucible::Seed::from_u64(plan.seed.value))
+        .unwrap_or_else(|| scenario.scenario_def().seed());
+    let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
+    for reduction in &verify_plan.reductions {
+        let run_plan =
+            verify_run_invocation_plan(seeded_scenario.clone(), request_seed, reduction.clone());
+        let report = run_control_client_workflow_async(client, &run_plan, &[]).await?;
+        if report.status.is_non_passing() {
+            return Err(CliError::Outcome(report.status));
+        }
+        witnesses.push(verify_witness_from_run_report(
+            reduction.clone(),
+            &run_plan,
+            &report,
+            backend,
+            ergonomics_plan,
+        )?);
+    }
+    let divergence = compare_verify_witnesses(&witnesses);
+    Ok(VerifyWorkflowReport {
+        witnesses,
+        divergence,
+    })
+}
+
+fn verify_compare_artifacts(
+    verify_plan: &VerifyInvocationPlan,
+    backend: Option<&ResolvedLocalBackend>,
+) -> Result<VerifyWorkflowReport, CliError> {
+    let VerifyMode::CompareArtifacts { left, right } = &verify_plan.mode else {
+        return Err(backend_error(
+            "verify run mode must use the live control-client workflow",
+        ));
+    };
+    let left_bytes = fs::read(left)?;
+    let right_bytes = fs::read(right)?;
+    let left_artifact = decode_reproduction_artifact(&left_bytes)?;
+    let right_artifact = decode_reproduction_artifact(&right_bytes)?;
+    let expected_identity = expected_replay_identity_for_backend(backend);
+    verify_replay_identity(&left_artifact.identity, &expected_identity)?;
+    verify_replay_identity(&right_artifact.identity, &expected_identity)?;
+    verify_compare_artifact_inputs_match(&left_artifact, &right_artifact)?;
+    let witnesses = vec![
+        verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
+        verify_witness_from_artifact(
+            verify_plan.reductions[1].clone(),
+            right_artifact,
+            right_bytes,
+        )?,
+    ];
+    let divergence = compare_verify_witnesses(&witnesses);
+    Ok(VerifyWorkflowReport {
+        witnesses,
+        divergence,
+    })
+}
+
+fn verify_compare_artifact_inputs_match(
+    left: &CliReproductionArtifact,
+    right: &CliReproductionArtifact,
+) -> Result<(), CliError> {
+    if left.seed != right.seed {
+        return Err(artifact_error(format!(
+            "verify --compare requires matching seeds, got left={} right={}",
+            left.seed, right.seed
+        )));
+    }
+    if left.scenario.digest != right.scenario.digest {
+        return Err(artifact_error(format!(
+            "verify --compare requires matching scenario digests, got left={} right={}",
+            left.scenario.digest, right.scenario.digest
+        )));
+    }
+    if left.scenario.media_type != right.scenario.media_type {
+        return Err(artifact_error(format!(
+            "verify --compare requires matching scenario media types, got left={} right={}",
+            left.scenario.media_type, right.scenario.media_type
+        )));
+    }
+    Ok(())
+}
+
+fn verify_run_invocation_plan(
+    scenario: RunScenarioRef,
+    request_seed: crucible::Seed,
+    reduction: VerifyReductionPlan,
+) -> RunInvocationPlan {
+    RunInvocationPlan {
+        scenario,
+        request_seed: Some(request_seed),
+        terminal_condition: RunTerminalCondition::Quiescence,
+        max_virtual_time: None,
+        max_virtual_time_ticks: None,
+        max_quanta: None,
+        execution_mode: RunExecutionMode::ToCompletion,
+        save_policy: RunSavePolicy::Never,
+        watch_streams_live_status: false,
+        startup_commands: vec![
+            SessionCommandKind::Start,
+            SessionCommandKind::StepQuantum,
+            SessionCommandKind::Continue,
+        ],
+        initial_control_commands: vec![SessionCommandKind::Query, SessionCommandKind::Query],
+        accepted_interactive_commands: Vec::new(),
+        observer_profile: reduction.host_profile,
+        collect_execution_fingerprints: true,
+        bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        outcome_exit_codes: vec![
+            (
+                BackendCommandStatus::Passed,
+                CliError::Outcome(BackendCommandStatus::Passed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Failed,
+                CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Timeout,
+                CliError::Outcome(BackendCommandStatus::Timeout).exit_code(),
+            ),
+            (
+                BackendCommandStatus::Crashed,
+                CliError::Outcome(BackendCommandStatus::Crashed).exit_code(),
+            ),
+        ],
+        invalid_scenario_exit_code: CliError::InvalidScenario(String::new()).exit_code(),
+    }
+}
+
+fn verify_witness_from_run_report(
+    reduction: VerifyReductionPlan,
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+    backend: Option<&ResolvedLocalBackend>,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+) -> Result<VerifyRunWitness, CliError> {
+    let canonical_log = canonical_run_log_entries(run_plan, report);
+    let canonical_log_bytes =
+        canonical_verify_log_stream_bytes(&canonical_log, &report.streamed_event_frames);
+    let fingerprint_samples = verify_fingerprint_samples(report)?;
+    let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
+    let request_seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
+    let seed = ergonomics_plan
+        .map(|plan| plan.seed.value)
+        .unwrap_or_else(|| seed_to_u64(request_seed));
+    let state_dump = verify_state_dump(run_plan, report);
+    let artifact = verify_reproduction_artifact_bytes(
+        seed,
+        backend,
+        run_plan.scenario.scenario_def(),
+        &canonical_log,
+        &fingerprint_samples,
+    )?;
+    Ok(VerifyRunWitness {
+        reduction,
+        canonical_log,
+        canonical_log_bytes,
+        fingerprint_samples,
+        fingerprint_stream,
+        state_dump,
+        artifact,
+    })
+}
+
+fn verify_witness_from_artifact(
+    reduction: VerifyReductionPlan,
+    artifact: CliReproductionArtifact,
+    bytes: Vec<u8>,
+) -> Result<VerifyRunWitness, CliError> {
+    let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
+    let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
+    let fingerprint_samples = artifact_fingerprint_samples(&artifact);
+    let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
+    let state_dump = artifact_state_dump(&artifact);
+    Ok(VerifyRunWitness {
+        reduction,
+        canonical_log,
+        canonical_log_bytes,
+        fingerprint_samples,
+        fingerprint_stream,
+        state_dump,
+        artifact: bytes,
+    })
+}
+
+fn canonical_run_log_entries(
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+) -> Vec<CanonicalLogEntry> {
+    let mut outcome = BackendCommandOutcome {
+        subcommand: CliSubcommand::Run,
+        status: BackendCommandStatus::Passed,
+        exit_code: 0,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        canonical_log: Vec::new(),
+        canonical_log_digest: content_address_bytes(b"empty"),
+        artifact_digest: content_address_bytes(b"empty"),
+        reproduction_artifact: None,
+        side_reproduction_artifacts: Vec::new(),
+    };
+    append_local_double_run_entries(&mut outcome, run_plan, report);
+    outcome.canonical_log
+}
+
+fn canonical_log_entry_bytes(entries: &[CanonicalLogEntry]) -> Vec<u8> {
+    jsonl_for_canonical_log_entries(entries).into_bytes()
+}
+
+fn canonical_verify_log_stream_bytes(
+    entries: &[CanonicalLogEntry],
+    event_frames: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"crucible.verify.canonical-log-stream.v1\n");
+    bytes.extend_from_slice(&canonical_log_entry_bytes(entries));
+    bytes.extend_from_slice(b"\ncrucible.verify.api-event-frames.v1\n");
+    for frame in event_frames {
+        bytes.extend_from_slice(frame);
+        if !frame.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+    }
+    bytes
+}
+
+fn canonical_streaming_event_frame_bytes(frame: &crucible_api::StreamingEventFrame) -> Vec<u8> {
+    let mut output = String::from("crucible.rpc/event-frame\n");
+    push_canonical_wire_line(&mut output, "generation", &frame.generation.to_string());
+    push_canonical_wire_line(
+        &mut output,
+        "cursor",
+        &frame.cursor.next_sequence.to_string(),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "next-cursor",
+        &frame.next_cursor.next_sequence.to_string(),
+    );
+    push_canonical_wire_line(&mut output, "sequence", &frame.event.sequence.to_string());
+    push_canonical_wire_line(
+        &mut output,
+        "virtual-time-ticks",
+        &frame.event.at.virtual_time_ticks.to_string(),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "icount-retired",
+        &frame.event.at.icount_retired.to_string(),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "icount-node",
+        &optional_string_canonical_wire(frame.event.at.icount_node.as_deref()),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "source",
+        &event_source_canonical_wire(&frame.event.source),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "level",
+        event_level_canonical_wire(frame.event.level),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "observational",
+        if frame.event.observational {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    push_canonical_wire_line(&mut output, "kind", &frame.event.payload.kind);
+    for (name, value) in &frame.event.payload.attributes {
+        push_canonical_wire_line(
+            &mut output,
+            "attribute",
+            &format!(
+                "{}|{}",
+                hex_bytes(name.as_bytes()),
+                attribute_canonical_wire(value)
+            ),
+        );
+    }
+    output.into_bytes()
+}
+
+fn optional_string_canonical_wire(value: Option<&str>) -> String {
+    value
+        .map(|value| hex_bytes(value.as_bytes()))
+        .unwrap_or_else(|| String::from("none"))
+}
+
+fn event_source_canonical_wire(source: &crucible_api::OpenSetEventSource) -> String {
+    match source {
+        crucible_api::OpenSetEventSource::Scenario { event } => {
+            format!("scenario|{}", hex_bytes(event.as_bytes()))
+        }
+        crucible_api::OpenSetEventSource::Engine => String::from("engine"),
+        crucible_api::OpenSetEventSource::Node { node } => {
+            format!("node|{}", hex_bytes(node.as_bytes()))
+        }
+        crucible_api::OpenSetEventSource::Guest { node } => {
+            format!("guest|{}", hex_bytes(node.as_bytes()))
+        }
+        crucible_api::OpenSetEventSource::Command { command_id } => {
+            format!("command|{command_id}")
+        }
+    }
+}
+
+fn event_level_canonical_wire(level: crucible::EventLevel) -> &'static str {
+    match level {
+        crucible::EventLevel::Trace => "trace",
+        crucible::EventLevel::Debug => "debug",
+        crucible::EventLevel::Info => "info",
+        crucible::EventLevel::Warn => "warn",
+        crucible::EventLevel::Error => "error",
+    }
+}
+
+fn attribute_canonical_wire(value: &crucible_api::OpenSetAttributeValue) -> String {
+    match value {
+        crucible_api::OpenSetAttributeValue::Bool(value) => {
+            format!("bool|{}", if *value { "true" } else { "false" })
+        }
+        crucible_api::OpenSetAttributeValue::Int(value) => format!("int|{value}"),
+        crucible_api::OpenSetAttributeValue::Uint(value) => format!("uint|{value}"),
+        crucible_api::OpenSetAttributeValue::Uint128(value) => format!("uint128|{value}"),
+        crucible_api::OpenSetAttributeValue::Float64Bits(value) => {
+            format!("float64bits|{value}")
+        }
+        crucible_api::OpenSetAttributeValue::String(value) => {
+            format!("string|{}", hex_bytes(value.as_bytes()))
+        }
+        crucible_api::OpenSetAttributeValue::Bytes(value) => format!("bytes|{}", hex_bytes(value)),
+    }
+}
+
+fn push_canonical_wire_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
+fn verify_fingerprint_samples(
+    report: &RunWorkflowReport,
+) -> Result<Vec<VerifyFingerprintSample>, CliError> {
+    if report.execution_fingerprints.is_empty() {
+        return Err(backend_error(
+            "verify did not collect any backend execution fingerprint samples",
+        ));
+    }
+    let mut samples = Vec::new();
+    for (index, sample) in report.execution_fingerprints.iter().enumerate() {
+        let index = u64::try_from(index).unwrap_or(u64::MAX);
+        samples.push(VerifyFingerprintSample {
+            index,
+            instruction: sample.at.ticks,
+            node: sample.node.name.clone(),
+            digest: format!(
+                "{}{}",
+                CONTENT_ADDRESS_PREFIX,
+                sample.fingerprint.hash.to_hex()
+            ),
+        });
+    }
+    Ok(samples)
+}
+
+fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u8> {
+    let mut text = String::from("crucible.verify.execution-fingerprint-stream.v1\n");
+    for sample in samples {
+        artifact_line(
+            &mut text,
+            &[
+                "sample",
+                &sample.index.to_string(),
+                &sample.instruction.to_string(),
+                &sample.node,
+                &sample.digest,
+            ],
+        );
+    }
+    text.into_bytes()
+}
+
+fn verify_state_dump(run_plan: &RunInvocationPlan, report: &RunWorkflowReport) -> String {
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
+    format!(
+        "scenario={} seed={} final_state={} outcome={} frontier_ticks={} quanta={} savepoint={} events={} frames={}",
+        run_plan.scenario.scenario_id().to_hex(),
+        seed.to_hex(),
+        report.final_state,
+        terminal_outcome_label(report.outcome),
+        report.final_frontier_ticks,
+        report.final_quanta,
+        report
+            .terminal_savepoint
+            .map(format_content_hash_ref)
+            .unwrap_or_else(|| String::from("none")),
+        report.streamed_events.len(),
+        report.streamed_event_frames.len()
+    )
+}
+
+fn canonical_log_entries_from_artifact(
+    artifact: &CliReproductionArtifact,
+) -> Result<Vec<CanonicalLogEntry>, CliError> {
+    if artifact.decisions.is_empty() {
+        return Err(artifact_error(
+            "verify comparison artifact contains no canonical decisions",
+        ));
+    }
+    Ok(artifact
+        .decisions
+        .iter()
+        .map(|decision| CanonicalLogEntry {
+            sequence: decision.sequence,
+            virtual_time_ticks: decision.virtual_time_ticks,
+            node: decision.node.clone(),
+            kind: decision.kind.clone(),
+            summary: decision.payload_digest.clone(),
+        })
+        .collect())
+}
+
+fn artifact_fingerprint_samples(
+    artifact: &CliReproductionArtifact,
+) -> Vec<VerifyFingerprintSample> {
+    artifact
+        .fingerprints
+        .iter()
+        .map(|fingerprint| VerifyFingerprintSample {
+            index: fingerprint.index,
+            instruction: fingerprint.index,
+            node: String::from("artifact"),
+            digest: fingerprint.digest.clone(),
+        })
+        .collect()
+}
+
+fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
+    format!(
+        "scenario={} seed={} decisions={} fingerprints={} schedule={}",
+        artifact.scenario.digest,
+        artifact.seed,
+        artifact.decisions.len(),
+        artifact.fingerprints.len(),
+        artifact.schedule_digest
+    )
+}
+
+fn compare_verify_witnesses(witnesses: &[VerifyRunWitness]) -> Option<VerifyDivergenceReport> {
+    for left_index in 0..witnesses.len() {
+        for right_index in left_index + 1..witnesses.len() {
+            let left = &witnesses[left_index];
+            let right = &witnesses[right_index];
+            let canonical_log_differs = left.canonical_log_bytes != right.canonical_log_bytes;
+            let fingerprint_differs = left.fingerprint_stream != right.fingerprint_stream;
+            if canonical_log_differs || fingerprint_differs {
+                let mismatch = match (canonical_log_differs, fingerprint_differs) {
+                    (true, true) => VerifyMismatchKind::CanonicalLogAndFingerprintStream,
+                    (true, false) => VerifyMismatchKind::CanonicalLog,
+                    (false, true) => VerifyMismatchKind::FingerprintStream,
+                    (false, false) => unreachable!("guarded by difference check"),
+                };
+                return Some(localize_verify_divergence(
+                    left_index,
+                    right_index,
+                    mismatch,
+                    left,
+                    right,
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn localize_verify_divergence(
+    left_index: usize,
+    right_index: usize,
+    mismatch: VerifyMismatchKind,
+    left: &VerifyRunWitness,
+    right: &VerifyRunWitness,
+) -> VerifyDivergenceReport {
+    let first_different_decision =
+        first_different_canonical_entry(&left.canonical_log, &right.canonical_log);
+    let first_different_sample =
+        first_different_fingerprint_sample(&left.fingerprint_samples, &right.fingerprint_samples);
+    let entry = first_different_decision.and_then(|index| {
+        left.canonical_log
+            .get(index)
+            .or_else(|| right.canonical_log.get(index))
+    });
+    let sample = first_different_sample.and_then(|index| {
+        left.fingerprint_samples
+            .get(index)
+            .or_else(|| right.fingerprint_samples.get(index))
+    });
+    let first_different_byte = bisect_first_different_byte(
+        bytes_for_mismatch(mismatch, left),
+        bytes_for_mismatch(mismatch, right),
+    );
+    VerifyDivergenceReport {
+        left: left_index,
+        right: right_index,
+        mismatch,
+        first_different_decision,
+        first_different_fingerprint_sample: first_different_sample,
+        first_different_instruction: entry
+            .map(|entry| entry.virtual_time_ticks)
+            .or_else(|| sample.map(|sample| sample.instruction))
+            .unwrap_or(first_different_byte as u64),
+        node: entry
+            .map(|entry| entry.node.clone())
+            .or_else(|| sample.map(|sample| sample.node.clone())),
+        first_different_byte,
+        left_state_digest: content_address_bytes(&left.artifact),
+        right_state_digest: content_address_bytes(&right.artifact),
+        left_state_dump: left.state_dump.clone(),
+        right_state_dump: right.state_dump.clone(),
+    }
+}
+
+fn bytes_for_mismatch(mismatch: VerifyMismatchKind, witness: &VerifyRunWitness) -> &[u8] {
+    match mismatch {
+        VerifyMismatchKind::CanonicalLog | VerifyMismatchKind::CanonicalLogAndFingerprintStream => {
+            &witness.canonical_log_bytes
+        }
+        VerifyMismatchKind::FingerprintStream => &witness.fingerprint_stream,
+    }
+}
+
+fn first_different_canonical_entry(
+    left: &[CanonicalLogEntry],
+    right: &[CanonicalLogEntry],
+) -> Option<usize> {
+    for (index, (left_entry, right_entry)) in left.iter().zip(right.iter()).enumerate() {
+        if json_for_canonical_log_entry(left_entry) != json_for_canonical_log_entry(right_entry) {
+            return Some(index);
+        }
+    }
+    (left.len() != right.len()).then_some(left.len().min(right.len()))
+}
+
+fn first_different_fingerprint_sample(
+    left: &[VerifyFingerprintSample],
+    right: &[VerifyFingerprintSample],
+) -> Option<usize> {
+    for (index, (left_sample, right_sample)) in left.iter().zip(right.iter()).enumerate() {
+        if left_sample != right_sample {
+            return Some(index);
+        }
+    }
+    (left.len() != right.len()).then_some(left.len().min(right.len()))
+}
+
+fn bisect_first_different_byte(left: &[u8], right: &[u8]) -> usize {
+    let max_len = left.len().max(right.len());
+    if max_len == 0 || left == right {
+        return 0;
+    }
+    let mut low = 0usize;
+    let mut high = max_len;
+    while low < high {
+        let midpoint = low + ((high - low) / 2);
+        if prefixes_match(left, right, midpoint.saturating_add(1)) {
+            low = midpoint.saturating_add(1);
+        } else {
+            high = midpoint;
+        }
+    }
+    low
+}
+
+fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
+    left.get(..len) == right.get(..len)
+}
+
+fn verify_reproduction_artifact_bytes(
+    seed: u64,
+    backend: Option<&ResolvedLocalBackend>,
+    scenario: &crucible::ScenarioDef,
+    canonical_log: &[CanonicalLogEntry],
+    fingerprint_samples: &[VerifyFingerprintSample],
+) -> Result<Vec<u8>, CliError> {
+    let scenario_bytes = scenario_identity_bytes(scenario);
+    let scenario_digest = content_address_bytes(&scenario_bytes);
+    let store_uri = format!("cas:{scenario_digest}");
+    let identity = expected_replay_identity_for_backend(backend);
+    let decisions = canonical_log
+        .iter()
+        .map(|entry| CliDecision {
+            sequence: entry.sequence,
+            virtual_time_ticks: entry.virtual_time_ticks,
+            node: entry.node.clone(),
+            kind: entry.kind.clone(),
+            payload_digest: content_address_bytes(entry.summary.as_bytes()),
+        })
+        .collect::<Vec<_>>();
+    let schedule_digest = schedule_digest(&decisions);
+    let mut text = String::new();
+
+    artifact_line(&mut text, &["schema", REPRODUCTION_ARTIFACT_SCHEMA]);
+    artifact_line(&mut text, &["seed", &seed.to_string()]);
+    artifact_line(
+        &mut text,
+        &[
+            "identity",
+            &identity.engine_version,
+            &identity.engine_abi,
+            &identity.artifact_abi,
+            &identity.qemu_build_id,
+            &identity.plugin_abi,
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "scenario",
+            "scenario_def",
+            "verify.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "component",
+            "scenario_def",
+            "verify.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
+    );
+    artifact_line(
+        &mut text,
+        &["schedule", &schedule_digest, &decisions.len().to_string()],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.node,
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    for sample in fingerprint_samples {
+        artifact_line(
+            &mut text,
+            &["fingerprint", &sample.index.to_string(), &sample.digest],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &[
+            "sampling",
+            "every-fingerprint-sample",
+            "final",
+            "1",
+            "execution-fingerprint-stream",
+        ],
+    );
+
+    let bytes = text.into_bytes();
+    let artifact = decode_reproduction_artifact(&bytes)?;
+    verify_replay_identity(&artifact.identity, &identity)?;
+    Ok(bytes)
+}
+
+fn seed_to_u64(seed: crucible::Seed) -> u64 {
+    let bytes = seed.bytes();
+    let mut low = [0u8; 8];
+    low.copy_from_slice(&bytes[..8]);
+    u64::from_le_bytes(low)
+}
+
+fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
+    format!(
+        "scenario_id={}\nseed={}\napp_random_draw_cap={}\n",
+        scenario.id().to_hex(),
+        scenario.seed().to_hex(),
+        scenario.app_random_draw_cap()
+    )
+    .into_bytes()
 }
 
 async fn run_local_double_workflow_async(
@@ -2890,7 +4298,9 @@ async fn run_control_client_workflow_with_interactive_driver<C>(
 where
     C: ControlClient + Sync,
 {
-    let seed = run_plan.scenario.scenario_def().seed();
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
     let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
         .with_start_paused(true);
     let created = client
@@ -2907,6 +4317,7 @@ where
         .map_err(control_client_error)?;
 
     let mut acknowledged_commands = Vec::new();
+    let mut execution_fingerprints = Vec::new();
     let mut command_id = 1;
     acknowledge_stream_command(
         &control,
@@ -2915,6 +4326,31 @@ where
         &mut acknowledged_commands,
     )
     .await?;
+    if run_plan.collect_execution_fingerprints {
+        query_execution_fingerprint(
+            &control,
+            &mut command_id,
+            run_plan,
+            &mut acknowledged_commands,
+            &mut execution_fingerprints,
+        )
+        .await?;
+        acknowledge_stream_command(
+            &control,
+            &mut command_id,
+            SessionCommandKind::StepQuantum,
+            &mut acknowledged_commands,
+        )
+        .await?;
+        query_execution_fingerprint(
+            &control,
+            &mut command_id,
+            run_plan,
+            &mut acknowledged_commands,
+            &mut execution_fingerprints,
+        )
+        .await?;
+    }
 
     match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
@@ -2951,14 +4387,17 @@ where
 
     let mut state_updates = Vec::new();
     let mut streamed_events = Vec::new();
+    let mut streamed_event_frames = Vec::new();
     let observation = observe_run_final_state(
         client,
         &mut control,
         run_plan,
+        created.session,
         &mut command_id,
         &mut acknowledged_commands,
         &mut state_updates,
         &mut streamed_events,
+        &mut streamed_event_frames,
     )
     .await?;
     if state_updates.last() != Some(&observation.final_state) {
@@ -2977,6 +4416,8 @@ where
         budget_timed_out: observation.budget_timed_out,
         state_updates,
         streamed_events,
+        streamed_event_frames,
+        execution_fingerprints,
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
@@ -3032,12 +4473,7 @@ async fn acknowledge_stream_command(
     command: SessionCommandKind,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
 ) -> Result<(), CliError> {
-    let model_command = command.representative_command().ok_or_else(|| {
-        backend_error(format!(
-            "session command `{}` is not supported",
-            session_command_name(command)
-        ))
-    })?;
+    let model_command = cli_stream_command(command)?;
     let response = control
         .send_command(*command_id, model_command)
         .await
@@ -3055,14 +4491,31 @@ async fn acknowledge_stream_command(
     }
 }
 
+fn cli_stream_command(command: SessionCommandKind) -> Result<SessionCommand, CliError> {
+    if command == SessionCommandKind::Query {
+        return Ok(SessionCommand::Query {
+            kind: QueryKind::State,
+            reply: CommandReply::discard(),
+        });
+    }
+    command.representative_command().ok_or_else(|| {
+        backend_error(format!(
+            "session command `{}` is not supported",
+            session_command_name(command)
+        ))
+    })
+}
+
 async fn observe_run_final_state<C>(
     client: &C,
     control: &mut crucible_api::ClientControlStream,
     run_plan: &RunInvocationPlan,
+    session_ref: crucible_api::SessionRef,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     state_updates: &mut Vec<String>,
     streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
 ) -> Result<RunObservation, CliError>
 where
     C: ControlClient + Sync,
@@ -3075,24 +4528,59 @@ where
     let mut last_session = None;
     let mut watch_statuses = Vec::new();
     for _ in 0..max_yields {
-        match tokio::time::timeout(Duration::from_millis(1), control.recv_event()).await {
-            Ok(Ok(Some(frame))) => {
-                streamed_events.push(frame.event.payload.kind);
-            }
-            Ok(Ok(None)) => break,
-            Ok(Err(error)) => return Err(control_client_error(error)),
-            Err(_) => {}
+        for _ in 0..run_plan.observer_profile.pre_poll_yields {
+            tokio::task::yield_now().await;
         }
-        match tokio::time::timeout(Duration::from_millis(10), control.recv_state_update()).await {
-            Ok(Ok(Some(frame))) => {
-                state_updates.push(format!("{:?}", frame.update.state).to_ascii_lowercase());
+        match run_plan.observer_profile.poll_order {
+            VerifyPollOrder::EventThenState => {
+                if observe_next_event(
+                    control,
+                    run_plan.observer_profile.event_timeout_ms,
+                    streamed_events,
+                    streamed_event_frames,
+                )
+                .await?
+                {
+                    break;
+                }
+                if observe_next_state_update(
+                    control,
+                    run_plan.observer_profile.state_timeout_ms,
+                    state_updates,
+                )
+                .await?
+                {
+                    break;
+                }
             }
-            Ok(Ok(None)) => break,
-            Ok(Err(error)) => return Err(control_client_error(error)),
-            Err(_) => {}
+            VerifyPollOrder::StateThenEvent => {
+                if observe_next_state_update(
+                    control,
+                    run_plan.observer_profile.state_timeout_ms,
+                    state_updates,
+                )
+                .await?
+                {
+                    break;
+                }
+                if observe_next_event(
+                    control,
+                    run_plan.observer_profile.event_timeout_ms,
+                    streamed_events,
+                    streamed_event_frames,
+                )
+                .await?
+                {
+                    break;
+                }
+            }
         }
         let sessions = client.list_sessions().await.map_err(control_client_error)?;
-        let Some(session) = sessions.sessions.first() else {
+        let Some(session) = sessions
+            .sessions
+            .iter()
+            .find(|summary| summary.session == session_ref)
+        else {
             return Ok(RunObservation {
                 final_state: terminal_final_state(run_plan, None),
                 outcome: None,
@@ -3153,7 +4641,9 @@ where
                 watch_statuses,
             });
         }
-        tokio::task::yield_now().await;
+        for _ in 0..run_plan.observer_profile.post_poll_yields {
+            tokio::task::yield_now().await;
+        }
     }
     if let Some(session) = last_session {
         return stop_budget_timed_out_session(
@@ -3177,6 +4667,102 @@ where
         budget_timed_out: true,
         watch_statuses,
     })
+}
+
+async fn query_execution_fingerprint(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    run_plan: &RunInvocationPlan,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    execution_fingerprints: &mut Vec<crucible::FingerprintSample>,
+) -> Result<(), CliError> {
+    let Some(node) = run_plan
+        .scenario
+        .scenario_form()
+        .world()
+        .nodes()
+        .first()
+        .map(|node| node.id.clone())
+    else {
+        return Err(backend_error(
+            "verify requires at least one scenario node for execution fingerprint sampling",
+        ));
+    };
+    let response = control
+        .send_command(
+            *command_id,
+            SessionCommand::Query {
+                kind: QueryKind::ExecutionFingerprint { node: node.clone() },
+                reply: CommandReply::discard(),
+            },
+        )
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    match response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(SessionCommandKind::Query);
+        }
+        CommandResultStatus::Rejected { reason } => {
+            return Err(backend_error(format!(
+                "execution fingerprint query for node `{}` was rejected: {reason:?}",
+                node.name
+            )));
+        }
+    }
+    match response.query_result {
+        Some(QueryResult::ExecutionFingerprint(sample)) => {
+            execution_fingerprints.push(sample);
+            Ok(())
+        }
+        Some(other) => Err(backend_error(format!(
+            "execution fingerprint query for node `{}` returned unexpected payload: {other:?}",
+            node.name
+        ))),
+        None => Err(backend_error(format!(
+            "execution fingerprint query for node `{}` returned no payload",
+            node.name
+        ))),
+    }
+}
+
+async fn observe_next_event(
+    control: &mut crucible_api::ClientControlStream,
+    timeout_ms: u64,
+    streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
+) -> Result<bool, CliError> {
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), control.recv_event()).await {
+        Ok(Ok(Some(frame))) => {
+            streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
+            streamed_events.push(frame.event.payload.kind);
+            Ok(false)
+        }
+        Ok(Ok(None)) => Ok(true),
+        Ok(Err(error)) => Err(control_client_error(error)),
+        Err(_) => Ok(false),
+    }
+}
+
+async fn observe_next_state_update(
+    control: &mut crucible_api::ClientControlStream,
+    timeout_ms: u64,
+    state_updates: &mut Vec<String>,
+) -> Result<bool, CliError> {
+    match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        control.recv_state_update(),
+    )
+    .await
+    {
+        Ok(Ok(Some(frame))) => {
+            state_updates.push(format!("{:?}", frame.update.state).to_ascii_lowercase());
+            Ok(false)
+        }
+        Ok(Ok(None)) => Ok(true),
+        Ok(Err(error)) => Err(control_client_error(error)),
+        Err(_) => Ok(false),
+    }
 }
 
 async fn stop_budget_timed_out_session<C>(
@@ -3205,7 +4791,11 @@ where
         let mut stopped = initial;
         for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
             let sessions = client.list_sessions().await.map_err(control_client_error)?;
-            let Some(session) = sessions.sessions.first() else {
+            let Some(session) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == stopped.session)
+            else {
                 break;
             };
             stopped = session.clone();
@@ -3355,6 +4945,16 @@ fn append_local_double_run_entries(
         kind: String::from("run_scenario"),
         summary: format!("id={}", run_plan.scenario.scenario_id().to_hex()),
     });
+    let request_seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("session"),
+        kind: String::from("run_seed"),
+        summary: request_seed.to_hex(),
+    });
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -3465,6 +5065,7 @@ fn backend_command_outcome(
         canonical_log_digest,
         artifact_digest,
         reproduction_artifact: None,
+        side_reproduction_artifacts: Vec::new(),
     }
 }
 
@@ -3556,6 +5157,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Run(args) => Some(plan_run_invocation(args, &run_store_root)?),
         _ => None,
     };
+    let verify_plan = match &cli.command {
+        Commands::Verify(args) => Some(plan_verify_invocation(args, &run_store_root)?),
+        _ => None,
+    };
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
         if !cli.quiet {
@@ -3572,6 +5177,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &backend_plan,
             ergonomics_plan.as_ref(),
             run_plan.as_ref(),
+            verify_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
         if matches!(
@@ -3736,6 +5342,30 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
         }
     }
     if outcome.status.is_non_passing() {
+        if !outcome.side_reproduction_artifacts.is_empty() {
+            for (label, artifact) in &outcome.side_reproduction_artifacts {
+                let slug = format!("{}-{label}", outcome.status.failure_slug());
+                let report = write_failure_reproduction_artifact(cli, artifact, &slug)?;
+                if !cli.quiet {
+                    println!(
+                        "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
+                        label,
+                        report.path.display(),
+                        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+                        report.digest
+                    );
+                    println!(
+                        "crucible: reproduce side {} with:\n    {}",
+                        label, report.footer.replay_command
+                    );
+                    println!(
+                        "crucible: debug side {} at the failure with:\n    {}",
+                        label, report.footer.debug_command
+                    );
+                }
+            }
+            return Ok(());
+        }
         let Some(artifact) = &outcome.reproduction_artifact else {
             return Err(CliError::Artifact(format!(
                 "{:?} outcome did not provide a reproduction artifact",
@@ -5801,6 +7431,7 @@ mod tests {
             backend_plan: &BackendSelectionPlan,
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
             _run_plan: Option<&RunInvocationPlan>,
+            _verify_plan: Option<&VerifyInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.local_runs.push(backend.clone());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -5815,6 +7446,7 @@ mod tests {
             backend_plan: &BackendSelectionPlan,
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
             _run_plan: Option<&RunInvocationPlan>,
+            _verify_plan: Option<&VerifyInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.remote_runs.push(daemon.to_string());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -5961,6 +7593,40 @@ mod tests {
                 summary: String::from("property ok"),
             },
         ]
+    }
+
+    fn verify_compare_artifacts_with_paths(
+        left: &Path,
+        right_bytes: &[u8],
+        _cli: &Cli,
+    ) -> Result<CliError, Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let right = temp.path().join("right.crucible");
+        fs::write(&right, right_bytes)?;
+        let compare_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("verify"),
+            String::from("--compare"),
+            left.display().to_string(),
+            right.display().to_string(),
+        ]);
+        let Commands::Verify(args) = &compare_cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let error = execute_backend_routed_command(
+            &plan_cli_invocation(&compare_cli),
+            &plan_backend_selection(&compare_cli)?
+                .expect("verify should require backend selection"),
+            None,
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )
+        .expect_err("mismatched compare artifacts should fail");
+        Ok(error)
     }
 
     fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
@@ -6971,6 +8637,7 @@ mod tests {
             &plan_backend_selection(&pass_cli)?.expect("run should require backend selection"),
             Some(&pass_seed),
             Some(&pass_run),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -7038,6 +8705,7 @@ mod tests {
             &plan_backend_selection(&timeout_cli)?.expect("run should require backend selection"),
             Some(&timeout_seed),
             Some(&timeout_run),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -7079,6 +8747,7 @@ mod tests {
             &plan_backend_selection(&property_cli)?.expect("run should require backend selection"),
             Some(&property_seed),
             Some(&property_run),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -7164,6 +8833,7 @@ mod tests {
             &backend_plan,
             Some(&ergonomics_plan),
             Some(&run_plan),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -7381,6 +9051,494 @@ mod tests {
     }
 
     #[test]
+    fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("3"),
+            String::from("--adversarial"),
+            String::from("--bisect"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+
+        let plan = plan_verify_invocation(args, temp.path())?;
+
+        assert!(matches!(plan.mode, VerifyMode::RunScenario { .. }));
+        assert_eq!(plan.requested_runs, 3);
+        assert_eq!(plan.reductions.len(), 3 * VERIFY_HOSTILE_PROFILES.len());
+        assert!(plan.applies_hostile_condition_matrix);
+        assert!(plan.bisection_on_divergence);
+        assert!(plan.print_bisection_state_dump);
+        assert!(plan.compare_canonical_logs);
+        assert!(plan.compare_fingerprint_streams);
+        assert!(plan.pairwise_byte_identity);
+        assert!(plan.writes_side_artifacts_on_divergence);
+        assert!(plan.surface_shape_is_consistent());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
+    -> Result<(), Box<dyn Error>> {
+        let mut loop_impl = SimBackendLifecycleLoop::default();
+        let node = crucible::NodeId {
+            name: String::from("node-a"),
+        };
+        let before = crucible::QuantumLoop::sample_fingerprint(&mut loop_impl, node.clone())?;
+        let configuration =
+            crucible::Configuration::genesis(crucible::ScenarioDef::from_canonical_material(
+                "crucible.cli.verify.test",
+                "sim-backend-loop",
+            ));
+
+        crucible::QuantumLoop::drive_quantum(
+            &mut loop_impl,
+            crucible::QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            },
+        )?;
+        let after = crucible::QuantumLoop::sample_fingerprint(&mut loop_impl, node)?;
+
+        assert_eq!(before.at.ticks, 0);
+        assert_eq!(after.at.ticks, 1);
+        assert_ne!(before.fingerprint, after.fingerprint);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_collects_post_step_backend_fingerprint() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("11"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("1"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("verify should resolve a seed");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let control_plane = LifecycleControlPlane::new(
+            "crucible-cli-double-test",
+            Vec::new(),
+            |_scenario: &crucible::ScenarioDef, _seed| SimBackendLifecycleLoop::default(),
+        );
+        let client = InProcessLifecycleClient::new(control_plane);
+        let report = runtime.block_on(run_control_client_verify_workflow_async(
+            &client,
+            &verify_plan,
+            Some(&ResolvedLocalBackend::Double),
+            Some(&seed_plan),
+        ))?;
+        let witness = report
+            .witnesses
+            .first()
+            .ok_or_else(|| io::Error::other("missing verify witness"))?;
+
+        assert!(witness.fingerprint_samples.len() >= 2);
+        assert_eq!(witness.fingerprint_samples[0].instruction, 0);
+        assert!(
+            witness
+                .fingerprint_samples
+                .iter()
+                .any(|sample| sample.instruction > 0)
+        );
+        assert!(
+            witness
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "interactive_ack" && entry.summary == "step-quantum")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_rejects_fresh_local_double_without_backend_grade_verifier()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("11"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("verify should resolve a seed");
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
+            Some(&seed_plan),
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )
+        .expect_err("fresh local double verify must not report a synthetic pass");
+
+        assert!(matches!(outcome, CliError::Backend(_)));
+        assert!(outcome.to_string().contains("backend-grade verifier"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
+                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
+                    scenario
+                }
+            };
+        let entries = canonical_trace_entries();
+        let first_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"first-verify-fingerprint-sample"),
+        }];
+        let first = verify_reproduction_artifact_bytes(
+            12,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &first_samples,
+        )?;
+        let mut diverged_entries = entries.clone();
+        diverged_entries[1].summary.push_str(" diverged");
+        let second_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"second-verify-fingerprint-sample"),
+        }];
+        let second = verify_reproduction_artifact_bytes(
+            12,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &diverged_entries,
+            &second_samples,
+        )?;
+        let left = temp.path().join("left.crucible");
+        let right = temp.path().join("right.crucible");
+        fs::write(&left, first)?;
+        fs::write(&right, second)?;
+        let artifact_dir = temp.path().join("verify-artifacts");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("12"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("verify"),
+            String::from("--compare"),
+            left.display().to_string(),
+            right.display().to_string(),
+            String::from("--bisect"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("verify should resolve a seed");
+
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
+            Some(&seed_plan),
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(outcome.exit_code, 1);
+        assert_eq!(outcome.side_reproduction_artifacts.len(), 2);
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("verify-divergence\t"))
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("verify-bisect-state\t"))
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "verify_divergence_bisection")
+        );
+
+        emit_backend_command_output(&cli, &outcome)?;
+        let artifacts = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(artifacts.len(), 2);
+        for entry in artifacts {
+            let artifact = ReproductionArtifact::decode(&fs::read(entry.path())?)?;
+            assert_eq!(artifact.seed, 12);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_compares_existing_reproduction_artifacts() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
+                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
+                    scenario
+                }
+            };
+        let mut entries = canonical_trace_entries();
+        let first_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"first-compare-fingerprint-sample"),
+        }];
+        let first = verify_reproduction_artifact_bytes(
+            21,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &first_samples,
+        )?;
+        entries[1].summary.push_str(" diverged");
+        let second_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"second-compare-fingerprint-sample"),
+        }];
+        let second = verify_reproduction_artifact_bytes(
+            21,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &second_samples,
+        )?;
+        let left = temp.path().join("left.crucible");
+        let right = temp.path().join("right.crucible");
+        fs::write(&left, first)?;
+        fs::write(&right, second)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("verify"),
+            String::from("--compare"),
+            left.display().to_string(),
+            right.display().to_string(),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
+            None,
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )?;
+
+        assert!(matches!(
+            verify_plan.mode,
+            VerifyMode::CompareArtifacts { .. }
+        ));
+        assert_eq!(outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(outcome.side_reproduction_artifacts.len(), 2);
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("mismatch=canonical-log+fingerprint-stream"))
+        );
+
+        let different_seed = verify_reproduction_artifact_bytes(
+            22,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &second_samples,
+        )?;
+        let seed_mismatch = verify_compare_artifacts_with_paths(&left, &different_seed, &cli)?;
+        assert!(matches!(
+            seed_mismatch,
+            CliError::Artifact(message) if message.contains("matching seeds")
+        ));
+
+        let different_scenario = crucible::ScenarioDef::from_canonical_material_with_seed(
+            "cli-verify-test-scenario",
+            "different scenario",
+            scenario.seed(),
+        );
+        let scenario_mismatch_artifact = verify_reproduction_artifact_bytes(
+            21,
+            Some(&ResolvedLocalBackend::Double),
+            &different_scenario,
+            &entries,
+            &second_samples,
+        )?;
+        let scenario_mismatch =
+            verify_compare_artifacts_with_paths(&left, &scenario_mismatch_artifact, &cli)?;
+        assert!(matches!(
+            scenario_mismatch,
+            CliError::Artifact(message) if message.contains("matching scenario digests")
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_rejects_fresh_remote_daemon_without_backend_grade_verifier()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let daemon = spawn_production_lifecycle_server()?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon,
+            String::from("--seed"),
+            String::from("13"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("verify should resolve a seed");
+        let backend_plan =
+            plan_backend_selection(&cli)?.expect("remote verify should route daemon");
+        assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            Some(&seed_plan),
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )
+        .expect_err("fresh remote daemon verify must not report a synthetic pass");
+
+        assert!(matches!(outcome, CliError::Backend(_)));
+        assert!(outcome.to_string().contains("backend-grade verifier"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_verify_workflow_rejects_local_qemu_without_rfc_fingerprint_runner()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("qemu"),
+            String::from("--qemu"),
+            qemu,
+            String::from("--plugin"),
+            plugin,
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let backend_plan =
+            plan_backend_selection(&cli)?.expect("qemu verify should require backend selection");
+
+        let error = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            None,
+            Some(&verify_plan),
+            &mut NullBackendCommandRunner,
+        )
+        .expect_err("local qemu verify must not fall through to a generic pass");
+
+        assert!(matches!(error, CliError::Backend(_)));
+        assert!(error.to_string().contains("execution-fingerprint runner"));
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_backend_selection_routes_daemon_over_api_without_local_backend()
     -> Result<(), Box<dyn Error>> {
         let cli = Cli::parse_from([
@@ -7419,8 +9577,14 @@ mod tests {
         );
         assert!(recorder.local_backends.is_empty());
         let mut runner = RecordingBackendCommandRunner::default();
-        let outcome =
-            execute_backend_routed_command(&thin_plan, &backend_plan, None, None, &mut runner)?;
+        let outcome = execute_backend_routed_command(
+            &thin_plan,
+            &backend_plan,
+            None,
+            None,
+            None,
+            &mut runner,
+        )?;
         assert_eq!(runner.remote_runs, vec![String::from("127.0.0.1:9000")]);
         assert!(runner.local_runs.is_empty());
         assert_eq!(outcome.exit_code, 0);
@@ -7454,11 +9618,13 @@ mod tests {
             &local_backend,
             None,
             None,
+            None,
             &mut local_runner,
         )?;
         let remote_outcome = execute_backend_routed_command(
             &remote_thin,
             &remote_backend,
+            None,
             None,
             None,
             &mut remote_runner,
@@ -7710,6 +9876,7 @@ mod tests {
             &local_backend,
             Some(&seed_one),
             None,
+            None,
             &mut local_runner,
         )?;
         let remote = execute_backend_routed_command(
@@ -7717,12 +9884,14 @@ mod tests {
             &remote_backend,
             Some(&remote_seed_one),
             None,
+            None,
             &mut remote_runner,
         )?;
         let different_seed = execute_backend_routed_command(
             &different_seed_thin,
             &different_seed_backend,
             Some(&seed_two),
+            None,
             None,
             &mut different_seed_runner,
         )?;
@@ -7805,7 +9974,7 @@ mod tests {
         let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
         let mut runner = RecordingBackendCommandRunner::default();
         let mut outcome =
-            execute_backend_routed_command(&thin, &backend, Some(&plan), None, &mut runner)?;
+            execute_backend_routed_command(&thin, &backend, Some(&plan), None, None, &mut runner)?;
         mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan))?;
 
         emit_backend_command_output(&cli, &outcome)?;
