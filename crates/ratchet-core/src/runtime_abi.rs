@@ -275,6 +275,10 @@ const APPLY_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("function", RuntimeAbiParameterKind::Value),
     RuntimeAbiParameter::new("arg", RuntimeAbiParameterKind::Value),
 ];
+const DEOPT_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("deopt_record", RuntimeAbiParameterKind::DeoptRecordPointer),
+];
 const SELECT_IC_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
@@ -378,6 +382,14 @@ const RUNTIME_APPLY_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature:
     APPLY_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_DEOPT_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_deopt", RuntimeHelperRole::Deoptimization),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    DEOPT_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 const RUNTIME_SELECT_IC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
@@ -397,6 +409,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_ALLOC_STRING_CALL_SIGNATURE,
     RUNTIME_ALLOC_THUNK_CALL_SIGNATURE,
     RUNTIME_APPLY_CALL_SIGNATURE,
+    RUNTIME_DEOPT_CALL_SIGNATURE,
     RUNTIME_ENV_GET_CALL_SIGNATURE,
     RUNTIME_FORCE_CALL_SIGNATURE,
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
@@ -440,6 +453,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_alloc_string" => Some(RUNTIME_ALLOC_STRING_CALL_SIGNATURE),
         "aos_alloc_thunk" => Some(RUNTIME_ALLOC_THUNK_CALL_SIGNATURE),
         "aos_apply" => Some(RUNTIME_APPLY_CALL_SIGNATURE),
+        "aos_deopt" => Some(RUNTIME_DEOPT_CALL_SIGNATURE),
         "aos_env_get" => Some(RUNTIME_ENV_GET_CALL_SIGNATURE),
         "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
@@ -559,6 +573,8 @@ pub enum RuntimeAbiParameterKind {
     RuntimeContext,
     /// The captured environment frame pointer.
     EnvPointer,
+    /// A pointer to tier deoptimization state reconstruction metadata.
+    DeoptRecordPointer,
     /// A pointer to native code for a thunk or lambda body.
     CodePointer,
     /// A pointer to a runtime thunk object.
@@ -1299,6 +1315,7 @@ mod tests {
                 "aos_alloc_string",
                 "aos_alloc_thunk",
                 "aos_apply",
+                "aos_deopt",
                 "aos_env_get",
                 "aos_force",
                 "aos_force_deep",
@@ -1380,6 +1397,30 @@ mod tests {
             ]
         );
         assert_eq!(apply.return_kind(), RuntimeAbiReturnKind::Value);
+    }
+
+    #[test]
+    fn deoptimization_helper_call_signature_pins_record_pointer_boundary() {
+        let deopt =
+            runtime_helper_call_signature("aos_deopt").expect("deopt signature is core-owned");
+
+        assert_eq!(
+            deopt.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_deopt", RuntimeHelperRole::Deoptimization),
+            }
+        );
+        assert_eq!(
+            deopt.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new(
+                    "deopt_record",
+                    RuntimeAbiParameterKind::DeoptRecordPointer,
+                ),
+            ]
+        );
+        assert_eq!(deopt.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

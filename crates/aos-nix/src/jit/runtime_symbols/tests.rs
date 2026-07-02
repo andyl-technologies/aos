@@ -215,6 +215,13 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
         })
     ));
     assert!(matches!(
+        registration.gap_for_symbol("aos_deopt"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Deoptimization),
+            ..
+        })
+    ));
+    assert!(matches!(
         registration.gap_for_symbol("aos_select_ic"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
             kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
@@ -307,6 +314,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
         preflight.gap_for_symbol("aos_apply"),
         Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
             kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
+            ..
+        })
+    ));
+    assert!(matches!(
+        preflight.gap_for_symbol("aos_deopt"),
+        Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+            kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::Deoptimization),
             ..
         })
     ));

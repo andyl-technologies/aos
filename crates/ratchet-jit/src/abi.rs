@@ -207,6 +207,7 @@ fn append_parameter(
     match parameter.kind() {
         RuntimeAbiParameterKind::RuntimeContext
         | RuntimeAbiParameterKind::EnvPointer
+        | RuntimeAbiParameterKind::DeoptRecordPointer
         | RuntimeAbiParameterKind::CodePointer
         | RuntimeAbiParameterKind::ThunkPointer
         | RuntimeAbiParameterKind::LambdaPointer
@@ -489,6 +490,19 @@ mod tests {
             param_types(&signature),
             vec![pointer_type, types::I64, types::I64, types::I64, types::I64]
         );
+        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
+    fn deopt_helper_clif_signature_lowers_record_pointer_and_value_return() {
+        let runtime_signature =
+            runtime_helper_call_signature("aos_deopt").expect("deopt signature is core-owned");
+        let signature =
+            clif_signature_for_runtime_call(runtime_signature).expect("deopt signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(runtime_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        assert_eq!(param_types(&signature), vec![pointer_type, pointer_type]);
         assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
     }
 
