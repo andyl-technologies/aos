@@ -982,7 +982,13 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
 ### Open questions, decided (§13)
 
 - [x] §13 decision record is closed for the current seam: per-invocation-first evaluation, cache transport beside the `NixEval` trait, a dedicated `eval_expr --eval --json` parity gate recorded as required before Phase C, and exact revision pinning for the currently present external evaluator-format dependency (`nix-compat`) are documented and reflected in the P1 seam/pinning substrate (§13) — decisions closed; gate: docs plus `NixEval`/`eval_expr` seam tests and workspace dependency pin audit.
-- [ ] §13 follow-through remains: implement or deliberately defer the persistent eval daemon based on measurement, build the Attic-backed eval-cache transport beside the trait, run the dedicated `eval_expr --eval --json` parity gate before Phase C, add exact Cranelift pinning once Cranelift enters the dependency graph, and enforce `nix-compat`/Cranelift bump gates with the full harness (§13) — build as recorded; gate: implementation, CI wiring, and full harness bump enforcement.
+- [x] Current Cranelift dependency-pinning precursor:
+      `ratchet-jit` now depends only on `cranelift-codegen` and
+      `target-lexicon` for CLIF signature metadata, with the resolved
+      Cranelift-facing versions pinned exactly in the workspace manifest and
+      `crates/Cargo.lock`. No `cranelift-jit`, executable memory manager, symbol
+      registration, native wrapper, or emitted-code call boundary is present yet.
+- [ ] §13 follow-through remains: implement or deliberately defer the persistent eval daemon based on measurement, build the Attic-backed eval-cache transport beside the trait, run the dedicated `eval_expr --eval --json` parity gate before Phase C, and enforce `nix-compat`/Cranelift bump gates with the full harness (§13) — build as recorded; gate: implementation, CI wiring, and full harness bump enforcement.
 
 ## References
 

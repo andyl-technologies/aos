@@ -100,6 +100,10 @@ clap_complete = "4"
 toml = "0.8"
 semver = "1"
 
+# Code generation
+cranelift-codegen = "=0.127.4"
+target-lexicon = "=0.13.5"
+
 # Dev
 tempfile = "3"
 libc = "0.2"

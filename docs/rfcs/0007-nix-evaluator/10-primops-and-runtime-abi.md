@@ -878,8 +878,19 @@ harness, never cut for scope.
       `ratchet-oracle` for now rather than making the JIT crate depend on the
       oracle stack. Tests pin thunk, lambda, and primop signature parity plus
       callable-kind coverage. This is a crate boundary and metadata adapter only;
-      no `unsafe extern "C"` aliases, exported wrappers, raw-pointer calls,
-      Cranelift lowering, or `JITBuilder::symbol` registration are implemented.
+      no `unsafe extern "C"` aliases, exported wrappers, raw-pointer calls, or
+      `JITBuilder::symbol` registration are implemented; the narrow
+      Cranelift-dependent signature adapter is tracked by the next item.
+- [x] Current `ratchet-jit` CLIF-signature ABI precursor:
+      `ratchet-jit::abi::clif_signature_for_runtime_call()` turns frozen
+      `RuntimeCallSignature` metadata into Cranelift `Signature` values for the
+      uniform runtime ABI. `rt` and `env` lower to host-pointer-sized CLIF
+      parameters, while each runtime `Value` parameter or return lowers to two
+      `i64` ABI slots behind a 16-byte/two-8-byte-word layout guard. Tests pin
+      thunk, lambda, and primop arities 0-3. This is not executable ABI glue:
+      no exported wrappers, raw-pointer dispatch, `cranelift-jit` module,
+      `JITBuilder::symbol` registration, CLIF body lowering, or native call
+      boundary is implemented.
 - [x] Current `ratchet-jit` runtime-symbol inventory precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_inventory()` exposes a JIT-side,
       address-free view of the `ratchet-core` runtime symbol manifest without an

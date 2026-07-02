@@ -24,7 +24,10 @@ pub mod symbols;
 pub mod tier;
 pub mod warmup;
 
-pub use abi::{JitRuntimeAbiInventory, jit_runtime_abi_inventory};
+pub use abi::{
+    JitClifSignatureError, JitRuntimeAbiInventory, clif_signature_for_runtime_call,
+    jit_runtime_abi_inventory,
+};
 pub use safety::{
     JIT_SAFETY_COMMENT_PREFIX, JIT_UNSAFE_CRATE_LINT, JitInnateUnsafeOperation,
     JitUnsafeDiscipline, jit_unsafe_discipline,

@@ -7,4 +7,6 @@ edition = "2024"
 default = []
 
 [dependencies]
+cranelift-codegen = { workspace = true }
 ratchet-core = { workspace = true }
+target-lexicon = { workspace = true }

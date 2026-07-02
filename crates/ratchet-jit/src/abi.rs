@@ -1,14 +1,29 @@
-//! Address-free runtime ABI inventory consumed by future JIT tiers.
+//! Address-free runtime ABI inventory and CLIF signature adapters.
 //!
 //! The inventory in this module mirrors the safe runtime ABI metadata owned by
 //! `ratchet-core`. It gives JIT-side code a local, documented entry point for the
 //! thunk, lambda, and builtin primop call signatures without creating raw
-//! function-pointer type aliases or executable wrappers.
+//! function-pointer type aliases or executable wrappers. The CLIF adapter lowers
+//! those frozen call signatures to Cranelift [`Signature`] values only; it does
+//! not construct a Cranelift module, register symbols, emit code, or call native
+//! addresses.
 
-use ratchet_core::{
-    RuntimeCallSignature, runtime_lambda_call_signature, runtime_primop_call_signatures,
-    runtime_thunk_call_signature,
+use std::{error::Error, fmt};
+
+use cranelift_codegen::{
+    ir::{AbiParam, Signature, Type, types},
+    isa::CallConv,
 };
+use ratchet_core::{
+    RuntimeAbiCallingConvention, RuntimeAbiParameter, RuntimeAbiParameterKind,
+    RuntimeAbiReturnKind, RuntimeAbiValueLayout, RuntimeCallSignature, runtime_abi_value_layout,
+    runtime_lambda_call_signature, runtime_primop_call_signatures, runtime_thunk_call_signature,
+};
+use target_lexicon::{CallingConvention, Triple};
+
+const RUNTIME_VALUE_CLIF_SIZE_BYTES: usize = 16;
+const RUNTIME_VALUE_CLIF_WORDS: usize = 2;
+const RUNTIME_VALUE_CLIF_WORD_BYTES: usize = 8;
 
 /// Address-free runtime-call signatures required by JIT lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,10 +64,199 @@ pub fn jit_runtime_abi_inventory() -> JitRuntimeAbiInventory {
     JitRuntimeAbiInventory::from_core_metadata()
 }
 
+/// Converts a frozen runtime-call signature into a Cranelift function signature.
+///
+/// Runtime context and environment parameters become host-pointer-sized CLIF
+/// parameters. Each by-value runtime `Value` parameter or result is expanded to
+/// the frozen two-word `i64, i64` ABI shape recorded by `ratchet-core`.
+///
+/// # Errors
+///
+/// Returns [`JitClifSignatureError::UnsupportedRuntimeValueLayout`] if the
+/// frozen runtime `Value` ABI is no longer the two 8-byte words that this CLIF
+/// lowering slice pins. Returns
+/// [`JitClifSignatureError::UnsupportedHostPointerWidth`] if the host target is
+/// neither 32-bit nor 64-bit. Returns
+/// [`JitClifSignatureError::UnsupportedHostCallingConvention`] if the host target
+/// reports a C ABI that this adapter cannot lower without relying on a Cranelift
+/// panic path.
+pub fn clif_signature_for_runtime_call(
+    signature: RuntimeCallSignature,
+) -> Result<Signature, JitClifSignatureError> {
+    validate_runtime_value_layout(runtime_abi_value_layout())?;
+
+    let mut clif_signature = Signature::new(clif_call_conv_for(signature.convention())?);
+    let pointer_type = host_pointer_type()?;
+
+    for parameter in signature.parameters() {
+        append_parameter(&mut clif_signature.params, *parameter, pointer_type);
+    }
+    append_return_kind(&mut clif_signature.returns, signature.return_kind());
+
+    Ok(clif_signature)
+}
+
+/// A failure while converting frozen runtime-call metadata to CLIF signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JitClifSignatureError {
+    /// The runtime `Value` ABI is not the two 8-byte words this adapter lowers.
+    UnsupportedRuntimeValueLayout {
+        /// The observed by-value `Value` size in bytes.
+        size_bytes: usize,
+        /// The observed number of register-passed words.
+        register_words: usize,
+        /// The observed byte width of each register-passed word.
+        register_word_bytes: usize,
+    },
+    /// The host pointer width is not representable by the current adapter.
+    UnsupportedHostPointerWidth {
+        /// The host pointer width reported by the Rust target.
+        pointer_width_bits: u32,
+    },
+    /// The host target reports a C calling convention unsupported by this adapter.
+    UnsupportedHostCallingConvention {
+        /// The target-lexicon calling convention name.
+        calling_convention: &'static str,
+    },
+}
+
+impl fmt::Display for JitClifSignatureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedRuntimeValueLayout {
+                size_bytes,
+                register_words,
+                register_word_bytes,
+            } => write!(
+                formatter,
+                "runtime Value ABI layout {size_bytes} bytes, {register_words} register words, \
+                 {register_word_bytes} bytes per word is not lowerable as two Cranelift i64 words"
+            ),
+            Self::UnsupportedHostPointerWidth { pointer_width_bits } => write!(
+                formatter,
+                "host pointer width {pointer_width_bits} bits is not supported by the CLIF ABI adapter"
+            ),
+            Self::UnsupportedHostCallingConvention { calling_convention } => write!(
+                formatter,
+                "host calling convention {calling_convention} is not supported by the CLIF ABI adapter"
+            ),
+        }
+    }
+}
+
+impl Error for JitClifSignatureError {}
+
+fn clif_call_conv_for(
+    convention: RuntimeAbiCallingConvention,
+) -> Result<CallConv, JitClifSignatureError> {
+    match convention {
+        RuntimeAbiCallingConvention::ExternC => clif_default_call_conv_for_triple(&Triple::host()),
+    }
+}
+
+fn clif_default_call_conv_for_triple(triple: &Triple) -> Result<CallConv, JitClifSignatureError> {
+    match triple.default_calling_convention() {
+        Ok(CallingConvention::SystemV) | Err(()) => Ok(CallConv::SystemV),
+        Ok(CallingConvention::AppleAarch64) => Ok(CallConv::AppleAarch64),
+        Ok(CallingConvention::WindowsFastcall) => Ok(CallConv::WindowsFastcall),
+        Ok(convention) => Err(JitClifSignatureError::UnsupportedHostCallingConvention {
+            calling_convention: calling_convention_name(convention),
+        }),
+    }
+}
+
+fn calling_convention_name(convention: CallingConvention) -> &'static str {
+    match convention {
+        CallingConvention::SystemV => "SystemV",
+        CallingConvention::WasmBasicCAbi => "WasmBasicCAbi",
+        CallingConvention::WindowsFastcall => "WindowsFastcall",
+        CallingConvention::AppleAarch64 => "AppleAarch64",
+        _ => "unknown",
+    }
+}
+
+fn host_pointer_type() -> Result<Type, JitClifSignatureError> {
+    match usize::BITS {
+        32 => Ok(types::I32),
+        64 => Ok(types::I64),
+        pointer_width_bits => {
+            Err(JitClifSignatureError::UnsupportedHostPointerWidth { pointer_width_bits })
+        }
+    }
+}
+
+fn append_parameter(
+    params: &mut Vec<AbiParam>,
+    parameter: RuntimeAbiParameter,
+    pointer_type: Type,
+) {
+    match parameter.kind() {
+        RuntimeAbiParameterKind::RuntimeContext | RuntimeAbiParameterKind::EnvPointer => {
+            params.push(AbiParam::new(pointer_type));
+        }
+        RuntimeAbiParameterKind::Value => append_value_words(params),
+    }
+}
+
+fn append_return_kind(returns: &mut Vec<AbiParam>, return_kind: RuntimeAbiReturnKind) {
+    match return_kind {
+        RuntimeAbiReturnKind::Value => append_value_words(returns),
+    }
+}
+
+fn append_value_words(params: &mut Vec<AbiParam>) {
+    for _ in 0..RUNTIME_VALUE_CLIF_WORDS {
+        params.push(AbiParam::new(types::I64));
+    }
+}
+
+fn validate_runtime_value_layout(
+    layout: RuntimeAbiValueLayout,
+) -> Result<(), JitClifSignatureError> {
+    let observed = ObservedRuntimeValueLayout::from(layout);
+    validate_observed_value_layout(observed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservedRuntimeValueLayout {
+    size_bytes: usize,
+    register_words: usize,
+    register_word_bytes: usize,
+}
+
+impl From<RuntimeAbiValueLayout> for ObservedRuntimeValueLayout {
+    fn from(layout: RuntimeAbiValueLayout) -> Self {
+        Self {
+            size_bytes: layout.size_bytes(),
+            register_words: layout.register_words(),
+            register_word_bytes: layout.register_word_bytes(),
+        }
+    }
+}
+
+fn validate_observed_value_layout(
+    layout: ObservedRuntimeValueLayout,
+) -> Result<(), JitClifSignatureError> {
+    if layout.size_bytes == RUNTIME_VALUE_CLIF_SIZE_BYTES
+        && layout.register_words == RUNTIME_VALUE_CLIF_WORDS
+        && layout.register_word_bytes == RUNTIME_VALUE_CLIF_WORD_BYTES
+    {
+        return Ok(());
+    }
+
+    Err(JitClifSignatureError::UnsupportedRuntimeValueLayout {
+        size_bytes: layout.size_bytes,
+        register_words: layout.register_words,
+        register_word_bytes: layout.register_word_bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use cranelift_codegen::ir::{Type, types};
     use ratchet_core::{
-        RuntimeCallableKind, runtime_lambda_call_signature, runtime_primop_call_signatures,
+        RuntimeCallableKind, runtime_abi_value_layout, runtime_lambda_call_signature,
+        runtime_primop_call_signature, runtime_primop_call_signatures,
         runtime_thunk_call_signature,
     };
 
@@ -102,5 +306,111 @@ mod tests {
                 RuntimeCallableKind::Primop { arity: 3 },
             ]
         );
+    }
+
+    #[test]
+    fn thunk_body_clif_signature_uses_pointer_params_and_value_return_words() {
+        let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())
+            .expect("thunk signature uses the pinned runtime value layout");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(
+            signature.call_conv,
+            clif_call_conv_for(RuntimeAbiCallingConvention::ExternC)
+                .expect("host target has a supported C calling convention")
+        );
+        assert_eq!(param_types(&signature), vec![pointer_type, pointer_type]);
+        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
+    fn lambda_body_clif_signature_expands_value_argument() {
+        let signature = clif_signature_for_runtime_call(runtime_lambda_call_signature())
+            .expect("lambda signature uses the pinned runtime value layout");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, pointer_type, types::I64, types::I64]
+        );
+        assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
+    fn primop_clif_signatures_expand_each_value_argument_by_arity() {
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        for arity in 0..=3 {
+            let runtime_signature =
+                runtime_primop_call_signature(arity).expect("arity is covered by frozen metadata");
+            let signature = clif_signature_for_runtime_call(runtime_signature)
+                .expect("primop signature uses the pinned runtime value layout");
+
+            let mut expected_params = vec![pointer_type, pointer_type];
+            for _ in 0..arity {
+                expected_params.push(types::I64);
+                expected_params.push(types::I64);
+            }
+
+            assert_eq!(param_types(&signature), expected_params);
+            assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+        }
+    }
+
+    #[test]
+    fn unsupported_host_calling_convention_reports_error() {
+        let wasm_triple = "wasm32-wasi"
+            .parse::<Triple>()
+            .expect("target-lexicon parses wasm32-wasi");
+
+        let error = clif_default_call_conv_for_triple(&wasm_triple)
+            .expect_err("wasm Basic C ABI is not a supported native JIT calling convention");
+        assert_eq!(
+            error,
+            JitClifSignatureError::UnsupportedHostCallingConvention {
+                calling_convention: "WasmBasicCAbi",
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_value_layout_guard_pins_two_i64_abi_words() {
+        let layout = runtime_abi_value_layout();
+
+        assert_eq!(layout.size_bytes(), RUNTIME_VALUE_CLIF_SIZE_BYTES);
+        assert_eq!(layout.register_words(), RUNTIME_VALUE_CLIF_WORDS);
+        assert_eq!(layout.register_word_bytes(), RUNTIME_VALUE_CLIF_WORD_BYTES);
+        validate_runtime_value_layout(layout).expect("current runtime value layout is supported");
+
+        let error = validate_observed_value_layout(ObservedRuntimeValueLayout {
+            size_bytes: 8,
+            register_words: 1,
+            register_word_bytes: 8,
+        })
+        .expect_err("single-word values must fail the two-word CLIF layout guard");
+        assert_eq!(
+            error,
+            JitClifSignatureError::UnsupportedRuntimeValueLayout {
+                size_bytes: 8,
+                register_words: 1,
+                register_word_bytes: 8,
+            }
+        );
+    }
+
+    fn param_types(signature: &Signature) -> Vec<Type> {
+        signature
+            .params
+            .iter()
+            .map(|parameter| parameter.value_type)
+            .collect()
+    }
+
+    fn return_types(signature: &Signature) -> Vec<Type> {
+        signature
+            .returns
+            .iter()
+            .map(|parameter| parameter.value_type)
+            .collect()
     }
 }

@@ -6522,8 +6522,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-core`, while runtime-symbol candidate gates remain in
       `ratchet-oracle` until a lower shared metadata layer exists. Tests prove ABI
       metadata parity and callable-kind coverage. This adds no oracle dependency,
-      Cranelift dependency, exported wrappers, raw function-pointer calls,
-      executable addresses, or `JITBuilder::symbol` registration.
+      exported wrappers, raw function-pointer calls, executable addresses, or
+      `JITBuilder::symbol` registration; the narrow Cranelift dependency is now
+      confined to the CLIF signature adapter below.
+- [x] Current `ratchet-jit` CLIF-signature ABI precursor:
+      `ratchet-jit::abi::clif_signature_for_runtime_call()` lowers the frozen
+      `RuntimeCallSignature` metadata into Cranelift `Signature` values for the
+      uniform runtime ABI. It maps `rt` and `env` to host-pointer-sized CLIF
+      slots, expands every runtime `Value` argument or return to two `i64` ABI
+      slots, and guards that lowering on the pinned 16-byte/two-8-byte-word
+      `Value` layout. Tests cover thunk and lambda signatures, primop arities
+      0-3, and the layout guard. This remains signature metadata only: no
+      `cranelift-jit`, `JITModule`, `JITBuilder::symbol` registration, CLIF body
+      lowering, executable buffer, raw pointer call, or native wrapper is added.
 - [x] Current `ratchet-jit` runtime-symbol inventory precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_inventory()` mirrors the
       address-free `ratchet-core` runtime symbol manifest inside the JIT crate
