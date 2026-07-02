@@ -939,13 +939,30 @@ recomputable byte-for-byte from what was already stored.
   cluster's content-address-least representative. The same canonical report
   material drives deterministic `json`, `jsonl`, `table`, and `markdown`
   renderings, and report sets are emitted in cluster-id order.
-- [ ] **T-TRI-7** Implement the `crucible triage <findings>` thin-driver
+- [x] **T-TRI-7** Implement the `crucible triage <findings>` thin-driver
   subcommand (flags --policy/--minimize/--report/--format/--recompute-signatures/
   --compare; pipeline cluster→minimize-representative→emit; exit codes uniform
   with 23), the content-addressed triage result in the DagStore (dedup; --compare
   content diff), and the offline self-check that recomputed signatures equal
   discovery-time signatures byte-for-byte. — satisfies [TRI-15], [TRI-16],
   [TRI-17], [TRI-18]; spec §34.6, §34.7.
+  Completed by `checks.crucible.phase6.triageThinDriver`: the model now exposes
+  `FailureFindingsLedger`, `FailureTriageSignatureSelfCheck`,
+  `FailureTriageResult`, and `FailureTriageResultDiff`. Findings ledgers dedup
+  reproduction artifacts by content hash, self-check records retain per-finding
+  discovery/recomputed signature byte hashes, and triage results re-bind
+  clusters, signature-preserving minimization runs, and per-cluster reports to
+  the same policy, representative, member set, signature key, and minimal
+  artifact before storing deterministic bytes in the `DagStore`. Repeated stores
+  report cache hits, the stored result hash is the `DagStore` key, and result
+  comparison is a content diff over stored report hashes. The CLI `triage`
+  command parses the policy, minimization, report, format, recompute, and
+  compare controls, rejects daemon-backed use, opens a local `DagStore`, loads
+  path or stored ledgers, executes the cluster→minimize-representative→emit→store
+  runner for ledgers whose discovery-time signature evidence is representable,
+  writes the report rendering, and preserves the uniform exit-code path for
+  recompute-signature mismatches; bare non-empty artifact-only ledgers are
+  rejected rather than assigned fabricated signatures.
 - [ ] **T-TRI-8** Add the `crucible triage` subcommand to the CLI surface of
   [`23-cli.md`](23-cli.md): subcommand-set entry, user-facing `--help` copy, and
   the uniform exit-code mapping. — satisfies [TRI-19]; spec §34.9; cross-ref 23

@@ -12,6 +12,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -19,6 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use crucible::DagStore;
 use crucible_session::SessionCommand;
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
@@ -95,6 +97,19 @@ enum OutputFormat {
     Json,
     /// Emit a human-readable table.
     Table,
+    /// Emit Markdown.
+    Markdown,
+}
+
+impl OutputFormat {
+    fn triage_report_format(self) -> crucible::FailureClusterReportFormat {
+        match self {
+            Self::Jsonl => crucible::FailureClusterReportFormat::JsonLines,
+            Self::Json => crucible::FailureClusterReportFormat::Json,
+            Self::Table => crucible::FailureClusterReportFormat::Table,
+            Self::Markdown => crucible::FailureClusterReportFormat::Markdown,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
@@ -163,7 +178,61 @@ struct SearchArgs {}
 struct FuzzArgs {}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct TriageArgs {}
+struct TriageArgs {
+    /// Read this findings ledger.
+    #[arg(value_name = "FINDINGS")]
+    findings: String,
+    /// Select the failure-signature policy.
+    #[arg(long, value_enum, default_value_t = TriagePolicyArg::Default)]
+    policy: TriagePolicyArg,
+    /// Select representative minimization mode.
+    #[arg(long, value_enum, default_value_t = TriageMinimizeArg::Representative)]
+    minimize: TriageMinimizeArg,
+    /// Write per-cluster reports here.
+    #[arg(long, value_name = "dir")]
+    report: Option<PathBuf>,
+    /// Recompute signatures and fail if discovery-time bytes drift.
+    #[arg(long, action = ArgAction::SetTrue)]
+    recompute_signatures: bool,
+    /// Diff against another content-addressed triage result.
+    #[arg(long, value_name = "other-triage-result")]
+    compare: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TriagePolicyArg {
+    /// Coarse failure-signature grouping.
+    Coarse,
+    /// Default failure-signature grouping.
+    #[default]
+    Default,
+    /// Fine failure-signature grouping.
+    Fine,
+    /// Exact failure-signature grouping.
+    Exact,
+}
+
+impl TriagePolicyArg {
+    fn policy(self) -> crucible::SignaturePolicy {
+        match self {
+            Self::Coarse => crucible::SignaturePolicy::coarse(),
+            Self::Default => crucible::SignaturePolicy::default_policy(),
+            Self::Fine => crucible::SignaturePolicy::fine(),
+            Self::Exact => crucible::SignaturePolicy::exact(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TriageMinimizeArg {
+    /// Skip minimization and report representatives unchanged.
+    None,
+    /// Minimize the content-address-least representative per cluster.
+    #[default]
+    Representative,
+    /// Minimize every finding in every cluster.
+    All,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 #[command(group(
@@ -325,9 +394,37 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
-        | Commands::Triage(_)
         | Commands::Serve(_)
         | Commands::Completions(_) => Ok(()),
+        Commands::Triage(args) => {
+            let report = run_triage_invocation(cli, args)?;
+            if !cli.quiet {
+                println!(
+                    "crucible: triage findings={} findings_count={} ledger={} ledger_cache_hit={} policy={} minimize={} clusters={} report={} format={} store={} result={} cache_hit={} compare={}",
+                    report.plan.findings.label(),
+                    report.ledger.artifact_count(),
+                    format_content_hash_ref(report.stored_ledger.key),
+                    report.stored_ledger.cache_hit,
+                    report.plan.policy_label(),
+                    report.plan.minimize_label(),
+                    report.result.clustering.cluster_count(),
+                    report.report_path.display(),
+                    report.plan.format_label(),
+                    report.plan.store_root.display(),
+                    format_content_hash_ref(report.stored_result.key),
+                    report.stored_result.cache_hit,
+                    report
+                        .compare
+                        .as_ref()
+                        .map(|diff| diff.status_label())
+                        .unwrap_or("none")
+                );
+                if let Some(diff) = &report.compare {
+                    println!("{}", diff.content_diff());
+                }
+            }
+            Ok(())
+        }
         Commands::Debug(args) => {
             let plan = plan_debug_invocation(cli, args)?;
             if !cli.quiet {
@@ -394,6 +491,266 @@ fn write_failure_reproduction_artifact(
         replay_command,
         debug_command,
     })
+}
+
+fn plan_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageInvocationPlan, CliError> {
+    if cli.daemon.is_some() {
+        return Err(CliError::Backend(
+            "triage is an offline DagStore operation and must not use --daemon".to_string(),
+        ));
+    }
+    if args.findings.is_empty() {
+        return Err(usage_error("triage requires a non-empty FINDINGS argument"));
+    }
+
+    let findings = parse_triage_findings_source(&args.findings);
+    let compare = args
+        .compare
+        .as_deref()
+        .map(parse_triage_compare_target)
+        .transpose()?;
+    let report_dir = args
+        .report
+        .clone()
+        .unwrap_or_else(|| cli.artifact_dir.clone());
+    let store_root = cli
+        .store
+        .clone()
+        .unwrap_or_else(|| cli.artifact_dir.join("store"));
+    let mut pipeline = vec![TriagePipelineStep::LoadFindingsLedger];
+    if args.recompute_signatures {
+        pipeline.push(TriagePipelineStep::RecomputeSignatureSelfCheck);
+    }
+    pipeline.push(TriagePipelineStep::Cluster);
+    pipeline.push(match args.minimize {
+        TriageMinimizeArg::None => TriagePipelineStep::SkipMinimization,
+        TriageMinimizeArg::Representative => TriagePipelineStep::MinimizeRepresentative,
+        TriageMinimizeArg::All => TriagePipelineStep::MinimizeAll,
+    });
+    pipeline.push(TriagePipelineStep::EmitReports);
+    pipeline.push(TriagePipelineStep::StoreTriageResult);
+    if compare.is_some() {
+        pipeline.push(TriagePipelineStep::CompareContentDiff);
+    }
+
+    let plan = TriageInvocationPlan {
+        findings,
+        policy: args.policy.policy(),
+        minimize: args.minimize,
+        report_dir,
+        format: cli.format.triage_report_format(),
+        recompute_signatures: args.recompute_signatures,
+        compare,
+        store_root,
+        pipeline,
+        failure_exit_code: CliError::Triage(
+            "triage self-check or signature-preserving minimization failed".to_string(),
+        )
+        .exit_code(),
+        thin_driver: true,
+        owns_run_state: false,
+        offline: true,
+        scheduler_started: false,
+    };
+    if !plan.proves_t_tri_7() {
+        return Err(CliError::Backend(
+            "triage planner does not satisfy the RFC-0010 thin-driver contract".to_string(),
+        ));
+    }
+    Ok(plan)
+}
+
+fn run_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageRunReport, CliError> {
+    let plan = plan_triage_invocation(cli, args)?;
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let ledger = load_triage_findings_ledger(&store, &plan.findings)?;
+    let stored_ledger = ledger.store(&store).map_err(CliError::Store)?;
+    if ledger.artifact_count() != 0 {
+        return Err(CliError::Artifact(format!(
+            "triage findings ledger contains {} artifact(s), but discovery-time signature evidence is not available in this ledger format",
+            ledger.artifact_count()
+        )));
+    }
+
+    let findings = Vec::<crucible::FailureClusterFinding>::new();
+    let clustering = crucible::FailureClusteringResult::from_findings(plan.policy, findings)
+        .map_err(|_| {
+            CliError::Triage("triage clustering failed for the findings ledger".to_string())
+        })?;
+    let minimization = crucible::FailureSignaturePreservingMinimizationResult {
+        policy: plan.policy,
+        runs: Vec::new(),
+    };
+    let report_set = crucible::FailureClusterReportSet::from_reports(plan.policy, Vec::new())
+        .map_err(|_| CliError::Triage("triage report set assembly failed".to_string()))?;
+    let signature_self_check = if plan.recompute_signatures {
+        crucible::FailureTriageSignatureSelfCheck::from_signature_pairs(Vec::<
+            crucible::FailureTriageSignatureSelfCheckInput,
+        >::new())
+    } else {
+        crucible::FailureTriageSignatureSelfCheck::skipped()
+    };
+    let result = crucible::FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering,
+        minimization,
+        report_set,
+        signature_self_check,
+    )
+    .map_err(|_| CliError::Triage("triage result validation failed".to_string()))?;
+    let report_path = write_triage_report(&plan, &result.report_set)?;
+    let compare = plan
+        .compare
+        .as_ref()
+        .map(|target| compare_triage_result(&store, &result, target))
+        .transpose()?;
+    let stored_result = result.store(&store).map_err(CliError::Store)?;
+
+    Ok(TriageRunReport {
+        plan,
+        ledger,
+        stored_ledger,
+        result,
+        stored_result,
+        report_path,
+        compare,
+    })
+}
+
+fn load_triage_findings_ledger(
+    store: &crucible::LocalDagStore,
+    source: &TriageFindingsSource,
+) -> Result<crucible::FailureFindingsLedger, CliError> {
+    match source {
+        TriageFindingsSource::StoredLedger(hash) => {
+            let bytes = store.get(hash).map_err(CliError::Store)?;
+            parse_failure_findings_ledger_bytes(&bytes)
+        }
+        TriageFindingsSource::Path(path) if path.is_dir() => {
+            let mut entries = fs::read_dir(path)?
+                .collect::<Result<Vec<_>, io::Error>>()?
+                .into_iter()
+                .filter_map(|entry| {
+                    entry
+                        .file_type()
+                        .ok()
+                        .filter(|kind| kind.is_file())
+                        .map(|_| entry.path())
+                })
+                .collect::<Vec<_>>();
+            entries.sort();
+            let mut artifacts = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let bytes = fs::read(&entry)?;
+                artifacts.push(store.put(&bytes).map_err(CliError::Store)?);
+            }
+            Ok(crucible::FailureFindingsLedger::from_artifacts(artifacts))
+        }
+        TriageFindingsSource::Path(path) => {
+            let bytes = fs::read(path)?;
+            parse_failure_findings_ledger_bytes(&bytes).or_else(|_| {
+                store
+                    .put(&bytes)
+                    .map(|hash| crucible::FailureFindingsLedger::from_artifacts([hash]))
+                    .map_err(CliError::Store)
+            })
+        }
+    }
+}
+
+fn parse_failure_findings_ledger_bytes(
+    bytes: &[u8],
+) -> Result<crucible::FailureFindingsLedger, CliError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| artifact_error(format!("findings ledger is not UTF-8: {error}")))?;
+    if text.lines().next() != Some("crucible.failure-triage.findings-ledger.v1") {
+        return Err(artifact_error(
+            "unsupported findings ledger artifact schema",
+        ));
+    }
+    let mut artifacts = Vec::new();
+    for line in text.lines() {
+        if let Some(hex) = line.strip_prefix("artifact.") {
+            let Some((_, value)) = hex.split_once('=') else {
+                return Err(artifact_error("malformed findings ledger artifact line"));
+            };
+            artifacts.push(parse_hex_content_hash("findings ledger artifact", value)?);
+        }
+    }
+    Ok(crucible::FailureFindingsLedger::from_artifacts(artifacts))
+}
+
+fn write_triage_report(
+    plan: &TriageInvocationPlan,
+    report_set: &crucible::FailureClusterReportSet,
+) -> Result<PathBuf, CliError> {
+    fs::create_dir_all(&plan.report_dir)?;
+    let path = plan.report_dir.join(format!(
+        "triage-report.{}",
+        triage_report_extension(plan.format)
+    ));
+    fs::write(&path, report_set.render(plan.format))?;
+    Ok(path)
+}
+
+fn compare_triage_result(
+    store: &crucible::LocalDagStore,
+    result: &crucible::FailureTriageResult,
+    target: &TriageCompareTarget,
+) -> Result<TriageSummaryDiff, CliError> {
+    let baseline = match target {
+        TriageCompareTarget::StoredResult(hash) => {
+            let bytes = store.get(hash).map_err(CliError::Store)?;
+            TriageResultSummary::from_artifact_bytes(&bytes)?
+        }
+        TriageCompareTarget::Path(path) => {
+            let bytes = fs::read(path)?;
+            TriageResultSummary::from_artifact_bytes(&bytes)?
+        }
+    };
+    Ok(TriageResultSummary::from_result(result).diff_from(&baseline))
+}
+
+fn triage_report_extension(format: crucible::FailureClusterReportFormat) -> &'static str {
+    match format {
+        crucible::FailureClusterReportFormat::JsonLines => "jsonl",
+        crucible::FailureClusterReportFormat::Json => "json",
+        crucible::FailureClusterReportFormat::Table => "txt",
+        crucible::FailureClusterReportFormat::Markdown => "md",
+    }
+}
+
+fn parse_hex_content_hash(
+    field: &'static str,
+    hex: &str,
+) -> Result<crucible::ContentHash, CliError> {
+    let reference = format!("blake3:{hex}");
+    crucible::ContentAddressedBlobRef::parse(field, &reference)
+        .map(crucible::ContentAddressedBlobRef::hash)
+        .map_err(|error| artifact_error(format!("invalid {field}: {error}")))
+}
+
+fn format_content_hash_ref(hash: crucible::ContentHash) -> String {
+    crucible::ContentAddressedBlobRef::from_hash(hash).to_uri()
+}
+
+fn parse_triage_findings_source(value: &str) -> TriageFindingsSource {
+    if let Ok(reference) = crucible::ContentAddressedBlobRef::parse("findings", value) {
+        TriageFindingsSource::StoredLedger(reference.hash())
+    } else {
+        TriageFindingsSource::Path(PathBuf::from(value))
+    }
+}
+
+fn parse_triage_compare_target(value: &str) -> Result<TriageCompareTarget, CliError> {
+    if value.is_empty() {
+        return Err(usage_error("--compare must not be empty"));
+    }
+    if let Ok(reference) = crucible::ContentAddressedBlobRef::parse("triage compare", value) {
+        Ok(TriageCompareTarget::StoredResult(reference.hash()))
+    } else {
+        Ok(TriageCompareTarget::Path(PathBuf::from(value)))
+    }
 }
 
 fn plan_debug_invocation(cli: &Cli, args: &DebugArgs) -> Result<DebugInvocationPlan, CliError> {
@@ -1433,6 +1790,297 @@ struct FailureArtifactReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TriageRunReport {
+    plan: TriageInvocationPlan,
+    ledger: crucible::FailureFindingsLedger,
+    stored_ledger: crucible::FailureTriageStoredArtifact,
+    result: crucible::FailureTriageResult,
+    stored_result: crucible::FailureTriageStoredArtifact,
+    report_path: PathBuf,
+    compare: Option<TriageSummaryDiff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TriageInvocationPlan {
+    findings: TriageFindingsSource,
+    policy: crucible::SignaturePolicy,
+    minimize: TriageMinimizeArg,
+    report_dir: PathBuf,
+    format: crucible::FailureClusterReportFormat,
+    recompute_signatures: bool,
+    compare: Option<TriageCompareTarget>,
+    store_root: PathBuf,
+    pipeline: Vec<TriagePipelineStep>,
+    failure_exit_code: i32,
+    thin_driver: bool,
+    owns_run_state: bool,
+    offline: bool,
+    scheduler_started: bool,
+}
+
+impl TriageInvocationPlan {
+    fn policy_label(&self) -> &'static str {
+        match self.policy.level() {
+            crucible::SignaturePolicyLevel::Coarse => "coarse",
+            crucible::SignaturePolicyLevel::Default => "default",
+            crucible::SignaturePolicyLevel::Fine => "fine",
+            crucible::SignaturePolicyLevel::Exact => "exact",
+        }
+    }
+
+    fn minimize_label(&self) -> &'static str {
+        match self.minimize {
+            TriageMinimizeArg::None => "none",
+            TriageMinimizeArg::Representative => "representative",
+            TriageMinimizeArg::All => "all",
+        }
+    }
+
+    fn format_label(&self) -> &'static str {
+        match self.format {
+            crucible::FailureClusterReportFormat::JsonLines => "jsonl",
+            crucible::FailureClusterReportFormat::Json => "json",
+            crucible::FailureClusterReportFormat::Table => "table",
+            crucible::FailureClusterReportFormat::Markdown => "markdown",
+        }
+    }
+
+    fn proves_t_tri_7(&self) -> bool {
+        self.thin_driver
+            && !self.owns_run_state
+            && self.offline
+            && !self.scheduler_started
+            && self
+                .pipeline
+                .contains(&TriagePipelineStep::LoadFindingsLedger)
+            && self.pipeline.contains(&TriagePipelineStep::Cluster)
+            && self.pipeline.contains(&TriagePipelineStep::EmitReports)
+            && self
+                .pipeline
+                .contains(&TriagePipelineStep::StoreTriageResult)
+            && self.failure_exit_code == 1
+            && match self.minimize {
+                TriageMinimizeArg::None => self
+                    .pipeline
+                    .contains(&TriagePipelineStep::SkipMinimization),
+                TriageMinimizeArg::Representative => self
+                    .pipeline
+                    .contains(&TriagePipelineStep::MinimizeRepresentative),
+                TriageMinimizeArg::All => self.pipeline.contains(&TriagePipelineStep::MinimizeAll),
+            }
+            && (!self.recompute_signatures
+                || self
+                    .pipeline
+                    .contains(&TriagePipelineStep::RecomputeSignatureSelfCheck))
+            && (self.compare.is_none()
+                || self
+                    .pipeline
+                    .contains(&TriagePipelineStep::CompareContentDiff))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TriageFindingsSource {
+    Path(PathBuf),
+    StoredLedger(crucible::ContentHash),
+}
+
+impl TriageFindingsSource {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Path(_) => "path",
+            Self::StoredLedger(_) => "dag-store",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TriageCompareTarget {
+    Path(PathBuf),
+    StoredResult(crucible::ContentHash),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TriagePipelineStep {
+    LoadFindingsLedger,
+    RecomputeSignatureSelfCheck,
+    Cluster,
+    SkipMinimization,
+    MinimizeRepresentative,
+    MinimizeAll,
+    EmitReports,
+    StoreTriageResult,
+    CompareContentDiff,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TriageResultSummary {
+    result: crucible::ContentHash,
+    report_hashes: BTreeMap<crucible::ContentHash, crucible::ContentHash>,
+}
+
+impl TriageResultSummary {
+    fn from_result(result: &crucible::FailureTriageResult) -> Self {
+        Self {
+            result: result.content_hash(),
+            report_hashes: result
+                .report_set
+                .reports
+                .iter()
+                .map(|report| (report.cluster_id, report.content_hash()))
+                .collect(),
+        }
+    }
+
+    fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, CliError> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| artifact_error(format!("triage result is not UTF-8: {error}")))?;
+        if text.lines().next() != Some("crucible.failure-triage.result.v1") {
+            return Err(artifact_error("unsupported triage result artifact schema"));
+        }
+        let mut by_index =
+            BTreeMap::<usize, (Option<crucible::ContentHash>, Option<crucible::ContentHash>)>::new(
+            );
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("report.") else {
+                continue;
+            };
+            let Some((index, field_value)) = rest.split_once('.') else {
+                return Err(artifact_error("malformed triage result report line"));
+            };
+            let index = index
+                .parse::<usize>()
+                .map_err(|_| artifact_error("malformed triage result report index"))?;
+            let Some((field, value)) = field_value.split_once('=') else {
+                return Err(artifact_error("malformed triage result report field"));
+            };
+            let entry = by_index.entry(index).or_insert((None, None));
+            match field {
+                "cluster_id" => {
+                    entry.0 = Some(parse_hex_content_hash("triage result cluster id", value)?);
+                }
+                "content_hash" => {
+                    entry.1 = Some(parse_hex_content_hash("triage result report hash", value)?);
+                }
+                "minimal_representative" => {}
+                _ => {}
+            }
+        }
+        let mut report_hashes = BTreeMap::new();
+        for (index, (cluster_id, report_hash)) in by_index {
+            let cluster_id = cluster_id.ok_or_else(|| {
+                artifact_error(format!(
+                    "triage result report {index} is missing cluster_id"
+                ))
+            })?;
+            let report_hash = report_hash.ok_or_else(|| {
+                artifact_error(format!(
+                    "triage result report {index} is missing content_hash"
+                ))
+            })?;
+            report_hashes.insert(cluster_id, report_hash);
+        }
+        Ok(Self {
+            result: crucible::ContentHash::from_bytes(bytes),
+            report_hashes,
+        })
+    }
+
+    fn diff_from(&self, baseline: &Self) -> TriageSummaryDiff {
+        let all_clusters = self
+            .report_hashes
+            .keys()
+            .chain(baseline.report_hashes.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut changed = Vec::new();
+        let mut unchanged = Vec::new();
+        for cluster in all_clusters {
+            match (
+                baseline.report_hashes.get(&cluster),
+                self.report_hashes.get(&cluster),
+            ) {
+                (None, Some(_)) => added.push(cluster),
+                (Some(_), None) => removed.push(cluster),
+                (Some(left), Some(right)) if left == right => unchanged.push(cluster),
+                (Some(left), Some(right)) => changed.push(TriageSummaryChangedCluster {
+                    cluster,
+                    baseline_report: *left,
+                    candidate_report: *right,
+                }),
+                (None, None) => {}
+            }
+        }
+        TriageSummaryDiff {
+            baseline: baseline.result,
+            candidate: self.result,
+            added,
+            removed,
+            changed,
+            unchanged,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TriageSummaryChangedCluster {
+    cluster: crucible::ContentHash,
+    baseline_report: crucible::ContentHash,
+    candidate_report: crucible::ContentHash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TriageSummaryDiff {
+    baseline: crucible::ContentHash,
+    candidate: crucible::ContentHash,
+    added: Vec<crucible::ContentHash>,
+    removed: Vec<crucible::ContentHash>,
+    changed: Vec<TriageSummaryChangedCluster>,
+    unchanged: Vec<crucible::ContentHash>,
+}
+
+impl TriageSummaryDiff {
+    fn status_label(&self) -> &'static str {
+        if self.baseline == self.candidate
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+        {
+            "unchanged"
+        } else {
+            "changed"
+        }
+    }
+
+    fn content_diff(&self) -> String {
+        let mut lines = vec![
+            format!("baseline\t{}", format_content_hash_ref(self.baseline)),
+            format!("candidate\t{}", format_content_hash_ref(self.candidate)),
+        ];
+        for cluster in &self.added {
+            lines.push(format!("added\t{}", format_content_hash_ref(*cluster)));
+        }
+        for cluster in &self.removed {
+            lines.push(format!("removed\t{}", format_content_hash_ref(*cluster)));
+        }
+        for changed in &self.changed {
+            lines.push(format!(
+                "changed\t{}\t{}\t{}",
+                format_content_hash_ref(changed.cluster),
+                format_content_hash_ref(changed.baseline_report),
+                format_content_hash_ref(changed.candidate_report)
+            ));
+        }
+        for cluster in &self.unchanged {
+            lines.push(format!("unchanged\t{}", format_content_hash_ref(*cluster)));
+        }
+        lines.join("\n")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct DebugInvocationPlan {
     target: DebugPlanTarget,
     coordinate: DebugPlanCoordinate,
@@ -1604,10 +2252,12 @@ struct SelftestReport {
 #[derive(Debug)]
 enum CliError {
     Io(io::Error),
+    Store(crucible::DagStoreError),
     Artifact(String),
     Usage(String),
     Backend(String),
     Identity(String),
+    Triage(String),
     Selftest(crucible::ExampleCorpusError),
 }
 
@@ -1615,10 +2265,12 @@ impl CliError {
     fn exit_code(&self) -> i32 {
         match self {
             Self::Io(_) => 5,
+            Self::Store(_) => 5,
             Self::Artifact(_) => 5,
             Self::Usage(_) => 64,
             Self::Backend(_) => 4,
             Self::Identity(_) => 3,
+            Self::Triage(_) => 1,
             Self::Selftest(_) => 1,
         }
     }
@@ -1628,10 +2280,12 @@ impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::Store(error) => write!(formatter, "{error}"),
             Self::Artifact(error) => write!(formatter, "{error}"),
             Self::Usage(error) => write!(formatter, "{error}"),
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
+            Self::Triage(error) => write!(formatter, "{error}"),
             Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
         }
     }
@@ -1641,10 +2295,12 @@ impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            Self::Store(error) => Some(error),
             Self::Artifact(_) => None,
             Self::Usage(_) => None,
             Self::Backend(_) => None,
             Self::Identity(_) => None,
+            Self::Triage(_) => None,
             Self::Selftest(error) => Some(error),
         }
     }
@@ -1764,6 +2420,131 @@ mod tests {
         };
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let findings = temp.path().join("findings");
+        let store = temp.path().join("store");
+        let reports = temp.path().join("triage-reports");
+        fs::create_dir_all(&findings)?;
+        let baseline_cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store.to_str().unwrap_or("."),
+            "--artifact-dir",
+            temp.path().join("artifacts").to_str().unwrap_or("."),
+            "triage",
+            findings.to_str().unwrap_or("."),
+            "--report",
+            reports.to_str().unwrap_or("."),
+            "--format",
+            "markdown",
+            "--recompute-signatures",
+        ]);
+        let Commands::Triage(baseline_args) = &baseline_cli.command else {
+            panic!("expected triage command");
+        };
+        let baseline = run_triage_invocation(&baseline_cli, baseline_args)?;
+        assert_eq!(baseline.ledger.artifact_count(), 0);
+        assert!(baseline.report_path.exists());
+        assert_eq!(baseline.stored_result.key, baseline.result.content_hash());
+        let prior = format_content_hash_ref(baseline.stored_result.key);
+
+        let cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store.to_str().unwrap_or("."),
+            "--artifact-dir",
+            temp.path().join("artifacts").to_str().unwrap_or("."),
+            "triage",
+            findings.to_str().unwrap_or("."),
+            "--policy",
+            "fine",
+            "--minimize",
+            "representative",
+            "--report",
+            reports.to_str().unwrap_or("."),
+            "--format",
+            "markdown",
+            "--recompute-signatures",
+            "--compare",
+            &prior,
+        ]);
+        let Commands::Triage(args) = &cli.command else {
+            panic!("expected triage command");
+        };
+
+        assert_eq!(args.findings, findings.to_string_lossy());
+        assert_eq!(args.policy, TriagePolicyArg::Fine);
+        assert_eq!(args.minimize, TriageMinimizeArg::Representative);
+        assert_eq!(args.report.as_deref(), Some(reports.as_path()));
+        assert_eq!(cli.format, OutputFormat::Markdown);
+        assert!(args.recompute_signatures);
+        assert_eq!(args.compare.as_deref(), Some(prior.as_str()));
+
+        let plan = plan_triage_invocation(&cli, args)?;
+
+        assert!(matches!(plan.findings, TriageFindingsSource::Path(_)));
+        assert_eq!(plan.policy.level(), crucible::SignaturePolicyLevel::Fine);
+        assert_eq!(plan.minimize, TriageMinimizeArg::Representative);
+        assert_eq!(plan.report_dir, reports);
+        assert_eq!(plan.format, crucible::FailureClusterReportFormat::Markdown);
+        assert!(matches!(
+            plan.compare,
+            Some(TriageCompareTarget::StoredResult(_))
+        ));
+        assert_eq!(plan.failure_exit_code, 1);
+        assert_eq!(plan.store_root, store);
+        assert_eq!(
+            plan.pipeline,
+            vec![
+                TriagePipelineStep::LoadFindingsLedger,
+                TriagePipelineStep::RecomputeSignatureSelfCheck,
+                TriagePipelineStep::Cluster,
+                TriagePipelineStep::MinimizeRepresentative,
+                TriagePipelineStep::EmitReports,
+                TriagePipelineStep::StoreTriageResult,
+                TriagePipelineStep::CompareContentDiff,
+            ]
+        );
+        assert!(plan.proves_t_tri_7());
+        let report = run_triage_invocation(&cli, args)?;
+        assert!(report.stored_ledger.cache_hit);
+        assert!(report.compare.as_ref().is_some_and(|diff| {
+            diff.status_label() == "changed" && diff.content_diff().contains("baseline\t")
+        }));
+        dispatch(&cli)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_triage_is_offline_and_uses_uniform_failure_exit_code() {
+        let cli = Cli::parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "triage",
+            "findings-ledger",
+        ]);
+        let Commands::Triage(args) = &cli.command else {
+            panic!("expected triage command");
+        };
+        let error = match plan_triage_invocation(&cli, args) {
+            Ok(_) => panic!("triage must not use a live daemon"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("offline"));
+
+        let self_check_failure = CliError::Triage(
+            "--recompute-signatures found a discovery-time signature mismatch".to_string(),
+        );
+        assert_eq!(self_check_failure.exit_code(), 1);
     }
 
     #[test]
