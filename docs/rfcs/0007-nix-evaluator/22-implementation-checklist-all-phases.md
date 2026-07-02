@@ -6517,6 +6517,20 @@ nurseries build on the bump arena.
 - [ ] `eval/parallel.rs` — the L1 **work-stealing scheduler** (Chase-Lev deques)
       over independent top-level derivations, each worker with its own nursery
       ([13](13-parallel-evaluation.md) §4).
+- [x] Current safe L1 scheduler precursor:
+      `ratchet-oracle::eval::parallel` exposes deterministic top-level task
+      seeding and a standard-library work-stealing executor for independent
+      roots. Tasks are seeded round-robin across worker-owned deques, workers pop
+      local work from the LIFO end, idle workers steal older peer work from the
+      FIFO end, and result collation is sorted by stable task index rather than
+      completion order. The execution report carries per-worker local-pop,
+      steal, and completion counters plus per-task initial/completing worker
+      metadata. Unit tests pin round-robin placement, stable result ordering,
+      exactly-once task completion, empty task sets, and worker-panic reporting.
+      This is a safe scheduler/readiness layer only: it is not the final
+      lock-free Chase-Lev deque, does not evaluate Nix derivations, does not
+      allocate per-worker nurseries, does not integrate with shared thunk CAS,
+      and does not satisfy the full L1 deliverable above.
 - [ ] `eval/thunk_cas.rs` — the L2 **lock-free CAS thunk protocol**
       (`Suspended → Pending → Awaited → Forced/Failed`); claim-by-CAS, with
       work-stealing or parking on a claimed thunk ([13](13-parallel-evaluation.md) §3).

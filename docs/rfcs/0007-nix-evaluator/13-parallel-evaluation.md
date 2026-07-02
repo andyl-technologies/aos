@@ -373,6 +373,12 @@ minimize steal frequency). The Chase-Lev algorithm is lock-free except for the
 rare allocation when the deque grows, which matches our "no locks on the hot
 path" rule.
 
+Current implementation status: `ratchet-oracle::eval::parallel` provides a safe
+standard-library scheduler precursor for this shape. It pins round-robin root
+seeding, LIFO local pops, FIFO peer steals, stable task-index result collation,
+and per-worker execution counters, but it deliberately does not claim the final
+lock-free Chase-Lev deque or integration with Nix derivation evaluation.
+
 ```text
    roots = [ pkgs.a, pkgs.b, pkgs.c, ... pkgs.zzz ]   (tens of thousands)
 

@@ -1,0 +1,570 @@
+//! Parallel top-level evaluation scheduling precursors.
+//!
+//! This module owns the first safe Phase 3.5 scheduling boundary for coarse
+//! top-level work. It models the RFC-0007 L1 discipline: seed independent roots
+//! across worker-owned queues, let workers pop local work from the hot end, let
+//! idle workers steal older peer work from the opposite end, and collate results
+//! by stable task index rather than completion order.
+//!
+//! The executor here deliberately uses safe standard-library synchronization.
+//! It is a correctness/readiness layer for tests and future evaluator wiring,
+//! not the final lock-free Chase-Lev deque implementation and not the L2 CAS
+//! thunk protocol.
+
+use std::{
+    collections::VecDeque,
+    fmt,
+    num::NonZeroUsize,
+    sync::{Mutex, MutexGuard},
+    thread,
+};
+
+use thiserror::Error;
+
+/// Builds the deterministic round-robin seed plan for top-level tasks.
+///
+/// The returned plan is independent of execution timing and is used by the
+/// safe scheduler precursor to keep root placement stable across runs.
+pub fn parallel_top_level_seed_plan(
+    task_count: usize,
+    worker_count: NonZeroUsize,
+) -> ParallelTopLevelSeedPlan {
+    let worker_count = worker_count.get();
+    let placements = (0..task_count)
+        .map(|task_index| ParallelTaskPlacement {
+            task_index,
+            initial_worker: task_index % worker_count,
+        })
+        .collect();
+
+    ParallelTopLevelSeedPlan {
+        worker_count,
+        task_count,
+        placements,
+    }
+}
+
+/// Executes independent top-level tasks with the safe work-stealing precursor.
+///
+/// Tasks are seeded round-robin across worker-owned deques. A worker first pops
+/// from the back of its own deque, preserving cache-friendly LIFO behavior, then
+/// attempts to steal from the front of peer deques. Results are sorted back into
+/// task-index order before the report is returned, so caller-visible output is
+/// independent of completion order.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::num::NonZeroUsize;
+///
+/// use ratchet_oracle::eval::execute_parallel_top_level;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let workers = NonZeroUsize::new(2).ok_or_else(|| {
+///     std::io::Error::new(std::io::ErrorKind::InvalidInput, "worker count cannot be zero")
+/// })?;
+/// let report = execute_parallel_top_level([1, 2, 3], workers, |value| value * 2)?;
+///
+/// assert_eq!(report.into_results_in_task_order(), vec![2, 4, 6]);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns [`ParallelTopLevelError`] if worker queues or the result buffer are
+/// poisoned by a panic, or if a worker thread panics while executing a task.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped worker
+/// threads. Task panics are caught and returned as
+/// [`ParallelTopLevelError::WorkerPanicked`].
+pub fn execute_parallel_top_level<I, T, R, F>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+    worker: F,
+) -> Result<ParallelTopLevelExecutionReport<R>, ParallelTopLevelError>
+where
+    I: IntoIterator<Item = T>,
+    T: Send,
+    R: Send,
+    F: Fn(T) -> R + Sync,
+{
+    let worker_count = worker_count.get();
+    let mut seeded_queues = (0..worker_count)
+        .map(|_| VecDeque::new())
+        .collect::<Vec<_>>();
+    let mut task_count = 0;
+
+    for (task_index, payload) in tasks.into_iter().enumerate() {
+        let initial_worker = task_index % worker_count;
+        seeded_queues[initial_worker].push_back(ParallelTopLevelTask {
+            task_index,
+            initial_worker,
+            payload,
+        });
+        task_count = task_index + 1;
+    }
+
+    let queues = seeded_queues
+        .into_iter()
+        .map(Mutex::new)
+        .collect::<Vec<_>>();
+    let results = Mutex::new(Vec::with_capacity(task_count));
+
+    let worker_reports = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for worker_id in 0..worker_count {
+            let queues = &queues;
+            let results = &results;
+            let worker = &worker;
+            handles.push((
+                worker_id,
+                scope.spawn(move || worker_loop(worker_id, queues, results, worker, worker_count)),
+            ));
+        }
+
+        let mut worker_reports = Vec::with_capacity(worker_count);
+        let mut first_error = None;
+        for (worker_id, handle) in handles {
+            match handle.join() {
+                Ok(Ok(report)) => worker_reports.push(report),
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if first_error.is_none() {
+                        first_error = Some(ParallelTopLevelError::WorkerPanicked { worker_id });
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(worker_reports)
+        }
+    })?;
+
+    let mut results = results
+        .into_inner()
+        .map_err(|_| ParallelTopLevelError::ResultBufferPoisoned)?;
+    results.sort_by_key(ParallelTaskExecution::task_index);
+
+    Ok(ParallelTopLevelExecutionReport {
+        worker_count,
+        task_count,
+        results,
+        worker_reports,
+    })
+}
+
+fn worker_loop<T, R, F>(
+    worker_id: usize,
+    queues: &[Mutex<VecDeque<ParallelTopLevelTask<T>>>],
+    results: &Mutex<Vec<ParallelTaskExecution<R>>>,
+    worker: &F,
+    worker_count: usize,
+) -> Result<ParallelWorkerExecutionReport, ParallelTopLevelError>
+where
+    F: Fn(T) -> R,
+{
+    let mut report = ParallelWorkerExecutionReport::new(worker_id);
+
+    while let Some(task) = take_next_task(queues, worker_id, worker_count, &mut report)? {
+        let task_index = task.task_index;
+        let initial_worker = task.initial_worker;
+        let result = worker(task.payload);
+
+        report.tasks_completed += 1;
+        lock_results(results)?.push(ParallelTaskExecution {
+            task_index,
+            initial_worker,
+            worker_id,
+            result,
+        });
+    }
+
+    Ok(report)
+}
+
+fn take_next_task<T>(
+    queues: &[Mutex<VecDeque<ParallelTopLevelTask<T>>>],
+    worker_id: usize,
+    worker_count: usize,
+    report: &mut ParallelWorkerExecutionReport,
+) -> Result<Option<ParallelTopLevelTask<T>>, ParallelTopLevelError> {
+    {
+        let mut own_queue = lock_queue(queues, worker_id)?;
+        if let Some(task) = own_queue.pop_back() {
+            report.local_pops += 1;
+            return Ok(Some(task));
+        }
+    }
+
+    for offset in 1..worker_count {
+        let victim_id = (worker_id + offset) % worker_count;
+        let mut victim_queue = lock_queue(queues, victim_id)?;
+        if let Some(task) = victim_queue.pop_front() {
+            report.steals += 1;
+            return Ok(Some(task));
+        }
+    }
+
+    Ok(None)
+}
+
+fn lock_queue<T>(
+    queues: &[Mutex<VecDeque<ParallelTopLevelTask<T>>>],
+    worker_id: usize,
+) -> Result<MutexGuard<'_, VecDeque<ParallelTopLevelTask<T>>>, ParallelTopLevelError> {
+    let queue = queues
+        .get(worker_id)
+        .ok_or(ParallelTopLevelError::WorkerQueueMissing { worker_id })?;
+    queue
+        .lock()
+        .map_err(|_| ParallelTopLevelError::WorkerQueuePoisoned { worker_id })
+}
+
+fn lock_results<R>(
+    results: &Mutex<Vec<ParallelTaskExecution<R>>>,
+) -> Result<MutexGuard<'_, Vec<ParallelTaskExecution<R>>>, ParallelTopLevelError> {
+    results
+        .lock()
+        .map_err(|_| ParallelTopLevelError::ResultBufferPoisoned)
+}
+
+struct ParallelTopLevelTask<T> {
+    task_index: usize,
+    initial_worker: usize,
+    payload: T,
+}
+
+/// A deterministic task-to-worker seed plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelTopLevelSeedPlan {
+    worker_count: usize,
+    task_count: usize,
+    placements: Vec<ParallelTaskPlacement>,
+}
+
+impl ParallelTopLevelSeedPlan {
+    /// Returns the number of workers in the plan.
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+
+    /// Returns the number of tasks in the plan.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns task placements in stable task-index order.
+    pub fn placements(&self) -> &[ParallelTaskPlacement] {
+        &self.placements
+    }
+}
+
+/// The initial worker selected for one top-level task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelTaskPlacement {
+    task_index: usize,
+    initial_worker: usize,
+}
+
+impl ParallelTaskPlacement {
+    /// Returns the stable task index.
+    pub const fn task_index(self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker queue that initially owns this task.
+    pub const fn initial_worker(self) -> usize {
+        self.initial_worker
+    }
+}
+
+/// Execution counters for one scheduler worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelWorkerExecutionReport {
+    worker_id: usize,
+    local_pops: usize,
+    steals: usize,
+    tasks_completed: usize,
+}
+
+impl ParallelWorkerExecutionReport {
+    const fn new(worker_id: usize) -> Self {
+        Self {
+            worker_id,
+            local_pops: 0,
+            steals: 0,
+            tasks_completed: 0,
+        }
+    }
+
+    /// Returns the worker index in the execution pool.
+    pub const fn worker_id(self) -> usize {
+        self.worker_id
+    }
+
+    /// Returns the number of tasks popped from this worker's own deque.
+    pub const fn local_pops(self) -> usize {
+        self.local_pops
+    }
+
+    /// Returns the number of tasks stolen from peer deques.
+    pub const fn steals(self) -> usize {
+        self.steals
+    }
+
+    /// Returns the number of tasks completed by this worker.
+    pub const fn tasks_completed(self) -> usize {
+        self.tasks_completed
+    }
+}
+
+/// The result produced for one top-level task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelTaskExecution<R> {
+    task_index: usize,
+    initial_worker: usize,
+    worker_id: usize,
+    result: R,
+}
+
+impl<R> ParallelTaskExecution<R> {
+    /// Returns the stable task index.
+    pub const fn task_index(&self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker queue that initially owned the task.
+    pub const fn initial_worker(&self) -> usize {
+        self.initial_worker
+    }
+
+    /// Returns the worker that completed the task.
+    pub const fn worker_id(&self) -> usize {
+        self.worker_id
+    }
+
+    /// Returns the task result.
+    pub const fn result(&self) -> &R {
+        &self.result
+    }
+}
+
+/// A complete report from the safe top-level scheduler precursor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelTopLevelExecutionReport<R> {
+    worker_count: usize,
+    task_count: usize,
+    results: Vec<ParallelTaskExecution<R>>,
+    worker_reports: Vec<ParallelWorkerExecutionReport>,
+}
+
+impl<R> ParallelTopLevelExecutionReport<R> {
+    /// Returns the number of workers used for this execution.
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+
+    /// Returns the number of executed top-level tasks.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns task executions sorted by stable task index.
+    pub fn results(&self) -> &[ParallelTaskExecution<R>] {
+        &self.results
+    }
+
+    /// Returns worker execution counters sorted by worker id.
+    pub fn worker_reports(&self) -> &[ParallelWorkerExecutionReport] {
+        &self.worker_reports
+    }
+
+    /// Consumes the report and returns results sorted by stable task index.
+    pub fn into_results_in_task_order(self) -> Vec<R> {
+        self.results
+            .into_iter()
+            .map(|execution| execution.result)
+            .collect()
+    }
+}
+
+/// A failure while executing safe top-level scheduler work.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParallelTopLevelError {
+    /// A worker queue was addressed outside the configured worker set.
+    #[error("parallel worker queue {worker_id} is not present")]
+    WorkerQueueMissing {
+        /// The missing worker queue index.
+        worker_id: usize,
+    },
+    /// A worker queue mutex was poisoned.
+    #[error("parallel worker queue {worker_id} is poisoned")]
+    WorkerQueuePoisoned {
+        /// The poisoned worker queue index.
+        worker_id: usize,
+    },
+    /// The shared result buffer mutex was poisoned.
+    #[error("parallel result buffer is poisoned")]
+    ResultBufferPoisoned,
+    /// A worker panicked while executing a task.
+    #[error("parallel worker {worker_id} panicked while executing a task")]
+    WorkerPanicked {
+        /// The panicking worker index.
+        worker_id: usize,
+    },
+}
+
+impl fmt::Display for ParallelTopLevelSeedPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} top-level task(s) seeded across {} worker(s)",
+            self.task_count, self.worker_count
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workers(count: usize) -> NonZeroUsize {
+        NonZeroUsize::new(count).expect("test worker count is nonzero")
+    }
+
+    #[test]
+    fn seed_plan_distributes_tasks_round_robin() {
+        let plan = parallel_top_level_seed_plan(8, workers(3));
+
+        assert_eq!(plan.worker_count(), 3);
+        assert_eq!(plan.task_count(), 8);
+        assert_eq!(
+            plan.placements()
+                .iter()
+                .copied()
+                .map(|placement| (placement.task_index(), placement.initial_worker()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0),
+                (1, 1),
+                (2, 2),
+                (3, 0),
+                (4, 1),
+                (5, 2),
+                (6, 0),
+                (7, 1)
+            ]
+        );
+        assert_eq!(
+            plan.to_string(),
+            "8 top-level task(s) seeded across 3 worker(s)"
+        );
+    }
+
+    #[test]
+    fn top_level_executor_returns_results_in_stable_task_order() {
+        let report =
+            execute_parallel_top_level([3, 1, 4, 1, 5, 9], workers(3), |value| value * value)
+                .expect("parallel execution succeeds");
+
+        assert_eq!(report.worker_count(), 3);
+        assert_eq!(report.task_count(), 6);
+        assert_eq!(
+            report.into_results_in_task_order(),
+            vec![9, 1, 16, 1, 25, 81]
+        );
+    }
+
+    #[test]
+    fn top_level_executor_reports_every_task_once() {
+        let report = execute_parallel_top_level(0..64, workers(4), |value| value + 10)
+            .expect("parallel execution succeeds");
+        let completed = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.tasks_completed())
+            .sum::<usize>();
+        let local_and_stolen = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.local_pops() + worker.steals())
+            .sum::<usize>();
+
+        assert_eq!(completed, 64);
+        assert_eq!(local_and_stolen, 64);
+        assert_eq!(report.results().len(), 64);
+        assert!(
+            report
+                .results()
+                .iter()
+                .enumerate()
+                .all(|(expected_index, execution)| {
+                    execution.task_index() == expected_index
+                        && execution.initial_worker() == expected_index % 4
+                        && execution.worker_id() < 4
+                        && *execution.result() == expected_index + 10
+                })
+        );
+    }
+
+    #[test]
+    fn top_level_executor_handles_empty_task_sets() {
+        let report =
+            execute_parallel_top_level(std::iter::empty::<usize>(), workers(2), |value| value)
+                .expect("empty execution succeeds");
+
+        assert_eq!(report.worker_count(), 2);
+        assert_eq!(report.task_count(), 0);
+        assert!(report.results().is_empty());
+        assert_eq!(report.worker_reports().len(), 2);
+        assert!(report.worker_reports().iter().all(|worker| {
+            worker.local_pops() == 0 && worker.steals() == 0 && worker.tasks_completed() == 0
+        }));
+    }
+
+    #[test]
+    fn top_level_executor_reports_worker_panic() {
+        let error = execute_parallel_top_level(0..4, workers(2), |value| {
+            assert_ne!(value, 2, "task panic is reported as worker failure");
+            value
+        })
+        .expect_err("panicking task fails execution");
+
+        assert!(matches!(
+            error,
+            ParallelTopLevelError::WorkerPanicked { worker_id } if worker_id < 2
+        ));
+    }
+
+    #[test]
+    fn top_level_executor_drains_join_handles_after_multiple_worker_panics() {
+        let outcome = std::panic::catch_unwind(|| {
+            execute_parallel_top_level(0..8, workers(4), |value| {
+                panic!("task {value} panics");
+            })
+        });
+
+        assert!(
+            outcome.is_ok(),
+            "executor returns an error instead of unwinding"
+        );
+        let error = outcome
+            .expect("executor call did not unwind")
+            .expect_err("panicking tasks fail execution");
+        assert!(matches!(
+            error,
+            ParallelTopLevelError::WorkerPanicked { worker_id } if worker_id < 4
+        ));
+    }
+}

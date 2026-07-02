@@ -10,6 +10,7 @@ pub mod env;
 pub mod heap;
 pub mod internal_diff;
 pub mod module;
+pub mod parallel;
 pub mod thunk;
 pub mod tree_walk;
 
@@ -19,6 +20,11 @@ pub use internal_diff::{
     InternalDiffError, InternalDiffReport, InternalDiffTier, compare_raw_with_oracle,
 };
 pub use module::{EvalModuleId, EvalNodeRef};
+pub use parallel::{
+    ParallelTaskExecution, ParallelTaskPlacement, ParallelTopLevelError,
+    ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan, ParallelWorkerExecutionReport,
+    execute_parallel_top_level, parallel_top_level_seed_plan,
+};
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,
     ThunkResolveBarrier, ThunkState,
