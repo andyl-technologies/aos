@@ -399,6 +399,12 @@ long-held locks.
   savepoint handles for `--save-on`, incremental stdin acknowledgements for
   interactive commands, and non-passing outcome exit propagation with a
   reproduction artifact.
+  `T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently
+  covers shell completion generation, `--version`, the current non-overclaiming
+  help surface, and rejection of future flags whose command behavior is not
+  implemented yet; full closure waits for the command-behavior gates
+  `T-CLI-7 … T-CLI-14` so the final help text can be certified in sync with
+  behavior.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

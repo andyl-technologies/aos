@@ -56,7 +56,13 @@ struct Cli {
     #[arg(long, value_name = "u64|hex", global = true)]
     seed: Option<String>,
     /// Select local backend.
-    #[arg(long, value_enum, default_value_t = Backend::Auto, global = true)]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "auto|qemu|double",
+        default_value_t = Backend::Auto,
+        global = true
+    )]
     backend: Backend,
     /// Use remote daemon.
     #[arg(long, value_name = "addr", global = true)]
@@ -7885,6 +7891,115 @@ mod tests {
         assert!(plan_backend_selection(&cli)?.is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn cli_help_and_version_surface_matches_rfc_copy() {
+        let mut command = Cli::command();
+        let top_help = command.render_long_help().to_string();
+        for needle in [
+            "Run and inspect Crucible simulations.",
+            "run",
+            "verify",
+            "selftest",
+            "save",
+            "resume",
+            "fork",
+            "replay",
+            "search",
+            "fuzz",
+            "serve",
+            "completions",
+            "--seed <u64|hex>",
+            "--backend <auto|qemu|double>",
+            "--daemon <addr>",
+            "--qemu <path>",
+            "--plugin <path>",
+            "--store <path>",
+            "--format <jsonl|json|table|markdown>",
+            "--trace <path>",
+            "--artifact-dir <path>",
+            "--quiet",
+        ] {
+            assert!(
+                top_help.contains(needle),
+                "top-level help is missing `{needle}`:\n{top_help}"
+            );
+        }
+
+        let version = Cli::command().render_version().to_string();
+        assert!(
+            version.contains(env!("CARGO_PKG_VERSION")),
+            "version output must contain the crate version: {version}"
+        );
+        let version_exit = Cli::try_parse_from(["crucible", "--version"])
+            .expect_err("--version must render through Clap's display path");
+        assert_eq!(cli_parse_error_exit_code(&version_exit), 0);
+
+        for (name, needles) in [
+            (
+                "run",
+                &[
+                    "SCENARIO",
+                    "--until <quiescence|virtual-time|property|stopped>",
+                    "--max-virtual-time <dur>",
+                    "--max-quanta <n>",
+                    "--interactive",
+                    "--save-on <fail|always|never>",
+                    "--watch",
+                ][..],
+            ),
+            (
+                "verify",
+                &[
+                    "SCENARIO",
+                    "--runs <n>",
+                    "--adversarial",
+                    "--bisect",
+                    "--compare <A> <B>",
+                ],
+            ),
+            ("replay", &["ARTIFACT"]),
+            ("serve", &["--listen <addr>", "--store <path>"]),
+        ] {
+            let help = command
+                .find_subcommand_mut(name)
+                .unwrap_or_else(|| panic!("{name} subcommand must be registered"))
+                .render_long_help()
+                .to_string();
+            for needle in needles {
+                assert!(
+                    help.contains(needle),
+                    "{name} help is missing `{needle}`:\n{help}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cli_help_surface_rejects_unimplemented_future_flags() {
+        for argv in [
+            vec!["crucible", "selftest", "--with-qemu"],
+            vec![
+                "crucible",
+                "replay",
+                "case.crucible",
+                "--check",
+                "log.jsonl",
+            ],
+            vec!["crucible", "serve", "--read-only"],
+        ] {
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "future flag must stay rejected until command behavior implements it"
+            );
+        }
+
+        let serve = Cli::parse_from(["crucible", "serve", "--listen", "127.0.0.1:9001"]);
+        let Commands::Serve(args) = serve.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.listen, "127.0.0.1:9001");
     }
 
     #[test]
