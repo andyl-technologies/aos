@@ -892,8 +892,9 @@ double in milliseconds (24 §2, §3) and why `gate:control-responsive` and
 /// The pluggable simulation backend. The session delegates all node-level
 /// operations through this trait, keeping the control plane backend-agnostic.
 /// Implemented by the QEMU backend (10), the SimDouble (24 §3), and a mock.
-#[async_trait::async_trait]
-pub trait SimulationBackend: Send {
+/// The object is owned by the driving session actor; no `Send` bound is required
+/// because concrete QEMU adapters may wrap thread-affine channel/runtime handles.
+pub trait SimulationBackend {
     /// Advance the backend's nodes by one bounded scheduler quantum toward
     /// `ceiling` virtual time (08), returning what was observed. The backend
     /// does NOT resolve cross-node order or evaluate properties — the
@@ -902,7 +903,7 @@ pub trait SimulationBackend: Send {
     ///
     /// # Errors
     /// Returns an error if a node fails to advance or the transport faults.
-    async fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError>;
+    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError>;
 
     /// Apply a backend-level effect at a quantum boundary (start/stop a node,
     /// activate/heal a fault, set a link property), as directed by the
@@ -910,7 +911,7 @@ pub trait SimulationBackend: Send {
     ///
     /// # Errors
     /// Returns an error if the effect cannot be applied.
-    async fn apply(&mut self, effect: &BackendEffect, at: VirtualTime)
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime)
         -> Result<(), BackendError>;
 
     /// Materialize the backend's node state into a content-addressed snapshot
@@ -919,14 +920,14 @@ pub trait SimulationBackend: Send {
     ///
     /// # Errors
     /// Returns an error if a node's state cannot be captured.
-    async fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError>;
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError>;
 
     /// Restore the backend to a prior snapshot (the `loadvm` branch of
     /// `instantiate`, 05 §5).
     ///
     /// # Errors
     /// Returns an error if the snapshot cannot be restored.
-    async fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError>;
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError>;
 
     /// The backend's current virtual time (a mirror of the scheduler's; the
     /// scheduler remains the single source of truth, 08 [SCHED-4]).
@@ -934,29 +935,18 @@ pub trait SimulationBackend: Send {
 
     /// Read a node's execution fingerprint (24 §4) for the replay oracle and
     /// divergence bisection — observation-only, must not perturb the stream.
-    fn fingerprint(&self, node: NodeId) -> FingerprintSample;
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError>;
 
     /// Shut all nodes down cleanly (on `stop`).
     ///
     /// # Errors
     /// Returns an error if a node fails to shut down.
-    async fn shutdown(&mut self) -> Result<(), BackendError>;
-
-    /// OPTIONAL capability: open the backend's gdbstub on `node` as an
-    /// observation-only out-of-band channel (§4.4, [SESS-33]). The QEMU
-    /// backend (10) implements this against QEMU's gdbstub; the in-process
-    /// `SimDouble` and the mock do NOT support it and MUST reject `attach_gdb`.
-    /// Default implementation returns `BackendError::Unsupported`.
-    ///
-    /// # Errors
-    /// Returns `Unsupported` on backends without a gdbstub; otherwise an error
-    /// if the stub cannot be opened.
-    async fn open_gdbstub(&mut self, _node: NodeId, _listen: &GdbListen)
-        -> Result<GdbAttachInfo, BackendError> {
-        Err(BackendError::Unsupported)
-    }
+    fn shutdown(&mut self) -> Result<(), BackendError>;
 }
 ```
+
+T-SESS-13 extends this boundary with the optional `open_gdbstub` debugging
+capability.
 
 - **[SESS-26]** The session MUST drive nodes exclusively through a pluggable
   `SimulationBackend` trait defined against the shmem/protocol boundary (13/14),
@@ -1217,11 +1207,21 @@ pub enum SessionError {
     `gate_control_responsive` tests cover lock-free status reads, mirror-backed
     state/event-log-length queries, event-log cursor streams, state-transition
     streams, and observation-only subscriptions.
-- [ ] **T-SESS-11** Define and implement the pluggable `SimulationBackend` trait
+- [x] **T-SESS-11** Define and implement the pluggable `SimulationBackend` trait
   (step_to/apply/snapshot/restore/now/fingerprint/shutdown) with the QEMU
   backend, the `SimDouble`, and a mock satisfying it interchangeably; keep the
   scheduler the single source of timing truth. — satisfies [SESS-26], [SESS-27];
   spec §10; cross-ref 24 [HARN-14].
+  - Completed by `checks.crucible.phase5.sessionSimulationBackend`:
+    `SimulationBackend` is the shared backend boundary for scheduler-supplied
+    `step_to`, boundary-applied effects, backend snapshots/restores,
+    scheduler-mirrored `now`, fingerprint sampling, and shutdown. The pure
+    mock, `SimBackend`, in-process `SimDouble`, and QEMU `QemuNode` implement the
+    same trait, with focused tests covering object-safe mock dispatch,
+    scheduler-owned time rejection, full-state SimDouble snapshot/restore,
+    rejection of trait-level SimDouble outbound sends without scheduler
+    authorization, and QEMU channel routing plus restore-time mirror updates
+    without introducing a backend-owned timing source.
 - [ ] **T-SESS-12** Run the full session/lifecycle/command suite and
   `gate:control-responsive` / `gate:scheduler-liveness` against the in-process
   `SimDouble` (no real QEMU), asserting only fidelity properties require the QEMU

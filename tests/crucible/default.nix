@@ -1189,6 +1189,12 @@ in rec {
       taskIds = ["T-SESS-10"];
       dependencies = [phase5.sessionControlDeterminism];
     };
+    sessionSimulationBackend = import ./phase5-session-simulation-backend.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionSimulationBackend";
+      taskIds = ["T-SESS-11"];
+      dependencies = [phase5.sessionLockFreeObservation];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

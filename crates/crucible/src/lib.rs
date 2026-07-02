@@ -41,7 +41,9 @@ pub mod tracing_bridge;
 pub mod trigger;
 
 pub use backend::{
-    AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
+    ExecutionFingerprint, ExecutionHorizon, FingerprintSample, MockSimulationBackend,
+    MockSimulationBackendState, SimulationBackend, StepObservation,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{

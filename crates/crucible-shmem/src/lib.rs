@@ -128,6 +128,26 @@ pub struct RegionHeader {
     _reserved: [u8; 194],
 }
 
+impl Clone for RegionHeader {
+    fn clone(&self) -> Self {
+        Self {
+            magic: AtomicU64::new(self.magic.load(Ordering::Acquire)),
+            abi_version: AtomicU32::new(self.abi_version.load(Ordering::Acquire)),
+            node_count: AtomicU32::new(self.node_count.load(Ordering::Acquire)),
+            queue_capacity: AtomicU32::new(self.queue_capacity.load(Ordering::Acquire)),
+            ring_count: AtomicU32::new(self.ring_count.load(Ordering::Acquire)),
+            ring_hdr_off: AtomicU64::new(self.ring_hdr_off.load(Ordering::Acquire)),
+            ring_data_off: AtomicU64::new(self.ring_data_off.load(Ordering::Acquire)),
+            entry_stride: AtomicU64::new(self.entry_stride.load(Ordering::Acquire)),
+            region_size: AtomicU64::new(self.region_size.load(Ordering::Acquire)),
+            icount_shift: AtomicU32::new(self.icount_shift.load(Ordering::Acquire)),
+            pause_requested: AtomicU8::new(self.pause_requested.load(Ordering::Acquire)),
+            shutdown_requested: AtomicU8::new(self.shutdown_requested.load(Ordering::Acquire)),
+            _reserved: [0; 194],
+        }
+    }
+}
+
 /// Byte offset of [`RegionHeader`]'s magic field.
 pub const REGION_HEADER_MAGIC_OFFSET: usize = core::mem::offset_of!(RegionHeader, magic);
 /// Byte offset of [`RegionHeader`]'s ABI version field.
@@ -693,6 +713,19 @@ pub struct RegionAllocation {
     frame_entries: Vec<FrameEntry>,
     rings: Vec<DirectedRing>,
     layout: RegionLayout,
+}
+
+impl Clone for RegionAllocation {
+    fn clone(&self) -> Self {
+        Self {
+            header: self.header.clone(),
+            slots: self.slots.clone(),
+            ring_headers: self.ring_headers.clone(),
+            frame_entries: self.frame_entries.clone(),
+            rings: self.rings.clone(),
+            layout: self.layout,
+        }
+    }
 }
 
 /// A scheduler-owned input frame to publish into one consumer's inbox.
@@ -1326,6 +1359,17 @@ pub struct RingHeader {
     _pad_write: [u8; 56],
 }
 
+impl Clone for RingHeader {
+    fn clone(&self) -> Self {
+        Self {
+            read_idx: AtomicU64::new(self.read_idx.load(Ordering::Acquire)),
+            _pad_read: [0; 56],
+            write_idx: AtomicU64::new(self.write_idx.load(Ordering::Acquire)),
+            _pad_write: [0; 56],
+        }
+    }
+}
+
 /// Byte offset of [`RingHeader`]'s consumer-owned read index.
 pub const RING_HEADER_READ_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, read_idx);
 /// Byte offset of [`RingHeader`]'s consumer cache-line padding.
@@ -1764,6 +1808,24 @@ pub struct NodeSlot {
     _pad0: u8,
     publish_gen: AtomicU32,
     _reserved: [u8; 84],
+}
+
+impl Clone for NodeSlot {
+    fn clone(&self) -> Self {
+        Self {
+            current_icount: AtomicU64::new(self.current_icount.load(Ordering::Acquire)),
+            current_ns: AtomicU64::new(self.current_ns.load(Ordering::Acquire)),
+            max_advance_icount: AtomicU64::new(self.max_advance_icount.load(Ordering::Acquire)),
+            idle_wake_icount: AtomicU64::new(self.idle_wake_icount.load(Ordering::Acquire)),
+            wake_signal: AtomicU32::new(self.wake_signal.load(Ordering::Acquire)),
+            status: AtomicU8::new(self.status.load(Ordering::Acquire)),
+            kind: AtomicU8::new(self.kind.load(Ordering::Acquire)),
+            device_io_active: AtomicU8::new(self.device_io_active.load(Ordering::Acquire)),
+            _pad0: 0,
+            publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
+            _reserved: [0; 84],
+        }
+    }
 }
 
 /// Byte offset of [`NodeSlot`]'s canonical current icount field.

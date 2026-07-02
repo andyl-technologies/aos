@@ -18,9 +18,10 @@ use crucible_sim::StableHasher;
 use thiserror::Error;
 
 use crate::{
-    AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, ContentHash,
-    ExecutionFingerprint, ExecutionHorizon, Icount, NodeBlobRef, NodeId, SchedulerError,
-    SchedulerNodeId, SchedulerSendAuthorizer, SchedulingNodeKind,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
+    Checkpoint, CheckpointKind, ContentHash, ExecutionFingerprint, ExecutionHorizon,
+    FingerprintSample, Icount, NodeBlobRef, NodeId, SchedulerError, SchedulerNodeId,
+    SchedulerSendAuthorizer, SchedulingNodeKind, SimulationBackend, StepObservation, VirtualTime,
 };
 
 /// A deterministic in-process backend implementing [`Backend`].
@@ -106,11 +107,20 @@ impl Backend for SimBackend {
     }
 
     fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
-        let checkpoint = Checkpoint::with_node_blobs(
+        let mut checkpoint = Checkpoint::with_node_blobs(
             self.state.checkpoint_id(),
             self.state.fingerprint(),
             CheckpointKind::Fat,
             self.state.node_blobs(),
+        );
+        checkpoint.virtual_time = VirtualTime {
+            ticks: self.state.icount.retired,
+        };
+        checkpoint.node_icounts.insert(
+            NodeId {
+                name: String::from("sim"),
+            },
+            self.state.icount,
         );
         self.snapshots.insert(checkpoint.id, self.state.clone());
         Ok(checkpoint)
@@ -129,6 +139,60 @@ impl Backend for SimBackend {
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.state.shutdown = true;
         Ok(())
+    }
+}
+
+impl SimulationBackend for SimBackend {
+    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+        let outcome = self.advance_to_horizon(ExecutionHorizon {
+            icount: Icount {
+                retired: ceiling.ticks,
+            },
+        })?;
+        Ok(StepObservation::from_advance_outcome(ceiling, outcome))
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+        let now = self.now();
+        if at != now {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "sim backend effect at {} does not match scheduler time {}",
+                    at.ticks, now.ticks
+                ),
+            });
+        }
+        match effect {
+            BackendEffect::Noop => Ok(()),
+            BackendEffect::DeliverInput(input) => self.deliver_input(input.clone()),
+            BackendEffect::Shutdown => Backend::shutdown(self),
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+        Backend::snapshot(self).map(BackendSnapshot::new)
+    }
+
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        Backend::restore(self, &snapshot.checkpoint)
+    }
+
+    fn now(&self) -> VirtualTime {
+        VirtualTime {
+            ticks: self.state.icount.retired,
+        }
+    }
+
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+        Ok(FingerprintSample {
+            node,
+            at: self.now(),
+            fingerprint: Backend::fingerprint(self)?,
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        Backend::shutdown(self)
     }
 }
 
@@ -411,6 +475,20 @@ pub struct SimDouble {
     delivered_frames: Vec<SimDeliveredFrame>,
     control_events: Vec<SimDoubleControlEvent>,
     host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
+    snapshots: BTreeMap<ContentHash, SimDoubleSnapshotState>,
+}
+
+#[derive(Clone)]
+struct SimDoubleSnapshotState {
+    backend: SimBackend,
+    shmem: SimDoubleShmem,
+    script: SimInstructionScript,
+    control_lifecycle: ControlLifecycle,
+    next_outbound_sequence: u32,
+    next_inbound_sequence_by_source: BTreeMap<u32, u32>,
+    delivered_frames: Vec<SimDeliveredFrame>,
+    control_events: Vec<SimDoubleControlEvent>,
+    host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
 }
 
 impl SimDouble {
@@ -447,6 +525,7 @@ impl SimDouble {
             delivered_frames: Vec::new(),
             control_events: Vec::new(),
             host_observable_schedule: Vec::new(),
+            snapshots: BTreeMap::new(),
         })
     }
 
@@ -556,7 +635,7 @@ impl SimDouble {
             HostMsg::Quit => {
                 self.control_lifecycle
                     .observe(ControlLifecycleEvent::HostQuit)?;
-                self.backend.shutdown()?;
+                Backend::shutdown(&mut self.backend)?;
                 self.control_events.push(SimDoubleControlEvent::Quit);
                 Ok(None)
             }
@@ -770,6 +849,64 @@ impl SimDouble {
         memory
     }
 
+    fn snapshot_state(&self) -> SimDoubleSnapshotState {
+        SimDoubleSnapshotState {
+            backend: self.backend.clone(),
+            shmem: self.shmem.clone(),
+            script: self.script.clone(),
+            control_lifecycle: self.control_lifecycle.clone(),
+            next_outbound_sequence: self.next_outbound_sequence,
+            next_inbound_sequence_by_source: self.next_inbound_sequence_by_source.clone(),
+            delivered_frames: self.delivered_frames.clone(),
+            control_events: self.control_events.clone(),
+            host_observable_schedule: self.host_observable_schedule.clone(),
+        }
+    }
+
+    fn restore_snapshot_state(&mut self, state: &SimDoubleSnapshotState) {
+        self.backend = state.backend.clone();
+        self.shmem = state.shmem.clone();
+        self.script = state.script.clone();
+        self.control_lifecycle = state.control_lifecycle.clone();
+        self.next_outbound_sequence = state.next_outbound_sequence;
+        self.next_inbound_sequence_by_source = state.next_inbound_sequence_by_source.clone();
+        self.delivered_frames = state.delivered_frames.clone();
+        self.control_events = state.control_events.clone();
+        self.host_observable_schedule = state.host_observable_schedule.clone();
+    }
+
+    fn simulation_checkpoint(&self) -> Checkpoint {
+        let mut hasher = StableHasher::new();
+        let fingerprint = self.synthetic_fingerprint();
+        hasher.write_tag("crucible.sim-double.checkpoint.v1");
+        hasher.write_bytes(&fingerprint.hash.bytes);
+        hasher.write_u64(self.backend.state().icount.retired);
+        hasher.write_u64(self.script.next_step as u64);
+        hasher.write_u64(u64::from(self.next_outbound_sequence));
+        hasher.write_u64(self.next_inbound_sequence_by_source.len() as u64);
+        for (source, sequence) in &self.next_inbound_sequence_by_source {
+            hasher.write_u64(u64::from(*source));
+            hasher.write_u64(u64::from(*sequence));
+        }
+        hasher.write_u64(self.delivered_frames.len() as u64);
+        hasher.write_u64(self.control_events.len() as u64);
+        hasher.write_u64(self.host_observable_schedule.len() as u64);
+        let id = ContentHash {
+            bytes: hasher.finish().bytes,
+        };
+        let mut checkpoint = Checkpoint::new(id, fingerprint.hash, CheckpointKind::Fat);
+        checkpoint.virtual_time = VirtualTime {
+            ticks: self.backend.state().icount.retired,
+        };
+        checkpoint.node_icounts.insert(
+            NodeId {
+                name: format!("slot-{}", self.slot_index),
+            },
+            self.backend.state().icount,
+        );
+        checkpoint
+    }
+
     fn publish_ceiling_and_reached_icount(
         &self,
         ceiling: AdvanceCeiling,
@@ -867,6 +1004,92 @@ impl SimDouble {
                 payload,
             });
         Ok(())
+    }
+}
+
+impl SimulationBackend for SimDouble {
+    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+        let outcome = self
+            .advance_scripted_quantum(
+                ExecutionHorizon {
+                    icount: Icount {
+                        retired: ceiling.ticks,
+                    },
+                },
+                &RejectingSimulationBackendSends,
+            )
+            .map_err(|source| BackendError::Rejected {
+                message: source.to_string(),
+            })?;
+        Ok(StepObservation::from_advance_outcome(ceiling, outcome))
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+        let now = self.now();
+        if at != now {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "sim double backend effect at {} does not match scheduler time {}",
+                    at.ticks, now.ticks
+                ),
+            });
+        }
+        match effect {
+            BackendEffect::Noop => Ok(()),
+            BackendEffect::DeliverInput(input) => self.backend.deliver_input(input.clone()),
+            BackendEffect::Shutdown => Backend::shutdown(&mut self.backend),
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+        let checkpoint = self.simulation_checkpoint();
+        self.snapshots.insert(checkpoint.id, self.snapshot_state());
+        Ok(BackendSnapshot::new(checkpoint))
+    }
+
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        let Some(state) = self.snapshots.get(&snapshot.checkpoint.id).cloned() else {
+            return Err(BackendError::Rejected {
+                message: String::from("sim double cannot restore unknown snapshot"),
+            });
+        };
+        self.restore_snapshot_state(&state);
+        Ok(())
+    }
+
+    fn now(&self) -> VirtualTime {
+        VirtualTime {
+            ticks: self.backend.state().icount.retired,
+        }
+    }
+
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+        Ok(FingerprintSample {
+            node,
+            at: self.now(),
+            fingerprint: self.synthetic_fingerprint(),
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        Backend::shutdown(&mut self.backend)
+    }
+}
+
+struct RejectingSimulationBackendSends;
+
+impl SchedulerSendAuthorizer for RejectingSimulationBackendSends {
+    fn authorize_cross_node_send(
+        &self,
+        producer: &SchedulerNodeId,
+        consumer: &SchedulerNodeId,
+    ) -> Result<crate::SchedulerSendAuthorization, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "simulation backend trait step lacks scheduler send authorization for {} -> {}",
+                producer.node.name, consumer.node.name
+            ),
+        })
     }
 }
 
@@ -991,6 +1214,7 @@ fn sim_scheduler_node_for_slot(slot: u32) -> SchedulerNodeId {
     }
 }
 
+#[derive(Clone)]
 struct SimDoubleShmem {
     allocation: RegionAllocation,
 }
@@ -1148,7 +1372,10 @@ mod tests {
             Ok(AdvanceOutcome::ReachedHorizon)
         );
 
-        assert_eq!(first.fingerprint(), second.fingerprint());
+        assert_eq!(
+            Backend::fingerprint(&mut first),
+            Backend::fingerprint(&mut second)
+        );
     }
 
     #[test]
@@ -1160,7 +1387,7 @@ mod tests {
             }),
             Ok(AdvanceOutcome::ReachedHorizon)
         );
-        let checkpoint = match backend.snapshot() {
+        let checkpoint = match Backend::snapshot(&mut backend) {
             Ok(checkpoint) => checkpoint,
             Err(error) => panic!("snapshot should succeed: {error}"),
         };
@@ -1177,7 +1404,7 @@ mod tests {
             Ok(AdvanceOutcome::ReachedHorizon)
         );
 
-        assert_eq!(backend.restore(&checkpoint), Ok(()));
+        assert_eq!(Backend::restore(&mut backend, &checkpoint), Ok(()));
 
         assert_eq!(backend.state().icount, Icount { retired: 7 });
     }
@@ -1196,7 +1423,7 @@ mod tests {
             }),
             Err(BackendError::Rejected { .. })
         ));
-        assert_eq!(backend.shutdown(), Ok(()));
+        assert_eq!(Backend::shutdown(&mut backend), Ok(()));
         assert!(matches!(
             backend.advance_to_horizon(ExecutionHorizon {
                 icount: Icount { retired: 10 },
@@ -1224,9 +1451,65 @@ mod tests {
         );
 
         assert!(matches!(
-            backend.restore(&unknown),
+            Backend::restore(&mut backend, &unknown),
             Err(BackendError::Rejected { message }) if message == "sim backend cannot restore unknown checkpoint"
         ));
+    }
+
+    #[test]
+    fn sim_backend_satisfies_simulation_backend_trait() {
+        let mut backend = SimBackend::new();
+        let ceiling = VirtualTime { ticks: 13 };
+
+        let observation = match SimulationBackend::step_to(&mut backend, ceiling) {
+            Ok(observation) => observation,
+            Err(error) => panic!("sim backend should advance through trait: {error}"),
+        };
+        assert_eq!(observation.reached, ceiling);
+        assert_eq!(SimulationBackend::now(&backend), ceiling);
+
+        assert!(matches!(
+            SimulationBackend::apply(
+                &mut backend,
+                &BackendEffect::Noop,
+                VirtualTime { ticks: ceiling.ticks - 1 },
+            ),
+            Err(BackendError::Rejected { message })
+                if message.contains("does not match scheduler time")
+        ));
+        if let Err(error) = SimulationBackend::apply(
+            &mut backend,
+            &BackendEffect::DeliverInput(BackendInput {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                payload: b"input".to_vec(),
+            }),
+            ceiling,
+        ) {
+            panic!("sim backend should accept delivered input through trait: {error}");
+        }
+        let snapshot = match SimulationBackend::snapshot(&mut backend) {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("sim backend should snapshot through trait: {error}"),
+        };
+        if let Err(error) = SimulationBackend::step_to(&mut backend, VirtualTime { ticks: 21 }) {
+            panic!("sim backend should advance after snapshot: {error}");
+        }
+        if let Err(error) = SimulationBackend::restore(&mut backend, &snapshot) {
+            panic!("sim backend should restore through trait: {error}");
+        }
+        assert_eq!(SimulationBackend::now(&backend), ceiling);
+        let sample = match SimulationBackend::fingerprint(
+            &mut backend,
+            NodeId {
+                name: String::from("node-a"),
+            },
+        ) {
+            Ok(sample) => sample,
+            Err(error) => panic!("sim backend should fingerprint through trait: {error}"),
+        };
+        assert_eq!(sample.at, ceiling);
     }
 
     #[test]
@@ -1551,6 +1834,141 @@ mod tests {
                 .expect_err("send should be frozen")
                 .to_string()
                 .contains("cross-node sends frozen")
+        );
+        assert_eq!(double.next_outbound_sequence, 0);
+        assert!(
+            !double
+                .host_observable_schedule()
+                .iter()
+                .any(|event| matches!(event, SimDoubleHostScheduleEvent::FrameEmission { .. }))
+        );
+    }
+
+    #[test]
+    fn sim_double_satisfies_simulation_backend_trait() {
+        let mut double = match SimDouble::new(SimDoubleConfig {
+            script: SimInstructionScript::new(vec![
+                SimInstructionStep {
+                    instruction_budget: 5,
+                    outbound_frames: Vec::new(),
+                },
+                SimInstructionStep {
+                    instruction_budget: 1,
+                    outbound_frames: Vec::new(),
+                },
+                SimInstructionStep {
+                    instruction_budget: 100,
+                    outbound_frames: Vec::new(),
+                },
+            ]),
+            ..SimDoubleConfig::default()
+        }) {
+            Ok(double) => double,
+            Err(error) => panic!("sim double should construct: {error}"),
+        };
+        complete_sim_double_setup(&mut double);
+        let ceiling = VirtualTime { ticks: 5 };
+
+        let observation = match SimulationBackend::step_to(&mut double, ceiling) {
+            Ok(observation) => observation,
+            Err(error) => panic!("sim double should advance through trait: {error}"),
+        };
+
+        assert_eq!(observation.reached, ceiling);
+        assert_eq!(SimulationBackend::now(&double), ceiling);
+        let sample = match SimulationBackend::fingerprint(
+            &mut double,
+            NodeId {
+                name: String::from("slot-0"),
+            },
+        ) {
+            Ok(sample) => sample,
+            Err(error) => panic!("sim double should fingerprint through trait: {error}"),
+        };
+        assert_eq!(sample.node.name, "slot-0");
+        assert_eq!(sample.at, ceiling);
+
+        assert!(matches!(
+            SimulationBackend::apply(
+                &mut double,
+                &BackendEffect::Noop,
+                VirtualTime { ticks: ceiling.ticks - 1 },
+            ),
+            Err(BackendError::Rejected { message })
+                if message.contains("does not match scheduler time")
+        ));
+        let snapshot = match SimulationBackend::snapshot(&mut double) {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("sim double should snapshot through trait: {error}"),
+        };
+        if let Err(error) = SimulationBackend::step_to(&mut double, VirtualTime { ticks: 6 }) {
+            panic!("sim double should advance after snapshot: {error}");
+        }
+        let advanced = match SimulationBackend::fingerprint(
+            &mut double,
+            NodeId {
+                name: String::from("slot-0"),
+            },
+        ) {
+            Ok(sample) => sample,
+            Err(error) => panic!("sim double should fingerprint after advance: {error}"),
+        };
+        assert_ne!(advanced.fingerprint, sample.fingerprint);
+
+        if let Err(error) = SimulationBackend::restore(&mut double, &snapshot) {
+            panic!("sim double should restore through trait: {error}");
+        }
+        assert_eq!(SimulationBackend::now(&double), ceiling);
+        let restored = match SimulationBackend::fingerprint(
+            &mut double,
+            NodeId {
+                name: String::from("slot-0"),
+            },
+        ) {
+            Ok(sample) => sample,
+            Err(error) => panic!("sim double should fingerprint after restore: {error}"),
+        };
+        assert_eq!(restored.fingerprint, sample.fingerprint);
+
+        let replayed_step = match SimulationBackend::step_to(&mut double, VirtualTime { ticks: 15 })
+        {
+            Ok(observation) => observation,
+            Err(error) => panic!("sim double should replay restored script cursor: {error}"),
+        };
+        assert_eq!(replayed_step.reached, VirtualTime { ticks: 6 });
+        assert!(matches!(
+            replayed_step.outcome,
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 6 },
+            }
+        ));
+    }
+
+    #[test]
+    fn sim_double_simulation_backend_rejects_outbound_without_scheduler_authorization() {
+        let mut double = match SimDouble::new(SimDoubleConfig {
+            script: SimInstructionScript::new(vec![SimInstructionStep {
+                instruction_budget: 1,
+                outbound_frames: vec![SimOutboundFrame {
+                    dst_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
+                    delivery_icount: 3,
+                    payload: b"blocked".to_vec(),
+                }],
+            }]),
+            ..SimDoubleConfig::default()
+        }) {
+            Ok(double) => double,
+            Err(error) => panic!("sim double should construct: {error}"),
+        };
+        complete_sim_double_setup(&mut double);
+
+        let error = SimulationBackend::step_to(&mut double, VirtualTime { ticks: 1 })
+            .expect_err("trait step must not authorize cross-node sends itself");
+
+        assert!(
+            error
+                .to_string()
+                .contains("lacks scheduler send authorization")
         );
         assert_eq!(double.next_outbound_sequence, 0);
         assert!(
