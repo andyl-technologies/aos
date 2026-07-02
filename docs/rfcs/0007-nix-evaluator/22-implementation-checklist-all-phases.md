@@ -6554,6 +6554,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       exported wrappers, raw function-pointer calls, executable addresses, or
       `JITBuilder::symbol` registration; the narrow Cranelift dependency is now
       confined to the CLIF signature adapter below.
+- [x] Current Cranelift crate-version pin precursor:
+      `ratchet-jit::cranelift::jit_cranelift_dependency_pin()` records the exact
+      `cranelift-codegen` crate version used by the safe CLIF signature and body
+      lowering slices, and tests assert that the active linked
+      `cranelift_codegen::VERSION` still matches the pin. This is a crate-version
+      guard only: it does not add `cranelift-jit`, `JITModule`, executable
+      buffers, runtime-symbol registration, or the later user-stack-map
+      git-revision policy.
 - [x] Current `ratchet-jit` CLIF-signature ABI precursor:
       `ratchet-jit::abi::clif_signature_for_runtime_call()` lowers the frozen
       `RuntimeCallSignature` metadata into Cranelift `Signature` values for the
