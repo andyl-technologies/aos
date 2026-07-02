@@ -1957,6 +1957,8 @@ pub struct ConditionEventLogPrefix {
     scheduler_entries: Vec<SchedulerEventLogEntry>,
     observable_events: Vec<ObservableEvent>,
     black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
+    event_firings: BTreeMap<EventId, VirtualTime>,
+    timer_fires: BTreeMap<TimerId, VirtualTime>,
     ordering_facts: Vec<ObservedOrderingFact>,
     fault_facts: Vec<ObservedFaultFact>,
 }
@@ -1973,6 +1975,8 @@ impl ConditionEventLogPrefix {
             scheduler_entries: Vec::new(),
             observable_events: Vec::new(),
             black_box_observation_kinds: BTreeSet::new(),
+            event_firings: BTreeMap::new(),
+            timer_fires: BTreeMap::new(),
             ordering_facts: Vec::new(),
             fault_facts: Vec::new(),
         }
@@ -2000,10 +2004,82 @@ impl ConditionEventLogPrefix {
     /// after the derived evaluation point, or a black-box observation error
     /// when a required surface observation is not observational or carries an
     /// invalid icount stamp.
-    pub(crate) fn from_scheduler_event_log_entries(
+    pub fn from_scheduler_event_log_entries(
         entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<Self, ConditionEvaluationError> {
         Self::from_scheduler_event_log_entries_with_base(entries, 0)
+    }
+
+    /// Builds a checked condition prefix from a scheduler event-log segment.
+    ///
+    /// This is the same validation path as
+    /// [`Self::from_scheduler_event_log_entries`], but the dense sequence check
+    /// starts at `base_sequence`. It is intended for live consumers that hold the
+    /// prefix length separately and evaluate a newly emitted segment at its
+    /// deterministic boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as
+    /// [`Self::from_scheduler_event_log_entries`], with sequence-prefix checks
+    /// relative to `base_sequence`.
+    pub fn from_scheduler_event_log_entries_with_base_sequence(
+        entries: Vec<SchedulerEventLogEntry>,
+        base_sequence: u64,
+    ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(entries, base_sequence)
+    }
+
+    /// Builds a checked condition prefix with an in-memory evaluation boundary.
+    ///
+    /// The supplied entries are treated as the canonical event-log prefix and the
+    /// synthesized boundary is appended only for this evaluation pass. This lets
+    /// live consumers evaluate scheduler-owned evidence for no-entry boundaries
+    /// without mutating the canonical log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as
+    /// [`Self::from_scheduler_event_log_entries`] after appending the synthesized
+    /// boundary entry.
+    pub fn from_scheduler_event_log_entries_with_evaluation_boundary(
+        mut entries: Vec<SchedulerEventLogEntry>,
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<Self, ConditionEvaluationError> {
+        entries.push(SchedulerEventLogEntry::evaluation_boundary(
+            sequence, at, kind,
+        ));
+        Self::from_scheduler_event_log_entries_with_base(entries, 0).map(|prefix| {
+            prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence))
+        })
+    }
+
+    /// Builds an in-memory evaluation-boundary prefix.
+    ///
+    /// This creates a checked boundary point for consumers that need to evaluate
+    /// scheduler-owned evidence, such as quiescence, even when the scheduler did
+    /// not append a canonical event-log entry at that boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] if the synthesized boundary entry is
+    /// not a valid dense prefix at `sequence`.
+    pub fn from_evaluation_boundary(
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(
+            vec![SchedulerEventLogEntry::evaluation_boundary(
+                sequence, at, kind,
+            )],
+            sequence,
+        )
+        .map(|prefix| {
+            prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence))
+        })
     }
 
     pub(crate) fn from_scheduler_event_log_entries_with_base(
@@ -2016,6 +2092,8 @@ impl ConditionEventLogPrefix {
         let point = EventEvaluationPoint::event_log_entry(last);
         let mut observable_events = Vec::new();
         let mut black_box_observation_kinds = BTreeSet::new();
+        let mut event_firings = BTreeMap::new();
+        let mut timer_fires = BTreeMap::new();
         let mut ordering_facts = Vec::new();
         let mut fault_facts = Vec::new();
         let mut previous_black_box_observation: Option<&SchedulerEventLogEntry> = None;
@@ -2070,6 +2148,7 @@ impl ConditionEventLogPrefix {
                 &mut ordering_facts,
                 &mut fault_facts,
             )?;
+            push_condition_runtime_facts(entry, &mut event_firings, &mut timer_fires);
         }
         Ok(Self {
             point,
@@ -2093,6 +2172,8 @@ impl ConditionEventLogPrefix {
             scheduler_entries: entries,
             observable_events,
             black_box_observation_kinds,
+            event_firings,
+            timer_fires,
             ordering_facts,
             fault_facts,
         })
@@ -7273,6 +7354,43 @@ fn push_observed_state_facts(
     Ok(())
 }
 
+fn push_condition_runtime_facts(
+    entry: &SchedulerEventLogEntry,
+    event_firings: &mut BTreeMap<EventId, VirtualTime>,
+    timer_fires: &mut BTreeMap<TimerId, VirtualTime>,
+) {
+    match entry.payload() {
+        SchedulerEventLogPayload::TriggerFired(firing) => {
+            event_firings.insert(firing.event().clone(), firing.at());
+        }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => match &application.action {
+            Action::ArmTimer { name, after } => {
+                if let Some(ticks) = application.at.ticks.checked_add(after.nanos) {
+                    timer_fires.insert(name.clone(), VirtualTime { ticks });
+                }
+            }
+            Action::CancelTimer { name } => {
+                timer_fires.remove(name);
+            }
+            Action::InjectFault { .. }
+            | Action::HealFault { .. }
+            | Action::StartNode { .. }
+            | Action::StopNode { .. }
+            | Action::CreateSavepoint { .. }
+            | Action::Fork { .. }
+            | Action::Pass
+            | Action::Fail { .. }
+            | Action::Log { .. }
+            | Action::Group(_) => {}
+        },
+        SchedulerEventLogPayload::ResolvedHappening(_)
+        | SchedulerEventLogPayload::Decision(_)
+        | SchedulerEventLogPayload::Observable(_)
+        | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::Diagnostic(_) => {}
+    }
+}
+
 fn scheduler_entry_black_box_observation_kind(
     entry: &SchedulerEventLogEntry,
 ) -> Option<BlackBoxObservationKind> {
@@ -7852,8 +7970,8 @@ impl<O> ConditionEvaluation<O> {
             point: prefix.point,
             event_log_offset: prefix.event_log_offset,
             oracle,
-            event_firings: BTreeMap::new(),
-            timer_fires: BTreeMap::new(),
+            event_firings: prefix.event_firings,
+            timer_fires: prefix.timer_fires,
             observable_events: prefix.observable_events,
             ordering_facts: prefix.ordering_facts,
             fault_facts: prefix.fault_facts,
@@ -7994,6 +8112,19 @@ impl<O> ConditionEvaluationPass<O> {
     pub fn with_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
         self.evaluation = self.evaluation.with_scheduler_quiescence(quiescence);
         self
+    }
+
+    /// Adds previously latched `Once` predicates visible to this pass.
+    #[must_use]
+    pub fn with_once_latches(mut self, once_latches: Vec<Condition>) -> Self {
+        self.evaluation.once_latches = once_latches;
+        self
+    }
+
+    /// Returns the `Once` predicates latched by this pass.
+    #[must_use]
+    pub fn once_latches(&self) -> &[Condition] {
+        &self.evaluation.once_latches
     }
 
     /// Adds authoritative white-box opt-in policies for guest-marker leaves.

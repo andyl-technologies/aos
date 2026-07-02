@@ -597,7 +597,7 @@ pub enum Disposition {
     /// Suspend the run: transition Running → Paused(Breakpoint{id}). The
     /// classic debugger breakpoint.
     Suspend,
-    /// Emit a trace marker into the event log and keep running (a tracepoint).
+    /// Emit a deterministic control-plane trace marker and keep running.
     Trace,
     /// Run a bounded, side-effect-scoped action (e.g. auto-savepoint, inject a
     /// follow-on fault) at the firing boundary, then keep running.
@@ -1137,7 +1137,7 @@ pub enum SessionError {
     later pause/stop/fork cannot drop them, rejects stopped-state mutators during
     terminal drain, and that `pause`/`stop` take effect at the boundary check
     without driving an extra quantum while `stop` invokes scheduler shutdown.
-- [ ] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
+- [x] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
   vocabulary (§17a.2, including `NodeState` and `AssertionState` leaves and
   `AllOf`/`AnyOf`/`Once`/`Not`) evaluated at the same deterministic evaluation
   points as triggers/assertions, with dispositions Suspend/Trace/Action and a
@@ -1145,6 +1145,23 @@ pub enum SessionError {
   matching evaluation point's quantum boundary, observation-only for Suspend/Trace
   and control-logged for mutating Actions. — satisfies [SESS-15], [SESS-16],
   [SESS-17], [SESS-30], [SESS-31]; spec §6; cross-ref 17a §17a.2.
+  - Completed by `checks.crucible.phase5.sessionBreakpoints`:
+    `crucible-session` now evaluates actor-owned breakpoints through the shared
+    17a `ConditionEventLogPrefix`/`ConditionEvaluationPass` path, including
+    scheduler-owned quiescence evidence from `QuantumOutcome` even at no-entry
+    boundaries and trigger-derived `After`/`Timer` runtime facts from the
+    canonical event-log prefix. It records each firing in an engine-owned
+    `BreakpointFiring` sequence keyed by frontier and completed quanta. Focused
+    tests cover observation-only suspend firing without canonical event-log
+    perturbation, repeatable trace false-to-true transitions, action breakpoints
+    that prevalidate, synchronously apply, and record scheduler controls in the
+    session control log, typed rejection of unsupported action variants and
+    unrepresentable fault actions, `NodeState`/`AssertionState`/`After`/`Timer`/
+    `Quiescent` leaves, 17a combinators including persistent `Once` latches, and
+    step modes evaluated through one-shot breakpoint stop conditions. Host-oracle
+    `Named` predicates and metadata-backed white-box/symbol leaves still require
+    a session-visible host metadata/oracle surface before they can fire outside
+    the existing shared evaluator.
 - [ ] **T-SESS-8** Wire save/resume/fork at the session level purely as
   execution-model/temporal-graph operations (fat-checkpoint materialize keyed by
   config.id with oracle validation; instantiate-from-checkpoint; instantiate a
