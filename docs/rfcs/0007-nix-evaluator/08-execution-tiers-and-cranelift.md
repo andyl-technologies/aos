@@ -976,16 +976,18 @@ harness, never cut for scope.
       gate only; it attaches no executable addresses and performs no Cranelift
       registration.
 - [x] Current runtime symbol ABI-signature preflight precursor:
-      `runtime_symbol_abi_signature_preflight()` combines safe helper ABI
-      metadata with builtin call-shape metadata in stable runtime symbol order:
-      allocation/write-barrier helper signatures and callable builtin
-      `RuntimeCallSignature` entries are bindable metadata, while unbound helper
-      roles and value-only builtin symbols stay in the gap report. Tests pin
-      helper parity with the safe registration preflight, builtin parity with the
-      builtin call preflight, exact binding/gap projection order,
-      representative callable builtin metadata, and current helper/value-only
-      gaps. This does not attach executable addresses, export wrappers, lower
-      Cranelift IR, or call `JITBuilder::symbol`.
+      `runtime_symbol_abi_signature_preflight()` combines safe helper binding
+      metadata with core-owned helper `RuntimeCallSignature` metadata and builtin
+      call-shape metadata in stable runtime symbol order:
+      allocation/write-barrier helpers are bindable only when the corresponding
+      core helper signature exists, callable builtin `RuntimeCallSignature`
+      entries are bindable metadata, and unbound helper roles plus value-only
+      builtin symbols stay in the gap report. Tests pin helper parity with the
+      safe registration preflight and the core helper signature inventory,
+      builtin parity with the builtin call preflight, exact binding/gap
+      projection order, representative callable builtin metadata, and current
+      helper/value-only gaps. This does not attach executable addresses, export
+      wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol ABI-signature plan precursor:
       `runtime_symbol_abi_signature_plan()` is the checked completeness gate for
       that ABI-signature metadata. It returns a `RuntimeSymbolAbiSignaturePlan`
@@ -1038,15 +1040,17 @@ harness, never cut for scope.
       expose a code pointer, call native code, lower generic IR, or emit runtime
       calls.
 - [x] Current runtime symbol native-target candidate preflight precursor:
-      `runtime_symbol_native_target_candidate_preflight()` combines helper ABI
-      metadata, helper Rust-callable availability, and builtin call-shape
-      metadata into a target-readiness report. Allocation/write-barrier helpers
-      are address-free symbol/role candidates for later wrapper generation, while
-      unbound helpers, value-only builtins, and callable builtins without wrapper
-      bodies stay in the gap report. Tests prove exact projection order, helper-callable
-      parity, representative helper/value-only gaps, all callable builtin wrapper
-      gaps, and no current helper-callable gaps. This does not attach executable
-      addresses, export wrappers, lower Cranelift IR, or call
+      `runtime_symbol_native_target_candidate_preflight()` consumes the
+      ABI-signature preflight, then combines helper Rust-callable availability
+      with the signature-covered helper/builtin set into a target-readiness
+      report. Allocation/write-barrier helpers are address-free symbol/role
+      candidates for later wrapper generation, while ABI-signature gaps,
+      value-only builtins, and callable builtins without wrapper bodies stay in
+      the gap report. Tests prove exact projection order from ABI-signature
+      metadata, helper-callable parity, representative helper/value-only gaps,
+      all callable builtin wrapper gaps, and no current helper-callable gaps.
+      This does not attach executable addresses, export wrappers, lower
+      Cranelift IR, or call
       `JITBuilder::symbol`.
 - [x] Current runtime symbol native-target candidate plan precursor:
       `runtime_symbol_native_target_candidate_plan()` is the checked completeness

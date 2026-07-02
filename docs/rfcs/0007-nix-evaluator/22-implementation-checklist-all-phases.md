@@ -5222,16 +5222,18 @@ and helps the oracle directly.
       This is a registration preflight only; it attaches no executable
       addresses, exports no wrappers, and performs no Cranelift registration.
 - [x] Current runtime symbol ABI-signature preflight precursor:
-      `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines the
-      oracle helper ABI metadata with `ratchet-core` builtin call-shape metadata
-      in the stable runtime symbol order. It attaches allocation/write-barrier
-      helper signatures plus callable builtin `RuntimeCallSignature` metadata,
-      while leaving unbound helper roles and value-only builtin symbols in the
-      missing-binding report. Tests prove helper parity with the safe
-      registration preflight, builtin parity with the builtin call preflight,
-      exact binding/gap projection order, representative callable builtin
-      metadata, and current helper/value-only gaps. This is signature metadata
-      only: no executable addresses, exported wrappers, `JITBuilder::symbol`
+      `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines safe
+      helper binding metadata with core-owned helper `RuntimeCallSignature`
+      metadata and `ratchet-core` builtin call-shape metadata in stable runtime
+      symbol order. It attaches allocation/write-barrier helper signatures only
+      when the corresponding core helper signature exists, plus callable builtin
+      `RuntimeCallSignature` metadata, while leaving unbound helper roles and
+      value-only builtin symbols in the missing-binding report. Tests prove
+      helper parity with the safe registration preflight and the core helper
+      signature inventory, builtin parity with the builtin call preflight, exact
+      binding/gap projection order, representative callable builtin metadata,
+      and current helper/value-only gaps. This is signature metadata only: no
+      executable addresses, exported wrappers, `JITBuilder::symbol`
       registrations, Cranelift lowering, native trap transfer, or compiled
       artifact relinking is implemented.
 - [x] Current runtime symbol ABI-signature plan precursor:
@@ -5246,13 +5248,14 @@ and helps the oracle directly.
       wrappers, `JITBuilder::symbol` registrations, Cranelift lowering, native
       trap transfer, or compiled artifact relinking is implemented.
 - [x] Current runtime symbol native-target candidate preflight precursor:
-      `runtime::helpers::runtime_symbol_native_target_candidate_preflight()` combines the
-      stable symbol manifest, helper ABI signatures, helper Rust-callable
-      availability, and builtin call-shape metadata into a target-readiness
-      report. It records allocation/write-barrier helpers as address-free
-      symbol/role wrapper-generation candidates and reports forcing/call/attr/error
-      helpers, value-only builtins, and callable builtins without wrapper bodies as gaps.
-      Tests prove exact projection order, helper-callable parity, representative
+      `runtime::helpers::runtime_symbol_native_target_candidate_preflight()`
+      consumes the ABI-signature preflight, then combines helper Rust-callable
+      availability with the signature-covered helper/builtin set into a
+      target-readiness report. It records allocation/write-barrier helpers
+      as address-free symbol/role wrapper-generation candidates and reports
+      ABI-signature gaps, value-only builtins, and callable builtins without
+      wrapper bodies as gaps. Tests prove exact projection order from
+      ABI-signature metadata, helper-callable parity, representative
       helper/value-only gaps, all callable builtin wrapper gaps, and no current
       helper-callable gaps. This is readiness metadata only: no executable
       addresses, exported wrappers, `JITBuilder::symbol` registrations,
