@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b190d986c948b3b8`
+Checklist sync digest: `rfc0010-checklist-v1:b691e66a1b572f54`
 
 ## The phase ladder
 
@@ -281,7 +281,16 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   representative, failing property or bisected first-diff detail, minimal
   reproduction tuple, causal-log excerpt, causal-cone narrative, and exact replay
   command through deterministic `json`, `jsonl`, `table`, and `markdown`
-  renderings; `T-TRI-7 … T-TRI-8` remain pending ([`34`](34-failure-triage.md)).
+  renderings. `T-TRI-7` is green through
+  `checks.crucible.phase6.triageThinDriver`, which adds content-addressed
+  findings ledgers and triage result artifacts, DagStore dedup/cache-hit
+  storage, per-finding offline signature recompute self-check records, content
+  diffs for `--compare`, and a thin `crucible triage <findings>` runner that
+  opens the local DagStore, loads stored/path ledgers, executes the
+  cluster→minimize-representative→emit→store pipeline for representable
+  discovery-signature evidence, and rejects bare non-empty artifact-only ledgers
+  instead of fabricating signatures; `T-TRI-8` remains pending
+  ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
 and restores validated continuously), and reproduction artifacts replay

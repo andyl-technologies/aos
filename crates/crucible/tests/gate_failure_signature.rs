@@ -8,18 +8,20 @@ use std::error::Error;
 use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
-    Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp, EventLogOffset,
-    EventPayload, EventSource, FailureCausalCone, FailureClusterFinding, FailureClusterReport,
-    FailureClusterReportDivergence, FailureClusterReportFailure, FailureClusterReportFormat,
-    FailureClusterReportSet, FailureClusteringResult, FailureKind, FailurePropertyViolationRecord,
-    FailureRecordedEventLog, FailureSignature, FailureSignatureNormalization,
-    FailureSignaturePreservingMinimizationRun, FailureTriageResultIdentity, FindingDiscoveryPath,
-    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MinimizationConfig,
-    MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OverrideDecision, Plan,
-    Properties, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogClass, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
-    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    DagStore, Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp,
+    EventLogOffset, EventPayload, EventSource, FailureCausalCone, FailureClusterFinding,
+    FailureClusterReport, FailureClusterReportDivergence, FailureClusterReportFailure,
+    FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
+    FailureFindingsLedger, FailureKind, FailurePropertyViolationRecord, FailureRecordedEventLog,
+    FailureSignature, FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
+    FailureSignaturePreservingMinimizationRun, FailureTriageResult, FailureTriageResultIdentity,
+    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
+    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
+    MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
+    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel, SymmetryClassId,
+    SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -1089,6 +1091,229 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
         property_report.content_hash(),
         "report identity must include causal excerpt evidence"
     );
+
+    Ok(())
+}
+
+#[test]
+fn triage_result_artifact_dedups_diffs_and_self_checks_offline() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let policy = SignaturePolicy::default_policy();
+    let decision = override_decision("triage-result-decision", "fail");
+    let finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([decision.clone()]),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("triage-result-finding"),
+    )?;
+    let entries = recorded_event_log(decision);
+    let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
+    let violation = property_violation_record(finding.artifact.id());
+    let signature =
+        FailureSignature::from_recorded_property_violation(&finding, &recorded_log, &violation)?;
+    let ledger =
+        FailureFindingsLedger::from_artifacts([finding.artifact.id(), finding.artifact.id()]);
+    assert_eq!(ledger.artifact_count(), 1);
+    assert!(ledger.canonical_material().contains("artifact_count=1"));
+
+    let clustering = FailureClusteringResult::from_findings(
+        policy,
+        [FailureClusterFinding::new(
+            finding.artifact.id(),
+            signature.clone(),
+        )],
+    )?;
+    let cluster = clustering
+        .clusters
+        .first()
+        .ok_or("triage result test should produce one cluster")?
+        .clone();
+    let run = no_op_minimization_run(policy, &cluster, &finding)?;
+    let minimization = FailureSignaturePreservingMinimizationResult {
+        policy,
+        runs: vec![run.clone()],
+    };
+    let report = FailureClusterReport::from_cluster(
+        policy,
+        &cluster,
+        &run,
+        FailureClusterReportFailure::property(violation),
+        &recorded_log,
+        &FailureSignatureNormalization::identity(),
+        8,
+    )?;
+    let report_set = FailureClusterReportSet::from_reports(policy, [report.clone()])?;
+    let clean_check = FailureTriageSignatureSelfCheck::from_signature_pairs([
+        FailureTriageSignatureSelfCheckInput::new(
+            finding.artifact.id(),
+            signature.clone(),
+            signature.clone(),
+        ),
+    ]);
+    assert!(clean_check.is_clean());
+
+    let mut stale_signature = signature.clone();
+    stale_signature.at_icount_report_only = Some(icount(444));
+    let mismatch_check = FailureTriageSignatureSelfCheck::from_signature_pairs([
+        FailureTriageSignatureSelfCheckInput::new(
+            finding.artifact.id(),
+            stale_signature,
+            signature.clone(),
+        ),
+    ]);
+    assert!(!mismatch_check.is_clean());
+    assert!(matches!(
+        mismatch_check.assert_clean(),
+        Err(EngineError::UnifiedOperationEvidenceMismatch { .. })
+    ));
+    let mismatch_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        minimization.clone(),
+        report_set.clone(),
+        mismatch_check,
+    )
+    .expect_err("--recompute-signatures mismatches must fail the triage result");
+    assert!(matches!(
+        mismatch_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+    let partial_check = FailureTriageSignatureSelfCheck {
+        checked_count: 2,
+        checks: Vec::new(),
+        mismatches: Vec::new(),
+    };
+    let partial_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        minimization.clone(),
+        report_set.clone(),
+        partial_check,
+    )
+    .expect_err("non-skipped self-checks must cover every clustered finding");
+    assert!(matches!(
+        partial_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+    let mut forged_self_check = clean_check.clone();
+    forged_self_check.checks[0].discovery_signature_hash =
+        finding_hash("forged-self-check-discovery");
+    let forged_self_check_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        minimization.clone(),
+        report_set.clone(),
+        forged_self_check,
+    )
+    .expect_err("self-check discovery hashes must bind to clustered finding signatures");
+    assert!(matches!(
+        forged_self_check_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+    let mut forged_minimization = minimization.clone();
+    forged_minimization.runs[0].representative_artifact =
+        finding_hash("forged-triage-result-representative");
+    let forged_minimization_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        forged_minimization,
+        report_set.clone(),
+        clean_check.clone(),
+    )
+    .expect_err("triage result must re-bind minimization runs to cluster representatives");
+    assert!(matches!(
+        forged_minimization_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+    let mut duplicate_minimization = minimization.clone();
+    duplicate_minimization
+        .runs
+        .push(duplicate_minimization.runs[0].clone());
+    let duplicate_minimization_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        duplicate_minimization,
+        report_set.clone(),
+        clean_check.clone(),
+    )
+    .expect_err("triage result must reject duplicate minimization runs for a cluster");
+    assert!(matches!(
+        duplicate_minimization_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+    let mut forged_report_set = report_set.clone();
+    forged_report_set.reports[0].member_count = 99;
+    let forged_report_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        minimization.clone(),
+        forged_report_set,
+        clean_check.clone(),
+    )
+    .expect_err("triage result must re-bind report membership to clusters");
+    assert!(matches!(
+        forged_report_result,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+
+    let result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        minimization.clone(),
+        report_set,
+        clean_check.clone(),
+    )?;
+    assert_eq!(
+        result.identity,
+        FailureTriageResultIdentity::new(ledger.content_hash(), policy)
+    );
+    assert!(
+        result
+            .canonical_material()
+            .contains("triage_result_identity=")
+    );
+    assert!(result.canonical_material().contains("report_set="));
+
+    let store = MemoryDagStore::new();
+    let ledger_first = ledger.store(&store)?;
+    let ledger_second = ledger.store(&store)?;
+    assert_eq!(ledger_first.key, ledger_second.key);
+    assert_eq!(ledger_first.key, ledger.content_hash());
+    assert!(!ledger_first.cache_hit);
+    assert!(ledger_second.cache_hit);
+
+    let stored_first = result.store(&store)?;
+    let stored_second = result.store(&store)?;
+    assert_eq!(stored_first.key, stored_second.key);
+    assert_eq!(stored_first.key, result.content_hash());
+    assert!(!stored_first.cache_hit);
+    assert!(stored_second.cache_hit);
+    assert_eq!(store.object_count()?, 2);
+    assert_eq!(store.get(&stored_first.key)?, result.artifact_bytes());
+
+    let same_diff = result.compare_to(&result);
+    assert!(!same_diff.has_changes());
+    assert!(same_diff.content_diff().contains("unchanged\t"));
+
+    let mut changed_report = report;
+    changed_report
+        .event_log_excerpt
+        .first_mut()
+        .ok_or("report must carry causal excerpt evidence")?
+        .entry = finding_hash("triage-result-content-diff");
+    let changed_report_set = FailureClusterReportSet::from_reports(policy, [changed_report])?;
+    let changed_result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering,
+        minimization,
+        changed_report_set,
+        clean_check,
+    )?;
+    let changed_diff = changed_result.compare_to(&result);
+    assert!(changed_diff.has_changes());
+    assert_eq!(changed_diff.changed_clusters.len(), 1);
+    assert!(changed_diff.content_diff().contains("changed\t"));
+    assert_ne!(changed_result.content_hash(), result.content_hash());
 
     Ok(())
 }

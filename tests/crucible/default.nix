@@ -1673,6 +1673,28 @@ in rec {
         phase4.gates.e2eDeterminism
       ];
     };
+    triageThinDriver = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.triageThinDriver";
+      gate = import ./phase6-triage-thin-driver.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.triageThinDriver";
+        taskIds = ["T-TRI-7"];
+        dependencies = [
+          phase6.perClusterReports.rawGate
+          phase6.signaturePreservingMinimization.rawGate
+          phase6.failureClustering.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.perClusterReports
+        phase6.signaturePreservingMinimization
+        phase6.failureClustering
+        phase1.gates.contentAddress
+        phase4.gates.e2eDeterminism
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {
