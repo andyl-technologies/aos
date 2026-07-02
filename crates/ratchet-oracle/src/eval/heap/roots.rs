@@ -19,14 +19,15 @@ use std::ptr::NonNull;
 use super::*;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::heap::{
-    GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
-    MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocationPlan,
-    MinorGcDestinationBases, MinorGcDestinationPlacementPlan, MinorGcForwardingPointerPlan,
-    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan,
-    MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
-    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
-    MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
-    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    GcCardTable, GcCardTableSnapshot, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
+    HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport,
+    MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
+    MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocationDestination,
+    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
+    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
+    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
     record_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier_with_card_table,
 };
@@ -2499,9 +2500,60 @@ impl EvalHeap {
         collection_epoch: RememberedSetEpoch,
         promotion_policy: MinorGcPromotionPolicy,
     ) -> Result<AllocationCollectorPollMinorGcPlan, EvalHeapError> {
+        self.plan_collector_poll_minor_gc_with_optional_card_table(
+            poll_scan,
+            remembered_set,
+            None,
+            collection_epoch,
+            promotion_policy,
+        )
+    }
+
+    /// Converts a collector-poll heap graph snapshot into a card-table-checked
+    /// minor-GC plan.
+    ///
+    /// This performs the same planning work as [`Self::plan_collector_poll_minor_gc`]
+    /// and additionally verifies that every remembered edge's source object is
+    /// covered by the supplied dirty-card snapshot. The check is conservative at
+    /// card granularity: a dirty card may cover more than one source object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] under the same conditions as
+    /// [`Self::plan_collector_poll_minor_gc`]. Also returns
+    /// [`EvalHeapError::MissingCollectorPollDirtyCard`] when a remembered edge
+    /// is not covered by the dirty-card snapshot.
+    pub fn plan_collector_poll_minor_gc_with_card_table(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+        remembered_set: RememberedSetSnapshot<'_>,
+        card_table: GcCardTableSnapshot<'_>,
+        collection_epoch: RememberedSetEpoch,
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<AllocationCollectorPollMinorGcPlan, EvalHeapError> {
+        self.plan_collector_poll_minor_gc_with_optional_card_table(
+            poll_scan,
+            remembered_set,
+            Some(card_table),
+            collection_epoch,
+            promotion_policy,
+        )
+    }
+
+    fn plan_collector_poll_minor_gc_with_optional_card_table(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+        remembered_set: RememberedSetSnapshot<'_>,
+        card_table: Option<GcCardTableSnapshot<'_>>,
+        collection_epoch: RememberedSetEpoch,
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<AllocationCollectorPollMinorGcPlan, EvalHeapError> {
         self.validate_collector_poll_snapshot_allocation_state(poll_scan)?;
         self.validate_collector_poll_scan_is_current(poll_scan)?;
         self.validate_remembered_set_snapshot(remembered_set)?;
+        if let Some(card_table) = card_table {
+            self.validate_card_table_snapshot(remembered_set, card_table)?;
+        }
         self.validate_current_permanent_edges_are_remembered(remembered_set)?;
 
         let roots = self.minor_gc_roots_for_poll_scan(poll_scan)?;
@@ -3028,6 +3080,23 @@ impl EvalHeap {
                         target_address: target,
                     });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_card_table_snapshot(
+        &self,
+        remembered_set: RememberedSetSnapshot<'_>,
+        card_table: GcCardTableSnapshot<'_>,
+    ) -> Result<(), EvalHeapError> {
+        for edge in remembered_set.edges() {
+            if !card_table.covers_source(edge.source()) {
+                return Err(EvalHeapError::MissingCollectorPollDirtyCard {
+                    source_address: edge.source(),
+                    target_address: edge.target(),
+                    card_index: card_table.card_index_for_source(edge.source()),
+                });
             }
         }
         Ok(())

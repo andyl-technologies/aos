@@ -5,7 +5,7 @@ use crate::eval::heap::{
     AllocationCollectorPollScan, EvalRoot, EvalRootSource, HeapAllocationDomain, InternedRootTable,
 };
 use crate::heap::{
-    GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
+    GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
     MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
@@ -1145,6 +1145,73 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     );
     assert!(summary.remembered_set_source_edges() > 0);
     assert!(summary.remembered_set_published_edges() > 0);
+}
+
+#[test]
+fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options.set_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark source thunk permanent");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(forced)
+        .expect("forced value builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    let remembered_set = evaluator.thunk_resolve_remembered_set;
+    let edge = remembered_set.edges()[0];
+    let outcome = EvalOutcome {
+        value: forced,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: remembered_set,
+        thunk_resolve_card_table: GcCardTable::default(),
+        memory_budget_action: None,
+        cheap_memory_budget_plan: None,
+        cheap_memory_advice_report: None,
+        gc_stress_boundary_scans,
+    };
+
+    let error = outcome
+        .gc_stress_boundary_minor_gc_plans(MinorGcPromotionPolicy::new(2))
+        .expect_err("boundary planning requires dirty remembered source card");
+
+    assert_eq!(
+        error,
+        EvalHeapError::MissingCollectorPollDirtyCard {
+            source_address: edge.source(),
+            target_address: edge.target(),
+            card_index: outcome
+                .thunk_resolve_card_table()
+                .snapshot()
+                .card_index_for_source(edge.source()),
+        }
+    );
 }
 
 #[test]

@@ -32,8 +32,8 @@ pub use concurrent_gc::{
     classify_thunk_mutation_barrier,
 };
 pub use gc::{
-    DEFAULT_GC_CARD_SIZE_BYTES, GcCardTable, GcCardTableUpdate, GcDirtyCard, GcHeapAddress,
-    GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
+    DEFAULT_GC_CARD_SIZE_BYTES, GcCardTable, GcCardTableSnapshot, GcCardTableUpdate, GcDirtyCard,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
     MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocation,
     MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacement,
     MinorGcDestinationPlacementPlan, MinorGcForwardingPointer, MinorGcForwardingPointerPlan,

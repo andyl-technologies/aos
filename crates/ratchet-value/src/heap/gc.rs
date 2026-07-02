@@ -232,6 +232,43 @@ pub enum GcCardTableUpdate {
 /// Default card size used by the safe daemon write-barrier model.
 pub const DEFAULT_GC_CARD_SIZE_BYTES: usize = 512;
 
+/// A read-only dirty-card view captured for minor-GC planning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GcCardTableSnapshot<'a> {
+    card_size_bytes: usize,
+    dirty_cards: &'a [GcDirtyCard],
+}
+
+impl<'a> GcCardTableSnapshot<'a> {
+    const fn new(card_size_bytes: usize, dirty_cards: &'a [GcDirtyCard]) -> Self {
+        Self {
+            card_size_bytes,
+            dirty_cards,
+        }
+    }
+
+    /// Returns the card size in bytes.
+    pub const fn card_size_bytes(self) -> usize {
+        self.card_size_bytes
+    }
+
+    /// Returns dirty cards in snapshot order.
+    pub const fn dirty_cards(self) -> &'a [GcDirtyCard] {
+        self.dirty_cards
+    }
+
+    /// Returns the card index selected from a source object address.
+    pub const fn card_index_for_source(self, source: GcHeapAddress) -> usize {
+        source.address_bits() / self.card_size_bytes
+    }
+
+    /// Returns whether this snapshot includes the source object's card.
+    pub fn covers_source(self, source: GcHeapAddress) -> bool {
+        let index = self.card_index_for_source(source);
+        self.dirty_cards.iter().any(|dirty| dirty.index() == index)
+    }
+}
+
 /// A safe card-table precursor for old/permanent-to-young writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GcCardTable {
@@ -273,6 +310,11 @@ impl GcCardTable {
     /// Returns dirty cards in first-mark order.
     pub fn dirty_cards(&self) -> &[GcDirtyCard] {
         &self.dirty_cards
+    }
+
+    /// Returns a read-only snapshot for minor-GC planning.
+    pub fn snapshot(&self) -> GcCardTableSnapshot<'_> {
+        GcCardTableSnapshot::new(self.card_size_bytes, &self.dirty_cards)
     }
 
     /// Returns the number of dirty cards.
@@ -3763,6 +3805,24 @@ mod tests {
         );
         assert_eq!(table.len(), 2);
         assert!(!table.is_empty());
+    }
+
+    #[test]
+    fn card_table_snapshot_covers_dirty_source_cards() {
+        let mut table = GcCardTable::new(0x1000).expect("card table builds");
+        let source = address(0x2000);
+        let same_card = address(0x2f00);
+        let clean_card = address(0x3000);
+        table.mark_source(source).expect("source card marks");
+
+        let snapshot = table.snapshot();
+
+        assert_eq!(snapshot.card_size_bytes(), 0x1000);
+        assert_eq!(snapshot.dirty_cards(), &[GcDirtyCard::new(2, source)]);
+        assert_eq!(snapshot.card_index_for_source(same_card), 2);
+        assert!(snapshot.covers_source(source));
+        assert!(snapshot.covers_source(same_card));
+        assert!(!snapshot.covers_source(clean_card));
     }
 
     #[test]

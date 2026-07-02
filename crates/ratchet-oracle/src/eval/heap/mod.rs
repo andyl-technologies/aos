@@ -577,6 +577,21 @@ pub enum EvalHeapError {
         /// The young target object that must be remembered.
         target_address: GcHeapAddress,
     },
+    /// A remembered-set edge's source card was absent from the supplied
+    /// card-table snapshot.
+    #[error(
+        "collector-poll remembered-set edge source card {card_index} is not dirty: 0x{source:x} -> 0x{target:x}",
+        source = source_address.address_bits(),
+        target = target_address.address_bits()
+    )]
+    MissingCollectorPollDirtyCard {
+        /// The remembered edge source address.
+        source_address: GcHeapAddress,
+        /// The remembered edge target address.
+        target_address: GcHeapAddress,
+        /// The source card index expected in the dirty-card snapshot.
+        card_index: usize,
+    },
     /// A remembered-set edge no longer matches any concrete source field.
     #[error(
         "collector-poll remembered-set edge has no current source field: 0x{source:x} -> 0x{target:x}",

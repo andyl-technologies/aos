@@ -985,6 +985,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       still does not construct roots automatically from an allocation poll,
       retain mutable root/field relocation slots, copy objects, install
       forwarding pointers, mutate references, or run GC-stress collection.
+- [x] Current allocation-poll card-table validation precursor:
+      `GcCardTableSnapshot` exposes the dirty-card view produced by daemon
+      thunk-resolution write barriers, and
+      `EvalHeap::plan_collector_poll_minor_gc_with_card_table` verifies every
+      remembered-edge source is covered by a dirty source card before deriving
+      the minor-GC survivor frontier. `EvalOutcome` now uses the stricter
+      card-table-aware planner for GC-stress boundary plans, so the recorded
+      daemon card table participates in the dry-run collector path. Tests cover
+      low-level snapshot coverage, direct and boundary-level missing dirty-card
+      rejection, dirty-card success, and the existing boundary remembered-edge
+      dry-run. This remains validation metadata only: it does not rescan dirty
+      cards, clear card-table storage after remembered-set publication, mutate
+      object generations, or install the Tier-B collector body.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit

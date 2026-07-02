@@ -1407,35 +1407,40 @@ impl EvalOutcome {
 
     /// Builds minor-GC plans from the recorded GC-stress boundary scans.
     ///
-    /// This uses the outcome's remembered-set snapshot and the caller-supplied
-    /// promotion policy. It is planning metadata only: it does not choose
-    /// semispace destinations, install forwarding pointers, rewrite roots or
-    /// fields, publish remembered sets, or invoke a collector.
+    /// This uses the outcome's remembered-set snapshot, dirty-card snapshot, and
+    /// the caller-supplied promotion policy. It is planning metadata only: it
+    /// does not choose semispace destinations, install forwarding pointers,
+    /// rewrite roots or fields, publish remembered sets, clear card-table
+    /// storage, or invoke a collector.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if a recorded boundary scan is stale relative
-    /// to the outcome heap, if the remembered set is incomplete or invalid for
-    /// the current heap graph, or if minor-GC planning fails.
+    /// to the outcome heap, if the remembered set or dirty-card snapshot is
+    /// incomplete or invalid for the current heap graph, or if minor-GC planning
+    /// fails.
     pub fn gc_stress_boundary_minor_gc_plans(
         &self,
         promotion_policy: MinorGcPromotionPolicy,
     ) -> Result<EvalGcStressBoundaryMinorGcPlans, EvalHeapError> {
         let remembered_set = self.thunk_resolve_remembered_set.snapshot();
+        let card_table = self.thunk_resolve_card_table.snapshot();
         let collection_epoch = self.thunk_resolve_remembered_set.epoch();
         let worker = match self.gc_stress_boundary_scans.worker() {
-            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc(
+            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc_with_card_table(
                 scan,
                 remembered_set,
+                card_table,
                 collection_epoch,
                 promotion_policy,
             )?),
             None => None,
         };
         let permanent_shared = match self.gc_stress_boundary_scans.permanent_shared() {
-            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc(
+            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc_with_card_table(
                 scan,
                 remembered_set,
+                card_table,
                 collection_epoch,
                 promotion_policy,
             )?),
