@@ -5452,6 +5452,16 @@ and helps the oracle directly.
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered addresses, call native code, or complete
       full/native runtime-symbol registration.
+- [x] Current `aos-nix` force-aware evaluator-thunk install readiness preflight:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root()`
+      wraps the force-aware registered install plan in the same read-only report
+      against a target evaluator thunk. Tests cover cold no-code reports,
+      literal roots reaching the existing future publication gaps, and hot
+      env-slot roots preserving the missing `aos_force` promotion blocker before
+      pointer installation or evaluator publication. This is safe readiness
+      plumbing only: it does not mutate heap thunks, perform atomic thunk-state
+      CAS, cast or call code pointers, dereference registered addresses, call
+      native code, or complete runtime-symbol registration.
 - [x] Current `aos-nix` tier-1 conformance-readiness preflight:
       `aos_nix::jit::nix_jit_tier1_conformance_readiness_for_ir_root()`
       aggregates the top-level runtime-symbol registration bridge and one

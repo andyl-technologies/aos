@@ -1,7 +1,7 @@
 use ratchet_core::{EffectClass, IrArena, IrData, IrId, IrKind, IrNode, syntax::Span};
 use ratchet_jit::{
-    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer, JitTieredCodeSlot, TierUpCounter,
-    TierUpDemandHint, TierUpPolicy,
+    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer, JitCraneliftModuleSetupError,
+    JitTieredCodeSlot, TierUpCounter, TierUpDemandHint, TierUpPolicy,
 };
 use ratchet_oracle::{
     eval::{EvalEnv, EvalModuleId, EvalNodeRef, EvalThunk, ForceClaim, ThunkState},
@@ -30,6 +30,18 @@ fn string_arena() -> IrArena {
             Span::new(0, 5),
             EffectClass::pure(),
             IrData::None,
+        )],
+        Vec::new(),
+    )
+}
+
+fn bool_arena(value: bool) -> IrArena {
+    IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Bool,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Bool(value),
         )],
         Vec::new(),
     )
@@ -237,4 +249,102 @@ fn thunk_install_readiness_rejects_forced_thunk() {
             state: ThunkState::Forced,
         }]
     );
+}
+
+#[test]
+fn force_aware_thunk_install_readiness_reports_cold_plan_without_publication_gaps() {
+    let arena = string_arena();
+    let thunk = EvalThunk::new(IrId::new(0));
+
+    let readiness = nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+        &thunk,
+    )
+    .expect("cold force-aware readiness report builds");
+
+    assert!(!readiness.install_plan().did_compile());
+    assert!(!readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.expected_body(),
+        EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(0))
+    );
+    assert_eq!(
+        readiness.target_body_ref(),
+        Some(EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(0)))
+    );
+    assert_eq!(readiness.target_state(), ThunkState::Suspended);
+    assert_eq!(
+        readiness.gaps(),
+        &[NixJitThunkInstallGap::Tier1CodeNotCompiled]
+    );
+}
+
+#[test]
+fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_literal_root() {
+    let arena = bool_arena(true);
+    let thunk = EvalThunk::new(IrId::new(0));
+
+    let readiness = nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+        &thunk,
+    )
+    .expect("force-aware literal readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+}
+
+#[test]
+fn force_aware_thunk_install_readiness_reports_missing_force_candidate() {
+    let arena = local_var_arena(9);
+    let thunk = EvalThunk::new(IrId::new(0));
+
+    let result = nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+        &thunk,
+    );
+    let Err(error) = result else {
+        panic!("force-aware env-slot readiness requires an aos_force candidate");
+    };
+
+    let NixJitThunkInstallReadinessError::Promotion(
+        NixJitRegisteredTier1PromotionError::Cranelift(source),
+    ) = error
+    else {
+        panic!("expected force-aware promotion failure");
+    };
+    assert!(source.decision().should_promote());
+    assert_eq!(
+        source.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert!(source.slot().tier1_code_ptr().is_none());
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        source.setup_error()
+    else {
+        panic!("expected force helper registration guard");
+    };
+    assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }

@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use super::{
     NixJitRegisteredTier1InstallPlan, NixJitRegisteredTier1PromotionError,
+    nix_jit_force_aware_registered_tier1_install_plan_for_ir_root,
     nix_jit_registered_tier1_install_plan_for_ir_root,
 };
 
@@ -266,6 +267,51 @@ pub fn nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
 ) -> NixJitThunkInstallReadinessResult {
     let install_plan =
         nix_jit_registered_tier1_install_plan_for_ir_root(slot, policy, demand_hint, arena, root)?;
+    let expected_body = EvalNodeRef::new(EvalModuleId::ROOT, root);
+    Ok(NixJitThunkInstallReadiness::from_install_plan(
+        install_plan,
+        expected_body,
+        target_thunk,
+    )?)
+}
+
+/// Builds a safe force-aware readiness report for publishing tier-1 code into a thunk.
+///
+/// This is the evaluator-facing preflight after
+/// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root`]. It
+/// validates the same read-only target-thunk conditions as the existing
+/// registered readiness bridge, while sourcing the install plan from the
+/// force-aware promotion path. It never mutates evaluator heap state, performs
+/// an atomic thunk-state compare-and-swap, casts or calls a code pointer,
+/// dereferences registered helper addresses, or calls native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitThunkInstallReadinessError::Promotion`] if the underlying
+/// force-aware registered tier-1 install plan cannot be built. Returns
+/// [`NixJitThunkInstallReadinessError::ThunkState`] if the target thunk state
+/// word cannot be decoded.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root`] when
+/// policy requests promotion for a finalizable artifact.
+pub fn nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+    target_thunk: &EvalThunk,
+) -> NixJitThunkInstallReadinessResult {
+    let install_plan = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        arena,
+        root,
+    )?;
     let expected_body = EvalNodeRef::new(EvalModuleId::ROOT, root);
     Ok(NixJitThunkInstallReadiness::from_install_plan(
         install_plan,

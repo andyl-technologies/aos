@@ -1484,6 +1484,16 @@ harness, never cut for scope.
       thunk is mutated, no atomic thunk-state CAS runs, no code pointer is cast
       or called, and no registered helper address is dereferenced or called;
       full/native runtime-symbol registration remains open.
+- [x] Current `aos-nix` force-aware evaluator-thunk install readiness preflight:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root()`
+      composes the force-aware install-plan handoff with the same read-only
+      evaluator thunk inspection. Cold roots report the no-code gap, literal
+      roots reach the existing future publication gaps, and hot local
+      environment-slot roots still fail through the missing `aos_force`
+      promotion blocker before any readiness report can publish pointer
+      metadata. This remains safe readiness plumbing only: no evaluator heap
+      thunk is mutated, no atomic thunk-state CAS runs, no code pointer is cast
+      or called, and no registered helper address is dereferenced or called.
 - [x] Current `aos-nix` tier-1 conformance-readiness preflight:
       `aos_nix::jit::nix_jit_tier1_conformance_readiness_for_ir_root()`
       composes the top-level runtime-symbol registration bridge with the

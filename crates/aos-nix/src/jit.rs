@@ -37,6 +37,7 @@ pub use runtime_symbols::{
 pub use thunk_install::{
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,
     NixJitThunkInstallReadinessResult, NixJitThunkInstallRequirement,
+    nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root,
     nix_jit_registered_tier1_thunk_install_readiness_for_ir_root,
 };
 
