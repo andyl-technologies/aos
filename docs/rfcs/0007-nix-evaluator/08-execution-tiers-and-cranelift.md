@@ -1032,6 +1032,19 @@ harness, never cut for scope.
       helper/builtin coverage. This remains symbol metadata only: no candidate
       readiness, executable addresses, Cranelift lowering, exported wrappers, or
       `JITBuilder::symbol` registration is implemented.
+- [x] Current `ratchet-jit` tier-up policy precursor:
+      `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
+      decision as safe policy metadata: a low default invocation threshold plus
+      optional accepted multi-use evidence from profiling or cardinality
+      analysis. `TierUpCounter` saturates invocation observations,
+      `TierUpObservation` carries invocation, demand, and current-tier evidence,
+      and `TierUpDecision` reports stay/promote decisions with target tier and
+      reason bits. Tests pin threshold promotion, eager multi-use promotion,
+      absent/once cardinality staying cold, disabled eager promotion, combined
+      reasons, zero-threshold measurement tuning, counter saturation, and
+      already-tier-1 no-repeat promotion. This does not store counters beside
+      thunks, mutate thunk state or code pointers, lower Cranelift IR, compile
+      native code, install OSR, or run tier-1 code.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the

@@ -6534,6 +6534,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       readiness, executable addresses, Cranelift lowering, exported wrappers, or
       `JITBuilder::symbol` registration is implemented.
 - [ ] `jit/tier.rs` — tier-up policy (hot-thunk detection) into tier 1.
+- [x] Current `ratchet-jit` tier-up policy precursor:
+      `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
+      decision as safe policy metadata: a low default invocation threshold plus
+      optional accepted multi-use evidence from profiling or cardinality
+      analysis. `TierUpCounter` saturates invocation observations,
+      `TierUpObservation` carries invocation, demand, and current-tier evidence,
+      and `TierUpDecision` reports stay/promote decisions with target tier and
+      reason bits. Tests pin threshold promotion, eager multi-use promotion,
+      absent/once cardinality staying cold, disabled eager promotion, combined
+      reasons, zero-threshold measurement tuning, counter saturation, and
+      already-tier-1 no-repeat promotion. This does not store counters beside
+      thunks, mutate thunk state or code pointers, lower Cranelift IR, compile
+      native code, install OSR, or run tier-1 code.
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the
       `transmute` of code pointers is the documented innate-unsafe call (`S-17`).
