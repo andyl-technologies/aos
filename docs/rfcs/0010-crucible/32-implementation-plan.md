@@ -293,6 +293,12 @@ long-held locks.
   shared `ControlClient` trait for both in-process lifecycle and HTTP/2 RPC
   clients. Inline RPC carries scenario seed and request seed separately so the
   lifecycle mismatch guard remains transport-facing.
+  `T-API-4` is green through `checks.crucible.phase5.apiStreamingEquivalence`,
+  which adds the typed `Control` and `Watch`+`Send` facade, validates identical
+  command capabilities from the thin mapping table, exposes the same attach/send
+  paths through `ControlClient`/`RpcControlClient`, and drives lifecycle plus
+  non-basic command classes from both command paths while returning
+  `CommandResult` plus optional `StateUpdate`.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

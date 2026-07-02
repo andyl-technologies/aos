@@ -8,14 +8,16 @@ use crucible::{
     VirtualTime,
 };
 use crucible_api::{
+    API_COMMAND_MAPPINGS, AttachRequest, Attached, CommandRejectionKind, CommandResultStatus,
     ControlClient, ControlPlaneEventLog, ControlTransportKind, ControlWireModel,
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
-    HelloRequest, InProcessControlClient, LifecycleControlPlane, ListScenariosResponse,
-    ListSessionsResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient,
-    RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SessionId, SessionRef,
-    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
+    EventLogCursor, HelloRequest, InProcessControlClient, LifecycleControlPlane,
+    ListScenariosResponse, ListSessionsResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
+    RpcControlClient, RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest,
+    SendResponse, SessionId, SessionRef, StateUpdate, assert_shared_wire_model,
+    encode_rpc_hello_request, encode_rpc_hello_response, session_command_for_api_command,
 };
-use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand};
+use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
 use tokio::sync::{Mutex, mpsc};
 
 #[tokio::test(flavor = "current_thread")]
@@ -89,13 +91,92 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(sessions.sessions[0].session, created.session);
     assert_eq!(sessions.sessions[0].state, LiveStateKind::Running);
 
+    let control_attached = rpc
+        .control_attach(
+            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("RPC Control attach should decode: {error}"));
+    assert_eq!(control_attached.session, created.session);
+    assert_eq!(control_attached.state, LiveStateKind::Running);
+    assert_eq!(
+        control_attached.capabilities.commands.len(),
+        SessionCommandKind::ALL.len(),
+    );
+
+    let control_paused = rpc
+        .control_send(SendRequest::new(
+            created.session,
+            101,
+            SessionCommand::Pause,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Control send should decode: {error}"));
+    assert_eq!(control_paused.result.command_id, 101);
+    assert_eq!(control_paused.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        control_paused.state_update.map(|update| update.state),
+        Some(LiveStateKind::Paused),
+    );
+
+    let watch_attached = rpc
+        .watch_attach(
+            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("RPC Watch attach should decode: {error}"));
+    assert_eq!(watch_attached.session, created.session);
+    assert_eq!(watch_attached.state, LiveStateKind::Paused);
+    assert_eq!(watch_attached.capabilities, control_attached.capabilities);
+
+    let send_continued = rpc
+        .send_command(SendRequest::new(
+            created.session,
+            102,
+            SessionCommand::Continue,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Send should decode: {error}"));
+    assert_eq!(send_continued.result.command_id, 102);
+    assert_eq!(send_continued.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        send_continued.state_update.map(|update| update.state),
+        Some(LiveStateKind::Running),
+    );
+
+    let rejected_start = rpc
+        .send_command(SendRequest::new(
+            created.session,
+            103,
+            SessionCommand::Start,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Send rejection should decode: {error}"));
+    assert_eq!(
+        rejected_start.result.status,
+        CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::InvalidState,
+        },
+    );
+    assert!(rejected_start.state_update.is_none());
+
+    let stream_stopped = rpc
+        .send_command(SendRequest::new(created.session, 104, SessionCommand::Stop))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Send Stop should decode: {error}"));
+    assert_eq!(stream_stopped.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        stream_stopped.state_update.map(|update| update.state),
+        Some(LiveStateKind::Stopped),
+    );
+
     let destroyed = rpc
         .destroy_session(DestroySessionRequest::new(created.session))
         .await
-        .unwrap_or_else(|error| panic!("RPC destroy session should decode: {error}"));
+        .unwrap_or_else(|error| panic!("RPC destroy after streaming Stop should decode: {error}"));
     assert_eq!(destroyed.session, created.session);
-    assert!(destroyed.stopped);
-    assert!(!destroyed.already_absent);
+    assert!(!destroyed.stopped);
+    assert!(destroyed.already_absent);
 
     let inline_scenario = generated_scenario(78);
     let inline_created = rpc
@@ -245,11 +326,19 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     let saw_http2_for_create_session = Arc::clone(&saw_http2);
     let saw_http2_for_list_sessions = Arc::clone(&saw_http2);
     let saw_http2_for_destroy_session = Arc::clone(&saw_http2);
+    let saw_http2_for_control_attach = Arc::clone(&saw_http2);
+    let saw_http2_for_control_send = Arc::clone(&saw_http2);
+    let saw_http2_for_watch_attach = Arc::clone(&saw_http2);
+    let saw_http2_for_send_command = Arc::clone(&saw_http2);
     let control_plane_for_hello = Arc::clone(&control_plane);
     let control_plane_for_list_scenarios = Arc::clone(&control_plane);
     let control_plane_for_create_session = Arc::clone(&control_plane);
     let control_plane_for_list_sessions = Arc::clone(&control_plane);
     let control_plane_for_destroy_session = Arc::clone(&control_plane);
+    let control_plane_for_control_attach = Arc::clone(&control_plane);
+    let control_plane_for_control_send = Arc::clone(&control_plane);
+    let control_plane_for_watch_attach = Arc::clone(&control_plane);
+    let control_plane_for_send_command = Arc::clone(&control_plane);
     let app = Router::new()
         .route(
             "/crucible.rpc/hello",
@@ -289,6 +378,38 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
                 let control_plane = Arc::clone(&control_plane_for_destroy_session);
                 let saw_http2 = Arc::clone(&saw_http2_for_destroy_session);
                 async move { handle_destroy_session(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/control/attach",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_control_attach);
+                let saw_http2 = Arc::clone(&saw_http2_for_control_attach);
+                async move { handle_control_attach(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/control/send",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_control_send);
+                let saw_http2 = Arc::clone(&saw_http2_for_control_send);
+                async move { handle_control_send(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/watch",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_watch_attach);
+                let saw_http2 = Arc::clone(&saw_http2_for_watch_attach);
+                async move { handle_watch_attach(request, control_plane, saw_http2).await }
+            }),
+        )
+        .route(
+            "/crucible.rpc/send",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_send_command);
+                let saw_http2 = Arc::clone(&saw_http2_for_send_command);
+                async move { handle_send_command(request, control_plane, saw_http2).await }
             }),
         );
     tokio::spawn(async move {
@@ -427,6 +548,108 @@ async fn handle_destroy_session(
     )
 }
 
+async fn handle_control_attach(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let attach = match parse_attach_request(&body) {
+        Ok(attach) => attach,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+    let streaming = match control_plane.lock().await.streaming_session(attach.session) {
+        Ok(streaming) => streaming,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    let control = match streaming.control(attach) {
+        Ok(control) => control,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_attached_response(control.attached()),
+    )
+}
+
+async fn handle_control_send(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    handle_streaming_send(request, control_plane, saw_http2).await
+}
+
+async fn handle_watch_attach(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let attach = match parse_attach_request(&body) {
+        Ok(attach) => attach,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+    let streaming = match control_plane.lock().await.streaming_session(attach.session) {
+        Ok(streaming) => streaming,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    let watch = match streaming.watch(attach) {
+        Ok(watch) => watch,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_attached_response(watch.attached()),
+    )
+}
+
+async fn handle_send_command(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    handle_streaming_send(request, control_plane, saw_http2).await
+}
+
+async fn handle_streaming_send(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let send = match parse_send_request(&body) {
+        Ok(send) => send,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+    let response = match control_plane
+        .lock()
+        .await
+        .send_streaming_command(send)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
+        }
+    };
+    http2_response(axum::http::StatusCode::OK, encode_send_response(&response))
+}
+
 async fn read_rpc_body(
     request: axum::http::Request<axum::body::Body>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -498,6 +721,66 @@ fn encode_destroy_session_response(response: &DestroySessionResponse) -> String 
     output
 }
 
+fn encode_attached_response(attached: &Attached) -> String {
+    let mut output = String::from("crucible.rpc/attached-response\n");
+    push_session_ref(&mut output, attached.session);
+    push_wire_line(
+        &mut output,
+        "event-log-len",
+        &attached.event_log_len.to_string(),
+    );
+    push_wire_line(&mut output, "state", state_wire_name(attached.state));
+    push_wire_line(
+        &mut output,
+        "version",
+        &format!(
+            "{}.{}.{}+{}",
+            attached.version.major,
+            attached.version.minor,
+            attached.version.patch,
+            attached.version.build
+        ),
+    );
+    let commands = attached
+        .capabilities
+        .commands
+        .iter()
+        .map(|capability| capability.command_name)
+        .collect::<Vec<_>>()
+        .join(",");
+    push_wire_line(&mut output, "commands", &commands);
+    output
+}
+
+fn encode_send_response(response: &SendResponse) -> String {
+    let mut output = String::from("crucible.rpc/send-response\n");
+    push_wire_line(
+        &mut output,
+        "command-id",
+        &response.result.command_id.to_string(),
+    );
+    push_wire_line(
+        &mut output,
+        "command",
+        command_name(response.result.command_kind),
+    );
+    push_wire_line(
+        &mut output,
+        "status",
+        match response.result.status {
+            CommandResultStatus::Accepted => "accepted",
+            CommandResultStatus::Rejected {
+                reason: CommandRejectionKind::InvalidState,
+            } => "rejected:invalid-state",
+        },
+    );
+    match response.state_update {
+        Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
+        None => push_wire_line(&mut output, "state-update", "none"),
+    }
+    output
+}
+
 fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
@@ -537,6 +820,40 @@ fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, S
     Ok(DestroySessionRequest::new(session))
 }
 
+fn parse_attach_request(body: &[u8]) -> Result<AttachRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/attach-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
+    let from = EventLogCursor::new(parse_u64_line(lines.next(), "from-seq=")?);
+    let client_name = parse_wire_line(lines.next(), "client-name=")?.to_owned();
+    reject_extra_line(lines.next())?;
+    let mut request = AttachRequest::new(session)
+        .with_cursor(from)
+        .with_client_name(client_name);
+    if let Some(expected_epoch) = expected_epoch {
+        request = request.with_expected_epoch(expected_epoch);
+    }
+    Ok(request)
+}
+
+fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/send-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
+    let command_id = parse_u64_line(lines.next(), "command-id=")?;
+    let command = parse_session_command(lines.next(), "command=")?;
+    reject_extra_line(lines.next())?;
+    let mut request = SendRequest::new(session, command_id, command);
+    if let Some(expected_epoch) = expected_epoch {
+        request = request.with_expected_epoch(expected_epoch);
+    }
+    Ok(request)
+}
+
 fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
 where
     I: Iterator<Item = &'a str>,
@@ -552,6 +869,32 @@ fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, Strin
     value
         .parse::<u64>()
         .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
+}
+
+fn parse_optional_epoch_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Option<u64>, String> {
+    let value = parse_wire_line(line, prefix)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
+}
+
+fn parse_session_command(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<SessionCommand, String> {
+    let command_name = parse_wire_line(line, prefix)?;
+    let command_kind = session_command_for_api_command(command_name)
+        .ok_or_else(|| format!("unknown command `{command_name}`"))?;
+    command_kind
+        .representative_command()
+        .ok_or_else(|| format!("command `{command_name}` has no representative payload"))
 }
 
 fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
@@ -633,6 +976,24 @@ fn state_wire_name(state: LiveStateKind) -> &'static str {
         LiveStateKind::Running => "running",
         LiveStateKind::Stopped => "stopped",
     }
+}
+
+fn command_name(command: SessionCommandKind) -> &'static str {
+    API_COMMAND_MAPPINGS
+        .iter()
+        .find(|mapping| mapping.command_kind == command)
+        .map(|mapping| mapping.command_name)
+        .unwrap_or("unknown")
+}
+
+fn state_update_wire(update: StateUpdate) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        update.session.id.value,
+        update.session.epoch,
+        update.session.seed.to_hex(),
+        state_wire_name(update.state),
+    )
 }
 
 fn http2_response(

@@ -14,16 +14,18 @@ use crucible::{
     ScenarioDef, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_session::{
-    Engine, LiveSnapshot, LiveStateKind, SessionActor, SessionCommand, SessionError,
-    SessionRunReport,
+    Engine, LiveSnapshot, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind,
+    SessionError, SessionRunReport,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::{
-    ControlClient, ControlClientError, ControlClientFuture, ControlTransportKind, ControlWireModel,
-    HelloRequest, HelloResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RpcAbiError, negotiate_rpc_protocol,
+    AttachRequest, Attached, CommandResultStatus, ControlClient, ControlClientError,
+    ControlClientFuture, ControlPlaneEventLog, ControlTransportKind, ControlWireModel,
+    HelloRequest, HelloResponse, InProcessStreamingSession, RPC_OPEN_SET_PAYLOAD_KINDS,
+    RpcAbiError, SendRequest, SendResponse, StreamingApiError, negotiate_rpc_protocol,
 };
 
 /// Default actor mailbox capacity for lifecycle-created sessions.
@@ -467,6 +469,7 @@ where
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();
+        let event_log = ControlPlaneEventLog::new(actor.event_log());
         let actor_task = tokio::spawn(async move { actor.run().await });
 
         let session_ref = self.next_session_ref(request.seed);
@@ -474,6 +477,7 @@ where
             session: session_ref,
             sender,
             live,
+            event_log,
             actor_task,
         };
 
@@ -585,6 +589,67 @@ where
         self.next_epoch = self.next_epoch.saturating_add(1);
         SessionRef::new(id, epoch, seed)
     }
+
+    /// Builds an in-process streaming handle for a live session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError::SessionNotFound`] when the session id is not
+    /// live, [`StreamingApiError::EpochMismatch`] when the supplied epoch is
+    /// stale, or [`StreamingApiError::SessionMismatch`] when the full session
+    /// reference does not match the live registry entry.
+    pub fn streaming_session(
+        &self,
+        requested: SessionRef,
+    ) -> Result<InProcessStreamingSession, StreamingApiError> {
+        let Some(runtime) = self.sessions.get(&requested.id) else {
+            return Err(StreamingApiError::SessionNotFound { session: requested });
+        };
+        if runtime.session.epoch != requested.epoch {
+            return Err(StreamingApiError::EpochMismatch {
+                expected: requested.epoch,
+                actual: runtime.session.epoch,
+            });
+        }
+        if runtime.session != requested {
+            return Err(StreamingApiError::SessionMismatch {
+                requested,
+                actual: runtime.session,
+            });
+        }
+        Ok(InProcessStreamingSession::new(
+            runtime.session,
+            runtime.sender.clone(),
+            Arc::clone(&runtime.live),
+            runtime.event_log.clone(),
+        ))
+    }
+
+    /// Dispatches one streaming command against a lifecycle-owned session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] if the streaming request is rejected, the
+    /// actor mailbox closes, or an accepted `Stop` cannot be joined cleanly.
+    pub async fn send_streaming_command(
+        &mut self,
+        request: SendRequest,
+    ) -> Result<SendResponse, ControlClientError> {
+        let session = request.session;
+        let command_kind = SessionCommandKind::from(&request.command);
+        let streaming_session = self.streaming_session(session)?;
+        let response = streaming_session.send(request).await?;
+
+        if command_kind == SessionCommandKind::Stop
+            && response.result.status == CommandResultStatus::Accepted
+        {
+            if let Some(runtime) = self.sessions.remove(&session.id) {
+                join_actor(runtime.actor_task).await?;
+            }
+        }
+
+        Ok(response)
+    }
 }
 
 /// In-process [`ControlClient`] implementation for unary lifecycle methods.
@@ -673,12 +738,57 @@ where
                 .map_err(ControlClientError::from)
         })
     }
+
+    fn control_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(async move {
+            let streaming_session = self
+                .control_plane
+                .lock()
+                .await
+                .streaming_session(request.session)?;
+            let control = streaming_session.control(request)?;
+            Ok(control.attached().clone())
+        })
+    }
+
+    fn control_send(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(async move {
+            self.control_plane
+                .lock()
+                .await
+                .send_streaming_command(request)
+                .await
+        })
+    }
+
+    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(async move {
+            let streaming_session = self
+                .control_plane
+                .lock()
+                .await
+                .streaming_session(request.session)?;
+            let watch = streaming_session.watch(request)?;
+            Ok(watch.attached().clone())
+        })
+    }
+
+    fn send_command(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(async move {
+            self.control_plane
+                .lock()
+                .await
+                .send_streaming_command(request)
+                .await
+        })
+    }
 }
 
 struct SessionRuntime {
     session: SessionRef,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
+    event_log: ControlPlaneEventLog,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
 }
 

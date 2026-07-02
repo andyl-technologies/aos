@@ -12,7 +12,8 @@
 //! quantum-counted acknowledgement contract used by `gate:control-responsive`;
 //! [`event_log_stream`] owns the cursor-backed live event-log subscription facade;
 //! [`session_mapping`] owns the API-to-session thin-wrapper contract; [`lifecycle`]
-//! owns the unary discovery and lifecycle API.
+//! owns the unary discovery and lifecycle API; [`streaming`] owns the typed
+//! `Control` and `Watch`+`Send` attach-and-command facade.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -24,6 +25,7 @@ pub mod event_log_stream;
 pub mod lifecycle;
 pub mod rpc_abi;
 pub mod session_mapping;
+pub mod streaming;
 
 pub use client::{
     ControlClient, ControlClientError, ControlClientFuture, ControlTransportKind, ControlWireModel,
@@ -61,4 +63,11 @@ pub use session_mapping::{
     ApiMethod, ApiMethodMapping, ApiRequestShape, CommandDispatchCardinality,
     api_command_for_session_command, method_mapping, session_command_for_api_command,
     validate_thin_api_mapping,
+};
+pub use streaming::{
+    AttachRequest, Attached, CommandRejectionKind, CommandResult, CommandResultStatus,
+    ControlStream, InProcessStreamingSession, STREAMING_COMMAND_MAX_ACTOR_YIELDS, SendRequest,
+    SendResponse, StateUpdate, StreamingApiError, StreamingCapabilitySet,
+    StreamingCommandCapability, StreamingEquivalenceError, StreamingEquivalenceReport, WatchStream,
+    validate_control_watch_send_equivalence,
 };
