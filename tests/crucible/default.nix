@@ -1481,6 +1481,16 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliSelftest = import ./phase5-cli-selftest.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliSelftest";
+      taskIds = ["T-CLI-8"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase4.gates.replayOracle.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliCompletionsHelp = import ./phase5-cli-completions-help.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";

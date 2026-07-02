@@ -405,6 +405,12 @@ long-held locks.
   implemented yet; full closure waits for the command-behavior gates
   `T-CLI-7 … T-CLI-14` so the final help text can be certified in sync with
   behavior.
+  `T-CLI-8` remains open. `checks.crucible.phase5.cliSelftest` currently covers
+  `--gates <list>` for the built-in corpus replay-oracle gate, canonical gate
+  name validation, malformed/unsupported selection rejection, built-in example
+  corpus execution, and a per-gate PASS row; full closure waits for the broader
+  double-backed gate runners, real-QEMU gate execution under `--with-qemu`, and
+  file-backed corpus override support.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a

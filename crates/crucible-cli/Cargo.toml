@@ -16,11 +16,11 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
+crucible-harness = { path = "../crucible-harness" }
 crucible-session = { path = "../crucible-session" }
 crucible-shmem = { path = "../crucible-shmem" }
 tokio = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double"] }
-crucible-harness = { path = "../crucible-harness" }
 tempfile = { workspace = true }
