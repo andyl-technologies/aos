@@ -5221,6 +5221,19 @@ and helps the oracle directly.
       forcing/call helper gaps, a builtin gap, and the incomplete-plan failure.
       This is a registration preflight only; it attaches no executable
       addresses, exports no wrappers, and performs no Cranelift registration.
+- [x] Current runtime symbol ABI-signature preflight precursor:
+      `runtime::helpers::runtime_symbol_abi_signature_preflight()` combines the
+      oracle helper ABI metadata with `ratchet-core` builtin call-shape metadata
+      in the stable runtime symbol order. It attaches allocation/write-barrier
+      helper signatures plus callable builtin `RuntimeCallSignature` metadata,
+      while leaving unbound helper roles and value-only builtin symbols in the
+      missing-binding report. Tests prove helper parity with the safe
+      registration preflight, builtin parity with the builtin call preflight,
+      exact binding/gap projection order, representative callable builtin
+      metadata, and current helper/value-only gaps. This is signature metadata
+      only: no executable addresses, exported wrappers, `JITBuilder::symbol`
+      registrations, Cranelift lowering, native trap transfer, or compiled
+      artifact relinking is implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
       same stable runtime symbol manifest, preserves its order, and attaches

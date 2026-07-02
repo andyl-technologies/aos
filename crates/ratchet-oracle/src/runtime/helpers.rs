@@ -8,7 +8,9 @@
 //! module.
 
 use crate::compile::{
-    RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError, runtime_symbol_manifest,
+    RuntimeBuiltinCallBinding, RuntimeBuiltinCallMissingBinding, RuntimeBuiltinCallPreflight,
+    RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError, runtime_builtin_call_preflight,
+    runtime_symbol_manifest,
 };
 use thiserror::Error;
 
@@ -326,6 +328,70 @@ pub fn runtime_symbol_registration_preflight() -> RuntimeSymbolRegistrationPrefl
     ))
 }
 
+/// Result returned when building runtime-symbol ABI-signature readiness metadata.
+pub type RuntimeSymbolAbiSignaturePreflightResult =
+    Result<RuntimeSymbolAbiSignaturePreflight, RuntimeSymbolNameError>;
+
+/// Builds a runtime-symbol report for helper and builtin ABI-signature metadata.
+///
+/// The report consumes [`runtime_symbol_binding_manifest`], preserves its order,
+/// keeps safe helper ABI metadata for currently covered helper families, attaches
+/// builtin call-signature metadata for callable builtin symbols, and records
+/// helper or builtin symbols that still prevent complete ABI-signature coverage.
+/// This is signature metadata only: no executable addresses are attached and no
+/// Cranelift symbols are registered.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest or the
+/// builtin call manifest cannot be built.
+pub fn runtime_symbol_abi_signature_preflight() -> RuntimeSymbolAbiSignaturePreflightResult {
+    let builtin_preflight = runtime_builtin_call_preflight()?;
+    let mut signature_bindings = Vec::new();
+    let mut missing_bindings = Vec::new();
+
+    for entry in runtime_symbol_binding_manifest()? {
+        match entry.status() {
+            RuntimeSymbolBindingStatus::BoundHelper(binding) => {
+                debug_assert_eq!(entry.symbol_name(), binding.symbol_name());
+                signature_bindings.push(RuntimeSymbolAbiSignatureBinding::Helper(binding));
+            }
+            RuntimeSymbolBindingStatus::UnboundHelper(role) => {
+                missing_bindings.push(RuntimeSymbolAbiMissingBinding::helper(
+                    entry.symbol_name().to_owned(),
+                    role,
+                ));
+            }
+            RuntimeSymbolBindingStatus::Builtin => {
+                match builtin_call_binding_for(&builtin_preflight, entry.symbol_name()) {
+                    Some(binding) => {
+                        signature_bindings.push(RuntimeSymbolAbiSignatureBinding::Builtin(binding));
+                    }
+                    None => {
+                        missing_bindings.push(
+                            builtin_call_missing_binding_for(
+                                &builtin_preflight,
+                                entry.symbol_name(),
+                            )
+                            .map(RuntimeSymbolAbiMissingBinding::Builtin)
+                            .unwrap_or_else(|| {
+                                RuntimeSymbolAbiMissingBinding::builtin_unclassified(
+                                    entry.symbol_name().to_owned(),
+                                )
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(RuntimeSymbolAbiSignaturePreflight::new(
+        signature_bindings,
+        missing_bindings,
+    ))
+}
+
 /// Result returned when building runtime-symbol Rust-callable readiness metadata.
 pub type RuntimeSymbolRustCallablePreflightResult =
     Result<RuntimeSymbolRustCallablePreflight, RuntimeSymbolNameError>;
@@ -397,6 +463,28 @@ pub fn runtime_symbol_registration_plan() -> RuntimeSymbolRegistrationPlanResult
     runtime_symbol_registration_preflight()
         .map_err(RuntimeSymbolRegistrationError::from)?
         .into_registration_plan()
+}
+
+fn builtin_call_binding_for(
+    preflight: &RuntimeBuiltinCallPreflight,
+    symbol_name: &str,
+) -> Option<RuntimeBuiltinCallBinding> {
+    preflight
+        .call_bindings()
+        .iter()
+        .find(|binding| binding.symbol_name() == symbol_name)
+        .cloned()
+}
+
+fn builtin_call_missing_binding_for(
+    preflight: &RuntimeBuiltinCallPreflight,
+    symbol_name: &str,
+) -> Option<RuntimeBuiltinCallMissingBinding> {
+    preflight
+        .missing_bindings()
+        .iter()
+        .find(|missing| missing.symbol_name() == symbol_name)
+        .cloned()
 }
 
 /// A callable Rust storage-wrapper binding for one runtime helper.
@@ -483,6 +571,130 @@ impl RuntimeHelperRustCallablePreflight {
     }
 
     /// Returns true when every currently bound helper has a callable Rust wrapper.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+}
+
+/// ABI-signature metadata for one runtime symbol.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolAbiSignatureBinding {
+    /// A helper symbol backed by safe helper ABI metadata.
+    Helper(RuntimeHelperBinding),
+    /// A builtin symbol backed by frozen primop call-signature metadata.
+    Builtin(RuntimeBuiltinCallBinding),
+}
+
+impl RuntimeSymbolAbiSignatureBinding {
+    /// Returns the stable runtime symbol name served by this binding.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::Helper(binding) => binding.symbol_name(),
+            Self::Builtin(binding) => binding.symbol_name(),
+        }
+    }
+
+    /// Returns helper metadata when this binding serves a helper symbol.
+    pub const fn helper_binding(&self) -> Option<RuntimeHelperBinding> {
+        match self {
+            Self::Helper(binding) => Some(*binding),
+            Self::Builtin(_) => None,
+        }
+    }
+
+    /// Returns builtin call metadata when this binding serves a builtin symbol.
+    pub const fn builtin_call_binding(&self) -> Option<&RuntimeBuiltinCallBinding> {
+        match self {
+            Self::Helper(_) => None,
+            Self::Builtin(binding) => Some(binding),
+        }
+    }
+}
+
+/// One runtime symbol that still lacks ABI-signature registration metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolAbiMissingBinding {
+    /// A helper symbol has no safe helper ABI metadata yet.
+    Helper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The helper role reserved by the core runtime ABI.
+        role: RuntimeHelperRole,
+    },
+    /// A builtin symbol is not currently a callable runtime wrapper.
+    Builtin(RuntimeBuiltinCallMissingBinding),
+    /// A builtin symbol was not classified by the builtin call manifest.
+    UnclassifiedBuiltin {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+    },
+}
+
+impl RuntimeSymbolAbiMissingBinding {
+    fn helper(symbol_name: String, role: RuntimeHelperRole) -> Self {
+        Self::Helper { symbol_name, role }
+    }
+
+    fn builtin_unclassified(symbol_name: String) -> Self {
+        Self::UnclassifiedBuiltin { symbol_name }
+    }
+
+    /// Returns the stable runtime symbol name that is not yet bindable.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::Helper { symbol_name, .. } | Self::UnclassifiedBuiltin { symbol_name } => {
+                symbol_name
+            }
+            Self::Builtin(binding) => binding.symbol_name(),
+        }
+    }
+
+    /// Returns the helper role when the missing binding is a helper symbol.
+    pub const fn helper_role(&self) -> Option<RuntimeHelperRole> {
+        match self {
+            Self::Helper { role, .. } => Some(*role),
+            Self::Builtin(_) | Self::UnclassifiedBuiltin { .. } => None,
+        }
+    }
+
+    /// Returns builtin missing-binding metadata when this gap is a builtin.
+    pub const fn builtin_missing_binding(&self) -> Option<&RuntimeBuiltinCallMissingBinding> {
+        match self {
+            Self::Builtin(binding) => Some(binding),
+            Self::Helper { .. } | Self::UnclassifiedBuiltin { .. } => None,
+        }
+    }
+}
+
+/// A deterministic runtime-symbol report for ABI-signature metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolAbiSignaturePreflight {
+    signature_bindings: Vec<RuntimeSymbolAbiSignatureBinding>,
+    missing_bindings: Vec<RuntimeSymbolAbiMissingBinding>,
+}
+
+impl RuntimeSymbolAbiSignaturePreflight {
+    fn new(
+        signature_bindings: Vec<RuntimeSymbolAbiSignatureBinding>,
+        missing_bindings: Vec<RuntimeSymbolAbiMissingBinding>,
+    ) -> Self {
+        Self {
+            signature_bindings,
+            missing_bindings,
+        }
+    }
+
+    /// Returns ABI-signature metadata in runtime symbol-manifest projection order.
+    pub fn signature_bindings(&self) -> &[RuntimeSymbolAbiSignatureBinding] {
+        &self.signature_bindings
+    }
+
+    /// Returns runtime symbols that still lack complete ABI-signature metadata.
+    pub fn missing_bindings(&self) -> &[RuntimeSymbolAbiMissingBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every runtime symbol has ABI-signature metadata.
     pub fn is_complete(&self) -> bool {
         self.missing_bindings.is_empty()
     }
@@ -608,7 +820,10 @@ impl RuntimeHelperBinding {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::compile::{RuntimeHelperRole, runtime_helper_symbols, runtime_symbol_manifest};
+    use crate::compile::{
+        RuntimeBuiltinCallPreflight, RuntimeHelperRole, runtime_builtin_call_preflight,
+        runtime_helper_symbols, runtime_symbol_manifest,
+    };
 
     use super::*;
     use crate::runtime::alloc::{
@@ -617,6 +832,56 @@ mod tests {
     use crate::runtime::barrier::{
         runtime_write_barrier_abi_signatures, runtime_write_barrier_rust_callable_bindings,
     };
+
+    fn expected_runtime_symbol_abi_signature_projection(
+        binding_manifest: &[RuntimeSymbolBindingManifestEntry],
+        builtin_preflight: &RuntimeBuiltinCallPreflight,
+    ) -> (
+        Vec<RuntimeSymbolAbiSignatureBinding>,
+        Vec<RuntimeSymbolAbiMissingBinding>,
+    ) {
+        let mut signature_bindings = Vec::new();
+        let mut missing_bindings = Vec::new();
+
+        for entry in binding_manifest {
+            match entry.status() {
+                RuntimeSymbolBindingStatus::BoundHelper(binding) => {
+                    signature_bindings.push(RuntimeSymbolAbiSignatureBinding::Helper(binding));
+                }
+                RuntimeSymbolBindingStatus::UnboundHelper(role) => {
+                    missing_bindings.push(RuntimeSymbolAbiMissingBinding::Helper {
+                        symbol_name: entry.symbol_name().to_owned(),
+                        role,
+                    });
+                }
+                RuntimeSymbolBindingStatus::Builtin => {
+                    if let Some(binding) = builtin_preflight
+                        .call_bindings()
+                        .iter()
+                        .find(|binding| binding.symbol_name() == entry.symbol_name())
+                        .cloned()
+                    {
+                        signature_bindings.push(RuntimeSymbolAbiSignatureBinding::Builtin(binding));
+                    } else if let Some(binding) = builtin_preflight
+                        .missing_bindings()
+                        .iter()
+                        .find(|binding| binding.symbol_name() == entry.symbol_name())
+                        .cloned()
+                    {
+                        missing_bindings.push(RuntimeSymbolAbiMissingBinding::Builtin(binding));
+                    } else {
+                        missing_bindings.push(
+                            RuntimeSymbolAbiMissingBinding::UnclassifiedBuiltin {
+                                symbol_name: entry.symbol_name().to_owned(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        (signature_bindings, missing_bindings)
+    }
 
     #[test]
     fn runtime_helper_bindings_match_core_bound_helper_roles() {
@@ -917,6 +1182,109 @@ mod tests {
             missing.symbol_name() == "nix.builtin.derivationStrict"
                 && missing.helper_role().is_none()
         }));
+    }
+
+    #[test]
+    fn runtime_symbol_abi_signature_preflight_combines_helpers_and_builtins() {
+        let signature_preflight =
+            runtime_symbol_abi_signature_preflight().expect("signature preflight builds");
+        let registration_preflight =
+            runtime_symbol_registration_preflight().expect("registration preflight builds");
+        let builtin_preflight =
+            runtime_builtin_call_preflight().expect("builtin call preflight builds");
+        let binding_manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+        let (expected_signature_bindings, expected_missing_bindings) =
+            expected_runtime_symbol_abi_signature_projection(&binding_manifest, &builtin_preflight);
+        let helper_symbols = signature_preflight
+            .signature_bindings()
+            .iter()
+            .filter_map(RuntimeSymbolAbiSignatureBinding::helper_binding)
+            .map(RuntimeHelperBinding::symbol_name)
+            .collect::<Vec<_>>();
+        let builtin_symbols = signature_preflight
+            .signature_bindings()
+            .iter()
+            .filter_map(RuntimeSymbolAbiSignatureBinding::builtin_call_binding)
+            .map(|binding| binding.symbol_name())
+            .collect::<Vec<_>>();
+
+        assert!(!signature_preflight.is_complete());
+        assert_eq!(
+            signature_preflight.signature_bindings().len()
+                + signature_preflight.missing_bindings().len(),
+            binding_manifest.len()
+        );
+        assert_eq!(
+            helper_symbols,
+            registration_preflight
+                .helper_bindings()
+                .iter()
+                .copied()
+                .map(RuntimeHelperBinding::symbol_name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            signature_preflight.signature_bindings(),
+            expected_signature_bindings.as_slice()
+        );
+        assert_eq!(
+            signature_preflight.missing_bindings(),
+            expected_missing_bindings.as_slice()
+        );
+        assert_eq!(
+            builtin_symbols,
+            builtin_preflight
+                .call_bindings()
+                .iter()
+                .map(|binding| binding.symbol_name())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn runtime_symbol_abi_signature_preflight_reports_current_gaps() {
+        let signature_preflight =
+            runtime_symbol_abi_signature_preflight().expect("signature preflight builds");
+
+        assert!(
+            signature_preflight
+                .signature_bindings()
+                .iter()
+                .any(|binding| {
+                    binding.builtin_call_binding().is_some_and(|builtin| {
+                        builtin.symbol_name() == "nix.builtin.derivationStrict"
+                            && builtin.arity() == 1
+                    })
+                })
+        );
+        assert!(
+            signature_preflight
+                .missing_bindings()
+                .iter()
+                .any(|missing| {
+                    missing.symbol_name() == "aos_force"
+                        && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+                })
+        );
+        assert!(
+            signature_preflight
+                .missing_bindings()
+                .iter()
+                .any(|missing| {
+                    missing.symbol_name() == "nix.builtin.true"
+                        && missing.builtin_missing_binding().is_some_and(|builtin| {
+                            builtin.symbol_name() == "nix.builtin.true"
+                                && builtin.builtin_name() == b"true"
+                                && builtin.unsupported_arity().is_none()
+                        })
+                })
+        );
+        assert!(
+            signature_preflight
+                .missing_bindings()
+                .iter()
+                .all(|missing| missing.symbol_name() != "nix.builtin.derivationStrict")
+        );
     }
 
     #[test]

@@ -973,6 +973,17 @@ harness, never cut for scope.
       builtin gaps, and the current incomplete-plan error. This is a preflight
       gate only; it attaches no executable addresses and performs no Cranelift
       registration.
+- [x] Current runtime symbol ABI-signature preflight precursor:
+      `runtime_symbol_abi_signature_preflight()` combines safe helper ABI
+      metadata with builtin call-shape metadata in stable runtime symbol order:
+      allocation/write-barrier helper signatures and callable builtin
+      `RuntimeCallSignature` entries are bindable metadata, while unbound helper
+      roles and value-only builtin symbols stay in the gap report. Tests pin
+      helper parity with the safe registration preflight, builtin parity with the
+      builtin call preflight, exact binding/gap projection order,
+      representative callable builtin metadata, and current helper/value-only
+      gaps. This does not attach executable addresses, export wrappers, lower
+      Cranelift IR, or call `JITBuilder::symbol`.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` preserves the stable runtime
       symbol order while attaching process-local Rust-callable metadata for the

@@ -824,6 +824,18 @@ harness, never cut for scope.
       sorted gaps, representative missing helper roles, builtin gaps, and the
       incomplete-plan failure. This still does not register `JITBuilder` symbols,
       attach addresses, export wrappers, or relink compiled artifacts.
+- [x] Current runtime symbol ABI-signature preflight precursor:
+      `runtime_symbol_abi_signature_preflight()` combines the oracle's
+      allocation/write-barrier helper ABI metadata with `ratchet-core`'s builtin
+      call-shape metadata in stable runtime symbol order. Callable builtin
+      symbols now carry their frozen `RuntimeCallSignature` metadata in this
+      preflight, while unbound helper roles and value-only builtin symbols remain
+      missing. Tests prove helper parity with the safe registration preflight,
+      builtin parity with the builtin call preflight, exact binding/gap
+      projection order, representative callable builtin metadata, and current
+      helper/value-only gaps. This is not executable ABI registration: no
+      addresses, exported wrappers, `JITBuilder::symbol` calls, Cranelift
+      lowering, or compiled artifact relinking are implemented.
 - [x] Current runtime symbol Rust-callable preflight precursor:
       `runtime_symbol_rust_callable_preflight()` consumes the stable runtime
       symbol manifest and attaches process-local Rust-callable helper metadata
