@@ -5,31 +5,38 @@
 //! session actor path or the HTTP/2 RPC path. The two paths intentionally share
 //! [`ControlWireModel`], which is backed by the frozen RPC ABI message encoder.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crucible::Seed;
+use bytes::Bytes;
+use crucible::{EventLevel, Seed};
 use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand, SessionCommandKind};
+use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::event_log_stream::ControlPlaneEventLog;
+use crate::event_log_stream::{ControlPlaneEventLog, EventLogCursor};
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
     DestroySessionResponse, LifecycleApiError, ListScenariosResponse, ListSessionsResponse,
     ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
-use crate::open_set::{open_set_command_kind, session_command_for_open_set_command_kind};
+use crate::open_set::{
+    OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime,
+    OpenSetPayload, open_set_command_kind, session_command_for_open_set_command_kind,
+};
 use crate::rpc_abi::{
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError,
     encode_rpc_hello_request, encode_rpc_hello_response, negotiate_rpc_protocol,
 };
 use crate::session_mapping::{API_COMMAND_MAPPINGS, api_command_for_session_command};
 use crate::streaming::{
-    AttachRequest, Attached, CommandRejectionKind, CommandResult, CommandResultStatus, SendRequest,
-    SendResponse, StateUpdate, StreamingApiError, StreamingCapabilitySet,
-    StreamingCommandCapability,
+    AttachRequest, AttachSnapshot, Attached, CommandRejectionKind, CommandResult,
+    CommandResultStatus, SendRequest, SendResponse, StateUpdate, StreamingApiError,
+    StreamingCapabilitySet, StreamingCommandCapability, StreamingEventFrame,
 };
 
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
@@ -42,10 +49,174 @@ const CONTROL_SEND_RPC_PATH: &str = "/crucible.rpc/control/send";
 const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
 const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
+const RPC_STREAM_EVENT_CHANNEL_CAPACITY: usize = 16;
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
+
+/// Attached bidirectional `Control` stream returned by a [`ControlClient`].
+pub enum ClientControlStream {
+    /// Same-process stream over the session actor mailbox and event-log hub.
+    InProcess(crate::streaming::ControlStream),
+    /// HTTP/2 RPC stream.
+    Rpc(RpcControlStream),
+}
+
+impl ClientControlStream {
+    /// Returns the attach metadata emitted at stream start.
+    #[must_use]
+    pub fn attached(&self) -> &Attached {
+        match self {
+            Self::InProcess(stream) => stream.attached(),
+            Self::Rpc(stream) => stream.attached(),
+        }
+    }
+
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the underlying transport fails, the
+    /// RPC event frame is malformed, or the in-process event-log stream lags.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
+        match self {
+            Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
+            Self::Rpc(stream) => stream.recv_event().await,
+        }
+    }
+
+    /// Dispatches one command envelope through this control stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when command dispatch is rejected by the
+    /// streaming layer or by the RPC transport.
+    pub async fn send_command(
+        &self,
+        command_id: u64,
+        command: SessionCommand,
+    ) -> Result<SendResponse, ControlClientError> {
+        match self {
+            Self::InProcess(stream) => stream
+                .send_command(command_id, command)
+                .await
+                .map_err(ControlClientError::from),
+            Self::Rpc(stream) => stream.send_command(command_id, command).await,
+        }
+    }
+}
+
+/// Attached read-only `Watch` stream returned by a [`ControlClient`].
+pub enum ClientWatchStream {
+    /// Same-process stream over the session event-log hub.
+    InProcess(crate::streaming::WatchStream),
+    /// HTTP/2 RPC stream.
+    Rpc(RpcWatchStream),
+}
+
+impl ClientWatchStream {
+    /// Returns the attach metadata emitted at stream start.
+    #[must_use]
+    pub fn attached(&self) -> &Attached {
+        match self {
+            Self::InProcess(stream) => stream.attached(),
+            Self::Rpc(stream) => stream.attached(),
+        }
+    }
+
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the underlying transport fails, the
+    /// RPC event frame is malformed, or the in-process event-log stream lags.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
+        match self {
+            Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
+            Self::Rpc(stream) => stream.recv_event().await,
+        }
+    }
+}
+
+/// Attached HTTP/2 RPC `Control` stream.
+pub struct RpcControlStream {
+    attached: Attached,
+    events: RpcStreamingEventReceiver,
+    client: RpcControlClient,
+}
+
+impl RpcControlStream {
+    /// Returns the attach metadata emitted at stream start.
+    #[must_use]
+    pub const fn attached(&self) -> &Attached {
+        &self.attached
+    }
+
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
+    /// the next event frame cannot be decoded.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
+        self.events.recv_event().await
+    }
+
+    /// Dispatches one command envelope over the RPC control stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the RPC command endpoint rejects the
+    /// request or the response cannot be decoded.
+    pub async fn send_command(
+        &self,
+        command_id: u64,
+        command: SessionCommand,
+    ) -> Result<SendResponse, ControlClientError> {
+        self.client
+            .control_send(SendRequest::new(self.attached.session, command_id, command))
+            .await
+    }
+}
+
+/// Attached HTTP/2 RPC `Watch` stream.
+pub struct RpcWatchStream {
+    attached: Attached,
+    events: RpcStreamingEventReceiver,
+}
+
+impl RpcWatchStream {
+    /// Returns the attach metadata emitted at stream start.
+    #[must_use]
+    pub const fn attached(&self) -> &Attached {
+        &self.attached
+    }
+
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
+    /// the next event frame cannot be decoded.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
+        self.events.recv_event().await
+    }
+}
+
+struct RpcStreamingEventReceiver {
+    frames: mpsc::Receiver<Result<StreamingEventFrame, ControlClientError>>,
+}
+
+impl RpcStreamingEventReceiver {
+    async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
+        match self.frames.recv().await {
+            Some(Ok(frame)) => Ok(Some(frame)),
+            Some(Err(error)) => Err(error),
+            None => Ok(None),
+        }
+    }
+}
 
 /// Transport used by one [`ControlClient`] implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,13 +461,16 @@ pub trait ControlClient {
         })
     }
 
-    /// Attaches the bidirectional `Control` stream and returns initial metadata.
+    /// Attaches the bidirectional `Control` stream.
     ///
     /// # Errors
     ///
     /// Returns [`ControlClientError`] when the transport rejects the request or
     /// when this client handle does not implement streaming attach.
-    fn control_attach(&self, _request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn control_attach(
+        &self,
+        _request: AttachRequest,
+    ) -> ControlClientFuture<'_, ClientControlStream> {
         Box::pin(async move {
             Err(ControlClientError::UnsupportedLifecycleMethod { method: "Control" })
         })
@@ -316,13 +490,13 @@ pub trait ControlClient {
         })
     }
 
-    /// Attaches the read-only `Watch` stream and returns initial metadata.
+    /// Attaches the read-only `Watch` stream.
     ///
     /// # Errors
     ///
     /// Returns [`ControlClientError`] when the transport rejects the request or
     /// when this client handle does not implement watch attach.
-    fn watch_attach(&self, _request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn watch_attach(&self, _request: AttachRequest) -> ControlClientFuture<'_, ClientWatchStream> {
         Box::pin(
             async move { Err(ControlClientError::UnsupportedLifecycleMethod { method: "Watch" }) },
         )
@@ -569,6 +743,29 @@ impl RpcControlClient {
                 message: error.to_string(),
             })
     }
+
+    async fn post_rpc_stream(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, ControlClientError> {
+        let response = self
+            .http
+            .post(self.endpoint.rpc_url(path))
+            .header(reqwest::header::CONTENT_TYPE, RPC_CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| ControlClientError::HttpRequest {
+                message: error.to_string(),
+            })?;
+        if !response.status().is_success() {
+            return Err(ControlClientError::HttpStatus {
+                status: response.status().as_u16(),
+            });
+        }
+        Ok(response)
+    }
 }
 
 impl ControlClient for RpcControlClient {
@@ -647,12 +844,20 @@ impl ControlClient for RpcControlClient {
         })
     }
 
-    fn control_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn control_attach(
+        &self,
+        request: AttachRequest,
+    ) -> ControlClientFuture<'_, ClientControlStream> {
         Box::pin(async move {
-            let body = self
-                .post_rpc_body(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
+            let response = self
+                .post_rpc_stream(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
-            decode_attached_response(&body)
+            let (attached, events) = decode_attached_stream_response(response).await?;
+            Ok(ClientControlStream::Rpc(RpcControlStream {
+                attached,
+                events,
+                client: self.clone(),
+            }))
         })
     }
 
@@ -665,12 +870,13 @@ impl ControlClient for RpcControlClient {
         })
     }
 
-    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, ClientWatchStream> {
         Box::pin(async move {
-            let body = self
-                .post_rpc_body(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
+            let response = self
+                .post_rpc_stream(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
-            decode_attached_response(&body)
+            let (attached, events) = decode_attached_stream_response(response).await?;
+            Ok(ClientWatchStream::Rpc(RpcWatchStream { attached, events }))
         })
     }
 
@@ -682,6 +888,74 @@ impl ControlClient for RpcControlClient {
             decode_send_response(&body)
         })
     }
+}
+
+async fn decode_attached_stream_response(
+    response: reqwest::Response,
+) -> Result<(Attached, RpcStreamingEventReceiver), ControlClientError> {
+    let mut stream = response.bytes_stream().boxed();
+    let mut buffer = Vec::new();
+    let attached_message = read_next_framed_rpc_message(&mut stream, &mut buffer)
+        .await?
+        .ok_or_else(|| rpc_decode("empty RPC stream attach response"))?;
+    let attached = decode_attached_response(&attached_message)?;
+    let (sender, receiver) = mpsc::channel(RPC_STREAM_EVENT_CHANNEL_CAPACITY);
+    tokio::spawn(async move {
+        pump_rpc_event_frames(stream, buffer, sender).await;
+    });
+    Ok((attached, RpcStreamingEventReceiver { frames: receiver }))
+}
+
+async fn pump_rpc_event_frames(
+    mut stream: BoxStream<'static, Result<Bytes, reqwest::Error>>,
+    mut buffer: Vec<u8>,
+    sender: mpsc::Sender<Result<StreamingEventFrame, ControlClientError>>,
+) {
+    loop {
+        let message = match read_next_framed_rpc_message(&mut stream, &mut buffer).await {
+            Ok(Some(message)) => message,
+            Ok(None) => return,
+            Err(error) => {
+                let _send_result = sender.send(Err(error)).await;
+                return;
+            }
+        };
+        let frame = decode_streaming_event_frame(&message);
+        if sender.send(frame).await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn read_next_framed_rpc_message(
+    stream: &mut BoxStream<'static, Result<Bytes, reqwest::Error>>,
+    buffer: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>, ControlClientError> {
+    loop {
+        if let Some(position) = rpc_message_separator(buffer) {
+            let message = buffer[..position].to_vec();
+            buffer.drain(..position.saturating_add(2));
+            if message.is_empty() {
+                continue;
+            }
+            return Ok(Some(message));
+        }
+
+        let Some(chunk) = stream.next().await else {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(std::mem::take(buffer)));
+        };
+        let chunk = chunk.map_err(|error| ControlClientError::HttpRequest {
+            message: error.to_string(),
+        })?;
+        buffer.extend_from_slice(&chunk);
+    }
+}
+
+fn rpc_message_separator(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(2).position(|window| window == b"\n\n")
 }
 
 fn decode_hello_response(
@@ -886,6 +1160,7 @@ fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError>
     let state = parse_state_line(lines.next())?;
     let version = parse_current_version_line(lines.next())?;
     let capabilities = parse_capabilities_line(lines.next())?;
+    let snapshot = parse_attach_snapshot_line(lines.next())?;
     reject_trailing(lines.next())?;
     Ok(Attached {
         session,
@@ -893,6 +1168,7 @@ fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError>
         state,
         version,
         capabilities,
+        snapshot,
     })
 }
 
@@ -912,6 +1188,41 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
             status,
         },
         state_update,
+    })
+}
+
+fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/event-frame")?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let cursor = EventLogCursor::new(parse_u64_line(lines.next(), "cursor=")?);
+    let next_cursor = EventLogCursor::new(parse_u64_line(lines.next(), "next-cursor=")?);
+    let sequence = parse_u64_line(lines.next(), "sequence=")?;
+    let virtual_time_ticks = parse_u64_line(lines.next(), "virtual-time-ticks=")?;
+    let icount_retired = parse_u64_line(lines.next(), "icount-retired=")?;
+    let icount_node = parse_optional_hex_string_line(lines.next(), "icount-node=")?;
+    let source = parse_event_source_line(lines.next())?;
+    let level = parse_event_level_line(lines.next())?;
+    let observational = parse_bool_line(lines.next(), "observational=")?;
+    let kind = parse_prefixed_line(lines.next(), "kind=")?.to_owned();
+    let attributes = parse_event_attributes(lines)?;
+    Ok(StreamingEventFrame {
+        generation,
+        cursor,
+        next_cursor,
+        event: OpenSetEventEnvelope {
+            sequence,
+            at: OpenSetEventTime {
+                virtual_time_ticks,
+                icount_retired,
+                icount_node,
+            },
+            source,
+            level,
+            observational,
+            payload: OpenSetPayload::new(kind, attributes),
+        },
     })
 }
 
@@ -979,6 +1290,135 @@ fn parse_seed_hex(value: &str) -> Result<Seed, ControlClientError> {
     Ok(Seed::from_bytes(bytes))
 }
 
+fn parse_optional_hex_string_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Option<String>, ControlClientError> {
+    match parse_prefixed_line(line, prefix)? {
+        "none" => Ok(None),
+        value => parse_hex_string(value).map(Some),
+    }
+}
+
+fn parse_event_source_line(line: Option<&str>) -> Result<OpenSetEventSource, ControlClientError> {
+    let value = parse_prefixed_line(line, "source=")?;
+    let mut fields = value.split('|');
+    let source = match fields
+        .next()
+        .ok_or_else(|| rpc_decode("missing event source tag"))?
+    {
+        "engine" => OpenSetEventSource::Engine,
+        "scenario" => OpenSetEventSource::Scenario {
+            event: parse_event_source_string(fields.next(), "scenario event")?,
+        },
+        "node" => OpenSetEventSource::Node {
+            node: parse_event_source_string(fields.next(), "node")?,
+        },
+        "guest" => OpenSetEventSource::Guest {
+            node: parse_event_source_string(fields.next(), "guest node")?,
+        },
+        "command" => OpenSetEventSource::Command {
+            command_id: parse_u64_field(fields.next(), "command id")?,
+        },
+        tag => return Err(rpc_decode(format!("unknown event source tag `{tag}`"))),
+    };
+    if fields.next().is_some() {
+        return Err(rpc_decode("unexpected extra event source fields"));
+    }
+    Ok(source)
+}
+
+fn parse_event_source_string(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<String, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    parse_hex_string(value)
+}
+
+fn parse_event_level_line(line: Option<&str>) -> Result<EventLevel, ControlClientError> {
+    match parse_prefixed_line(line, "level=")? {
+        "trace" => Ok(EventLevel::Trace),
+        "debug" => Ok(EventLevel::Debug),
+        "info" => Ok(EventLevel::Info),
+        "warn" => Ok(EventLevel::Warn),
+        "error" => Ok(EventLevel::Error),
+        value => Err(rpc_decode(format!("unknown event level `{value}`"))),
+    }
+}
+
+fn parse_event_attributes<'a, I>(
+    lines: I,
+) -> Result<BTreeMap<String, OpenSetAttributeValue>, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut attributes = BTreeMap::new();
+    for line in lines {
+        let value = parse_prefixed_line(Some(line), "attribute=")?;
+        let (name, attribute) = parse_event_attribute(value)?;
+        attributes.insert(name, attribute);
+    }
+    Ok(attributes)
+}
+
+fn parse_event_attribute(
+    value: &str,
+) -> Result<(String, OpenSetAttributeValue), ControlClientError> {
+    let mut fields = value.split('|');
+    let name = parse_hex_field(fields.next(), "attribute name")?;
+    let type_name = fields
+        .next()
+        .ok_or_else(|| rpc_decode("missing attribute type"))?;
+    let wire_value = fields
+        .next()
+        .ok_or_else(|| rpc_decode("missing attribute value"))?;
+    if fields.next().is_some() {
+        return Err(rpc_decode("unexpected extra attribute fields"));
+    }
+    let attribute = match type_name {
+        "bool" => OpenSetAttributeValue::Bool(parse_bool_field(wire_value, "attribute bool")?),
+        "int" => OpenSetAttributeValue::Int(parse_i64_field(wire_value, "attribute int")?),
+        "uint" => OpenSetAttributeValue::Uint(parse_u64_field(Some(wire_value), "attribute uint")?),
+        "uint128" => {
+            OpenSetAttributeValue::Uint128(parse_u128_field(wire_value, "attribute uint128")?)
+        }
+        "float64bits" => OpenSetAttributeValue::Float64Bits(parse_u64_field(
+            Some(wire_value),
+            "attribute float64bits",
+        )?),
+        "string" => OpenSetAttributeValue::String(parse_hex_string(wire_value)?),
+        "bytes" => OpenSetAttributeValue::Bytes(parse_hex_bytes(wire_value)?),
+        value => return Err(rpc_decode(format!("unknown attribute type `{value}`"))),
+    };
+    Ok((name, attribute))
+}
+
+fn parse_hex_field(value: Option<&str>, label: &'static str) -> Result<String, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    parse_hex_string(value)
+}
+
+fn parse_bool_field(value: &str, label: &'static str) -> Result<bool, ControlClientError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(rpc_decode(format!("invalid {label} `{value}`"))),
+    }
+}
+
+fn parse_i64_field(value: &str, label: &'static str) -> Result<i64, ControlClientError> {
+    value
+        .parse::<i64>()
+        .map_err(|error| rpc_decode(format!("invalid {label} `{value}`: {error}")))
+}
+
+fn parse_u128_field(value: &str, label: &'static str) -> Result<u128, ControlClientError> {
+    value
+        .parse::<u128>()
+        .map_err(|error| rpc_decode(format!("invalid {label} `{value}`: {error}")))
+}
+
 fn parse_state_line(line: Option<&str>) -> Result<LiveStateKind, ControlClientError> {
     parse_state_field(Some(parse_prefixed_line(line, "state=")?), "state")
 }
@@ -1003,6 +1443,7 @@ fn parse_capabilities_line(
     if value.is_empty() {
         return Ok(StreamingCapabilitySet {
             commands: Vec::new(),
+            snapshot_on_attach: true,
         });
     }
 
@@ -1017,7 +1458,51 @@ fn parse_capabilities_line(
             command_kind,
         });
     }
-    Ok(StreamingCapabilitySet { commands })
+    Ok(StreamingCapabilitySet {
+        commands,
+        snapshot_on_attach: true,
+    })
+}
+
+fn parse_attach_snapshot_line(
+    line: Option<&str>,
+) -> Result<Option<AttachSnapshot>, ControlClientError> {
+    let value = parse_prefixed_line(line, "snapshot=")?;
+    if value == "none" {
+        return Ok(None);
+    }
+    let mut fields = value.split('|');
+    let through = parse_snapshot_u64(fields.next(), "snapshot.through")?;
+    let event_count = parse_snapshot_u64(fields.next(), "snapshot.events")?;
+    let causal_event_count = parse_snapshot_u64(fields.next(), "snapshot.causal")?;
+    let observational_event_count = parse_snapshot_u64(fields.next(), "snapshot.observational")?;
+    let last_sequence =
+        match fields
+            .next()
+            .ok_or_else(|| rpc_decode("missing snapshot.last"))?
+        {
+            "none" => None,
+            value => Some(value.parse::<u64>().map_err(|error| {
+                rpc_decode(format!("invalid snapshot.last `{value}`: {error}"))
+            })?),
+        };
+    if fields.next().is_some() {
+        return Err(rpc_decode("trailing snapshot fields"));
+    }
+    Ok(Some(AttachSnapshot {
+        through: EventLogCursor::new(through),
+        event_count,
+        causal_event_count,
+        observational_event_count,
+        last_sequence,
+    }))
+}
+
+fn parse_snapshot_u64(value: Option<&str>, field: &'static str) -> Result<u64, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {field}")))?;
+    value
+        .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid {field} `{value}`: {error}")))
 }
 
 fn parse_command_kind_line(
@@ -1158,4 +1643,27 @@ fn parse_prefixed_line<'a>(
         .ok_or_else(|| ControlClientError::RpcDecode {
             message: format!("expected `{prefix}` line, got `{line}`"),
         })
+}
+
+fn parse_hex_string(value: &str) -> Result<String, ControlClientError> {
+    String::from_utf8(parse_hex_bytes(value)?)
+        .map_err(|error| rpc_decode(format!("invalid UTF-8 hex string: {error}")))
+}
+
+fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
+    if value.len() % 2 != 0 {
+        return Err(rpc_decode(format!(
+            "hex string has odd length {}",
+            value.len()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let pair = &value[index..index + 2];
+        bytes.push(
+            u8::from_str_radix(pair, 16)
+                .map_err(|error| rpc_decode(format!("invalid hex byte `{pair}`: {error}")))?,
+        );
+    }
+    Ok(bytes)
 }

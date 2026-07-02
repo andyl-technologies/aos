@@ -2,23 +2,31 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, EventLogOffset, GenesisCheckpoint,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed, TemporalGraph,
-    VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EventAttributeValue,
+    EventDiagnosticPayload, EventLevel, EventLogOffset, GenesisCheckpoint, QuantumLoop,
+    QuantumOutcome, QuantumRequest, RngDecision, RngStreamId, ScenarioDef, SchedulerError,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_api::{
     API_COMMAND_MAPPINGS, AttachRequest, Attached, CommandRejectionKind, CommandResultStatus,
-    ControlClient, ControlPlaneEventLog, ControlTransportKind, ControlWireModel,
+    ControlClient, ControlPlaneEventLog, ControlStream, ControlTransportKind, ControlWireModel,
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     EventLogCursor, HelloRequest, InProcessControlClient, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
-    RpcControlClient, RpcEndpoint, RpcTransportProtocol, ScenarioCatalogEntry, SendRequest,
-    SendResponse, SessionId, SessionRef, StateUpdate, assert_shared_wire_model,
+    ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventSource,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcControlClient, RpcEndpoint,
+    RpcTransportProtocol, ScenarioCatalogEntry, SendRequest, SendResponse, SessionId, SessionRef,
+    StateUpdate, StreamingEventFrame, WatchStream, assert_shared_wire_model,
     encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
     session_command_for_open_set_command_kind,
 };
+use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind};
+use futures_util::stream;
 use tokio::sync::{Mutex, mpsc};
 
 #[tokio::test(flavor = "current_thread")]
@@ -92,53 +100,152 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(sessions.sessions[0].session, created.session);
     assert_eq!(sessions.sessions[0].state, LiveStateKind::Running);
 
-    let control_attached = rpc
+    let pre_attach_paused = rpc
+        .send_command(SendRequest::new(
+            created.session,
+            100,
+            SessionCommand::Pause,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC pre-attach Pause should decode: {error}"));
+    assert_eq!(
+        pre_attach_paused.result.status,
+        CommandResultStatus::Accepted
+    );
+    assert_eq!(
+        pre_attach_paused.state_update.map(|update| update.state),
+        Some(LiveStateKind::Paused),
+    );
+    let paused_sessions = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC paused list sessions should decode: {error}"));
+    assert_eq!(paused_sessions.sessions[0].state, LiveStateKind::Paused);
+    let control_replay_start = paused_sessions.sessions[0].event_log_len;
+    rpc_server
+        .append_session_events(created.session, &event_pair(control_replay_start, 301))
+        .await;
+
+    let mut control = rpc
         .control_attach(
-            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_cursor(EventLogCursor::new(control_replay_start)),
         )
         .await
         .unwrap_or_else(|error| panic!("RPC Control attach should decode: {error}"));
+    let control_attached = control.attached().clone();
     assert_eq!(control_attached.session, created.session);
-    assert_eq!(control_attached.state, LiveStateKind::Running);
+    assert_eq!(control_attached.state, LiveStateKind::Paused);
+    assert_eq!(
+        control_attached.event_log_len,
+        control_replay_start.saturating_add(2),
+    );
+    assert_eq!(
+        control_attached
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.event_count),
+        Some(control_replay_start.saturating_add(2)),
+    );
     assert_eq!(
         control_attached.capabilities.commands.len(),
         SessionCommandKind::ALL.len(),
+    );
+    let control_replay = recv_rpc_control_event(&mut control).await;
+    assert_eq!(
+        control_replay.cursor,
+        EventLogCursor::new(control_replay_start)
+    );
+    assert_eq!(control_replay.event.payload.kind, "crucible.event.rng_draw",);
+    assert!(!control_replay.event.observational);
+    let control_replay_observational = recv_rpc_control_event(&mut control).await;
+    assert_eq!(
+        control_replay_observational.cursor,
+        EventLogCursor::new(control_replay_start.saturating_add(1)),
+    );
+    assert!(control_replay_observational.event.observational);
+    let control_live_start = control_attached.event_log_len;
+    rpc_server
+        .append_session_events(created.session, &event_pair(control_live_start, 302))
+        .await;
+    let control_live = recv_rpc_control_event(&mut control).await;
+    assert_eq!(control_live.cursor, EventLogCursor::new(control_live_start));
+    assert_eq!(control_live.event.sequence, control_live_start);
+
+    let control_continued = rpc
+        .control_send(SendRequest::new(
+            created.session,
+            101,
+            SessionCommand::Continue,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("RPC Control Continue should decode: {error}"));
+    assert_eq!(control_continued.result.command_id, 101);
+    assert_eq!(
+        control_continued.result.status,
+        CommandResultStatus::Accepted
+    );
+    assert_eq!(
+        control_continued.state_update.map(|update| update.state),
+        Some(LiveStateKind::Running),
     );
 
     let control_paused = rpc
         .control_send(SendRequest::new(
             created.session,
-            101,
+            102,
             SessionCommand::Pause,
         ))
         .await
-        .unwrap_or_else(|error| panic!("RPC Control send should decode: {error}"));
-    assert_eq!(control_paused.result.command_id, 101);
+        .unwrap_or_else(|error| panic!("RPC Control Pause should decode: {error}"));
+    assert_eq!(control_paused.result.command_id, 102);
     assert_eq!(control_paused.result.status, CommandResultStatus::Accepted);
     assert_eq!(
         control_paused.state_update.map(|update| update.state),
         Some(LiveStateKind::Paused),
     );
 
-    let watch_attached = rpc
+    let watch_replay_start = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC list before Watch attach should decode: {error}"))
+        .sessions[0]
+        .event_log_len;
+    let mut watch = rpc
         .watch_attach(
-            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_cursor(EventLogCursor::new(watch_replay_start)),
         )
         .await
         .unwrap_or_else(|error| panic!("RPC Watch attach should decode: {error}"));
+    let watch_attached = watch.attached().clone();
     assert_eq!(watch_attached.session, created.session);
     assert_eq!(watch_attached.state, LiveStateKind::Paused);
     assert_eq!(watch_attached.capabilities, control_attached.capabilities);
+    assert_eq!(watch_attached.event_log_len, watch_replay_start);
+    let quiet_watch = tokio::time::timeout(Duration::from_millis(10), watch.recv_event()).await;
+    assert!(
+        quiet_watch.is_err(),
+        "Watch cursor at tail should not replay"
+    );
+    rpc_server
+        .append_session_events(created.session, &event_pair(watch_replay_start, 303))
+        .await;
+    let watch_live = recv_rpc_watch_event(&mut watch).await;
+    assert_eq!(watch_live.cursor, EventLogCursor::new(watch_replay_start));
+    assert_eq!(watch_live.event.payload.kind, "crucible.event.rng_draw");
 
     let send_continued = rpc
         .send_command(SendRequest::new(
             created.session,
-            102,
+            103,
             SessionCommand::Continue,
         ))
         .await
         .unwrap_or_else(|error| panic!("RPC Send should decode: {error}"));
-    assert_eq!(send_continued.result.command_id, 102);
+    assert_eq!(send_continued.result.command_id, 103);
     assert_eq!(send_continued.result.status, CommandResultStatus::Accepted);
     assert_eq!(
         send_continued.state_update.map(|update| update.state),
@@ -148,7 +255,7 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let rejected_start = rpc
         .send_command(SendRequest::new(
             created.session,
-            103,
+            104,
             SessionCommand::Start,
         ))
         .await
@@ -162,7 +269,7 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert!(rejected_start.state_update.is_none());
 
     let stream_stopped = rpc
-        .send_command(SendRequest::new(created.session, 104, SessionCommand::Stop))
+        .send_command(SendRequest::new(created.session, 105, SessionCommand::Stop))
         .await
         .unwrap_or_else(|error| panic!("RPC Send Stop should decode: {error}"));
     assert_eq!(stream_stopped.result.status, CommandResultStatus::Accepted);
@@ -264,9 +371,28 @@ fn assert_control_client_trait<C: ControlClient>(client: &C) {
     assert_eq!(client.wire_model(), ControlWireModel::current());
 }
 
+async fn recv_rpc_control_event(
+    stream: &mut crucible_api::ClientControlStream,
+) -> StreamingEventFrame {
+    tokio::time::timeout(Duration::from_millis(100), stream.recv_event())
+        .await
+        .unwrap_or_else(|_| panic!("RPC Control event should arrive before timeout"))
+        .unwrap_or_else(|error| panic!("RPC Control event should decode: {error}"))
+        .unwrap_or_else(|| panic!("RPC Control event stream should remain open"))
+}
+
+async fn recv_rpc_watch_event(stream: &mut crucible_api::ClientWatchStream) -> StreamingEventFrame {
+    tokio::time::timeout(Duration::from_millis(100), stream.recv_event())
+        .await
+        .unwrap_or_else(|_| panic!("RPC Watch event should arrive before timeout"))
+        .unwrap_or_else(|error| panic!("RPC Watch event should decode: {error}"))
+        .unwrap_or_else(|| panic!("RPC Watch event stream should remain open"))
+}
+
 struct Http2LifecycleServer {
     endpoint: String,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
 }
 
 impl Http2LifecycleServer {
@@ -282,6 +408,23 @@ impl Http2LifecycleServer {
             tokio::task::yield_now().await;
         }
         false
+    }
+
+    async fn append_session_events(&self, session: SessionRef, entries: &[SchedulerEventLogEntry]) {
+        let streaming = self
+            .control_plane
+            .lock()
+            .await
+            .streaming_session(session)
+            .unwrap_or_else(|error| panic!("streaming session should exist: {error}"));
+        let hub = streaming.event_log().clone().into_inner();
+        append_event_log_entries_for_test(&hub, entries);
+        if let Some(last) = entries.last() {
+            assert_eq!(
+                hub.current_cursor().next_sequence,
+                last.sequence().saturating_add(1),
+            );
+        }
     }
 }
 
@@ -422,6 +565,7 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     Http2LifecycleServer {
         endpoint: format!("http://{addr}"),
         saw_http2,
+        control_plane,
     }
 }
 
@@ -573,10 +717,7 @@ async fn handle_control_attach(
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
     };
-    http2_response(
-        axum::http::StatusCode::OK,
-        encode_attached_response(control.attached()),
-    )
+    http2_stream_response(control_event_body(control))
 }
 
 async fn handle_control_send(
@@ -611,10 +752,7 @@ async fn handle_watch_attach(
             return http2_response(axum::http::StatusCode::BAD_REQUEST, error.to_string());
         }
     };
-    http2_response(
-        axum::http::StatusCode::OK,
-        encode_attached_response(watch.attached()),
-    )
+    http2_stream_response(watch_event_body(watch))
 }
 
 async fn handle_send_command(
@@ -753,7 +891,26 @@ fn encode_attached_response(attached: &Attached) -> String {
         .collect::<Vec<_>>()
         .join(",");
     push_wire_line(&mut output, "commands", &commands);
+    push_wire_line(&mut output, "snapshot", &snapshot_wire(attached));
     output
+}
+
+fn snapshot_wire(attached: &Attached) -> String {
+    let Some(snapshot) = &attached.snapshot else {
+        return String::from("none");
+    };
+    let last = snapshot
+        .last_sequence
+        .map(|sequence| sequence.to_string())
+        .unwrap_or_else(|| String::from("none"));
+    format!(
+        "{}|{}|{}|{}|{}",
+        snapshot.through.next_sequence,
+        snapshot.event_count,
+        snapshot.causal_event_count,
+        snapshot.observational_event_count,
+        last,
+    )
 }
 
 fn encode_send_response(response: &SendResponse) -> String {
@@ -1003,6 +1160,171 @@ fn state_update_wire(update: StateUpdate) -> String {
     )
 }
 
+fn control_event_body(
+    control: ControlStream,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> {
+    let attached = framed_rpc_message(encode_attached_response(control.attached()));
+    stream::unfold(
+        (control, Some(attached)),
+        |(mut control, pending)| async move {
+            if let Some(message) = pending {
+                return Some((Ok(message), (control, None)));
+            }
+            let frame = match control.recv_event().await {
+                Ok(Some(frame)) => frame,
+                Ok(None) | Err(_) => return None,
+            };
+            Some((
+                Ok(framed_rpc_message(encode_streaming_event_frame(&frame))),
+                (control, None),
+            ))
+        },
+    )
+}
+
+fn watch_event_body(
+    watch: WatchStream,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> {
+    let attached = framed_rpc_message(encode_attached_response(watch.attached()));
+    stream::unfold((watch, Some(attached)), |(mut watch, pending)| async move {
+        if let Some(message) = pending {
+            return Some((Ok(message), (watch, None)));
+        }
+        let frame = match watch.recv_event().await {
+            Ok(Some(frame)) => frame,
+            Ok(None) | Err(_) => return None,
+        };
+        Some((
+            Ok(framed_rpc_message(encode_streaming_event_frame(&frame))),
+            (watch, None),
+        ))
+    })
+}
+
+fn framed_rpc_message(message: String) -> axum::body::Bytes {
+    let mut message = message;
+    message.push('\n');
+    axum::body::Bytes::from(message)
+}
+
+fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
+    let mut output = String::from("crucible.rpc/event-frame\n");
+    push_wire_line(&mut output, "generation", &frame.generation.to_string());
+    push_wire_line(
+        &mut output,
+        "cursor",
+        &frame.cursor.next_sequence.to_string(),
+    );
+    push_wire_line(
+        &mut output,
+        "next-cursor",
+        &frame.next_cursor.next_sequence.to_string(),
+    );
+    push_wire_line(&mut output, "sequence", &frame.event.sequence.to_string());
+    push_wire_line(
+        &mut output,
+        "virtual-time-ticks",
+        &frame.event.at.virtual_time_ticks.to_string(),
+    );
+    push_wire_line(
+        &mut output,
+        "icount-retired",
+        &frame.event.at.icount_retired.to_string(),
+    );
+    push_wire_line(
+        &mut output,
+        "icount-node",
+        &optional_string_wire(frame.event.at.icount_node.as_deref()),
+    );
+    push_wire_line(
+        &mut output,
+        "source",
+        &event_source_wire(&frame.event.source),
+    );
+    push_wire_line(&mut output, "level", event_level_wire(frame.event.level));
+    push_wire_line(
+        &mut output,
+        "observational",
+        if frame.event.observational {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    push_wire_line(&mut output, "kind", &frame.event.payload.kind);
+    for (name, value) in &frame.event.payload.attributes {
+        push_wire_line(
+            &mut output,
+            "attribute",
+            &format!("{}|{}", hex_encode(name.as_bytes()), attribute_wire(value)),
+        );
+    }
+    output
+}
+
+fn optional_string_wire(value: Option<&str>) -> String {
+    value
+        .map(|value| hex_encode(value.as_bytes()))
+        .unwrap_or_else(|| String::from("none"))
+}
+
+fn event_source_wire(source: &OpenSetEventSource) -> String {
+    match source {
+        OpenSetEventSource::Scenario { event } => {
+            format!("scenario|{}", hex_encode(event.as_bytes()))
+        }
+        OpenSetEventSource::Engine => String::from("engine"),
+        OpenSetEventSource::Node { node } => format!("node|{}", hex_encode(node.as_bytes())),
+        OpenSetEventSource::Guest { node } => format!("guest|{}", hex_encode(node.as_bytes())),
+        OpenSetEventSource::Command { command_id } => format!("command|{command_id}"),
+    }
+}
+
+fn event_level_wire(level: EventLevel) -> &'static str {
+    match level {
+        EventLevel::Trace => "trace",
+        EventLevel::Debug => "debug",
+        EventLevel::Info => "info",
+        EventLevel::Warn => "warn",
+        EventLevel::Error => "error",
+    }
+}
+
+fn attribute_wire(value: &OpenSetAttributeValue) -> String {
+    match value {
+        OpenSetAttributeValue::Bool(value) => {
+            format!("bool|{}", if *value { "true" } else { "false" })
+        }
+        OpenSetAttributeValue::Int(value) => format!("int|{value}"),
+        OpenSetAttributeValue::Uint(value) => format!("uint|{value}"),
+        OpenSetAttributeValue::Uint128(value) => format!("uint128|{value}"),
+        OpenSetAttributeValue::Float64Bits(value) => format!("float64bits|{value}"),
+        OpenSetAttributeValue::String(value) => format!("string|{}", hex_encode(value.as_bytes())),
+        OpenSetAttributeValue::Bytes(value) => format!("bytes|{}", hex_encode(value)),
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn http2_stream_response(
+    body: impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>>
+    + Send
+    + 'static,
+) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .body(axum::body::Body::from_stream(body))
+        .unwrap_or_else(|error| panic!("HTTP/2 test streaming response should build: {error}"))
+}
+
 fn http2_response(
     status: axum::http::StatusCode,
     body: impl Into<axum::body::Body>,
@@ -1024,6 +1346,31 @@ fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop
     let event_log = ControlPlaneEventLog::new(actor.event_log());
     let client = InProcessControlClient::new(sender, live, event_log);
     (client, actor)
+}
+
+fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
+    let frontier = VirtualTime { ticks: quantum };
+    let causal = condition_payload_entry_for_test(
+        first_sequence,
+        frontier,
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name(format!("rpc-{quantum}")),
+            value: quantum,
+        })),
+    );
+
+    let mut details = BTreeMap::new();
+    details.insert(String::from("quantum"), EventAttributeValue::U64(quantum));
+    let observational = condition_payload_entry_for_test(
+        first_sequence.saturating_add(1),
+        frontier,
+        SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+            format!("rpc-diagnostic-{quantum}"),
+            EventLevel::Info,
+            details,
+        )),
+    );
+    vec![causal, observational]
 }
 
 struct ServerQuantumLoop {

@@ -649,8 +649,7 @@ ran in-process against the double or over the wire against QEMU.
   paths advertise the same command capability set from the thin API mapping
   table, dispatch accepted commands through the same session actor mailbox
   helper, and use the session lifecycle transition model for invalid-state
-  command results. Cursor replay, event payload open-set encoding, and monotonic
-  live `StateUpdate` streaming remain T-API-5 through T-API-7.
+  command results. Monotonic live `StateUpdate` streaming remains T-API-7.
 - [x] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log
   catalog (19 §19.7); opaque-unknown-kind handling on receive, typed
@@ -665,11 +664,21 @@ ran in-process against the double or over the wire against QEMU.
   the existing taxonomy keys, and breakpoint kinds from the shared predicate
   vocabulary. `Hello` now advertises the four dotted open-set categories and the
   ABI golden seed uses dotted command and catalog event kinds.
-- [ ] **T-API-6** Implement the streaming cursor: replay from `from_seq` then live
+- [x] **T-API-6** Implement the streaming cursor: replay from `from_seq` then live
   tail, deterministic causal subsequence with observational entries flowing
   (flagged), pure non-stalling observation, and optional snapshot-on-attach with
   every field log-derivable. — satisfies [API-15], [API-16], [API-17], [API-18];
   spec §21.4; cross-ref 19 §19.6.5, 20 §9.
+  Completed by `checks.crucible.phase5.apiStreamingCursor`:
+  `crucible-session::SessionEventLog` now exposes attach-tail subscription and a
+  retained-prefix snapshot fold without changing append or broadcast semantics.
+  `crucible-api::streaming` reports the attach replay tail as `event_log_len`,
+  includes a log-derived `AttachSnapshot` when `snapshot_on_attach` is
+  advertised, and adds `recv_event` helpers that convert replay/live frames into
+  open-set API event envelopes carrying cursor, level, source, and
+  observational flag. The cursor gate replays causal plus observational entries
+  from `from_seq = 0`, proves attach beyond the tail skips historical replay, and
+  verifies live-tail delivery after attach without changing the live state.
 - [ ] **T-API-7** Implement `StateUpdate` delivery distinct from event-log entries,
   applied monotonically, so a Watch-only client tracks run-state from
   StateUpdate + SendResponse. — satisfies [API-19]; spec §21.4; cross-ref 20 §2.

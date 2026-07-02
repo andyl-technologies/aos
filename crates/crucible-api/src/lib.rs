@@ -30,9 +30,10 @@ pub mod session_mapping;
 pub mod streaming;
 
 pub use client::{
-    ControlClient, ControlClientError, ControlClientFuture, ControlTransportKind, ControlWireModel,
-    HelloRequest, HelloResponse, InProcessControlClient, RpcControlClient, RpcEndpoint,
-    RpcTransportProtocol, assert_shared_wire_model,
+    ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
+    ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
+    RpcControlClient, RpcControlStream, RpcEndpoint, RpcTransportProtocol, RpcWatchStream,
+    assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
@@ -43,7 +44,7 @@ pub use control_responsive::{
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
     SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
-    SessionEventLogStream, SessionEventLogStreamError,
+    SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
@@ -78,9 +79,10 @@ pub use session_mapping::{
     validate_thin_api_mapping,
 };
 pub use streaming::{
-    AttachRequest, Attached, CommandRejectionKind, CommandResult, CommandResultStatus,
-    ControlStream, InProcessStreamingSession, STREAMING_COMMAND_MAX_ACTOR_YIELDS, SendRequest,
-    SendResponse, StateUpdate, StreamingApiError, StreamingCapabilitySet,
-    StreamingCommandCapability, StreamingEquivalenceError, StreamingEquivalenceReport, WatchStream,
+    AttachRequest, AttachSnapshot, Attached, CommandRejectionKind, CommandResult,
+    CommandResultStatus, ControlStream, InProcessStreamingSession,
+    STREAMING_COMMAND_MAX_ACTOR_YIELDS, SendRequest, SendResponse, StateUpdate, StreamingApiError,
+    StreamingCapabilitySet, StreamingCommandCapability, StreamingEquivalenceError,
+    StreamingEquivalenceReport, StreamingEventFrame, WatchStream,
     validate_control_watch_send_equivalence,
 };

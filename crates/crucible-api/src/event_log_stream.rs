@@ -6,8 +6,8 @@
 
 pub use crucible_session::{
     EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE,
-    SessionEventLog as SessionEventLogHub, SessionEventLogFrame, SessionEventLogStream,
-    SessionEventLogStreamError,
+    SessionEventLog as SessionEventLogHub, SessionEventLogFrame, SessionEventLogSnapshot,
+    SessionEventLogStream, SessionEventLogStreamError,
 };
 
 /// Control-plane facade for cursor-backed event-log subscriptions.
@@ -37,6 +37,25 @@ impl ControlPlaneEventLog {
     #[must_use]
     pub fn subscribe(&self, cursor: EventLogCursor) -> SessionEventLogStream {
         self.hub.subscribe(cursor)
+    }
+
+    /// Subscribes and returns the retained log tail used for replay.
+    ///
+    /// The returned cursor is the `event_log_len` boundary that attach metadata
+    /// should report; the stream replays from `cursor` through that boundary and
+    /// then follows the live tail.
+    #[must_use]
+    pub fn subscribe_with_replay_tail(
+        &self,
+        cursor: EventLogCursor,
+    ) -> (EventLogCursor, SessionEventLogStream) {
+        self.hub.subscribe_with_replay_tail(cursor)
+    }
+
+    /// Returns a log-derived snapshot summary through `cursor`.
+    #[must_use]
+    pub fn snapshot_through(&self, cursor: EventLogCursor) -> SessionEventLogSnapshot {
+        self.hub.snapshot_through(cursor)
     }
 
     /// Returns the wrapped session event-log hub.

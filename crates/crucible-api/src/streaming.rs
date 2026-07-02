@@ -15,8 +15,12 @@ use crucible_session::{
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::event_log_stream::{ControlPlaneEventLog, EventLogCursor};
+use crate::event_log_stream::{
+    ControlPlaneEventLog, EventLogCursor, SessionEventLogFrame, SessionEventLogSnapshot,
+    SessionEventLogStreamError,
+};
 use crate::lifecycle::SessionRef;
+use crate::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
 use crate::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION};
 use crate::session_mapping::{
     API_COMMAND_MAPPINGS, ApiDispatch, ApiMethod, CommandDispatchCardinality, method_mapping,
@@ -39,6 +43,8 @@ pub struct StreamingCommandCapability {
 pub struct StreamingCapabilitySet {
     /// Command kinds accepted by the path.
     pub commands: Vec<StreamingCommandCapability>,
+    /// Whether `Attached` carries a log-derived snapshot summary.
+    pub snapshot_on_attach: bool,
 }
 
 impl StreamingCapabilitySet {
@@ -53,6 +59,7 @@ impl StreamingCapabilitySet {
                     command_kind: mapping.command_kind,
                 })
                 .collect(),
+            snapshot_on_attach: true,
         }
     }
 
@@ -194,6 +201,59 @@ pub struct Attached {
     pub version: ProtocolVersion,
     /// Command capabilities available after attach.
     pub capabilities: StreamingCapabilitySet,
+    /// Optional log-derived snapshot captured at attach time.
+    pub snapshot: Option<AttachSnapshot>,
+}
+
+/// Log-derived snapshot summary included in `Attached`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachSnapshot {
+    /// Cursor through which the snapshot was folded.
+    pub through: EventLogCursor,
+    /// Number of event-log entries folded into the snapshot.
+    pub event_count: u64,
+    /// Number of causal entries folded into the snapshot.
+    pub causal_event_count: u64,
+    /// Number of observational entries folded into the snapshot.
+    pub observational_event_count: u64,
+    /// Last sequence folded into the snapshot, when any entry was present.
+    pub last_sequence: Option<u64>,
+}
+
+impl From<SessionEventLogSnapshot> for AttachSnapshot {
+    fn from(value: SessionEventLogSnapshot) -> Self {
+        Self {
+            through: value.through,
+            event_count: value.event_count,
+            causal_event_count: value.causal_count,
+            observational_event_count: value.observational_count,
+            last_sequence: value.last_sequence,
+        }
+    }
+}
+
+/// API event frame delivered by `Control` and `Watch`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamingEventFrame {
+    /// Event-log stream generation that produced this frame.
+    pub generation: u64,
+    /// Cursor position of this entry.
+    pub cursor: EventLogCursor,
+    /// Cursor position immediately after this entry.
+    pub next_cursor: EventLogCursor,
+    /// Open-set API event envelope.
+    pub event: OpenSetEventEnvelope,
+}
+
+impl From<SessionEventLogFrame> for StreamingEventFrame {
+    fn from(value: SessionEventLogFrame) -> Self {
+        Self {
+            generation: value.generation,
+            cursor: value.cursor,
+            next_cursor: value.next_cursor,
+            event: open_set_event_envelope_from_entry(&value.entry),
+        }
+    }
 }
 
 /// Run-state update returned beside a command result.
@@ -316,6 +376,12 @@ pub enum StreamingApiError {
         /// Expected state.
         expected: LiveStateKind,
     },
+    /// The subscriber fell behind the bounded event-log tail.
+    #[error("streaming event-log subscriber lagged by {skipped} frames")]
+    EventStreamLagged {
+        /// Number of skipped frames reported by the event-log stream.
+        skipped: u64,
+    },
 }
 
 /// In-process streaming API handle for one live session.
@@ -353,6 +419,12 @@ impl InProcessStreamingSession {
         self
     }
 
+    /// Returns the event-log facade used for cursor-backed attach streams.
+    #[must_use]
+    pub const fn event_log(&self) -> &ControlPlaneEventLog {
+        &self.event_log
+    }
+
     /// Attaches a bidirectional `Control` stream.
     ///
     /// # Errors
@@ -360,8 +432,7 @@ impl InProcessStreamingSession {
     /// Returns [`StreamingApiError`] if the request targets a different session
     /// or if the optional expected epoch does not match.
     pub fn control(&self, request: AttachRequest) -> Result<ControlStream, StreamingApiError> {
-        let attached = self.attached(&request)?;
-        let events = self.event_log.subscribe(request.from);
+        let (attached, events) = self.attach_stream(&request)?;
         Ok(ControlStream {
             session: self.session,
             sender: self.sender.clone(),
@@ -379,8 +450,7 @@ impl InProcessStreamingSession {
     /// Returns [`StreamingApiError`] if the request targets a different session
     /// or if the optional expected epoch does not match.
     pub fn watch(&self, request: AttachRequest) -> Result<WatchStream, StreamingApiError> {
-        let attached = self.attached(&request)?;
-        let events = self.event_log.subscribe(request.from);
+        let (attached, events) = self.attach_stream(&request)?;
         Ok(WatchStream { attached, events })
     }
 
@@ -404,16 +474,25 @@ impl InProcessStreamingSession {
         .await
     }
 
-    fn attached(&self, request: &AttachRequest) -> Result<Attached, StreamingApiError> {
+    fn attach_stream(
+        &self,
+        request: &AttachRequest,
+    ) -> Result<(Attached, SessionEventLogStream), StreamingApiError> {
         self.validate_session(request.session, request.expected_epoch)?;
+        let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
+        let snapshot = AttachSnapshot::from(self.event_log.snapshot_through(attach_tail));
         let live = self.live.read();
-        Ok(Attached {
-            session: self.session,
-            event_log_len: live.event_log_len,
-            state: live.state_kind,
-            version: RPC_PROTOCOL_VERSION,
-            capabilities: StreamingCapabilitySet::current(),
-        })
+        Ok((
+            Attached {
+                session: self.session,
+                event_log_len: attach_tail.next_sequence,
+                state: live.state_kind,
+                version: RPC_PROTOCOL_VERSION,
+                capabilities: StreamingCapabilitySet::current(),
+                snapshot: Some(snapshot),
+            },
+            events,
+        ))
     }
 
     fn validate_session(
@@ -462,6 +541,16 @@ impl ControlStream {
         &mut self.events
     }
 
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
+    /// behind the bounded live tail.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
+        recv_api_event(&mut self.events).await
+    }
+
     /// Dispatches one command envelope through the control stream.
     ///
     /// # Errors
@@ -502,6 +591,34 @@ impl WatchStream {
     #[must_use]
     pub fn event_stream(&mut self) -> &mut SessionEventLogStream {
         &mut self.events
+    }
+
+    /// Receives the next API event frame from replay or live tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
+    /// behind the bounded live tail.
+    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
+        recv_api_event(&mut self.events).await
+    }
+}
+
+async fn recv_api_event(
+    events: &mut SessionEventLogStream,
+) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
+    events
+        .recv()
+        .await
+        .map(|frame| frame.map(StreamingEventFrame::from))
+        .map_err(stream_error)
+}
+
+fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
+    match error {
+        SessionEventLogStreamError::Lagged { skipped } => {
+            StreamingApiError::EventStreamLagged { skipped }
+        }
     }
 }
 

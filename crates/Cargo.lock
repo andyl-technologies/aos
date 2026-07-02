@@ -1550,9 +1550,11 @@ name = "crucible-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "crucible",
  "crucible-protocol",
  "crucible-session",
+ "futures-util",
  "reqwest",
  "thiserror",
  "tokio",
