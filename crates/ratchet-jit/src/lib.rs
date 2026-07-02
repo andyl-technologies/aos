@@ -5,8 +5,9 @@
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
 //! `ratchet-core`, [`artifact`] records address-free CLIF artifact metadata,
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
-//! `JITModule` declaration, registered-symbol artifact-definition,
-//! artifact-finalization, owned tier-slot, and promotion-gated preflights,
+//! `JITModule` declaration, artifact-definition/finalization,
+//! registered-symbol artifact-definition/finalization, owned tier-slot, and
+//! promotion-gated preflights,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
 //! environment-slot, and constant-thunk smoke tests,
 //! [`module`] composes artifacts with runtime-symbol declaration
@@ -26,8 +27,8 @@
 //! runtime symbol tables, and executable native calls are future work inside
 //! this crate. The current `JITBuilder::symbol` precursor registers only
 //! explicit opaque address metadata with an encapsulated builder, and the
-//! current finalization precursor exposes only opaque code-pointer metadata for
-//! constant/literal artifacts. Unsafe blocks are allowed only behind the
+//! current finalization precursors expose only opaque code-pointer metadata for
+//! verified artifacts. Unsafe blocks are allowed only behind the
 //! crate-level `unsafe_op_in_unsafe_fn` discipline and must carry local
 //! `// SAFETY:` invariants when those later slices land.
 
@@ -56,15 +57,17 @@ pub use cranelift::{
     JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
     JitCraneliftModuleSetupError, JitCraneliftRegisteredArtifactDefinitionPreflight,
-    JitCraneliftRegisteredSymbol, JitCraneliftSymbolRegistrationPreflight,
-    JitCraneliftTier1PromotionError, JitCraneliftTier1PromotionPreflight,
-    JitCraneliftTier1SlotPreflight, PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
+    JitCraneliftRegisteredArtifactFinalizationPreflight, JitCraneliftRegisteredSymbol,
+    JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1PromotionError,
+    JitCraneliftTier1PromotionPreflight, JitCraneliftTier1SlotPreflight,
+    PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact, jit_cranelift_dependency_pin,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
+    jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
     jit_cranelift_symbol_registration_preflight_with_candidates,
     jit_cranelift_tier1_promotion_preflight_for_ir_root,
     jit_cranelift_tier1_slot_preflight_for_artifact,

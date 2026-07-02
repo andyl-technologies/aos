@@ -6758,6 +6758,21 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       not use real exported wrappers, dereference or call registered addresses,
       finalize executable memory, expose a code pointer, install tier metadata,
       or call native code.
+- [x] Current registered-symbol artifact-finalization precursor:
+      `ratchet-jit::cranelift::jit_cranelift_registered_artifact_finalization_preflight_with_candidates()`
+      composes explicit native-address candidates with the registered artifact
+      definition path, calls `JITModule::finalize_definitions`, and returns a
+      non-null opaque code pointer for the finalized artifact body. Tests pin
+      env-slot finalization with a synthetic relocation target for `aos_env_get`,
+      missing-candidate and wrong-kind candidate rejection for artifact imports,
+      unresolved-import readiness preservation, code-pointer metadata,
+      registered/imported symbol visibility, representative registration gaps,
+      and encapsulated-module ownership. This finalizes executable memory for
+      registered call-bearing artifacts, but still does not use real exported
+      wrappers, directly dereference or call registered addresses, cast or call
+      the finalized code pointer, install tier metadata, mutate evaluator thunk
+      state, or complete runtime-symbol registration for unrelated stable
+      symbols.
 - [x] Current Cranelift artifact-finalization precursor:
       `ratchet-jit::cranelift::jit_cranelift_artifact_finalization_preflight_for_artifact()`
       takes one verified CLIF artifact through the same import declaration and
@@ -6771,9 +6786,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       finalizes executable memory for non-call-bearing artifacts but still does
       not install the pointer into evaluator thunk state, cast the code pointer
       to a function type, call native code, lower generic IR, emit runtime calls,
-      or complete runtime-symbol registration. Call-bearing artifacts still
-      require a later finalization path that composes with complete
-      runtime-symbol address registration before relocation.
+      or complete runtime-symbol registration. This unregistered API still
+      rejects call-bearing artifacts; those artifacts must use a registered
+      finalization path, and full native-call integration still requires
+      complete runtime-symbol address registration before relocation.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs
