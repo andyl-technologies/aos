@@ -1,0 +1,172 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase5.cliServeMultiClient",
+  taskIds ? ["T-CLI-14"],
+  dependencies ? [],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
+  };
+
+  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
+  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  controlClientGate = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
+      {
+        label = "T-CLI-14 remains open";
+        needle = "- [ ] **T-CLI-14** Implement `serve`";
+      }
+      {
+        label = "T-CLI-14 multi-client progress note";
+        needle = "Work in progress under `checks.crucible.phase5.cliServeMultiClient`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
+      {
+        label = "phase5 CLI serve multi-client progress note";
+        needle = "`checks.crucible.phase5.cliServeMultiClient` covers";
+      }
+      {
+        label = "phase5 CLI serve multi-client coverage wording";
+        needle = "production HTTP/2 server admitting concurrent read-only Watch and Query";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientGate [
+      {
+        label = "production HTTP/2 multi-client test";
+        needle = "production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients";
+      }
+      {
+        label = "concurrent watch/query join";
+        needle = "tokio::join!(watch_a, watch_b, paused_query)";
+      }
+      {
+        label = "watch clients attach";
+        needle = "watch_attach";
+      }
+      {
+        label = "read-only query clients";
+        needle = "query_state_command()";
+      }
+      {
+        label = "live watch update assertion";
+        needle = "recv_watch_state_update(&mut watch_a, LiveStateKind::Running)";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase5 exposes CLI serve multi-client check";
+        needle = "cliServeMultiClient = import ./phase5-cli-serve-multi-client.nix";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase5 CLI serve multi-client check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase5-cli-serve-multi-client";
+      version = "0";
+      src = crucibleSrc;
+
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.rust
+        pkgs.sed
+      ];
+
+      ATTR_PATH = attrPath;
+      TASK_IDS = builtins.concatStringsSep "," taskIds;
+      DEPENDENCY_COUNT = toString (builtins.length dependencies);
+      DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-cli-serve-multi-client";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cd crates
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-serve-multi-client-target" \
+              -p crucible-api \
+              production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients \
+              -- --test-threads=1
+          '';
+        }
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=$ATTR_PATH
+            tasks=$TASK_IDS
+            component=crucible-api
+            serve_multi_client=production-http2-watch-query
+            dependencies=$DEPENDENCY_COUNT
+            RESULT
+          '';
+        }
+      ];
+    }
