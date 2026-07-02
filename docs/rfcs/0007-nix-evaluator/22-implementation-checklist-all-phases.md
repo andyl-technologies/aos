@@ -6518,6 +6518,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       nested/generic traversal, runtime calls, forcing, branches, applications,
       `JITModule`, executable buffer, symbol registration, and native calls
       remain unimplemented.
+- [x] Current deterministic IR-root CLIF naming precursor:
+      `ratchet-jit::lower::clif_name_for_ir_root()` reserves a Cranelift
+      user-function namespace for verified CLIF functions lowered from Core IR
+      roots and uses the raw `IrId` as the function index. Tests pin default
+      constant-body naming, reserved namespace/index mapping, direct
+      `ThunkAlloc` root naming, and nonzero whole-artifact root naming. This is
+      non-executable naming metadata only: no `JITModule`, symbol declaration,
+      relocation, executable address, compiled artifact cache, or native call is
+      implemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

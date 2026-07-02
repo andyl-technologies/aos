@@ -19,12 +19,27 @@ use ratchet_value::value::Value;
 
 use crate::abi::{JitClifSignatureError, clif_signature_for_runtime_call};
 
+/// Cranelift user-function namespace reserved for Core IR root thunks.
+///
+/// Cranelift treats user function names as caller-owned numeric metadata. The
+/// current lowerer uses this namespace with the Core [`IrId`] as the function
+/// index so non-executable CLIF artifacts have deterministic per-expression
+/// names before `JITModule` integration exists.
+pub const AOS_IR_ROOT_FUNCTION_NAMESPACE: u32 = 7;
+
+/// Returns the deterministic CLIF user-function name for a Core IR root.
+pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
+    UserFuncName::user(AOS_IR_ROOT_FUNCTION_NAMESPACE, root.as_u32())
+}
+
 /// Lowers a constant runtime value into a verified compiled-thunk CLIF body.
 ///
 /// The returned function has the frozen compiled-thunk runtime signature:
 /// `rt`, `env`, and a two-word runtime `Value` return. The current body ignores
 /// the runtime and environment parameters and emits two `iconst.i64`
-/// instructions for the value tag and payload words.
+/// instructions for the value tag and payload words. This smoke-test entrypoint
+/// uses Cranelift's default user-function name because it is not tied to a Core
+/// IR root.
 ///
 /// # Errors
 ///
@@ -32,8 +47,15 @@ use crate::abi::{JitClifSignatureError, clif_signature_for_runtime_call};
 /// lowered to a CLIF signature. Returns [`JitLowerError::Verifier`] if Cranelift
 /// rejects the generated single-block function.
 pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError> {
+    lower_constant_thunk_body_with_name(value, UserFuncName::default())
+}
+
+fn lower_constant_thunk_body_with_name(
+    value: Value,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
-    let mut function = Function::with_name_signature(UserFuncName::default(), signature);
+    let mut function = Function::with_name_signature(name, signature);
     let entry_block = append_entry_block_params(&mut function);
     emit_value_return(&mut function, entry_block, value);
     verify_clif_function(&function)?;
@@ -45,7 +67,9 @@ pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError
 /// This is the first Core-IR entrypoint for the tier-1 lowerer. It accepts
 /// literal `Int`, `Float`, `Bool`, and `Null` roots plus one direct
 /// [`IrKind::ThunkAlloc`] wrapper around those literal roots, then reuses
-/// [`lower_constant_thunk_body`] to build the single-block CLIF body.
+/// the constant thunk body path to build the single-block CLIF body. The
+/// returned function name is deterministic: [`AOS_IR_ROOT_FUNCTION_NAMESPACE`]
+/// plus the raw Core [`IrId`] root as the Cranelift user-function index.
 ///
 /// # Errors
 ///
@@ -64,7 +88,7 @@ pub fn lower_constant_ir_thunk_body(
     root: IrId,
 ) -> Result<Function, JitLowerError> {
     let value = constant_value_for_root(arena, root)?;
-    lower_constant_thunk_body(value)
+    lower_constant_thunk_body_with_name(value, clif_name_for_ir_root(root))
 }
 
 /// Lowers the root of a lowered IR artifact into a compiled-thunk CLIF body.
@@ -316,11 +340,23 @@ mod tests {
         let expected_signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())
             .expect("thunk signature lowers");
 
+        assert_eq!(function.name, UserFuncName::default());
         assert_eq!(function.signature, expected_signature);
         assert_eq!(
             entry_block_param_types(&function),
             param_types(&expected_signature)
         );
+    }
+
+    #[test]
+    fn ir_root_function_name_uses_reserved_namespace_and_root_index() {
+        let name = clif_name_for_ir_root(IrId::new(42));
+        let user_name = name
+            .get_user()
+            .expect("IR root CLIF names use user-function metadata");
+
+        assert_eq!(user_name.namespace, AOS_IR_ROOT_FUNCTION_NAMESPACE);
+        assert_eq!(user_name.index, 42);
     }
 
     #[test]
@@ -441,6 +477,7 @@ mod tests {
         let function = lower_constant_ir_thunk_body(&arena, IrId::new(1))
             .expect("direct literal thunk allocation lowers");
 
+        assert_eq!(function.name, clif_name_for_ir_root(IrId::new(1)));
         assert_eq!(
             iconst_words(&function),
             vec![ValueTag::Int as u64, Value::int(17).payload_bits()]
@@ -644,6 +681,7 @@ mod tests {
 
         let function = lower_constant_ir_root_thunk_body(&ir).expect("nonzero literal root lowers");
 
+        assert_eq!(function.name, clif_name_for_ir_root(IrId::new(1)));
         assert_eq!(
             iconst_words(&function),
             vec![ValueTag::Int as u64, Value::int(11).payload_bits()]

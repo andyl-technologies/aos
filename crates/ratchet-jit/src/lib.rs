@@ -40,8 +40,8 @@ pub use cranelift::{
     jit_cranelift_dependency_pin,
 };
 pub use lower::{
-    JitLowerError, lower_constant_ir_root_thunk_body, lower_constant_ir_thunk_body,
-    lower_constant_thunk_body,
+    AOS_IR_ROOT_FUNCTION_NAMESPACE, JitLowerError, clif_name_for_ir_root,
+    lower_constant_ir_root_thunk_body, lower_constant_ir_thunk_body, lower_constant_thunk_body,
 };
 pub use safepoints::{
     JitSafepointPlacement, JitSafepointPolicy, JitSafepointTier, REQUIRED_JIT_SAFEPOINT_PLACEMENTS,

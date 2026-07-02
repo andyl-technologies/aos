@@ -1160,6 +1160,15 @@ harness, never cut for scope.
       malformed thunk payloads. This is the first bounded child traversal only:
       nested/generic traversal, forcing, runtime-symbol calls, branches,
       applications, executable buffers, and native calls remain unimplemented.
+- [x] Current deterministic IR-root CLIF naming precursor:
+      `ratchet-jit::lower::clif_name_for_ir_root()` assigns verified CLIF
+      functions lowered from Core IR roots to a reserved Cranelift user-function
+      namespace with the raw `IrId` as the index. Tests pin default naming for
+      constant smoke bodies, reserved namespace/index mapping, and nonzero IR
+      root naming through the whole-artifact entrypoint. This is debug/relink
+      metadata for non-executable CLIF only: no `JITModule`, external symbol
+      declaration, relocation, executable address, or compiled artifact cache is
+      implemented.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:
