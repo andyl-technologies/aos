@@ -22,9 +22,10 @@ mod thunk_install;
 pub use runtime_symbols::{
     NixJitPreflightResult, NixJitRuntimeSymbolAddressCandidateError,
     NixJitRuntimeSymbolAddressCandidatePreflight, NixJitRuntimeSymbolRegistrationError,
-    NixJitRuntimeSymbolRegistrationPreflight, NixJitRuntimeSymbolRegistrationResult,
-    nix_jit_runtime_symbol_address_candidate_preflight,
-    nix_jit_runtime_symbol_registration_preflight,
+    NixJitRuntimeSymbolRegistrationPlan, NixJitRuntimeSymbolRegistrationPlanError,
+    NixJitRuntimeSymbolRegistrationPlanResult, NixJitRuntimeSymbolRegistrationPreflight,
+    NixJitRuntimeSymbolRegistrationResult, nix_jit_runtime_symbol_address_candidate_preflight,
+    nix_jit_runtime_symbol_registration_plan, nix_jit_runtime_symbol_registration_preflight,
 };
 pub use thunk_install::{
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,

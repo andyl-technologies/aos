@@ -204,3 +204,38 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
         registration.bindings().len()
     );
 }
+
+#[test]
+fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
+    let error = nix_jit_runtime_symbol_registration_plan()
+        .expect_err("current runtime-symbol registration remains incomplete");
+
+    let NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
+        missing_count,
+        preflight,
+    } = error
+    else {
+        panic!("expected incomplete registration plan");
+    };
+
+    assert_eq!(missing_count, preflight.gaps().len());
+    assert!(missing_count > 0);
+    assert!(!preflight.is_complete());
+    assert!(preflight.gap_for_symbol("aos_force").is_some());
+    assert!(
+        preflight
+            .binding_for_symbol("aos_env_get")
+            .is_some_and(|binding| binding.address()
+                == preflight
+                    .address_candidate_preflight()
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .missing_binding_for("aos_force")
+            .is_some()
+    );
+}

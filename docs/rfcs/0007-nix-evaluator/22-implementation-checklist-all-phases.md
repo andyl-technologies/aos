@@ -5316,6 +5316,15 @@ and helps the oracle directly.
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
       registration.
+- [x] Current `aos-nix` runtime-symbol registration plan gate:
+      `aos_nix::jit::nix_jit_runtime_symbol_registration_plan()` derives
+      oracle address candidates and requires the JIT registration preflight to
+      be complete before returning a complete plan. The current implementation
+      returns a typed incomplete error carrying the owned Nix preflight while
+      helper and builtin gaps such as `aos_force` remain. This is strict
+      metadata gating only: it does not call `JITBuilder::symbol`, export C ABI
+      wrappers, finalize code, dereference helper addresses, call native code,
+      or complete runtime-symbol registration.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and drives the registered-symbol

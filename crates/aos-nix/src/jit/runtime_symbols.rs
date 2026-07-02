@@ -6,6 +6,7 @@ use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError}
 use ratchet_jit::{
     JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitRuntimeSymbolRegistrationBinding,
     JitRuntimeSymbolRegistrationError, JitRuntimeSymbolRegistrationGap,
+    JitRuntimeSymbolRegistrationPlan, JitRuntimeSymbolRegistrationPlanError,
     JitRuntimeSymbolRegistrationPreflight,
     jit_runtime_symbol_registration_preflight_with_candidates,
 };
@@ -49,6 +50,46 @@ pub enum NixJitRuntimeSymbolRegistrationError {
 /// Result returned by JIT runtime-symbol registration preflights.
 pub type NixJitRuntimeSymbolRegistrationResult =
     Result<NixJitRuntimeSymbolRegistrationPreflight, NixJitRuntimeSymbolRegistrationError>;
+
+/// A failure while preparing complete Nix JIT runtime-symbol registration metadata.
+#[derive(Debug, Error)]
+pub enum NixJitRuntimeSymbolRegistrationPlanError {
+    /// Oracle runtime helper addresses could not be projected into JIT metadata.
+    #[error("JIT runtime-symbol address candidate projection failed")]
+    AddressCandidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
+
+    /// JIT runtime-symbol registration metadata could not be built.
+    #[error("JIT runtime-symbol registration preflight failed")]
+    Registration(#[from] JitRuntimeSymbolRegistrationError),
+
+    /// Some runtime symbols cannot yet be registered with native addresses.
+    #[error(
+        "Nix JIT runtime-symbol registration metadata is incomplete: {missing_count} symbol(s) missing"
+    )]
+    Incomplete {
+        /// The number of runtime symbols still missing registration metadata.
+        missing_count: usize,
+        /// The preserved Nix preflight report, including oracle address candidates.
+        preflight: NixJitRuntimeSymbolRegistrationPreflight,
+    },
+}
+
+impl From<NixJitRuntimeSymbolRegistrationError> for NixJitRuntimeSymbolRegistrationPlanError {
+    fn from(error: NixJitRuntimeSymbolRegistrationError) -> Self {
+        match error {
+            NixJitRuntimeSymbolRegistrationError::AddressCandidates(source) => {
+                Self::AddressCandidates(source)
+            }
+            NixJitRuntimeSymbolRegistrationError::Registration(source) => {
+                Self::Registration(source)
+            }
+        }
+    }
+}
+
+/// Result returned by complete JIT runtime-symbol registration plan gates.
+pub type NixJitRuntimeSymbolRegistrationPlanResult =
+    Result<NixJitRuntimeSymbolRegistrationPlan, NixJitRuntimeSymbolRegistrationPlanError>;
 
 /// Nix runtime-symbol registration readiness assembled from oracle helper addresses.
 ///
@@ -111,6 +152,67 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
     /// Returns the registration gap for `symbol_name`, when present.
     pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolRegistrationGap> {
         self.registration_preflight.gap_for_symbol(symbol_name)
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        NixJitRuntimeSymbolAddressCandidatePreflight,
+        JitRuntimeSymbolRegistrationPreflight,
+    ) {
+        (
+            self.address_candidate_preflight,
+            self.registration_preflight,
+        )
+    }
+}
+
+/// Complete Nix runtime-symbol registration metadata assembled from oracle addresses.
+///
+/// This plan owns the address-candidate preflight that fed the JIT registration
+/// plan. It is still metadata for a future `JITBuilder::symbol` pass: it does
+/// not export C ABI wrappers, finalize code, dereference helper addresses, or
+/// call native code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NixJitRuntimeSymbolRegistrationPlan {
+    address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+    registration_plan: JitRuntimeSymbolRegistrationPlan,
+}
+
+impl NixJitRuntimeSymbolRegistrationPlan {
+    fn new(
+        address_candidate_preflight: NixJitRuntimeSymbolAddressCandidatePreflight,
+        registration_plan: JitRuntimeSymbolRegistrationPlan,
+    ) -> Self {
+        Self {
+            address_candidate_preflight,
+            registration_plan,
+        }
+    }
+
+    /// Returns the address-candidate preflight used for registration metadata.
+    pub const fn address_candidate_preflight(
+        &self,
+    ) -> &NixJitRuntimeSymbolAddressCandidatePreflight {
+        &self.address_candidate_preflight
+    }
+
+    /// Returns the complete JIT runtime-symbol registration plan.
+    pub const fn registration_plan(&self) -> &JitRuntimeSymbolRegistrationPlan {
+        &self.registration_plan
+    }
+
+    /// Returns runtime-symbol bindings in stable manifest order.
+    pub fn bindings(&self) -> &[JitRuntimeSymbolRegistrationBinding] {
+        self.registration_plan.bindings()
+    }
+
+    /// Returns the registration binding for `symbol_name`, when present.
+    pub fn binding_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&JitRuntimeSymbolRegistrationBinding> {
+        self.registration_plan.binding_for_symbol(symbol_name)
     }
 }
 
@@ -234,6 +336,62 @@ pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolReg
     Ok(NixJitRuntimeSymbolRegistrationPreflight::new(
         address_candidate_preflight,
         registration_preflight,
+    ))
+}
+
+/// Builds complete JIT runtime-symbol registration metadata from oracle helper addresses.
+///
+/// This strict gate derives process-local oracle helper address candidates,
+/// builds the JIT registration preflight, and succeeds only once every stable
+/// runtime symbol has both declaration and address metadata. While helper and
+/// builtin gaps remain, the incomplete error carries the owned Nix preflight so
+/// callers can inspect both the oracle address candidates and JIT registration
+/// gaps. It still does not call `JITBuilder::symbol`, export C ABI wrappers,
+/// finalize code, dereference helper addresses, or call native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates`] when
+/// oracle helper addresses cannot be projected into JIT candidate metadata.
+/// Returns [`NixJitRuntimeSymbolRegistrationPlanError::Registration`] when JIT
+/// registration metadata cannot be built from the candidate set. Returns
+/// [`NixJitRuntimeSymbolRegistrationPlanError::Incomplete`] while any stable
+/// runtime symbol still lacks registration metadata.
+pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistrationPlanResult {
+    let preflight = nix_jit_runtime_symbol_registration_preflight()?;
+    let missing_count = preflight.gaps().len();
+    if missing_count != 0 {
+        return Err(NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
+            missing_count,
+            preflight,
+        });
+    }
+
+    let (address_candidate_preflight, registration_preflight) = preflight.into_parts();
+    let registration_plan = match registration_preflight.into_registration_plan() {
+        Ok(registration_plan) => registration_plan,
+        Err(JitRuntimeSymbolRegistrationPlanError::Registration(error)) => {
+            return Err(NixJitRuntimeSymbolRegistrationPlanError::Registration(
+                error,
+            ));
+        }
+        Err(JitRuntimeSymbolRegistrationPlanError::Incomplete {
+            missing_count,
+            preflight,
+        }) => {
+            return Err(NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
+                missing_count,
+                preflight: NixJitRuntimeSymbolRegistrationPreflight::new(
+                    address_candidate_preflight,
+                    preflight,
+                ),
+            });
+        }
+    };
+
+    Ok(NixJitRuntimeSymbolRegistrationPlan::new(
+        address_candidate_preflight,
+        registration_plan,
     ))
 }
 
