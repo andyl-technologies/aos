@@ -200,6 +200,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             event_log_segment_text: String::from("x"),
             event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
             event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
+            scheduler_quiescence: None,
         })
     }
 

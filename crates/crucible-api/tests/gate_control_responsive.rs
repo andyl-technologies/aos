@@ -347,6 +347,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
                 0,
                 self.event_log_events,
             ),
+            scheduler_quiescence: None,
         })
     }
 

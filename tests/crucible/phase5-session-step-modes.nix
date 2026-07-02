@@ -91,7 +91,7 @@
       }
       {
         label = "step completion pause reason";
-        needle = "PauseReason::StepComplete { mode: step.mode }";
+        needle = "PauseReason::StepComplete { mode }";
       }
       {
         label = "boundary stop test";

@@ -1165,6 +1165,12 @@ in rec {
       taskIds = ["T-SESS-6"];
       dependencies = [phase5.sessionStepModes];
     };
+    sessionBreakpoints = import ./phase5-session-breakpoints.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionBreakpoints";
+      taskIds = ["T-SESS-7"];
+      dependencies = [phase5.sessionBoundaryControl];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";

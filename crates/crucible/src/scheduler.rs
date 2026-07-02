@@ -153,6 +153,8 @@ pub struct QuantumOutcome {
     pub event_log_segment_hash: Option<ContentHash>,
     /// Event-log offset after this quantum's EMIT segment.
     pub event_log_offset: EventLogOffset,
+    /// Scheduler-owned quiescence evidence at this quantum boundary, when available.
+    pub scheduler_quiescence: Option<SchedulerQuiescence>,
 }
 
 /// Output produced by one bounded host-concurrent scheduler round.
@@ -10443,6 +10445,7 @@ impl SingleScheduler {
                 event_log_segment_text: event_log.segment_text,
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
+                scheduler_quiescence: Some(self.quiescence()?),
             };
             return Ok(SchedulerConcurrentQuantumOutcome {
                 run_set,
@@ -10563,6 +10566,7 @@ impl SingleScheduler {
                 event_log_segment_text: event_log.segment_text,
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
+                scheduler_quiescence: Some(self.quiescence()?),
             });
         }
 
@@ -10642,6 +10646,7 @@ impl SingleScheduler {
                     event_log_segment_text: event_log.segment_text,
                     event_log_segment_hash: event_log.segment_hash,
                     event_log_offset: event_log.offset,
+                    scheduler_quiescence: Some(self.quiescence()?),
                 });
             }
         };
@@ -10723,6 +10728,7 @@ impl SingleScheduler {
             event_log_segment_text: event_log.segment_text,
             event_log_segment_hash: event_log.segment_hash,
             event_log_offset: event_log.offset,
+            scheduler_quiescence: Some(self.quiescence()?),
         })
     }
 
@@ -11675,6 +11681,7 @@ mod tests {
                     event_log_segment_text: String::new(),
                     event_log_segment_hash: None,
                     event_log_offset: EventLogOffset::default(),
+                    scheduler_quiescence: None,
                 })
             }
         }
@@ -11999,6 +12006,7 @@ mod tests {
             event_log_segment_text: String::new(),
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
         };
 
         assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);

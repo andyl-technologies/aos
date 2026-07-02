@@ -21,11 +21,13 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Action, Checkpoint, Condition, Configuration, ContentHash, ControlOperation,
-    ControlOperationKind, DebugReverseStepGrain, Decision, EngineError, Fault, FaultTag,
-    ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, Schedule,
-    ScheduledEventPayload, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SimDuration, TemporalGraph, VirtualTime, instantiate,
+    Action, Checkpoint, Condition, ConditionEvaluationError, ConditionEvaluationPass,
+    ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Configuration, ContentHash,
+    ControlOperation, ControlOperationKind, DebugReverseStepGrain, Decision, EngineError, Fault,
+    FaultTag, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
+    Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SimDuration,
+    TemporalGraph, VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -226,6 +228,8 @@ impl From<&PauseReason> for PauseReasonKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BreakpointSet {
     specs: BTreeMap<BreakpointId, BreakpointSpec>,
+    last_truth: BTreeMap<BreakpointId, bool>,
+    once_latches: BTreeMap<BreakpointId, Vec<Condition>>,
     next_id: BreakpointId,
 }
 
@@ -253,11 +257,15 @@ impl BreakpointSet {
         self.next_id = self.next_id.saturating_add(1);
         let id = self.next_id;
         self.specs.insert(id, spec);
+        self.last_truth.insert(id, false);
+        self.once_latches.insert(id, Vec::new());
         id
     }
 
     /// Removes a breakpoint by id and reports whether it was present.
     pub fn remove(&mut self, id: BreakpointId) -> bool {
+        self.last_truth.remove(&id);
+        self.once_latches.remove(&id);
         self.specs.remove(&id).is_some()
     }
 
@@ -265,6 +273,28 @@ impl BreakpointSet {
     #[must_use]
     pub fn get(&self, id: BreakpointId) -> Option<&BreakpointSpec> {
         self.specs.get(&id)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (BreakpointId, &BreakpointSpec, bool)> {
+        self.specs
+            .iter()
+            .map(|(id, spec)| (*id, spec, self.last_truth.get(id).copied().unwrap_or(false)))
+    }
+
+    fn set_last_truth(&mut self, id: BreakpointId, value: bool) {
+        if self.specs.contains_key(&id) {
+            self.last_truth.insert(id, value);
+        }
+    }
+
+    fn once_latches(&self, id: BreakpointId) -> Vec<Condition> {
+        self.once_latches.get(&id).cloned().unwrap_or_default()
+    }
+
+    fn set_once_latches(&mut self, id: BreakpointId, once_latches: Vec<Condition>) {
+        if self.specs.contains_key(&id) {
+            self.once_latches.insert(id, once_latches);
+        }
     }
 }
 
@@ -370,10 +400,11 @@ impl StepMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ActiveStep {
     mode: StepMode,
     target_frontier: Option<VirtualTime>,
+    breakpoint: BreakpointSpec,
 }
 
 impl ActiveStep {
@@ -384,27 +415,99 @@ impl ActiveStep {
             }),
             StepMode::Quantum | StepMode::Event | StepMode::Assertion | StepMode::Timer => None,
         };
+        let breakpoint = BreakpointSpec::suspend_once(Self::stop_condition(mode, target_frontier));
         Self {
             mode,
             target_frontier,
+            breakpoint,
         }
     }
 
-    fn is_complete(self, outcome: &QuantumOutcome) -> bool {
-        match self.mode {
-            StepMode::Quantum => true,
-            StepMode::Event => outcome
+    fn stop_condition(mode: StepMode, target_frontier: Option<VirtualTime>) -> Condition {
+        match mode {
+            StepMode::Quantum => Condition::Named {
+                name: String::from("session.step.quantum"),
+                nodes: Vec::new(),
+            },
+            StepMode::Event => Condition::Named {
+                name: String::from("session.step.event"),
+                nodes: Vec::new(),
+            },
+            StepMode::Assertion => Condition::Named {
+                name: String::from("session.step.assertion"),
+                nodes: Vec::new(),
+            },
+            StepMode::Timer => Condition::Named {
+                name: String::from("session.step.timer"),
+                nodes: Vec::new(),
+            },
+            StepMode::Duration(_) => Condition::At {
+                at: target_frontier.unwrap_or_default(),
+            },
+        }
+    }
+
+    fn is_complete(
+        &self,
+        outcome: &QuantumOutcome,
+        event_log_len_before: u64,
+    ) -> Result<bool, ConditionEvaluationError> {
+        let prefix = if outcome.event_log_entries.is_empty() {
+            ConditionEventLogPrefix::from_evaluation_boundary(
+                event_log_len_before,
+                outcome.frontier,
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )?
+        } else {
+            ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
+                outcome.event_log_entries.clone(),
+                event_log_len_before,
+            )?
+        };
+        let mut pass = ConditionEvaluationPass::from_log_prefix(
+            prefix,
+            StepConditionLeaves::from_outcome(outcome),
+        );
+        Ok(pass.evaluate_assertion_condition(&self.breakpoint.predicate))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StepConditionLeaves {
+    quantum: bool,
+    event: bool,
+    assertion: bool,
+    timer: bool,
+}
+
+impl StepConditionLeaves {
+    fn from_outcome(outcome: &QuantumOutcome) -> Self {
+        Self {
+            quantum: true,
+            event: outcome
                 .event_log_entries
                 .iter()
                 .any(entry_is_resolved_external_event),
-            StepMode::Assertion => outcome
+            assertion: outcome
                 .event_log_entries
                 .iter()
                 .any(entry_is_assertion_state_change),
-            StepMode::Timer => outcome.event_log_entries.iter().any(entry_is_timer_fire),
-            StepMode::Duration(_) => self
-                .target_frontier
-                .is_some_and(|target| outcome.frontier >= target),
+            timer: outcome.event_log_entries.iter().any(entry_is_timer_fire),
+        }
+    }
+}
+
+impl ConditionLeafOracle for StepConditionLeaves {
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        let ConditionLeaf::Named { name, .. } = leaf else {
+            return false;
+        };
+        match name {
+            "session.step.quantum" => self.quantum,
+            "session.step.event" => self.event,
+            "session.step.assertion" => self.assertion,
+            "session.step.timer" => self.timer,
+            _ => false,
         }
     }
 }
@@ -549,7 +652,7 @@ pub enum BreakpointPolicy {
 pub enum BreakpointDisposition {
     /// Suspend the run.
     Suspend,
-    /// Emit an observational marker and keep running.
+    /// Record a deterministic control-plane marker and keep running.
     Trace,
     /// Apply a bounded event-graph action at the firing boundary.
     Action(Action),
@@ -1513,6 +1616,46 @@ fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> Conte
     )
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct NoBreakpointLeaves;
+
+impl ConditionLeafOracle for NoBreakpointLeaves {
+    fn leaf_is_true(&mut self, _leaf: ConditionLeaf<'_>) -> bool {
+        false
+    }
+}
+
+fn breakpoint_action_kind(action: &Action) -> &'static str {
+    match action {
+        Action::InjectFault { .. } => "inject-fault",
+        Action::HealFault { .. } => "heal-fault",
+        Action::ArmTimer { .. } => "arm-timer",
+        Action::CancelTimer { .. } => "cancel-timer",
+        Action::StartNode { .. } => "start-node",
+        Action::StopNode { .. } => "stop-node",
+        Action::CreateSavepoint { .. } => "create-savepoint",
+        Action::Fork { .. } => "fork",
+        Action::Pass => "pass",
+        Action::Fail { .. } => "fail",
+        Action::Log { .. } => "log",
+        Action::Group(_) => "group",
+    }
+}
+
+fn control_operation_command_kind(control: &ControlOperationKind) -> Option<SessionCommandKind> {
+    match control {
+        ControlOperationKind::InjectFault { .. } => Some(SessionCommandKind::InjectFault),
+        ControlOperationKind::HealFault { .. } => Some(SessionCommandKind::HealFault),
+        ControlOperationKind::Inject
+        | ControlOperationKind::Pause
+        | ControlOperationKind::Resume
+        | ControlOperationKind::Step
+        | ControlOperationKind::Snapshot
+        | ControlOperationKind::Fork
+        | ControlOperationKind::Query => None,
+    }
+}
+
 /// Cursor into a session event-log stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventLogCursor {
@@ -1755,6 +1898,9 @@ pub struct Engine<L> {
     next_control_sequence: u64,
     boundary_control_log: Vec<SessionControlLogEntry>,
     next_boundary_control_sequence: u64,
+    scheduler_quiescence: Option<SchedulerQuiescence>,
+    breakpoint_firings: Vec<BreakpointFiring>,
+    next_breakpoint_firing_sequence: u64,
 }
 
 impl<L> Engine<L> {
@@ -1778,6 +1924,9 @@ impl<L> Engine<L> {
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
+            scheduler_quiescence: None,
+            breakpoint_firings: Vec::new(),
+            next_breakpoint_firing_sequence: 0,
         }
     }
 
@@ -1821,6 +1970,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn boundary_control_log(&self) -> &[SessionControlLogEntry] {
         &self.boundary_control_log
+    }
+
+    /// Returns the deterministic breakpoint-firing log.
+    #[must_use]
+    pub fn breakpoint_firings(&self) -> &[BreakpointFiring] {
+        &self.breakpoint_firings
     }
 
     /// Returns the number of scheduler quanta driven by this engine.
@@ -1939,13 +2094,28 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
-        self.next_control_sequence = self.next_control_sequence.saturating_add(1);
-        let entries = self
-            .quantum_loop
-            .apply_control_at_boundary(vec![ControlOperation {
+        self.apply_control_operations_at_boundary(vec![kind])
+    }
+
+    fn apply_control_operations_at_boundary(
+        &mut self,
+        kinds: Vec<ControlOperationKind>,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        let mut control = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            self.next_control_sequence = self.next_control_sequence.saturating_add(1);
+            control.push(ControlOperation {
                 sequence: self.next_control_sequence,
                 kind,
-            }])?;
+            });
+        }
+        let entries = self.quantum_loop.apply_control_at_boundary(control)?;
         self.append_boundary_event_log_entries(entries)
     }
 
@@ -1982,14 +2152,209 @@ impl<L> Engine<L> {
         command: &SessionCommand,
         scheduler_control: Option<ControlOperationKind>,
     ) {
+        self.record_boundary_control_kind(SessionCommandKind::from(command), scheduler_control);
+    }
+
+    fn record_boundary_control_kind(
+        &mut self,
+        command: SessionCommandKind,
+        scheduler_control: Option<ControlOperationKind>,
+    ) {
         self.next_boundary_control_sequence = self.next_boundary_control_sequence.saturating_add(1);
         self.boundary_control_log.push(SessionControlLogEntry {
             sequence: self.next_boundary_control_sequence,
-            command: SessionCommandKind::from(command),
+            command,
             frontier: self.frontier,
             quanta: self.quanta,
             scheduler_control,
         });
+    }
+
+    fn evaluate_breakpoints(
+        &mut self,
+        event_log_entries: &[SchedulerEventLogEntry],
+        emitted_event_log_entries: usize,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if self.breakpoints.is_empty() {
+            return Ok(());
+        }
+
+        let Some(prefix) =
+            self.breakpoint_condition_prefix(event_log_entries, emitted_event_log_entries)?
+        else {
+            return Ok(());
+        };
+        let evaluations = self
+            .breakpoints
+            .iter()
+            .map(|(id, spec, was_true)| {
+                let mut pass =
+                    ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoBreakpointLeaves)
+                        .with_once_latches(self.breakpoints.once_latches(id));
+                if let Some(quiescence) = self.scheduler_quiescence.clone() {
+                    pass = pass.with_scheduler_quiescence(quiescence);
+                }
+                let is_true = pass.evaluate_assertion_condition(&spec.predicate);
+                (
+                    id,
+                    spec.clone(),
+                    was_true,
+                    is_true,
+                    pass.once_latches().to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for (id, spec, was_true, is_true, once_latches) in evaluations {
+            if is_true && !was_true {
+                self.fire_breakpoint(id, &spec)?;
+                if matches!(spec.policy, BreakpointPolicy::OneShot) {
+                    self.breakpoints.remove(id);
+                } else {
+                    self.breakpoints.set_once_latches(id, once_latches);
+                    self.breakpoints.set_last_truth(id, true);
+                }
+            } else {
+                self.breakpoints.set_once_latches(id, once_latches);
+                self.breakpoints.set_last_truth(id, is_true);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn breakpoint_condition_prefix(
+        &self,
+        event_log_entries: &[SchedulerEventLogEntry],
+        emitted_event_log_entries: usize,
+    ) -> Result<Option<ConditionEventLogPrefix>, SessionError> {
+        if emitted_event_log_entries == 0 {
+            if self.scheduler_quiescence.is_some() {
+                return ConditionEventLogPrefix::from_scheduler_event_log_entries_with_evaluation_boundary(
+                    event_log_entries.to_vec(),
+                    usize_to_u64(self.event_log_len),
+                    self.frontier,
+                    SchedulerEvaluationBoundaryKind::Quantum,
+                )
+                .map(Some)
+                .map_err(|error| SessionError::BreakpointConditionPrefix {
+                    reason: error.to_string(),
+                });
+            }
+            return Ok(None);
+        }
+
+        ConditionEventLogPrefix::from_scheduler_event_log_entries(event_log_entries.to_vec())
+            .map(Some)
+            .map_err(|error| SessionError::BreakpointConditionPrefix {
+                reason: error.to_string(),
+            })
+    }
+
+    fn fire_breakpoint(
+        &mut self,
+        id: BreakpointId,
+        spec: &BreakpointSpec,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let mut scheduler_controls = Vec::new();
+        match &spec.disposition {
+            BreakpointDisposition::Suspend => {
+                self.active_step = None;
+                self.state = EngineState::Paused {
+                    reason: PauseReason::Breakpoint { id },
+                };
+            }
+            BreakpointDisposition::Trace => {}
+            BreakpointDisposition::Action(action) => {
+                self.apply_breakpoint_action(action, &mut scheduler_controls)?;
+            }
+        }
+
+        self.next_breakpoint_firing_sequence =
+            self.next_breakpoint_firing_sequence.saturating_add(1);
+        self.breakpoint_firings.push(BreakpointFiring {
+            sequence: self.next_breakpoint_firing_sequence,
+            id,
+            predicate: spec.predicate.clone(),
+            disposition: spec.disposition.clone(),
+            frontier: self.frontier,
+            quanta: self.quanta,
+            scheduler_controls,
+        });
+        Ok(())
+    }
+
+    fn apply_breakpoint_action(
+        &mut self,
+        action: &Action,
+        scheduler_controls: &mut Vec<ControlOperationKind>,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let planned_controls = Self::plan_breakpoint_action(action)?;
+        self.apply_control_operations_at_boundary(planned_controls.clone())?;
+        for control in &planned_controls {
+            if let Some(command) = control_operation_command_kind(control) {
+                self.record_boundary_control_kind(command, Some(control.clone()));
+            }
+        }
+        scheduler_controls.extend(planned_controls);
+        Ok(())
+    }
+
+    fn plan_breakpoint_action(action: &Action) -> Result<Vec<ControlOperationKind>, SessionError> {
+        let mut scheduler_controls = Vec::new();
+        Self::plan_breakpoint_action_into(action, &mut scheduler_controls)?;
+        Ok(scheduler_controls)
+    }
+
+    fn plan_breakpoint_action_into(
+        action: &Action,
+        scheduler_controls: &mut Vec<ControlOperationKind>,
+    ) -> Result<(), SessionError> {
+        match action {
+            Action::InjectFault { tag, fault } => {
+                let Some(fault) = fault.table_fault() else {
+                    return Err(SessionError::UnsupportedBreakpointFault {
+                        action: "inject-fault",
+                        reason: "fault has no scheduler-control representation",
+                    });
+                };
+                scheduler_controls.push(ControlOperationKind::InjectFault {
+                    tag: tag.clone(),
+                    fault,
+                });
+            }
+            Action::HealFault { tag } => {
+                scheduler_controls.push(ControlOperationKind::HealFault { tag: tag.clone() });
+            }
+            Action::Group(actions) => {
+                for action in actions {
+                    Self::plan_breakpoint_action_into(action, scheduler_controls)?;
+                }
+            }
+            Action::ArmTimer { .. }
+            | Action::CancelTimer { .. }
+            | Action::StartNode { .. }
+            | Action::StopNode { .. }
+            | Action::CreateSavepoint { .. }
+            | Action::Fork { .. }
+            | Action::Pass
+            | Action::Fail { .. }
+            | Action::Log { .. } => {
+                return Err(SessionError::UnsupportedBreakpointAction {
+                    action: breakpoint_action_kind(action),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn pending_control_len(&self) -> usize {
@@ -2322,6 +2687,17 @@ impl<L: QuantumLoop> Engine<L> {
                 next: outcome.event_log_offset.events,
             });
         }
+        let step_completion = if let Some(step) = self.active_step.as_ref() {
+            Some((
+                step.mode,
+                step.is_complete(&outcome, current_event_log_len)
+                    .map_err(|error| SessionError::BreakpointConditionPrefix {
+                        reason: error.to_string(),
+                    })?,
+            ))
+        } else {
+            None
+        };
         let runtime = instantiate(&self.graph, &outcome.configuration)?;
 
         self.configuration = outcome.configuration.clone();
@@ -2329,16 +2705,15 @@ impl<L: QuantumLoop> Engine<L> {
         self.runtime_instantiated = true;
         self.frontier = outcome.frontier;
         self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
+        self.scheduler_quiescence = outcome.scheduler_quiescence.clone();
         self.quanta = self.quanta.saturating_add(1);
         self.pending_event_log_entries
             .extend(outcome.event_log_entries.iter().cloned());
-        if let Some(step) = self.active_step {
-            if step.is_complete(&outcome) {
-                self.state = EngineState::Paused {
-                    reason: PauseReason::StepComplete { mode: step.mode },
-                };
-                self.active_step = None;
-            }
+        if let Some((mode, true)) = step_completion {
+            self.state = EngineState::Paused {
+                reason: PauseReason::StepComplete { mode },
+            };
+            self.active_step = None;
         }
 
         Ok(outcome)
@@ -2391,6 +2766,26 @@ pub enum SessionError {
         /// Event-log entry count returned by the scheduler.
         next: u64,
     },
+    /// Breakpoint condition evaluation could not build a checked log prefix.
+    #[error("breakpoint condition prefix is invalid: {reason}")]
+    BreakpointConditionPrefix {
+        /// Stable debug description of the prefix validation failure.
+        reason: String,
+    },
+    /// A breakpoint action used an event-graph action variant the session does not support.
+    #[error("unsupported breakpoint action {action}")]
+    UnsupportedBreakpointAction {
+        /// Stable action kind label.
+        action: &'static str,
+    },
+    /// A breakpoint fault action cannot be mapped into a boundary scheduler control.
+    #[error("unsupported breakpoint fault for action {action}: {reason}")]
+    UnsupportedBreakpointFault {
+        /// Stable action kind label.
+        action: &'static str,
+        /// Stable reason for rejecting the fault action.
+        reason: &'static str,
+    },
 }
 
 /// Evidence returned when a session actor exits.
@@ -2421,6 +2816,25 @@ pub struct SessionControlLogEntry {
     pub scheduler_control: Option<ControlOperationKind>,
 }
 
+/// Deterministic record of one breakpoint firing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointFiring {
+    /// Monotone session-local breakpoint-firing sequence.
+    pub sequence: u64,
+    /// Actor-owned breakpoint identifier that fired.
+    pub id: BreakpointId,
+    /// Shared 17a condition that evaluated true.
+    pub predicate: Condition,
+    /// Disposition applied at the boundary.
+    pub disposition: BreakpointDisposition,
+    /// Virtual-time frontier where the breakpoint fired.
+    pub frontier: VirtualTime,
+    /// Number of scheduler quanta completed before the firing was applied.
+    pub quanta: u64,
+    /// Scheduler control payloads applied by an action disposition, when any.
+    pub scheduler_controls: Vec<ControlOperationKind>,
+}
+
 /// The single owning session actor.
 ///
 /// `SessionActor` owns the [`Engine`], polls the command mailbox at state
@@ -2431,6 +2845,7 @@ pub struct SessionActor<L> {
     mailbox: mpsc::Receiver<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: SessionEventLog,
+    condition_event_log: Vec<SchedulerEventLogEntry>,
     commands_applied: u64,
     yielded_after_quanta: u64,
     control_acknowledgements: u64,
@@ -2446,6 +2861,7 @@ impl<L> SessionActor<L> {
             mailbox,
             live,
             event_log: SessionEventLog::new(),
+            condition_event_log: Vec::new(),
             commands_applied: 0,
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
@@ -2507,6 +2923,11 @@ impl<L> SessionActor<L> {
         self.live
             .publish(&self.engine.snapshot(), self.control_acknowledgements);
     }
+
+    fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
+        self.event_log.append_entries(entries);
+        self.condition_event_log.extend(entries.iter().cloned());
+    }
 }
 
 impl<L: QuantumLoop> SessionActor<L> {
@@ -2538,7 +2959,12 @@ impl<L: QuantumLoop> SessionActor<L> {
                 let pending_control = self.engine.pending_control_len() as u64;
                 let _outcome = self.engine.step_quantum()?;
                 let entries = self.engine.drain_event_log_entries();
-                self.event_log.append_entries(&entries);
+                let emitted_event_log_entries = entries.len();
+                self.append_event_log_entries(&entries);
+                self.engine
+                    .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                let breakpoint_entries = self.engine.drain_event_log_entries();
+                self.append_event_log_entries(&breakpoint_entries);
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -2581,7 +3007,7 @@ impl<L: QuantumLoop> SessionActor<L> {
             return Err(error);
         }
         let entries = self.engine.drain_event_log_entries();
-        self.event_log.append_entries(&entries);
+        self.append_event_log_entries(&entries);
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {
             self.control_acknowledgements = self
@@ -2623,11 +3049,10 @@ mod tests {
     use super::*;
     use crucible::{
         Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind,
-        ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, DebugReverseStepGrain,
-        Decision, DeliveryOrderDecision, Event, EventGraph, EventGraphState, EventId, EventKey,
-        GenesisCheckpoint, LogLevel, NodeId, Predicate, ScenarioDef, ScheduledEvent,
-        ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, Seed, TimerId,
-        TriggerActionApplication, VirtualTime, step,
+        DebugReverseStepGrain, Decision, DeliveryOrderDecision, Event, EventGraph, EventGraphState,
+        EventId, EventKey, GenesisCheckpoint, LogLevel, MembershipFault, NodeId, NodeLifecycle,
+        Predicate, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerNodeId,
+        SchedulingNodeKind, Seed, TimerId, TriggerActionApplication, VirtualTime, step,
     };
 
     #[test]
@@ -2662,6 +3087,43 @@ mod tests {
     }
 
     #[test]
+    fn step_modes_are_expressible_as_one_shot_breakpoints() {
+        let start = VirtualTime { ticks: 10 };
+        for mode in StepMode::ALL {
+            let step = ActiveStep::new(mode, start);
+            assert_eq!(step.breakpoint.disposition, BreakpointDisposition::Suspend);
+            assert_eq!(step.breakpoint.policy, BreakpointPolicy::OneShot);
+            match (mode, &step.breakpoint.predicate) {
+                (
+                    StepMode::Duration(duration),
+                    Condition::At {
+                        at: VirtualTime { ticks },
+                    },
+                ) => {
+                    assert_eq!(*ticks, start.ticks.saturating_add(duration.nanos));
+                }
+                (StepMode::Quantum, Condition::Named { name, nodes }) => {
+                    assert_eq!(name, "session.step.quantum");
+                    assert!(nodes.is_empty());
+                }
+                (StepMode::Event, Condition::Named { name, nodes }) => {
+                    assert_eq!(name, "session.step.event");
+                    assert!(nodes.is_empty());
+                }
+                (StepMode::Assertion, Condition::Named { name, nodes }) => {
+                    assert_eq!(name, "session.step.assertion");
+                    assert!(nodes.is_empty());
+                }
+                (StepMode::Timer, Condition::Named { name, nodes }) => {
+                    assert_eq!(name, "session.step.timer");
+                    assert!(nodes.is_empty());
+                }
+                other => panic!("unexpected step stop condition: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn engine_step_modes_start_bounded_execution_for_forward_vocabulary() {
         let scenario = generated_scenario(22);
         let config = Configuration::genesis(scenario.clone());
@@ -2677,7 +3139,10 @@ mod tests {
             };
             assert_eq!(snapshot.state, EngineState::Running);
             assert_eq!(engine.quanta(), 0);
-            assert_eq!(engine.active_step.map(|step| step.mode), Some(mode));
+            assert_eq!(
+                engine.active_step.as_ref().map(|step| step.mode),
+                Some(mode)
+            );
         }
     }
 
@@ -2739,7 +3204,7 @@ mod tests {
         assert_eq!(engine.quanta(), 2);
         assert_eq!(engine.state(), &EngineState::Running);
         assert_eq!(
-            engine.active_step.map(|step| step.mode),
+            engine.active_step.as_ref().map(|step| step.mode),
             Some(StepMode::Timer)
         );
     }
@@ -3562,6 +4027,754 @@ mod tests {
                 outcome: Outcome::Stopped
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_suspend_uses_shared_condition_and_preserves_canonical_log() {
+        let baseline_entries = {
+            let scenario = generated_scenario(38);
+            let config = Configuration::genesis(scenario.clone());
+            let graph = graph_with_baked_genesis(&scenario);
+            let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+            if let Err(error) = engine.apply_command(SessionCommand::Start) {
+                panic!("baseline start should instantiate runtime: {error}");
+            }
+            if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+                panic!("baseline continue should enter running state: {error}");
+            }
+            let (_sender, receiver) = mpsc::channel(1);
+            let mut actor = SessionActor::new(engine, receiver);
+            if let Err(error) = actor.run_once().await {
+                panic!("baseline actor should drive one quantum: {error}");
+            }
+            actor.event_log.lock_entries().clone()
+        };
+
+        let scenario = generated_scenario(38);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::all_of(vec![
+            Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
+            Predicate::not(Predicate::at(VirtualTime { ticks: 2 })),
+        ]);
+        let breakpoint = BreakpointSpec::suspend_once(predicate.clone());
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint.clone(),
+            reply,
+        }) {
+            panic!("breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("breakpoint actor should drive one quantum: {error}");
+        }
+
+        assert_eq!(
+            actor.engine().state(),
+            &EngineState::Paused {
+                reason: PauseReason::Breakpoint { id: breakpoint_id },
+            }
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert_eq!(
+            &*actor.event_log.lock_entries(),
+            baseline_entries.as_slice()
+        );
+        assert_eq!(
+            actor.engine().breakpoint_firings(),
+            &[BreakpointFiring {
+                sequence: 1,
+                id: breakpoint_id,
+                predicate,
+                disposition: BreakpointDisposition::Suspend,
+                frontier: VirtualTime { ticks: 1 },
+                quanta: 1,
+                scheduler_controls: Vec::new(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn repeatable_trace_breakpoint_fires_on_false_to_true_transitions() {
+        let scenario = generated_scenario(39);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("trace breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::any_of(vec![
+            Predicate::at(VirtualTime { ticks: 1 }),
+            Predicate::at(VirtualTime { ticks: 3 }),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate,
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::Repeatable,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("trace breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("trace breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("first trace quantum should run: {error}");
+        }
+        assert_eq!(actor.engine().breakpoint_firings().len(), 1);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+
+        if let Err(error) = actor.run_once().await {
+            panic!("second trace quantum should run: {error}");
+        }
+        assert_eq!(actor.engine().breakpoint_firings().len(), 1);
+        assert!(actor.engine().breakpoints().get(breakpoint_id).is_some());
+
+        if let Err(error) = actor.run_once().await {
+            panic!("third trace quantum should run: {error}");
+        }
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id, breakpoint_id]
+        );
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_once_combinator_latches_across_boundaries() {
+        let scenario = generated_scenario(40);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("once breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::all_of(vec![
+            Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
+            Predicate::at(VirtualTime { ticks: 3 }),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate,
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::Repeatable,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("once breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("once breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        for quantum in 1..=2 {
+            if let Err(error) = actor.run_once().await {
+                panic!("once breakpoint quantum {quantum} should run: {error}");
+            }
+            assert!(actor.engine().breakpoint_firings().is_empty());
+        }
+
+        if let Err(error) = actor.run_once().await {
+            panic!("once breakpoint third quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_action_applies_scheduler_control_at_boundary() {
+        let scenario = generated_scenario(41);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::new(Arc::clone(&control_batches)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("action breakpoint start should instantiate runtime: {error}");
+        }
+        let tag = FaultTag::from_name("breakpoint-action-fault");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let action = Action::inject_fault(tag.clone(), MembershipFault::taxonomy(fault.clone()));
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(action),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("action breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("action breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("action breakpoint quantum should run: {error}");
+        }
+
+        let expected_control = ControlOperationKind::InjectFault {
+            tag: tag.clone(),
+            fault: fault.clone(),
+        };
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+        assert_eq!(actor.engine().pending_control_len(), 0);
+        assert_eq!(
+            actor.engine().breakpoint_firings()[0].scheduler_controls,
+            vec![expected_control.clone()]
+        );
+        assert_eq!(actor.engine().breakpoint_firings()[0].id, breakpoint_id);
+        let log = actor.engine().boundary_control_log();
+        assert_eq!(log.len(), 1);
+        assert_boundary_log_entry(
+            &log[0],
+            1,
+            SessionCommandKind::InjectFault,
+            Some(expected_control.clone()),
+        );
+        assert_eq!(
+            recorded_control_batches(&control_batches),
+            vec![Vec::new(), vec![expected_control]]
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_breakpoint_action_fails_loudly() {
+        let scenario = generated_scenario(42);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("unsupported-action breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(Action::Log {
+                level: LogLevel::Info,
+                message: String::from("unsupported breakpoint action"),
+            }),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("unsupported-action breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("unsupported-action breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let error = actor
+            .run_once()
+            .await
+            .expect_err("unsupported action breakpoint should fail loudly");
+
+        assert_eq!(
+            error,
+            SessionError::UnsupportedBreakpointAction { action: "log" }
+        );
+        assert!(actor.engine().breakpoint_firings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unsupported_breakpoint_fault_fails_loudly() {
+        let scenario = generated_scenario(43);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("unsupported-fault breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(Action::inject_fault(
+                FaultTag::from_name("unsupported-breakpoint-fault"),
+                MembershipFault::Isolate {
+                    node: NodeId {
+                        name: String::from("node-a"),
+                    },
+                },
+            )),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("unsupported-fault breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("unsupported-fault breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let error = actor
+            .run_once()
+            .await
+            .expect_err("unsupported fault breakpoint should fail loudly");
+
+        assert_eq!(
+            error,
+            SessionError::UnsupportedBreakpointFault {
+                action: "inject-fault",
+                reason: "fault has no scheduler-control representation",
+            }
+        );
+        assert!(actor.engine().breakpoint_firings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn breakpoint_action_group_is_prevalidated_before_control_application() {
+        let scenario = generated_scenario(44);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::new(Arc::clone(&control_batches)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("group breakpoint start should instantiate runtime: {error}");
+        }
+        let tag = FaultTag::from_name("group-prefix-fault");
+        let fault = Fault::Node(crucible::NodeFault::Crash {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            restart: crucible::RestartPolicy::StayDown,
+        });
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(Action::Group(vec![
+                Action::inject_fault(tag, MembershipFault::taxonomy(fault)),
+                Action::Log {
+                    level: LogLevel::Info,
+                    message: String::from("unsupported group suffix"),
+                },
+            ])),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("group breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("group breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        let error = actor
+            .run_once()
+            .await
+            .expect_err("unsupported group suffix should fail before control application");
+
+        assert_eq!(
+            error,
+            SessionError::UnsupportedBreakpointAction { action: "log" }
+        );
+        assert!(actor.engine().breakpoint_firings().is_empty());
+        assert!(actor.engine().boundary_control_log().is_empty());
+        assert_eq!(recorded_control_batches(&control_batches), vec![Vec::new()]);
+    }
+
+    #[tokio::test]
+    async fn breakpoint_conditions_cover_node_and_assertion_state_leaves() {
+        let scenario = generated_scenario(45);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let assertion = AssertionId::from_name("session-step-assertion");
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![
+                    SchedulerEventLogPayload::Observable(ObservableEventPayload::NodeState {
+                        node: node.clone(),
+                        state: NodeLifecycle::Exited,
+                    }),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::AssertionStateChanged {
+                            name: assertion.clone(),
+                            state: AssertionPhase::Satisfied,
+                        },
+                    ),
+                ],
+            ),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("leaf breakpoint start should instantiate runtime: {error}");
+        }
+
+        let node_breakpoint = BreakpointSpec {
+            predicate: Predicate::node_state(node, NodeLifecycle::Exited),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (node_reply, node_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: node_breakpoint,
+            reply: node_reply,
+        }) {
+            panic!("node-state breakpoint should register: {error}");
+        }
+        let node_breakpoint_id = receive_reply(node_receiver).await;
+
+        let assertion_breakpoint = BreakpointSpec {
+            predicate: Predicate::assertion_state(assertion, AssertionPhase::Satisfied),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (assertion_reply, assertion_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: assertion_breakpoint,
+            reply: assertion_reply,
+        }) {
+            panic!("assertion-state breakpoint should register: {error}");
+        }
+        let assertion_breakpoint_id = receive_reply(assertion_receiver).await;
+
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("leaf breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("leaf breakpoint quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![node_breakpoint_id, assertion_breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
+        let scenario = generated_scenario(46);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let after_event = EventId::from_name("breakpoint-after-source");
+        let timer = TimerId {
+            name: String::from("breakpoint-timer"),
+        };
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![
+                    trigger_fired_payload(
+                        1,
+                        after_event.clone(),
+                        Predicate::at(VirtualTime { ticks: 1 }),
+                    ),
+                    SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+                        sequence: 0,
+                        event: EventId::from_name("breakpoint-timer-arm"),
+                        at: VirtualTime { ticks: 1 },
+                        path: Vec::new(),
+                        action: Action::arm_timer(timer.clone(), SimDuration { nanos: 1 }),
+                    }),
+                ],
+            ),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("runtime-fact breakpoint start should instantiate runtime: {error}");
+        }
+
+        let after_breakpoint = BreakpointSpec {
+            predicate: Predicate::after(SimDuration { nanos: 1 }, after_event),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (after_reply, after_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: after_breakpoint,
+            reply: after_reply,
+        }) {
+            panic!("after breakpoint should register: {error}");
+        }
+        let after_breakpoint_id = receive_reply(after_receiver).await;
+
+        let timer_breakpoint = BreakpointSpec {
+            predicate: Predicate::timer(timer),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (timer_reply, timer_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: timer_breakpoint,
+            reply: timer_reply,
+        }) {
+            panic!("timer breakpoint should register: {error}");
+        }
+        let timer_breakpoint_id = receive_reply(timer_receiver).await;
+
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("runtime-fact breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("first runtime-fact quantum should run: {error}");
+        }
+        assert!(actor.engine().breakpoint_firings().is_empty());
+
+        if let Err(error) = actor.run_once().await {
+            panic!("second runtime-fact quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![after_breakpoint_id, timer_breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+    }
+
+    #[tokio::test]
+    async fn quiescent_breakpoint_uses_scheduler_quiescence_evidence() {
+        let scenario = generated_scenario(47);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("quiescent breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::quiescent(),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("quiescent breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("quiescent breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("quiescent breakpoint quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    }
+
+    #[tokio::test]
+    async fn quiescent_breakpoint_fires_without_emitted_entries() {
+        let scenario = generated_scenario(48);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            NoEventQuiescenceLoop {
+                quiescence: SchedulerQuiescence::default(),
+            },
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("no-event quiescent breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::quiescent(),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("no-event quiescent breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("no-event quiescent breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("no-event quiescent breakpoint quantum should run: {error}");
+        }
+
+        assert!(actor.event_log.lock_entries().is_empty());
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_entry_breakpoint_after_prior_event_uses_current_boundary() {
+        let scenario = generated_scenario(49);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            PriorEventThenNoEventQuiescenceLoop {
+                quanta: 0,
+                quiescence: SchedulerQuiescence::default(),
+            },
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("post-event no-entry breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::all_of(vec![
+            Predicate::at(VirtualTime { ticks: 2 }),
+            Predicate::quiescent(),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate: predicate.clone(),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("post-event no-entry breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("post-event no-entry breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("first post-event no-entry quantum should run: {error}");
+        }
+        assert!(actor.engine().breakpoint_firings().is_empty());
+        assert_eq!(actor.event_log.lock_entries().len(), 1);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("second post-event no-entry quantum should run: {error}");
+        }
+
+        assert_eq!(actor.event_log.lock_entries().len(), 1);
+        assert_eq!(
+            actor.engine().breakpoint_firings(),
+            &[BreakpointFiring {
+                sequence: 1,
+                id: breakpoint_id,
+                predicate,
+                disposition: BreakpointDisposition::Trace,
+                frontier: VirtualTime { ticks: 2 },
+                quanta: 2,
+                scheduler_controls: Vec::new(),
+            }]
+        );
     }
 
     #[test]
@@ -4579,6 +5792,7 @@ mod tests {
                 event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
+                scheduler_quiescence: None,
             })
         }
     }
@@ -4605,6 +5819,7 @@ mod tests {
                 event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
+                scheduler_quiescence: None,
             })
         }
     }
@@ -4664,6 +5879,7 @@ mod tests {
                 event_log_segment_text: String::from("x"),
                 event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+                scheduler_quiescence: None,
             })
         }
 
@@ -4721,6 +5937,7 @@ mod tests {
                 event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
+                scheduler_quiescence: None,
             })
         }
 
@@ -4735,16 +5952,29 @@ mod tests {
         quanta: u64,
         event_log_entries: u64,
         payloads_by_quantum: std::collections::BTreeMap<u64, Vec<SchedulerEventLogPayload>>,
+        scheduler_quiescence: Option<SchedulerQuiescence>,
     }
 
     impl ScriptedStepLoop {
         fn with_payload(quantum: u64, payload: SchedulerEventLogPayload) -> Self {
+            Self::with_payloads(quantum, vec![payload])
+        }
+
+        fn with_payloads(quantum: u64, payloads: Vec<SchedulerEventLogPayload>) -> Self {
             let mut payloads_by_quantum = std::collections::BTreeMap::new();
-            payloads_by_quantum.insert(quantum, vec![payload]);
+            payloads_by_quantum.insert(quantum, payloads);
             Self {
                 quanta: 0,
                 event_log_entries: 0,
                 payloads_by_quantum,
+                scheduler_quiescence: None,
+            }
+        }
+
+        fn with_quiescence(scheduler_quiescence: SchedulerQuiescence) -> Self {
+            Self {
+                scheduler_quiescence: Some(scheduler_quiescence),
+                ..Self::default()
             }
         }
     }
@@ -4795,6 +6025,71 @@ mod tests {
                     0,
                     self.event_log_entries,
                 ),
+                scheduler_quiescence: self.scheduler_quiescence.clone(),
+            })
+        }
+    }
+
+    struct NoEventQuiescenceLoop {
+        quiescence: SchedulerQuiescence,
+    }
+
+    impl QuantumLoop for NoEventQuiescenceLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 1 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::default(),
+                scheduler_quiescence: Some(self.quiescence.clone()),
+            })
+        }
+    }
+
+    struct PriorEventThenNoEventQuiescenceLoop {
+        quanta: u64,
+        quiescence: SchedulerQuiescence,
+    }
+
+    impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            self.quanta = self.quanta.saturating_add(1);
+            let at = VirtualTime { ticks: self.quanta };
+            let entries = if self.quanta == 1 {
+                vec![crucible::test_support::condition_boundary_entry_for_test(
+                    0,
+                    at,
+                    crucible::SchedulerEvaluationBoundaryKind::Quantum,
+                )]
+            } else {
+                Vec::new()
+            };
+            let decision = generated_decision(self.quanta);
+            let configuration = step(&request.configuration, decision.clone());
+            Ok(QuantumOutcome {
+                configuration,
+                frontier: at,
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: entries,
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+                scheduler_quiescence: Some(self.quiescence.clone()),
             })
         }
     }
@@ -4834,6 +6129,7 @@ mod tests {
                 event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+                scheduler_quiescence: None,
             })
         }
     }
@@ -4868,6 +6164,7 @@ mod tests {
                 event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: offset,
+                scheduler_quiescence: None,
             })
         }
     }
@@ -4891,6 +6188,7 @@ mod tests {
                 event_log_segment_text: String::from("x"),
                 event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+                scheduler_quiescence: None,
             })
         }
     }
@@ -4927,7 +6225,9 @@ mod tests {
     fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
         crucible::test_support::condition_boundary_entry_for_test(
             sequence,
-            VirtualTime { ticks: sequence },
+            VirtualTime {
+                ticks: sequence.saturating_add(1),
+            },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
         )
     }
@@ -4953,6 +6253,36 @@ mod tests {
             name: AssertionId::from_name("session-step-assertion"),
             state: AssertionPhase::Satisfied,
         })
+    }
+
+    fn trigger_fired_payload(
+        sequence: u64,
+        event: EventId,
+        predicate: Predicate,
+    ) -> SchedulerEventLogPayload {
+        let graph = EventGraph::new(vec![Event::once(
+            event.clone(),
+            Some(predicate),
+            Action::Log {
+                level: LogLevel::Info,
+                message: String::from("session breakpoint trigger fired"),
+            },
+        )])
+        .unwrap_or_else(|error| panic!("trigger-fired event graph should build: {error}"));
+        let mut graph_state = EventGraphState::new();
+        let mut pass = ConditionEvaluationPass::from_log_prefix(
+            crucible::test_support::condition_prefix_at_quantum_boundary_for_test(sequence),
+            NoLeaves,
+        );
+        let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+        let Some(firing) = firings
+            .iter()
+            .find(|firing| firing.event() == &event)
+            .cloned()
+        else {
+            panic!("trigger-fired event graph should produce the requested firing");
+        };
+        SchedulerEventLogPayload::TriggerFired(firing)
     }
 
     fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {

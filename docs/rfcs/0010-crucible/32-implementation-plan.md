@@ -222,6 +222,17 @@ long-held locks.
   frontier/quanta-keyed session control log, verifies scheduler-backed control
   delivery and stopped-state terminal drain, and checks pause/stop take effect
   at the boundary without an extra quantum while stop invokes shutdown.
+  `T-SESS-7` is green through `checks.crucible.phase5.sessionBreakpoints`,
+  which evaluates actor-owned breakpoints through the shared 17a condition
+  prefix/evaluator, threads scheduler quiescence evidence into session
+  breakpoint evaluation including no-entry quiescent boundaries, records
+  deterministic firing entries and action scheduler controls, verifies
+  suspend/trace/action and OneShot/Repeatable behavior including persistent
+  `Once` latches, derives `After`/`Timer` facts from the canonical trigger log,
+  rejects unsupported or unrepresentable action breakpoints before applying
+  scheduler controls, and evaluates step stop points through one-shot breakpoint
+  conditions. Host-oracle `Named` predicates and metadata-backed white-box/symbol
+  leaves remain dependent on a session-visible host metadata/oracle surface.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
