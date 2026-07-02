@@ -41,6 +41,20 @@ pub const RUNTIME_WRITE_BARRIER_ABI_SIGNATURES: &[RuntimeWriteBarrierAbiSignatur
         RuntimeWriteBarrierAbiReturnKind::Unit,
     )];
 
+/// Returns write-barrier helper bindings with callable Rust storage-wrapper addresses.
+///
+/// The addresses are process-local Rust function addresses for registration
+/// preflight metadata. They are not stable across builds or processes, are not
+/// exported C symbols, and are not callable with [`RuntimeWriteBarrierAbiSignature`].
+pub fn runtime_write_barrier_rust_callable_bindings() -> Vec<RuntimeWriteBarrierRustCallableBinding>
+{
+    runtime_write_barrier_entrypoints()
+        .iter()
+        .copied()
+        .map(RuntimeWriteBarrierEntryPoint::rust_callable_binding)
+        .collect()
+}
+
 /// Returns the frozen write-barrier entry-point inventory.
 pub const fn runtime_write_barrier_entrypoints() -> &'static [RuntimeWriteBarrierEntryPoint] {
     RUNTIME_WRITE_BARRIER_ENTRYPOINTS
@@ -245,6 +259,21 @@ fn daemon_generational_aos_gc_write_barrier<'a>(
     .map(RuntimeThunkResolveBarrier::Heap)
 }
 
+fn rust_callable_aos_gc_write_barrier<'a>(
+    heap: &'a EvalHeap,
+    tier: GenerationalGcTier,
+    source_thunk: Value,
+    remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
+) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+    runtime_write_barrier_vtable(tier).aos_gc_write_barrier(
+        heap,
+        source_thunk,
+        remembered_set,
+        card_table,
+    )
+}
+
 impl RuntimeWriteBarrierEntryPoint {
     /// Returns the stable runtime symbol name for this write-barrier entry point.
     pub const fn symbol_name(self) -> &'static str {
@@ -270,6 +299,122 @@ impl RuntimeWriteBarrierEntryPoint {
                 RuntimeWriteBarrierAbiReturnKind::Unit,
             ),
         }
+    }
+
+    /// Returns the callable Rust storage-wrapper binding for this entry point.
+    ///
+    /// The callable's Rust shape is separate from the frozen native ABI
+    /// signature because runtime-context extraction, thunk-pointer decoding, and
+    /// trap transfer are not implemented yet.
+    pub fn rust_callable_binding(self) -> RuntimeWriteBarrierRustCallableBinding {
+        RuntimeWriteBarrierRustCallableBinding::new(
+            self,
+            self.rust_callable_shape(),
+            self.rust_callable_address(),
+        )
+    }
+
+    /// Returns the Rust storage-wrapper call shape for this entry point.
+    pub const fn rust_callable_shape(self) -> RuntimeWriteBarrierRustCallableShape {
+        match self {
+            Self::AosGcWriteBarrier => {
+                RuntimeWriteBarrierRustCallableShape::ThunkResolveConstructor
+            }
+        }
+    }
+
+    /// Returns the process-local Rust storage-wrapper address for this entry point.
+    ///
+    /// The address is suitable for registration preflight metadata only. It is
+    /// not an exported C ABI symbol, is not callable with the frozen native ABI
+    /// signature, and must not be persisted.
+    pub fn rust_callable_address(self) -> RuntimeWriteBarrierRustCallableAddress {
+        let ptr = match self {
+            Self::AosGcWriteBarrier => {
+                rust_callable_aos_gc_write_barrier as RuntimeThunkResolveWriteBarrierFn as *const ()
+            }
+        };
+        RuntimeWriteBarrierRustCallableAddress::new(ptr)
+    }
+}
+
+/// The Rust function shape behind a callable write-barrier storage wrapper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeWriteBarrierRustCallableShape {
+    /// A thunk-resolution barrier constructor selected by explicit GC tier.
+    ThunkResolveConstructor,
+}
+
+/// A process-local callable Rust write-barrier storage-wrapper address.
+///
+/// This pointer identifies a Rust function in the current process. It is used as
+/// registration metadata for later native startup binding and is intentionally
+/// not serialized or treated as stable ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeWriteBarrierRustCallableAddress {
+    ptr: *const (),
+}
+
+impl RuntimeWriteBarrierRustCallableAddress {
+    const fn new(ptr: *const ()) -> Self {
+        Self { ptr }
+    }
+
+    /// Returns the process-local function pointer.
+    pub const fn as_ptr(self) -> *const () {
+        self.ptr
+    }
+
+    /// Returns true when the address pointer is non-null.
+    pub const fn is_non_null(self) -> bool {
+        !self.ptr.is_null()
+    }
+}
+
+/// A callable Rust storage-wrapper binding for the frozen write-barrier helper.
+///
+/// This is not a native ABI binding. It deliberately omits
+/// [`RuntimeWriteBarrierAbiSignature`] because this Rust callable constructs a
+/// thunk-resolution barrier adapter while the frozen native ABI will eventually
+/// publish a forced value through a runtime context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeWriteBarrierRustCallableBinding {
+    entrypoint: RuntimeWriteBarrierEntryPoint,
+    shape: RuntimeWriteBarrierRustCallableShape,
+    address: RuntimeWriteBarrierRustCallableAddress,
+}
+
+impl RuntimeWriteBarrierRustCallableBinding {
+    const fn new(
+        entrypoint: RuntimeWriteBarrierEntryPoint,
+        shape: RuntimeWriteBarrierRustCallableShape,
+        address: RuntimeWriteBarrierRustCallableAddress,
+    ) -> Self {
+        Self {
+            entrypoint,
+            shape,
+            address,
+        }
+    }
+
+    /// Returns the write-barrier entry point served by this binding.
+    pub const fn entrypoint(self) -> RuntimeWriteBarrierEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the Rust function shape behind this binding.
+    pub const fn shape(self) -> RuntimeWriteBarrierRustCallableShape {
+        self.shape
+    }
+
+    /// Returns the stable runtime symbol name served by this binding.
+    pub const fn symbol_name(self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the process-local callable Rust address for this binding.
+    pub const fn address(self) -> RuntimeWriteBarrierRustCallableAddress {
+        self.address
     }
 }
 
@@ -477,6 +622,64 @@ mod tests {
     }
 
     #[test]
+    fn write_barrier_rust_callable_bindings_preserve_entrypoint_inventory() {
+        let bindings = runtime_write_barrier_rust_callable_bindings();
+        let expected = [(
+            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier,
+            RuntimeWriteBarrierRustCallableShape::ThunkResolveConstructor,
+            rust_callable_aos_gc_write_barrier as RuntimeThunkResolveWriteBarrierFn as *const (),
+        )];
+
+        assert_eq!(bindings.len(), expected.len());
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(RuntimeWriteBarrierRustCallableBinding::entrypoint)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_write_barrier_entrypoints()
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(|binding| (
+                    binding.entrypoint(),
+                    binding.shape(),
+                    binding.address().as_ptr(),
+                ))
+                .collect::<Vec<_>>()
+                .as_slice(),
+            expected.as_slice()
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .copied()
+                .map(|binding| binding.entrypoint().abi_signature())
+                .collect::<Vec<_>>()
+                .as_slice(),
+            runtime_write_barrier_abi_signatures()
+        );
+
+        for binding in bindings {
+            assert_eq!(binding.symbol_name(), binding.entrypoint().symbol_name());
+            assert_eq!(binding.entrypoint().rust_callable_binding(), binding);
+            assert_eq!(binding.shape(), binding.entrypoint().rust_callable_shape());
+            assert_eq!(
+                binding.address(),
+                binding.entrypoint().rust_callable_address()
+            );
+            assert!(
+                binding.address().is_non_null(),
+                "{} has a callable write-barrier address",
+                binding.symbol_name()
+            );
+        }
+    }
+
+    #[test]
     fn runtime_write_barrier_vtable_selects_every_gc_tier() {
         for tier in [
             GenerationalGcTier::OneShotArena,
@@ -512,6 +715,55 @@ mod tests {
             .expect("disabled barrier allows publish");
         drop(barrier);
         assert!(remembered_set.is_empty());
+    }
+
+    #[test]
+    fn write_barrier_rust_callable_routes_through_runtime_vtable() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        let source = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(1)))
+            .expect("source thunk allocates");
+        let mut remembered_set = RememberedSet::new();
+        let mut barrier = rust_callable_aos_gc_write_barrier(
+            &heap,
+            GenerationalGcTier::OneShotArena,
+            source,
+            &mut remembered_set,
+            None,
+        )
+        .expect("one-shot callable barrier creates");
+
+        assert_eq!(barrier.tier(), GenerationalGcTier::OneShotArena);
+        assert!(barrier.heap_barrier().is_none());
+        barrier
+            .before_publish_forced(Value::int(11))
+            .expect("disabled barrier allows publish");
+        drop(barrier);
+        assert!(remembered_set.is_empty());
+
+        let mut card_table = GcCardTable::default();
+        let mut barrier = rust_callable_aos_gc_write_barrier(
+            &heap,
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+            Some(&mut card_table),
+        )
+        .expect("daemon callable barrier creates");
+
+        assert_eq!(barrier.tier(), GenerationalGcTier::DaemonGenerational);
+        assert!(
+            barrier
+                .heap_barrier()
+                .and_then(|barrier| barrier.card_table())
+                .is_some()
+        );
+        barrier
+            .before_publish_forced(Value::int(11))
+            .expect("heap adapter allows inline publish");
+        drop(barrier);
+        assert!(remembered_set.is_empty());
+        assert!(card_table.is_empty());
     }
 
     #[test]

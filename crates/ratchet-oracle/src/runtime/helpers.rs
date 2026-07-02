@@ -16,7 +16,10 @@ use super::alloc::{
     RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint,
     RuntimeAllocationRustCallableBinding, runtime_allocation_rust_callable_bindings,
 };
-use super::barrier::{RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint};
+use super::barrier::{
+    RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint,
+    RuntimeWriteBarrierRustCallableBinding, runtime_write_barrier_rust_callable_bindings,
+};
 
 /// Runtime helpers that currently have a safe Rust ABI binding.
 pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
@@ -40,13 +43,19 @@ pub const fn runtime_helper_bindings() -> &'static [RuntimeHelperBinding] {
 /// Returns helper bindings that currently have callable Rust storage wrappers.
 ///
 /// These bindings are process-local Rust callables, not exported C ABI targets.
-/// The inventory is intentionally narrower than [`runtime_helper_bindings`]
-/// until every helper family has a callable wrapper shape.
+/// The inventory is separate from complete runtime-symbol registration, which
+/// also has to bind future helper roles and builtin symbols.
 pub fn runtime_helper_rust_callable_bindings() -> Vec<RuntimeHelperRustCallableBinding> {
-    runtime_allocation_rust_callable_bindings()
+    let mut bindings = runtime_allocation_rust_callable_bindings()
         .into_iter()
         .map(RuntimeHelperRustCallableBinding::Allocation)
-        .collect()
+        .collect::<Vec<_>>();
+    bindings.extend(
+        runtime_write_barrier_rust_callable_bindings()
+            .into_iter()
+            .map(RuntimeHelperRustCallableBinding::WriteBarrier),
+    );
+    bindings
 }
 
 /// Builds a helper-family preflight for callable Rust storage wrappers.
@@ -340,6 +349,8 @@ pub fn runtime_symbol_registration_plan() -> RuntimeSymbolRegistrationPlanResult
 pub enum RuntimeHelperRustCallableBinding {
     /// An allocation helper backed by `runtime::alloc` storage-wrapper dispatch.
     Allocation(RuntimeAllocationRustCallableBinding),
+    /// A write-barrier helper backed by `runtime::barrier` storage-wrapper dispatch.
+    WriteBarrier(RuntimeWriteBarrierRustCallableBinding),
 }
 
 impl RuntimeHelperRustCallableBinding {
@@ -347,6 +358,7 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn symbol_name(self) -> &'static str {
         match self {
             Self::Allocation(binding) => binding.symbol_name(),
+            Self::WriteBarrier(binding) => binding.symbol_name(),
         }
     }
 
@@ -354,6 +366,7 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn role(self) -> RuntimeHelperRole {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
+            Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
         }
     }
 
@@ -363,6 +376,9 @@ impl RuntimeHelperRustCallableBinding {
             Self::Allocation(binding) => {
                 RuntimeHelperBinding::Allocation(binding.entrypoint().abi_signature())
             }
+            Self::WriteBarrier(binding) => {
+                RuntimeHelperBinding::WriteBarrier(binding.entrypoint().abi_signature())
+            }
         }
     }
 
@@ -370,6 +386,15 @@ impl RuntimeHelperRustCallableBinding {
     pub const fn allocation_callable(self) -> Option<RuntimeAllocationRustCallableBinding> {
         match self {
             Self::Allocation(binding) => Some(binding),
+            Self::WriteBarrier(_) => None,
+        }
+    }
+
+    /// Returns the write-barrier callable when this binding serves a barrier.
+    pub const fn write_barrier_callable(self) -> Option<RuntimeWriteBarrierRustCallableBinding> {
+        match self {
+            Self::Allocation(_) => None,
+            Self::WriteBarrier(binding) => Some(binding),
         }
     }
 }
@@ -457,7 +482,9 @@ impl RuntimeHelperBinding {
             Self::Allocation(signature) => Some(RuntimeHelperRustCallableBinding::Allocation(
                 signature.entrypoint().rust_callable_binding(),
             )),
-            Self::WriteBarrier(_) => None,
+            Self::WriteBarrier(signature) => Some(RuntimeHelperRustCallableBinding::WriteBarrier(
+                signature.entrypoint().rust_callable_binding(),
+            )),
         }
     }
 
@@ -498,7 +525,9 @@ mod tests {
     use crate::runtime::alloc::{
         runtime_allocation_abi_signatures, runtime_allocation_rust_callable_bindings,
     };
-    use crate::runtime::barrier::runtime_write_barrier_abi_signatures;
+    use crate::runtime::barrier::{
+        runtime_write_barrier_abi_signatures, runtime_write_barrier_rust_callable_bindings,
+    };
 
     #[test]
     fn runtime_helper_bindings_match_core_bound_helper_roles() {
@@ -593,14 +622,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_helper_rust_callable_bindings_preserve_allocation_inventory() {
+    fn runtime_helper_rust_callable_bindings_preserve_family_inventories() {
         let helper_callables = runtime_helper_rust_callable_bindings();
-        let allocation_callables = runtime_allocation_rust_callable_bindings()
+        let mut expected_callables = runtime_allocation_rust_callable_bindings()
             .into_iter()
             .map(RuntimeHelperRustCallableBinding::Allocation)
             .collect::<Vec<_>>();
+        expected_callables.extend(
+            runtime_write_barrier_rust_callable_bindings()
+                .into_iter()
+                .map(RuntimeHelperRustCallableBinding::WriteBarrier),
+        );
 
-        assert_eq!(helper_callables, allocation_callables);
+        assert_eq!(helper_callables, expected_callables);
         assert_eq!(
             helper_callables
                 .iter()
@@ -609,15 +643,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 .as_slice(),
             runtime_helper_bindings()
-                .iter()
-                .copied()
-                .filter(|binding| binding.role() == RuntimeHelperRole::Allocation)
-                .collect::<Vec<_>>()
-                .as_slice()
         );
 
         for callable in helper_callables {
-            assert_eq!(callable.role(), RuntimeHelperRole::Allocation);
             assert_eq!(
                 RuntimeHelperBinding::from_symbol_name(callable.symbol_name()),
                 Some(callable.helper_binding())
@@ -626,24 +654,30 @@ mod tests {
                 callable.helper_binding().rust_callable_binding(),
                 Some(callable)
             );
-            assert!(callable.allocation_callable().is_some());
+            match callable.role() {
+                RuntimeHelperRole::Allocation => {
+                    assert!(callable.allocation_callable().is_some());
+                    assert!(callable.write_barrier_callable().is_none());
+                }
+                RuntimeHelperRole::WriteBarrier => {
+                    assert!(callable.allocation_callable().is_none());
+                    assert!(callable.write_barrier_callable().is_some());
+                }
+                role => panic!("unexpected callable helper role: {role:?}"),
+            }
         }
     }
 
     #[test]
-    fn runtime_helper_rust_callable_preflight_reports_missing_bound_helpers() {
+    fn runtime_helper_rust_callable_preflight_covers_bound_helpers() {
         let preflight = runtime_helper_rust_callable_preflight();
-        let missing_write_barrier = RuntimeHelperBinding::WriteBarrier(
-            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
-        );
 
-        assert!(!preflight.is_complete());
+        assert!(preflight.is_complete());
         assert_eq!(
             preflight.callable_bindings(),
             runtime_helper_rust_callable_bindings().as_slice()
         );
-        assert_eq!(preflight.missing_bindings(), [missing_write_barrier]);
-        assert_eq!(missing_write_barrier.rust_callable_binding(), None);
+        assert!(preflight.missing_bindings().is_empty());
     }
 
     #[test]

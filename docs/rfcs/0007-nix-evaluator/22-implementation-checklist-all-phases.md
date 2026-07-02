@@ -5312,6 +5312,20 @@ and helps the oracle directly.
       only; it does not export the `unsafe extern "C"` function, register
       Cranelift symbols, mutate object generations, or install the Tier-B
       collector table.
+- [x] Current write-barrier Rust-callable address precursor:
+      `runtime::barrier::runtime_write_barrier_rust_callable_bindings()` now
+      attaches a process-local Rust thunk-resolution barrier-constructor address
+      to `aos_gc_write_barrier`, separately from the frozen native ABI
+      signature. The callable wrapper dispatches through the selected
+      `RuntimeWriteBarrierVTable`, preserving the one-shot and daemon
+      generational routes. Tests prove entry-point/signature order parity, exact
+      entry-point-to-wrapper pointer mapping, non-null callable addresses, and
+      wrapper dispatch through both vtable routes. This is still not the
+      exported C ABI: the Rust address is not callable through
+      `RuntimeWriteBarrierAbiSignature`, and no `unsafe extern "C"` symbol,
+      runtime-context extraction, native thunk/value decoding, trap transfer,
+      Cranelift registration, object-generation mutation, or Tier-B collector
+      installation is implemented here.
 - [x] Current runtime-helper binding-manifest precursor:
       `ratchet-oracle::runtime::helpers` now combines the allocation and
       write-barrier helper families into one safe `RuntimeHelperBinding`
@@ -5331,16 +5345,15 @@ and helps the oracle directly.
       bindings for forcing/call/attr/error helpers.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
-      allocation Rust-callable storage-wrapper addresses into the helper-family
-      layer, while `runtime_helper_rust_callable_preflight()` reports bound
-      helper families that still lack such a callable. Today the callable
-      inventory is exactly the allocation helper set, and the preflight reports
-      `aos_gc_write_barrier` as the only currently bound helper still missing a
-      Rust-callable wrapper address. Tests prove allocation inventory parity,
-      safe-helper metadata round trips, exact callable coverage, and the
-      write-barrier missing report. This is still helper-family Rust metadata
-      only: no exported C ABI symbols, Cranelift registration, callable
-      write-barrier wrapper, unbound forcing/call/attr/error helpers, builtin
+      allocation and write-barrier Rust-callable storage-wrapper addresses into
+      the helper-family layer, while
+      `runtime_helper_rust_callable_preflight()` reports whether any currently
+      bound helper family still lacks such a callable. The preflight is now
+      complete for the currently bound allocation/write-barrier helper set.
+      Tests prove family inventory parity, safe-helper metadata round trips,
+      exact callable coverage, and the empty missing-binding report. This is
+      still helper-family Rust metadata only: no exported C ABI symbols,
+      Cranelift registration, unbound forcing/call/attr/error helpers, builtin
       addresses, or complete runtime-symbol registration plan is implemented.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
