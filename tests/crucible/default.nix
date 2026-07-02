@@ -1398,6 +1398,29 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiNondeterminism = import ./phase5-api-nondeterminism.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiNondeterminism";
+      taskIds = ["T-API-14"];
+      dependencies = [
+        phase5.apiReferenceClientConformance
+        phase5.apiCommandStatusTaxonomy
+        phase5.apiReproductionContext
+        phase5.apiEpochGuards
+        phase5.apiStateUpdateStream
+        phase5.apiStreamingCursor
+        phase5.apiOpenSetPayload
+        phase5.apiStreamingEquivalence
+        phase5.apiLifecycleUnary
+        phase5.sessionControlDeterminism
+        phase5.sessionLockFreeObservation
+        phase5.sessionLifecycle
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase4.gates.replayOracle.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

@@ -765,8 +765,23 @@ ran in-process against the double or over the wire against QEMU.
   through the `SimulationBackend` contract. The ABI and wire-snapshot tests now
   explicitly cover the frozen RPC request, response, streaming-frame, error, and
   open-set payload variants.
-- [ ] **T-API-14** Prove the API introduces no nondeterminism: mutating commands
+- [x] **T-API-14** Prove the API introduces no nondeterminism: mutating commands
   land at deterministic quantum boundaries; transport, observer load, wall-clock,
   and RPC arrival order do not influence the causal subsequence or State; read-only
   RPCs never enter the schedule. — satisfies [API-30], [API-31]; spec §21.7;
   cross-ref 20 §8, §9.
+  Completed by `checks.crucible.phase5.apiNondeterminism`: the shared
+  `ControlClient` nondeterminism gate drives the same paused-boundary
+  scheduler-control stream through quiet/noisy in-process and HTTP/2 RPC
+  clients, plus RPC lanes that assert the test server observed both
+  `GetReproduction`-before-`Send` and `Send`-before-`GetReproduction` orders on
+  independent client requests. It then compares final state, event-log cursor,
+  causal/observational event counts, last event sequence, reproduction context,
+  and accepted command results with transport removed from the projection. A
+  separate streaming lane appends a non-empty causal/observational event burst
+  while undrained `Control` and `Watch` observers are attached, then compares the
+  replayed causal event payload projection between quiet and noisy runs. The
+  noisy lanes interleave read-only `Hello`/`List*`/`Watch`/`GetReproduction` and
+  query-class traffic around the mutating commands, and yield between requests
+  while production API control paths statically forbid wall-clock reads. The gate
+  also re-runs the reproduction-context and streaming-cursor read-only checks.
