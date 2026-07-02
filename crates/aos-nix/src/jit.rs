@@ -269,6 +269,43 @@ pub fn nix_jit_registered_tier1_install_plan_for_ir_root(
         .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
 }
 
+/// Builds a force-aware safe registered tier-1 install plan for an IR root.
+///
+/// This composes the force-aware registered promotion bridge with the same safe
+/// handoff object used by the existing registered install-plan path. Literal
+/// roots can produce a ready plan. Local environment-slot roots lower through
+/// the forced env-slot artifact and currently report the missing `aos_force`
+/// address candidate before finalization or pointer installation. The plan
+/// still does not mutate evaluator heap state, cast or call the code pointer,
+/// dereference registered helper addresses, or call native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError`] under the same conditions as
+/// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root`].
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root`] when
+/// policy requests promotion for a finalizable artifact.
+pub fn nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitRegisteredTier1InstallPlanResult {
+    nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        arena,
+        root,
+    )
+    .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
+}
+
 fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,

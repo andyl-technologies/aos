@@ -5427,6 +5427,17 @@ and helps the oracle directly.
       thunk-state CAS, cast or call code pointers, dereference registered
       addresses, call native code, or complete full/native runtime-symbol
       registration for unrelated stable symbols.
+- [x] Current `aos-nix` force-aware registered tier-1 install-plan handoff:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root()`
+      wraps the force-aware registered promotion preflight in the same safe
+      handoff object used by the existing registered path. Tests cover cold slot
+      preservation before candidate projection, literal pointer/module-owner
+      readiness, and the current hot env-slot `aos_force` registration gap
+      before finalization or pointer installation. This creates the future
+      force-aware evaluator thunk install boundary but still does not mutate heap
+      thunks, perform atomic thunk-state CAS, cast or call code pointers,
+      dereference registered addresses, call native code, or complete
+      runtime-symbol registration.
 - [x] Current `aos-nix` evaluator-thunk install readiness preflight:
       `aos_nix::jit::nix_jit_registered_tier1_thunk_install_readiness_for_ir_root()`
       wraps the registered install plan in a read-only report against a target

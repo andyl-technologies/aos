@@ -1459,6 +1459,17 @@ harness, never cut for scope.
       no code pointer is cast or called, and no registered helper address is
       dereferenced or called; full/native runtime-symbol registration for
       unrelated stable symbols remains open.
+- [x] Current `aos-nix` force-aware registered tier-1 install-plan handoff:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root()`
+      wraps the force-aware registered promotion preflight in the same safe
+      install handoff object used by the existing registered path. Cold roots
+      preserve the updated tier slot without address-candidate requirements,
+      literal roots can produce a ready pointer/module-owner plan, and hot local
+      environment-slot roots still report the missing `aos_force` candidate
+      before Cranelift finalization or tier-slot pointer installation. This is a
+      safe plan only: no evaluator heap thunk is mutated, no atomic thunk-state
+      CAS runs, no code pointer is cast or called, and no registered helper
+      address is dereferenced or called.
 - [x] Current `aos-nix` evaluator-thunk install readiness preflight:
       `aos_nix::jit::nix_jit_registered_tier1_thunk_install_readiness_for_ir_root()`
       composes the registered install-plan handoff with read-only evaluator

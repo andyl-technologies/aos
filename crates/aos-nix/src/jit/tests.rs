@@ -493,3 +493,111 @@ fn nix_jit_registered_tier1_install_plan_carries_promoted_slot_and_module_owner(
     );
     assert!(plan.owns_encapsulated_module());
 }
+
+#[test]
+fn nix_jit_force_aware_registered_tier1_install_plan_records_cold_slot_without_pointer() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Str,
+            Span::new(0, 5),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+    )
+    .expect("cold force-aware unsupported root records slot state");
+
+    assert!(!plan.did_compile());
+    assert!(!plan.is_ready_for_install());
+    assert_eq!(plan.slot().invocation_counter().invocations(), 1);
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier0Oracle);
+    assert!(plan.tier1_code_ptr().is_none());
+    assert!(plan.promoted_preflight().is_none());
+    assert!(!plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_force_aware_registered_tier1_install_plan_carries_literal_slot_and_module_owner() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Bool,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Bool(true),
+        )],
+        Vec::new(),
+    );
+
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+    )
+    .expect("force-aware literal install plan builds");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("literal install plan owns promoted preflight");
+    assert!(
+        promoted
+            .finalization()
+            .artifact_runtime_imports()
+            .is_empty()
+    );
+    assert!(plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_force_aware_registered_tier1_install_plan_reports_missing_force_candidate() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::LocalVar,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Local { slot: 2 },
+        )],
+        Vec::new(),
+    );
+
+    let result = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+    );
+    let Err(error) = result else {
+        panic!("force-aware env-slot install plan requires an aos_force candidate");
+    };
+
+    assert!(error.decision().should_promote());
+    assert_eq!(
+        error.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+    assert!(error.slot().tier1_code_ptr().is_none());
+    let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
+        panic!("expected Cranelift promotion failure");
+    };
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        source.setup_error()
+    else {
+        panic!("expected force helper registration guard");
+    };
+    assert_eq!(symbol_names, &["aos_force".to_owned()]);
+}
