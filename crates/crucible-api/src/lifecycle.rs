@@ -22,10 +22,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::{
-    AttachRequest, Attached, CommandResultStatus, ControlClient, ControlClientError,
-    ControlClientFuture, ControlPlaneEventLog, ControlTransportKind, ControlWireModel,
-    HelloRequest, HelloResponse, InProcessStreamingSession, RPC_OPEN_SET_PAYLOAD_KINDS,
-    RpcAbiError, SendRequest, SendResponse, StreamingApiError, negotiate_rpc_protocol,
+    AttachRequest, ClientControlStream, ClientWatchStream, CommandResultStatus, ControlClient,
+    ControlClientError, ControlClientFuture, ControlPlaneEventLog, ControlTransportKind,
+    ControlWireModel, HelloRequest, HelloResponse, InProcessStreamingSession,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RpcAbiError, SendRequest, SendResponse, StreamingApiError,
+    negotiate_rpc_protocol,
 };
 
 /// Default actor mailbox capacity for lifecycle-created sessions.
@@ -739,15 +740,19 @@ where
         })
     }
 
-    fn control_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn control_attach(
+        &self,
+        request: AttachRequest,
+    ) -> ControlClientFuture<'_, ClientControlStream> {
         Box::pin(async move {
             let streaming_session = self
                 .control_plane
                 .lock()
                 .await
                 .streaming_session(request.session)?;
-            let control = streaming_session.control(request)?;
-            Ok(control.attached().clone())
+            Ok(ClientControlStream::InProcess(
+                streaming_session.control(request)?,
+            ))
         })
     }
 
@@ -761,15 +766,16 @@ where
         })
     }
 
-    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, ClientWatchStream> {
         Box::pin(async move {
             let streaming_session = self
                 .control_plane
                 .lock()
                 .await
                 .streaming_session(request.session)?;
-            let watch = streaming_session.watch(request)?;
-            Ok(watch.attached().clone())
+            Ok(ClientWatchStream::InProcess(
+                streaming_session.watch(request)?,
+            ))
         })
     }
 

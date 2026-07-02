@@ -305,6 +305,11 @@ long-held locks.
   sources from existing model tables, treats unknown received event kinds as
   opaque, rejects unknown or malformed send payloads with typed errors, and
   updates `Hello`/golden vectors to advertise the open-set categories.
+  `T-API-6` is green through `checks.crucible.phase5.apiStreamingCursor`, which
+  adds attach-tail replay metadata, log-derived snapshot summaries, API event
+  frame conversion over the shared event-log stream, observational flags, and a
+  cursor gate covering replay, attach-past-tail skip, pure observation, and live
+  tail delivery.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

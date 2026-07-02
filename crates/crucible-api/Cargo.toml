@@ -8,8 +8,10 @@ publish = false
 workspace = true
 
 [dependencies]
+bytes = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-session = { path = "../crucible-session" }
+futures-util = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

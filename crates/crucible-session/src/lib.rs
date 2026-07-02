@@ -29,8 +29,8 @@ use crucible::{
     DebugReverseStepReport, DebugReverseStepRequest, Decision, EngineError, Fault, FaultTag,
     GdbListen, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
     RuntimeState, Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SimDuration,
-    TemporalGraph, VirtualTime,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
+    SimDuration, TemporalGraph, VirtualTime,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -2011,6 +2011,21 @@ impl SessionEventLogFrame {
     }
 }
 
+/// Log-derived summary captured at stream attach time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEventLogSnapshot {
+    /// Cursor through which the snapshot was folded.
+    pub through: EventLogCursor,
+    /// Number of event-log entries folded into the snapshot.
+    pub event_count: u64,
+    /// Number of causal entries folded into the snapshot.
+    pub causal_count: u64,
+    /// Number of observational entries folded into the snapshot.
+    pub observational_count: u64,
+    /// Last sequence folded into the snapshot, when any entry was present.
+    pub last_sequence: Option<u64>,
+}
+
 /// Error returned while reading a live event-log stream.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SessionEventLogStreamError {
@@ -2077,16 +2092,64 @@ impl SessionEventLog {
     /// a session command and does not await the scheduler.
     #[must_use]
     pub fn subscribe(&self, cursor: EventLogCursor) -> SessionEventLogStream {
+        let (_current_tail, stream) = self.subscribe_with_replay_tail(cursor);
+        stream
+    }
+
+    /// Subscribes and returns the replay tail captured for the attach response.
+    ///
+    /// The returned cursor is the retained log tail observed by the attach path;
+    /// the stream starts with replay from `cursor` up to that tail and then
+    /// continues with the live broadcast tail.
+    #[must_use]
+    pub fn subscribe_with_replay_tail(
+        &self,
+        cursor: EventLogCursor,
+    ) -> (EventLogCursor, SessionEventLogStream) {
+        let receiver = self.inner.tail.subscribe();
         let current_tail = self.current_cursor();
         let next_cursor = EventLogCursor::new(cursor.next_sequence.min(current_tail.next_sequence));
-        let receiver = self.inner.tail.subscribe();
-        SessionEventLogStream {
-            hub: self.clone(),
-            generation: self.generation(),
-            next_cursor,
-            replay_exhausted: false,
-            backlog: VecDeque::new(),
-            receiver,
+        (
+            current_tail,
+            SessionEventLogStream {
+                hub: self.clone(),
+                generation: self.generation(),
+                next_cursor,
+                replay_tail: current_tail,
+                replay_exhausted: false,
+                backlog: VecDeque::new(),
+                receiver,
+            },
+        )
+    }
+
+    /// Returns a log-derived snapshot summary through `cursor`.
+    #[must_use]
+    pub fn snapshot_through(&self, cursor: EventLogCursor) -> SessionEventLogSnapshot {
+        let entries = self.lock_entries();
+        let mut event_count = 0_u64;
+        let mut causal_count = 0_u64;
+        let mut observational_count = 0_u64;
+        let mut last_sequence = None;
+        for entry in entries
+            .iter()
+            .take_while(|entry| entry.sequence() < cursor.next_sequence)
+        {
+            event_count = event_count.saturating_add(1);
+            match entry.class() {
+                SchedulerEventLogClass::Causal => causal_count = causal_count.saturating_add(1),
+                SchedulerEventLogClass::Observational => {
+                    observational_count = observational_count.saturating_add(1);
+                }
+            }
+            last_sequence = Some(entry.sequence());
+        }
+        SessionEventLogSnapshot {
+            through: cursor,
+            event_count,
+            causal_count,
+            observational_count,
+            last_sequence,
         }
     }
 
@@ -2143,6 +2206,7 @@ impl SessionEventLog {
     fn replay_batch_from(
         &self,
         cursor: EventLogCursor,
+        replay_tail: EventLogCursor,
         generation: u64,
     ) -> VecDeque<SessionEventLogFrame> {
         let entries = self.lock_entries();
@@ -2150,6 +2214,7 @@ impl SessionEventLog {
         entries
             .iter()
             .skip(start)
+            .take_while(|entry| entry.sequence() < replay_tail.next_sequence)
             .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
             .cloned()
             .map(|entry| SessionEventLogFrame::new(entry, generation))
@@ -2163,12 +2228,31 @@ impl Default for SessionEventLog {
     }
 }
 
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod test_support {
+    //! Debug-build helpers for integration tests.
+
+    use crucible::SchedulerEventLogEntry;
+
+    use crate::SessionEventLog;
+
+    /// Appends event-log entries to a session event-log hub for integration tests.
+    pub fn append_event_log_entries_for_test(
+        hub: &SessionEventLog,
+        entries: &[SchedulerEventLogEntry],
+    ) {
+        hub.append_entries(entries);
+    }
+}
+
 /// Cursor-backed event-log stream for one subscriber.
 #[derive(Debug)]
 pub struct SessionEventLogStream {
     hub: SessionEventLog,
     generation: u64,
     next_cursor: EventLogCursor,
+    replay_tail: EventLogCursor,
     replay_exhausted: bool,
     backlog: VecDeque<SessionEventLogFrame>,
     receiver: broadcast::Receiver<SessionEventLogFrame>,
@@ -2195,14 +2279,15 @@ impl SessionEventLogStream {
             if hub_generation > self.generation {
                 self.generation = hub_generation;
                 self.next_cursor = self.next_cursor.min(self.hub.generation_start_cursor());
+                self.replay_tail = self.hub.current_cursor();
                 self.replay_exhausted = false;
                 self.backlog.clear();
             }
 
             if self.backlog.is_empty() && !self.replay_exhausted {
-                self.backlog = self
-                    .hub
-                    .replay_batch_from(self.next_cursor, self.generation);
+                self.backlog =
+                    self.hub
+                        .replay_batch_from(self.next_cursor, self.replay_tail, self.generation);
                 self.replay_exhausted = self.backlog.is_empty();
             }
 

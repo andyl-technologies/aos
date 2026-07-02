@@ -1292,6 +1292,20 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    apiStreamingCursor = import ./phase5-api-streaming-cursor.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.apiStreamingCursor";
+      taskIds = ["T-API-6"];
+      dependencies = [
+        phase5.apiOpenSetPayload
+        phase5.apiStreamingEquivalence
+        phase5.apiLifecycleUnary
+        phase5.sessionLifecycle
+        phase5.sessionCommandSet
+        phase2.gates.abiConformance.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {
