@@ -856,6 +856,56 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         }]
     );
 
+    let mut forwarding_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live forwarding");
+    assert_eq!(
+        forwarding_outcome
+            .heap()
+            .minor_gc_forwarding_value_at(gc_address(forwarding_outcome.value()))
+            .expect("forwarding source is known"),
+        None
+    );
+    let live_forwarding_dry_run = forwarding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live forwarding");
+    let live_forwarding_commit = live_forwarding_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live forwarding worker commit records");
+    let live_forwarding_slot = live_forwarding_commit.forwarding_slots()[0];
+    assert_eq!(live_forwarding_dry_run.forwarding_pointers_installed(), 1);
+    assert_eq!(
+        forwarding_outcome
+            .heap()
+            .minor_gc_forwarding_value_at(live_forwarding_slot.source())
+            .expect("forwarding source remains known"),
+        live_forwarding_slot.forwarded_value()
+    );
+    let forwarding_before_repeat = forwarding_outcome
+        .heap()
+        .minor_gc_forwarding_value_at(live_forwarding_slot.source())
+        .expect("forwarding source remains known before repeat");
+    forwarding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live forwarding slot rejects repeat install");
+    assert_eq!(
+        forwarding_outcome
+            .heap()
+            .minor_gc_forwarding_value_at(live_forwarding_slot.source())
+            .expect("forwarding source remains known after repeat"),
+        forwarding_before_repeat
+    );
+
     let live_dirty_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
     outcome
         .thunk_resolve_card_table
@@ -886,7 +936,7 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
 #[test]
 fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
     let ir = lower("x: x");
-    let outcome = eval_whnf_owned_with_options(
+    let mut outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
@@ -955,6 +1005,30 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
             address: old_base,
             generation: HeapGeneration::Old,
         }]
+    );
+
+    let live_forwarding_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), old_base),
+        )
+        .expect("promoted worker dry-run installs live forwarding");
+    let live_forwarding_slot = live_forwarding_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live promoted worker commit records")
+        .forwarding_slots()[0];
+    assert_eq!(live_forwarding_dry_run.forwarding_pointers_installed(), 1);
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(live_forwarding_slot.source())
+            .expect("promoted forwarding source remains known"),
+        Some(ResolvedValueGeneration::Heap {
+            address: old_base,
+            generation: HeapGeneration::Old,
+        })
     );
 }
 
@@ -1358,6 +1432,58 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     );
     assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 2);
     assert!(outcome.thunk_resolve_card_table().is_empty());
+
+    let (mut forwarding_outcome, _) = boundary_remembered_edge_outcome();
+    let live_forwarding_dry_run = forwarding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("sibling boundary preflights install merged live forwarding");
+    let live_forwarding_worker = live_forwarding_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live forwarding worker commit records");
+    let live_forwarding_permanent = live_forwarding_dry_run
+        .dry_run()
+        .commit_applications()
+        .permanent_shared()
+        .expect("live forwarding permanent commit records");
+    let mut expected_forwarding = Vec::new();
+    for slot in live_forwarding_worker
+        .forwarding_slots()
+        .iter()
+        .chain(live_forwarding_permanent.forwarding_slots())
+    {
+        let Some(forwarded) = slot.forwarded_value() else {
+            continue;
+        };
+        if let Some((_, existing)) = expected_forwarding
+            .iter()
+            .find(|(source, _)| *source == slot.source())
+        {
+            assert_eq!(*existing, forwarded);
+            continue;
+        }
+        expected_forwarding.push((slot.source(), forwarded));
+    }
+    assert!(!live_forwarding_worker.forwarding_slots().is_empty());
+    assert!(!live_forwarding_permanent.forwarding_slots().is_empty());
+    assert!(!expected_forwarding.is_empty());
+    assert_eq!(
+        live_forwarding_dry_run.forwarding_pointers_installed(),
+        expected_forwarding.len()
+    );
+    for (source, forwarded) in expected_forwarding {
+        assert_eq!(
+            forwarding_outcome
+                .heap()
+                .minor_gc_forwarding_value_at(source)
+                .expect("merged forwarding source remains known"),
+            Some(forwarded)
+        );
+    }
 
     let (mut merge_outcome, _) = boundary_remembered_edge_outcome();
     let extra_card_source = next_dirty_card_source(merge_outcome.thunk_resolve_card_table());
@@ -1955,6 +2081,21 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         outcome.thunk_resolve_card_table().dirty_cards()[0].source(),
         unrelated_dirty_source
     );
+    let empty_live_forwarding_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary dry run leaves live forwarding alone");
+    assert!(empty_live_forwarding_dry_run.dry_run().is_empty());
+    assert_eq!(
+        empty_live_forwarding_dry_run.forwarding_pointers_installed(),
+        0
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let remembered_set_before_empty = outcome.thunk_resolve_remembered_set().clone();
     let empty_live_state_dry_run = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set(

@@ -47,19 +47,20 @@ pub use arena::{
     EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
 pub use roots::{
-    AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
-    AllocationCollectorPollHeapFieldWritebackReport, AllocationCollectorPollHeapFieldWritebackSlot,
-    AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
-    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
-    AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
-    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
-    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
-    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
-    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWriteback,
-    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollRootWritebackReport,
-    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, CapturedRootOwner,
-    EvalHeapThunkResolveBarrier, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
-    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollForwardingInstallReport, AllocationCollectorPollHeapFieldWriteback,
+    AllocationCollectorPollHeapFieldWritebackPlan, AllocationCollectorPollHeapFieldWritebackReport,
+    AllocationCollectorPollHeapFieldWritebackSlot, AllocationCollectorPollMinorGcCommitBuffers,
+    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
+    AllocationCollectorPollMinorGcRelocationDestinations, AllocationCollectorPollNurseryField,
+    AllocationCollectorPollNurseryFields, AllocationCollectorPollObjectByteCopyPlan,
+    AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollReferenceSlot,
+    AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
+    AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
+    AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
+    AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
+    AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
+    EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
+    InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -213,6 +214,7 @@ struct HeapRecord {
     layout: HeapRecordLayout,
     structural_hash: Option<HotXxh3Hash>,
     allocation_domain: HeapAllocationDomain,
+    minor_gc_forwarding: Cell<Option<ResolvedValueGeneration>>,
     last_touch_epoch: Cell<u64>,
     value_hash: Cell<Option<ValueHash>>,
     captured_value_hash: Cell<Option<ValueHash>>,
@@ -688,6 +690,28 @@ pub enum EvalHeapError {
         source_address: GcHeapAddress,
         /// The relocation value whose address collides with the source set.
         destination: ResolvedValueGeneration,
+    },
+    /// A live forwarding installation received an empty forwarding slot.
+    #[error(
+        "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",
+        address = address.address_bits()
+    )]
+    CollectorPollForwardingSlotEmpty {
+        /// The supplied forwarding slot index.
+        index: usize,
+        /// The source object whose forwarding slot was empty.
+        address: GcHeapAddress,
+    },
+    /// A live forwarding installation received a duplicated source slot.
+    #[error(
+        "collector-poll minor-GC forwarding slot for 0x{address:x} appears more than once at index {index}",
+        address = address.address_bits()
+    )]
+    CollectorPollForwardingSlotDuplicateSource {
+        /// The supplied forwarding slot index.
+        index: usize,
+        /// The duplicated source object.
+        address: GcHeapAddress,
     },
     /// A caller-supplied root value list did not contain one value per copied
     /// root reference slot.

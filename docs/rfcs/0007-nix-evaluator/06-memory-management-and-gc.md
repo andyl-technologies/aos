@@ -1175,7 +1175,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       boundary successes, multi-card live clears, empty-boundary no-clear
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
-      root/field mutation, live object bytes, forwarding headers,
+      root/field mutation, live object bytes, forwarding metadata,
       object-generation mutation, semispace ownership, and Tier-B dispatch
       remain open.
 - [x] Current boundary live remembered-set publication bridge:
@@ -1194,8 +1194,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       clearing, multi-tier merge publication with observed raw relocation-map
       coherence and live-card clearing, and empty-boundary no-mutation behavior.
       This is still not a full live collector commit: live root/field mutation,
-      live object bytes, forwarding headers, object-generation mutation,
+      live object bytes, forwarding metadata, object-generation mutation,
       semispace ownership, and Tier-B dispatch remain open.
+- [x] Current boundary live forwarding-slot bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
+      derives the same owned boundary commit dry run, merges sibling
+      worker/permanent forwarding applications through the same raw
+      relocation-map coherence checks used by live remembered-set publication,
+      and installs the deduplicated forwarding values into evaluator heap
+      side-table cells only after every dry-run and live-slot validation
+      succeeds. Empty/no-survivor boundaries leave forwarding cells unchanged,
+      and occupied live forwarding cells reject repeat installation without
+      partial mutation. Tests cover copied-young, promoted-old, multi-tier
+      overlapping-source merge, repeat-install rejection/no-mutation, and
+      empty-boundary no-op behavior. This is still not a full live collector
+      commit: live root/field mutation, live object bytes, real ABI
+      object-header forwarding writes, object-generation mutation, semispace
+      ownership, remembered-source field mutation, and Tier-B dispatch remain
+      open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -1933,10 +1949,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       owned dry-run validation, and
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
       publishes an outcome-owned remembered set after the same dry run, merging
-      sibling worker/permanent next sets when both tiers produced applications.
-      These helpers still do not bind live object-byte buffers, live root/field
-      storage, live forwarding slots, object-generation metadata, or semispace
-      storage, and they do not commit those live mutations.
+      sibling worker/permanent next sets when both tiers produced applications,
+      and
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
+      installs evaluator-owned side-table forwarding values after the same dry
+      run. These helpers still do not bind live object-byte buffers, live
+      root/field storage, real ABI object-header forwarding storage,
+      object-generation metadata, or semispace storage, and they do not commit
+      those live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1954,7 +1974,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       commit-buffer application, single-call owned commit dry-run,
       outcome-owned live card-table clearing after successful dry-run
       validation, single-tier and multi-tier live remembered-set publication,
-      stale same-domain poll rejection, and stack cleanup after
+      live side-table forwarding installation, stale same-domain poll
+      rejection, and stack cleanup after
       force/primop failures. This still does not infer arbitrary Rust locals
       without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those

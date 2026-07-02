@@ -1828,6 +1828,19 @@ impl AllocationCollectorPollObjectByteCopyPlan {
     }
 }
 
+/// A summary of live evaluator heap forwarding values installed for minor GC.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollForwardingInstallReport {
+    forwarding_pointers: usize,
+}
+
+impl AllocationCollectorPollForwardingInstallReport {
+    /// Returns the number of evaluator heap forwarding values installed.
+    pub const fn forwarding_pointers(self) -> usize {
+        self.forwarding_pointers
+    }
+}
+
 /// One root-backed reference that must be rewritten after minor GC.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollRootWriteback {
@@ -2852,6 +2865,94 @@ impl EvalHeap {
         Ok(AllocationCollectorPollObjectByteCopyPlan::new(requests))
     }
 
+    /// Returns the live side-table forwarding value installed for `address`.
+    ///
+    /// This exposes evaluator-owned forwarding metadata used by the tree-walk
+    /// GC-stress bridge. It does not read an ABI object header or prove that
+    /// destination object storage has been allocated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `address` does not belong to this heap.
+    pub fn minor_gc_forwarding_value_at(
+        &self,
+        address: GcHeapAddress,
+    ) -> Result<Option<ResolvedValueGeneration>, EvalHeapError> {
+        Ok(self
+            .record_for_gc_address(address, "forwarding source")?
+            .minor_gc_forwarding
+            .get())
+    }
+
+    /// Installs live side-table forwarding values for a minor-GC commit.
+    ///
+    /// Each supplied slot must be occupied, must name a current young
+    /// worker-domain source object, and that object's live forwarding cell must
+    /// still be empty. All slots are validated before any heap record is
+    /// mutated, so validation failures leave every forwarding cell unchanged.
+    /// This is an evaluator side-table bridge for GC-stress execution; it does
+    /// not write ABI object headers, copy object bytes, rewrite roots or fields,
+    /// publish remembered sets, clear card-table storage, or manage semispaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if a slot is empty, duplicated, references an
+    /// unknown or non-young source object, or if the source object's forwarding
+    /// cell is already occupied.
+    pub fn install_collector_poll_minor_gc_forwarding_slots(
+        &mut self,
+        slots: &[MinorGcForwardingSlot],
+    ) -> Result<AllocationCollectorPollForwardingInstallReport, EvalHeapError> {
+        let mut planned = Vec::new();
+        planned.try_reserve_exact(slots.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+                entries: slots.len(),
+            }
+        })?;
+
+        for (index, slot) in slots.iter().copied().enumerate() {
+            let Some(forwarded) = slot.forwarded_value() else {
+                return Err(EvalHeapError::CollectorPollForwardingSlotEmpty {
+                    index,
+                    address: slot.source(),
+                });
+            };
+            if planned.iter().any(
+                |(_, source, _): &(usize, GcHeapAddress, ResolvedValueGeneration)| {
+                    *source == slot.source()
+                },
+            ) {
+                return Err(EvalHeapError::CollectorPollForwardingSlotDuplicateSource {
+                    index,
+                    address: slot.source(),
+                });
+            }
+
+            let record_index = self.record_index_for_minor_gc_survivor(slot.source())?;
+            if let Some(actual) = self.records[record_index].minor_gc_forwarding.get() {
+                return Err(EvalHeapError::GenerationalGc(
+                    GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+                        index,
+                        address: slot.source(),
+                        actual,
+                    },
+                ));
+            }
+            planned.push((record_index, slot.source(), forwarded));
+        }
+
+        for (record_index, _, forwarded) in planned.iter().copied() {
+            self.records[record_index]
+                .minor_gc_forwarding
+                .set(Some(forwarded));
+        }
+
+        Ok(AllocationCollectorPollForwardingInstallReport {
+            forwarding_pointers: planned.len(),
+        })
+    }
+
     /// Derives a reference buffer for heap-field-backed commit slots.
     ///
     /// This is a live side-table binding precursor for remembered-source fields,
@@ -3699,17 +3800,26 @@ impl EvalHeap {
         &self,
         address: GcHeapAddress,
     ) -> Result<&HeapRecord, EvalHeapError> {
-        let record = self
+        let record = &self.records[self.record_index_for_minor_gc_survivor(address)?];
+        Ok(record)
+    }
+
+    fn record_index_for_minor_gc_survivor(
+        &self,
+        address: GcHeapAddress,
+    ) -> Result<usize, EvalHeapError> {
+        let record_index = self
             .records
             .iter()
-            .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .position(|record| record.ptr.as_ptr() as usize == address.address_bits())
             .ok_or(EvalHeapError::UnknownCollectorPollSurvivorAddress { address })?;
+        let record = &self.records[record_index];
         if generation_for_record(record) != HeapGeneration::Young {
             return Err(EvalHeapError::GenerationalGc(
                 GenerationalGcError::StaleNurseryObjectLayout { address },
             ));
         }
-        Ok(record)
+        Ok(record_index)
     }
 
     fn record_for_reference_slot_object(

@@ -890,6 +890,42 @@ fn clone_boundary_remembered_set(
     Ok(cloned)
 }
 
+fn boundary_minor_gc_merged_forwarding_slots(
+    applications: &EvalGcStressBoundaryMinorGcCommitApplications,
+) -> Result<Vec<MinorGcForwardingSlot>, EvalHeapError> {
+    let mut relocations = Vec::new();
+    merge_boundary_minor_gc_forwarding_slot_application(&mut relocations, applications.worker())?;
+    merge_boundary_minor_gc_forwarding_slot_application(
+        &mut relocations,
+        applications.permanent_shared(),
+    )?;
+
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(relocations.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+            entries: relocations.len(),
+        }
+    })?;
+    for (source, forwarded) in relocations {
+        slots.push(MinorGcForwardingSlot::with_forwarded_value(
+            source, forwarded,
+        ));
+    }
+    Ok(slots)
+}
+
+fn merge_boundary_minor_gc_forwarding_slot_application(
+    relocations: &mut Vec<(GcHeapAddress, ResolvedValueGeneration)>,
+    application: Option<&EvalGcStressBoundaryMinorGcCommitApplication>,
+) -> Result<(), EvalHeapError> {
+    let Some(application) = application else {
+        return Ok(());
+    };
+
+    validate_boundary_minor_gc_relocations_match(relocations, application.forwarding_slots())
+}
+
 fn boundary_minor_gc_merged_remembered_set(
     applications: &EvalGcStressBoundaryMinorGcCommitApplications,
     source_epoch: RememberedSetEpoch,
@@ -1451,6 +1487,49 @@ impl EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
     /// Returns how many dirty-card markers were cleared from live outcome state.
     pub const fn card_table_dirty_cards_cleared(&self) -> usize {
         self.card_table_clear_report.dirty_cards()
+    }
+}
+
+/// Boundary commit dry run plus live side-table forwarding installation.
+///
+/// This report preserves the owned dry-run artifacts and records the forwarding
+/// values installed into [`EvalOutcome`]'s evaluator heap side table after all
+/// dry-run validation succeeds. It still does not write ABI object headers,
+/// copy live object bytes, mutate roots or heap fields, publish remembered-set
+/// storage, mutate object generations, clear card-table storage, or manage
+/// semispaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            forwarding_install_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated live forwarding install.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live side-table forwarding installation report.
+    pub const fn forwarding_install_report(
+        &self,
+    ) -> AllocationCollectorPollForwardingInstallReport {
+        self.forwarding_install_report
+    }
+
+    /// Returns how many live side-table forwarding values were installed.
+    pub const fn forwarding_pointers_installed(&self) -> usize {
+        self.forwarding_install_report.forwarding_pointers()
     }
 }
 
@@ -2205,6 +2284,48 @@ impl EvalOutcome {
     ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
         self.gc_stress_boundary_minor_gc_commit_preflights(promotion_policy, bases)?
             .apply_owned_commit_dry_run()
+    }
+
+    /// Runs a boundary dry run and installs live side-table forwarding values.
+    ///
+    /// The method first derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. It then validates
+    /// that sibling worker/permanent applications form one coherent survivor
+    /// relocation map, deduplicates overlapping forwarding sources that agree,
+    /// and installs the resulting forwarding values into this outcome's
+    /// evaluator heap side table. Empty boundaries, or non-empty boundaries
+    /// with no copied/promoted survivors, leave the heap forwarding cells
+    /// unchanged.
+    ///
+    /// This is a live forwarding-metadata bridge for GC-stress experiments, not
+    /// a full collector commit. It does not write ABI object headers, bind live
+    /// object-byte buffers, mutate roots or heap fields, publish remembered
+    /// sets, clear card-table storage, mutate object generations, reserve
+    /// semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling forwarding applications do not form
+    /// one coherent survivor relocation map, or if any target heap record is no
+    /// longer a young unforwarded survivor. When an error is returned, live heap
+    /// forwarding cells are left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        let forwarding_slots =
+            boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let forwarding_install_report = self
+            .heap
+            .install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)?;
+
+        Ok(EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun::new(
+            dry_run,
+            forwarding_install_report,
+        ))
     }
 
     /// Runs a boundary minor-GC dry run and clears the outcome-owned card table.

@@ -3449,6 +3449,210 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
 }
 
 #[test]
+fn collector_poll_minor_gc_forwarding_install_writes_valid_slots() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("second thunk allocates");
+    let first_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0000),
+        generation: HeapGeneration::Young,
+    };
+    let second_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0010),
+        generation: HeapGeneration::Young,
+    };
+    let forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), first_forwarded),
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(second), second_forwarded),
+    ];
+
+    let report = heap
+        .install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
+        .expect("forwarding slots install");
+
+    assert_eq!(report.forwarding_pointers(), 2);
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(first))
+            .expect("first forwarding source remains known"),
+        Some(first_forwarded)
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(second))
+            .expect("second forwarding source remains known"),
+        Some(second_forwarded)
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_forwarding_install_rejects_empty_slot_without_partial_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("second thunk allocates");
+    let first_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0000),
+        generation: HeapGeneration::Young,
+    };
+    let forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), first_forwarded),
+        MinorGcForwardingSlot::new(gc_address(second)),
+    ];
+
+    assert_eq!(
+        heap.install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
+            .expect_err("empty second forwarding slot is rejected"),
+        EvalHeapError::CollectorPollForwardingSlotEmpty {
+            index: 1,
+            address: gc_address(second),
+        }
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(first))
+            .expect("first forwarding source remains known"),
+        None
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(second))
+            .expect("second forwarding source remains known"),
+        None
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_forwarding_install_rejects_duplicate_source_without_partial_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let first_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0000),
+        generation: HeapGeneration::Young,
+    };
+    let duplicate_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0010),
+        generation: HeapGeneration::Young,
+    };
+    let forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), first_forwarded),
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), duplicate_forwarded),
+    ];
+
+    assert_eq!(
+        heap.install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
+            .expect_err("duplicate forwarding source is rejected"),
+        EvalHeapError::CollectorPollForwardingSlotDuplicateSource {
+            index: 1,
+            address: gc_address(first),
+        }
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(first))
+            .expect("first forwarding source remains known"),
+        None
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_partial_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let permanent = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let first_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0000),
+        generation: HeapGeneration::Young,
+    };
+    let permanent_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0010),
+        generation: HeapGeneration::Young,
+    };
+    let forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), first_forwarded),
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(permanent), permanent_forwarded),
+    ];
+
+    assert_eq!(
+        heap.install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
+            .expect_err("permanent forwarding source is rejected"),
+        EvalHeapError::GenerationalGc(GenerationalGcError::StaleNurseryObjectLayout {
+            address: gc_address(permanent),
+        })
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(first))
+            .expect("first forwarding source remains known"),
+        None
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(permanent))
+            .expect("permanent forwarding source remains known"),
+        None
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_forwarding_install_rejects_occupied_later_slot_without_partial_mutation()
+{
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("second thunk allocates");
+    let first_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0000),
+        generation: HeapGeneration::Young,
+    };
+    let second_initial_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0010),
+        generation: HeapGeneration::Young,
+    };
+    let second_retry_forwarded = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x1000_0020),
+        generation: HeapGeneration::Young,
+    };
+    heap.install_collector_poll_minor_gc_forwarding_slots(&[
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(second), second_initial_forwarded),
+    ])
+    .expect("initial second forwarding slot installs");
+    let forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(first), first_forwarded),
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(second), second_retry_forwarded),
+    ];
+
+    assert_eq!(
+        heap.install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
+            .expect_err("occupied second forwarding source is rejected"),
+        EvalHeapError::GenerationalGc(GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+            index: 1,
+            address: gc_address(second),
+            actual: second_initial_forwarded,
+        })
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(first))
+            .expect("first forwarding source remains known"),
+        None
+    );
+    assert_eq!(
+        heap.minor_gc_forwarding_value_at(gc_address(second))
+            .expect("second forwarding source remains known"),
+        Some(second_initial_forwarded)
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_keeps_hash_consed_roots_out_of_survivor_frontier() {
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
