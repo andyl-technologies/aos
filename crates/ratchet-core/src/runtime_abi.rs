@@ -275,6 +275,12 @@ const APPLY_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("function", RuntimeAbiParameterKind::Value),
     RuntimeAbiParameter::new("arg", RuntimeAbiParameterKind::Value),
 ];
+const SELECT_IC_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
+    RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
+    RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+];
 
 const RUNTIME_ALLOC_ATTRS_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
@@ -372,6 +378,14 @@ const RUNTIME_APPLY_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature:
     APPLY_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_SELECT_IC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    SELECT_IC_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 
 /// Frozen helper call signatures for helpers with core-owned ABI shapes today.
 pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
@@ -387,6 +401,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_FORCE_CALL_SIGNATURE,
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
+    RUNTIME_SELECT_IC_CALL_SIGNATURE,
 ];
 
 /// Returns the by-value runtime value layout assumed by native call metadata.
@@ -429,6 +444,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
+        "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
         _ => None,
     }
 }
@@ -565,6 +581,10 @@ pub enum RuntimeAbiParameterKind {
     Usize,
     /// A runtime-specific raw allocation type tag.
     TypeTag,
+    /// A dense interned-symbol table index.
+    SymbolId,
+    /// A stable per-lookup inline-cache site identifier.
+    InlineCacheSiteId,
     /// A 32-bit unsigned integer.
     U32,
 }
@@ -1283,6 +1303,7 @@ mod tests {
                 "aos_force",
                 "aos_force_deep",
                 "aos_gc_write_barrier",
+                "aos_select_ic",
             ])
         );
         assert_eq!(
@@ -1387,6 +1408,29 @@ mod tests {
             );
             assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
         }
+    }
+
+    #[test]
+    fn attrset_helper_call_signature_pins_select_ic_value_boundary() {
+        let select_ic = runtime_helper_call_signature("aos_select_ic")
+            .expect("select-IC signature is core-owned");
+
+        assert_eq!(
+            select_ic.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
+            }
+        );
+        assert_eq!(
+            select_ic.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
+                RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
+                RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+            ]
+        );
+        assert_eq!(select_ic.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

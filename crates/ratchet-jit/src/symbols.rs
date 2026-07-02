@@ -1047,6 +1047,9 @@ mod tests {
         let force_deep_declaration = preflight
             .declaration_for_symbol("aos_force_deep")
             .expect("core-owned deep-force helper has a CLIF declaration");
+        let select_ic_declaration = preflight
+            .declaration_for_symbol("aos_select_ic")
+            .expect("core-owned select-IC helper has a CLIF declaration");
         let expected_allocation = clif_signature_for_runtime_call(
             runtime_helper_call_signature("aos_alloc_attrs")
                 .expect("allocation helper signature is core-owned"),
@@ -1077,6 +1080,11 @@ mod tests {
                 .expect("deep-force helper signature is core-owned"),
         )
         .expect("deep-force helper signature lowers");
+        let expected_select_ic = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_select_ic")
+                .expect("select-IC helper signature is core-owned"),
+        )
+        .expect("select-IC helper signature lowers");
 
         assert_eq!(
             allocation_declaration.kind(),
@@ -1111,12 +1119,18 @@ mod tests {
             RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
         );
         assert_eq!(force_deep_declaration.signature(), &expected_force_deep);
+        assert_eq!(
+            select_ic_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess)
+        );
+        assert_eq!(select_ic_declaration.signature(), &expected_select_ic);
         assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
         assert!(preflight.gap_for_symbol("aos_apply").is_none());
         assert!(preflight.gap_for_symbol("aos_env_get").is_none());
         assert!(preflight.gap_for_symbol("aos_gc_write_barrier").is_none());
         assert!(preflight.gap_for_symbol("aos_force").is_none());
         assert!(preflight.gap_for_symbol("aos_force_deep").is_none());
+        assert!(preflight.gap_for_symbol("aos_select_ic").is_none());
     }
 
     #[test]
@@ -1237,6 +1251,13 @@ mod tests {
             preflight.gap_for_symbol("aos_force"),
             Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
                 kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                ..
+            })
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_select_ic"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 ..
             })
         ));
