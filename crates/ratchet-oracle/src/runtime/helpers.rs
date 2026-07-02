@@ -326,6 +326,61 @@ pub fn runtime_symbol_registration_preflight() -> RuntimeSymbolRegistrationPrefl
     ))
 }
 
+/// Result returned when building runtime-symbol Rust-callable readiness metadata.
+pub type RuntimeSymbolRustCallablePreflightResult =
+    Result<RuntimeSymbolRustCallablePreflight, RuntimeSymbolNameError>;
+
+/// Builds a runtime-symbol report for callable Rust storage wrappers.
+///
+/// The report consumes [`runtime_symbol_binding_manifest`], preserves its order,
+/// keeps callable helper metadata for currently covered helper families, and
+/// records every helper or builtin symbol that still prevents complete runtime
+/// symbol registration. The helper callables are process-local Rust function
+/// addresses; they are not exported C ABI targets and are not installable as
+/// final JIT symbols.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest cannot
+/// be built.
+pub fn runtime_symbol_rust_callable_preflight() -> RuntimeSymbolRustCallablePreflightResult {
+    let mut helper_callables = Vec::new();
+    let mut missing_bindings = Vec::new();
+
+    for entry in runtime_symbol_binding_manifest()? {
+        match entry.status() {
+            RuntimeSymbolBindingStatus::BoundHelper(binding) => {
+                match binding.rust_callable_binding() {
+                    Some(callable) => {
+                        debug_assert_eq!(entry.symbol_name(), callable.symbol_name());
+                        helper_callables.push(callable);
+                    }
+                    None => missing_bindings.push(RuntimeSymbolMissingBinding::helper(
+                        entry.symbol_name().to_owned(),
+                        binding.role(),
+                    )),
+                }
+            }
+            RuntimeSymbolBindingStatus::UnboundHelper(role) => {
+                missing_bindings.push(RuntimeSymbolMissingBinding::helper(
+                    entry.symbol_name().to_owned(),
+                    role,
+                ));
+            }
+            RuntimeSymbolBindingStatus::Builtin => {
+                missing_bindings.push(RuntimeSymbolMissingBinding::builtin(
+                    entry.symbol_name().to_owned(),
+                ));
+            }
+        }
+    }
+
+    Ok(RuntimeSymbolRustCallablePreflight::new(
+        helper_callables,
+        missing_bindings,
+    ))
+}
+
 /// Builds complete safe runtime symbol registration metadata.
 ///
 /// This function is intentionally stricter than
@@ -428,6 +483,40 @@ impl RuntimeHelperRustCallablePreflight {
     }
 
     /// Returns true when every currently bound helper has a callable Rust wrapper.
+    pub fn is_complete(&self) -> bool {
+        self.missing_bindings.is_empty()
+    }
+}
+
+/// A deterministic runtime-symbol report for callable Rust storage wrappers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolRustCallablePreflight {
+    helper_callables: Vec<RuntimeHelperRustCallableBinding>,
+    missing_bindings: Vec<RuntimeSymbolMissingBinding>,
+}
+
+impl RuntimeSymbolRustCallablePreflight {
+    fn new(
+        helper_callables: Vec<RuntimeHelperRustCallableBinding>,
+        missing_bindings: Vec<RuntimeSymbolMissingBinding>,
+    ) -> Self {
+        Self {
+            helper_callables,
+            missing_bindings,
+        }
+    }
+
+    /// Returns callable helper metadata in runtime symbol-manifest order.
+    pub fn helper_callables(&self) -> &[RuntimeHelperRustCallableBinding] {
+        &self.helper_callables
+    }
+
+    /// Returns runtime symbols that still lack a complete registration binding.
+    pub fn missing_bindings(&self) -> &[RuntimeSymbolMissingBinding] {
+        &self.missing_bindings
+    }
+
+    /// Returns true when every runtime symbol has a callable registration binding.
     pub fn is_complete(&self) -> bool {
         self.missing_bindings.is_empty()
     }
@@ -825,6 +914,47 @@ mod tests {
                 && missing.helper_role() == Some(RuntimeHelperRole::CallControl)
         }));
         assert!(preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "nix.builtin.derivationStrict"
+                && missing.helper_role().is_none()
+        }));
+    }
+
+    #[test]
+    fn runtime_symbol_rust_callable_preflight_reports_current_gaps() {
+        let callable_preflight =
+            runtime_symbol_rust_callable_preflight().expect("callable preflight builds");
+        let registration_preflight =
+            runtime_symbol_registration_preflight().expect("registration preflight builds");
+        let callable_helper_symbols = callable_preflight
+            .helper_callables()
+            .iter()
+            .copied()
+            .map(RuntimeHelperRustCallableBinding::symbol_name)
+            .collect::<Vec<_>>();
+
+        assert!(!callable_preflight.is_complete());
+        assert_eq!(
+            callable_preflight.helper_callables(),
+            runtime_helper_rust_callable_bindings().as_slice()
+        );
+        assert_eq!(
+            callable_helper_symbols,
+            registration_preflight
+                .helper_bindings()
+                .iter()
+                .copied()
+                .map(RuntimeHelperBinding::symbol_name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            callable_preflight.missing_bindings(),
+            registration_preflight.missing_bindings()
+        );
+        assert!(callable_preflight.missing_bindings().iter().any(|missing| {
+            missing.symbol_name() == "aos_force"
+                && missing.helper_role() == Some(RuntimeHelperRole::ForcingControl)
+        }));
+        assert!(callable_preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "nix.builtin.derivationStrict"
                 && missing.helper_role().is_none()
         }));

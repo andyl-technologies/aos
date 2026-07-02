@@ -996,6 +996,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       and the incomplete-plan failure. This is only a registration preflight; it
       attaches no executable addresses, exports no wrappers, and performs no
       Cranelift registration.
+- [x] Current runtime symbol Rust-callable preflight precursor:
+      `runtime::helpers::runtime_symbol_rust_callable_preflight()` consumes the
+      same stable runtime symbol manifest, preserves its order, and attaches
+      process-local Rust-callable helper metadata for the currently covered
+      allocation/write-barrier helper symbols while reporting unbound helper and
+      builtin symbols as gaps. Tests prove helper-callable order matches the
+      helper-family callable inventory, callable helper symbols line up with the
+      safe registration preflight, and missing symbols remain identical to the
+      existing incomplete registration report. This is Rust-callable readiness
+      metadata only: the addresses are not exported C ABI targets, not final
+      `JITBuilder::symbol` registrations, and not a complete runtime-symbol
+      registration plan.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
