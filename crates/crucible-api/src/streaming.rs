@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use crucible_session::{
     LifecycleStateKind, LifecycleTransition, LiveQueryKind, LiveSnapshot, LiveStateKind,
-    SessionCommand, SessionCommandKind, SessionEventLogStream, lifecycle_transition,
+    SessionCommand, SessionCommandKind, SessionEventLogStream, SessionStateTransitionBus,
+    SessionStateTransitionFrame, SessionStateTransitionStream, SessionStateTransitionStreamError,
+    lifecycle_transition,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -256,6 +258,15 @@ impl From<SessionEventLogFrame> for StreamingEventFrame {
     }
 }
 
+/// Streaming frame delivered by `Control` and `Watch`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StreamingFrame {
+    /// Open-set event-log frame.
+    Event(StreamingEventFrame),
+    /// Live run-state update frame.
+    StateUpdate(StreamingStateUpdateFrame),
+}
+
 /// Run-state update returned beside a command result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StateUpdate {
@@ -263,6 +274,15 @@ pub struct StateUpdate {
     pub session: SessionRef,
     /// New state read from the lock-free live mirror.
     pub state: LiveStateKind,
+}
+
+/// Monotone run-state update delivered by `Control` and `Watch`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StreamingStateUpdateFrame {
+    /// Monotone actor-local state-transition sequence.
+    pub sequence: u64,
+    /// State update payload.
+    pub update: StateUpdate,
 }
 
 /// Rejection class for a command result.
@@ -382,6 +402,12 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
+    /// The subscriber fell behind the bounded state-update tail.
+    #[error("streaming state-update subscriber lagged by {skipped} frames")]
+    StateUpdateStreamLagged {
+        /// Number of skipped frames reported by the state-transition stream.
+        skipped: u64,
+    },
 }
 
 /// In-process streaming API handle for one live session.
@@ -391,6 +417,7 @@ pub struct InProcessStreamingSession {
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
+    state_transitions: SessionStateTransitionBus,
     max_actor_yields: u64,
 }
 
@@ -402,12 +429,14 @@ impl InProcessStreamingSession {
         sender: mpsc::Sender<SessionCommand>,
         live: Arc<LiveSnapshot>,
         event_log: ControlPlaneEventLog,
+        state_transitions: SessionStateTransitionBus,
     ) -> Self {
         Self {
             session,
             sender,
             live,
             event_log,
+            state_transitions,
             max_actor_yields: STREAMING_COMMAND_MAX_ACTOR_YIELDS,
         }
     }
@@ -425,6 +454,12 @@ impl InProcessStreamingSession {
         &self.event_log
     }
 
+    /// Returns the state-transition bus used for live run-state updates.
+    #[must_use]
+    pub const fn state_transitions(&self) -> &SessionStateTransitionBus {
+        &self.state_transitions
+    }
+
     /// Attaches a bidirectional `Control` stream.
     ///
     /// # Errors
@@ -432,13 +467,14 @@ impl InProcessStreamingSession {
     /// Returns [`StreamingApiError`] if the request targets a different session
     /// or if the optional expected epoch does not match.
     pub fn control(&self, request: AttachRequest) -> Result<ControlStream, StreamingApiError> {
-        let (attached, events) = self.attach_stream(&request)?;
+        let (attached, events, state_updates) = self.attach_stream(&request)?;
         Ok(ControlStream {
             session: self.session,
             sender: self.sender.clone(),
             live: Arc::clone(&self.live),
             attached,
             events,
+            state_updates,
             max_actor_yields: self.max_actor_yields,
         })
     }
@@ -450,8 +486,13 @@ impl InProcessStreamingSession {
     /// Returns [`StreamingApiError`] if the request targets a different session
     /// or if the optional expected epoch does not match.
     pub fn watch(&self, request: AttachRequest) -> Result<WatchStream, StreamingApiError> {
-        let (attached, events) = self.attach_stream(&request)?;
-        Ok(WatchStream { attached, events })
+        let (attached, events, state_updates) = self.attach_stream(&request)?;
+        Ok(WatchStream {
+            session: self.session,
+            attached,
+            events,
+            state_updates,
+        })
     }
 
     /// Dispatches one unary `Send` command.
@@ -477,8 +518,16 @@ impl InProcessStreamingSession {
     fn attach_stream(
         &self,
         request: &AttachRequest,
-    ) -> Result<(Attached, SessionEventLogStream), StreamingApiError> {
+    ) -> Result<
+        (
+            Attached,
+            SessionEventLogStream,
+            SessionStateTransitionStream,
+        ),
+        StreamingApiError,
+    > {
         self.validate_session(request.session, request.expected_epoch)?;
+        let state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
         let snapshot = AttachSnapshot::from(self.event_log.snapshot_through(attach_tail));
         let live = self.live.read();
@@ -492,6 +541,7 @@ impl InProcessStreamingSession {
                 snapshot: Some(snapshot),
             },
             events,
+            state_updates,
         ))
     }
 
@@ -525,6 +575,7 @@ pub struct ControlStream {
     live: Arc<LiveSnapshot>,
     attached: Attached,
     events: SessionEventLogStream,
+    state_updates: SessionStateTransitionStream,
     max_actor_yields: u64,
 }
 
@@ -549,6 +600,27 @@ impl ControlStream {
     /// behind the bounded live tail.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
         recv_api_event(&mut self.events).await
+    }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
+    /// falls behind the bounded state-update tail.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
+        recv_api_state_update(self.session, &mut self.state_updates).await
+    }
+
+    /// Receives the next event or state-update frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
+        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
     }
 
     /// Dispatches one command envelope through the control stream.
@@ -576,8 +648,10 @@ impl ControlStream {
 
 /// Attached read-only `Watch` stream handle.
 pub struct WatchStream {
+    session: SessionRef,
     attached: Attached,
     events: SessionEventLogStream,
+    state_updates: SessionStateTransitionStream,
 }
 
 impl WatchStream {
@@ -602,6 +676,27 @@ impl WatchStream {
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
         recv_api_event(&mut self.events).await
     }
+
+    /// Receives the next live run-state update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
+    /// falls behind the bounded state-update tail.
+    pub async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
+        recv_api_state_update(self.session, &mut self.state_updates).await
+    }
+
+    /// Receives the next event or state-update frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
+        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
+    }
 }
 
 async fn recv_api_event(
@@ -618,6 +713,51 @@ fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
     match error {
         SessionEventLogStreamError::Lagged { skipped } => {
             StreamingApiError::EventStreamLagged { skipped }
+        }
+    }
+}
+
+async fn recv_api_state_update(
+    session: SessionRef,
+    state_updates: &mut SessionStateTransitionStream,
+) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
+    state_updates
+        .recv()
+        .await
+        .map(|frame| frame.map(|frame| state_update_frame(session, frame)))
+        .map_err(state_update_stream_error)
+}
+
+async fn recv_api_frame(
+    session: SessionRef,
+    events: &mut SessionEventLogStream,
+    state_updates: &mut SessionStateTransitionStream,
+) -> Result<Option<StreamingFrame>, StreamingApiError> {
+    tokio::select! {
+        event = recv_api_event(events) => event.map(|frame| frame.map(StreamingFrame::Event)),
+        state_update = recv_api_state_update(session, state_updates) => {
+            state_update.map(|frame| frame.map(StreamingFrame::StateUpdate))
+        }
+    }
+}
+
+fn state_update_frame(
+    session: SessionRef,
+    frame: SessionStateTransitionFrame,
+) -> StreamingStateUpdateFrame {
+    StreamingStateUpdateFrame {
+        sequence: frame.sequence,
+        update: StateUpdate {
+            session,
+            state: frame.to.state_kind,
+        },
+    }
+}
+
+fn state_update_stream_error(error: SessionStateTransitionStreamError) -> StreamingApiError {
+    match error {
+        SessionStateTransitionStreamError::Lagged { skipped } => {
+            StreamingApiError::StateUpdateStreamLagged { skipped }
         }
     }
 }

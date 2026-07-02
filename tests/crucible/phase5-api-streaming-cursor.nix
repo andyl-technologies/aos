@@ -60,8 +60,8 @@
         needle = "Completed by `checks.crucible.phase5.apiStreamingCursor`";
       }
       {
-        label = "T-API-7 remains next";
-        needle = "- [ ] **T-API-7**";
+        label = "T-API-7 completion note";
+        needle = "Completed by `checks.crucible.phase5.apiStateUpdateStream`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
