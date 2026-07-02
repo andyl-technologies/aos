@@ -1649,16 +1649,18 @@ exploration.
 **RISK-28** is resolved by `T-RISK-20` with the read-only/Crucible-driven-step fallback:
 `checks.crucible.phase0.s14GdbstubFallback` scanned the current implementation
 surface and the debug/session/CLI specifications for the Phase-0 gdbstub gate.
-The check found no hermetic gdb client package, no implemented session or CLI
-`open_gdbstub` path in the Rust crates, and no known gdbstub single-step mediation
-or continuation hook in the scanned AOS QEMU patch/plugin integration surface. It
-also required the recorded green `checks.crucible.phase0.s1Fingerprint` decision
-entry as the baseline single-VM determinism prerequisite. The run reported
+The check found no hermetic gdb client package and no known gdbstub single-step
+mediation or continuation hook in the scanned AOS QEMU patch/plugin integration
+surface; the session/backend `open_gdbstub` path is now implemented by
+`checks.crucible.phase5.sessionDebugTimeTravel` but is not yet a live S14
+neutrality measurement. It also required the recorded green
+`checks.crucible.phase0.s1Fingerprint` decision entry as the baseline single-VM
+determinism prerequisite. The run reported
 `hermetic_gdb_client_available=false`,
 `qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin`,
 `known_aos_qemu_gdbstub_step_hook_detected=false`,
 `aos_qemu_gdbstub_mediation_patch_implemented=false`,
-`session_open_gdbstub_implemented=false`,
+`session_open_gdbstub_implemented=true`,
 `cli_debug_command_implemented=false`,
 `read_only_gdbstub_ops_tested=false`,
 `read_only_fingerprint_neutral=not_tested`,
@@ -1668,12 +1670,12 @@ entry as the baseline single-VM determinism prerequisite. The run reported
 `raw_gdb_single_step_allowed_by_crucible_policy=false`,
 `policy_enforcement_runtime=not_implemented`,
 `default_debug_policy=read_only_attach_crucible_driven_step_reverse_step`,
-`live_gdbstub_attach_gate_status=fallback_pending_debug_surface`, and
+`live_gdbstub_attach_gate_status=fallback_pending_hermetic_gdb_client_and_mediation_gate`, and
 `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`.
 Phase 0 therefore does not claim live gdbstub attach neutrality or
-scheduler-routed gdb single-step. Until a hermetic debug client, backend
-`open_gdbstub` implementation, CLI command, and mediation gate land, raw gdb
-single-step remains disabled by Crucible policy. The permitted advancement model
+scheduler-routed gdb single-step. Until a hermetic debug client, CLI live attach
+command, and mediation gate land, raw gdb single-step remains disabled by
+Crucible policy. The permitted advancement model
 for the future debug surface remains Crucible-driven deterministic
 step/reverse-step, but runtime enforcement is not implemented yet.
 
@@ -1867,10 +1869,11 @@ never tolerated). Results live in the decision register (31).
   modeled-throughput default-only fallback; satisfies [RISK-27] via the accepted
   fallback; does not close [D-25] yet; spec §30.11c.
 - [x] **T-RISK-20** Run **S14** fallback: scan the current debug implementation
-  surface, record that no hermetic gdb client package, session/CLI `open_gdbstub`
-  implementation, or AOS QEMU gdbstub step-mediation hook exists yet, and leave live
+  surface, record that no hermetic gdb client package or AOS QEMU gdbstub
+  step-mediation hook exists yet, note that the session/backend `open_gdbstub`
+  surface is implemented but not a live neutrality proof, and leave live
   read-only attach plus gdb single-step untested. Default to read-only attach +
   Crucible-driven step/reverse-step, with gdb single-step disabled until S14 can
-  run against the implemented debug surface. — resolves [RISK-28] by adopting the
+  run against the live debug surface. — resolves [RISK-28] by adopting the
   conservative fallback; satisfies [RISK-28] via the accepted fallback; does not
   yet satisfy [DBG-1] or [SCHED-46] for live debugging; spec §30.11d.

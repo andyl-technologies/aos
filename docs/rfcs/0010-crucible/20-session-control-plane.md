@@ -406,7 +406,7 @@ default** debugging vocabulary that turns the session's existing primitives —
 checkpoint-restore (07), deterministic replay (05, [INV-1]), and the lock-free
 observation surface (§9) — into an operator-facing time-travel debugger. These
 commands are the session substrate over which the gdb-protocol debugger of
-[`36-debugging-time-travel.md`](36-debugging-time-travel.md) and the CLI `debug`
+[`36-time-travel-debugging.md`](36-time-travel-debugging.md) and the CLI `debug`
 subcommand (23 §16) are thin wrappers; they add no new determinism mechanism.
 
 ```rust,illustrative
@@ -460,7 +460,7 @@ pub enum DebugScope { Node(NodeId), World }
   clearly-marked **NON-CANONICAL debug branch**: it is excluded from the replay
   oracle, is not artifact-reproducible, and MUST be labelled as such on every
   surface that exposes it. *Gate:* `gate:replay-oracle`, `gate:control-responsive`.
-  *Spec:* §4.4, §8; cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md),
+  *Spec:* §4.4, §8; cross-ref [`36-time-travel-debugging.md`](36-time-travel-debugging.md),
   [ADV-33], [SESS-22].
 
 ### 4.3 Step modes
@@ -964,7 +964,7 @@ capability.
   faking a stub. Backends without the capability MUST default to refusing the
   attach, so a debug session always knows whether its node is gdb-attachable.
   *Gate:* `gate:control-responsive`, `gate:abi-conformance`. *Spec:* §4.4, §10;
-  cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md), 10.
+  cross-ref [`36-time-travel-debugging.md`](36-time-travel-debugging.md), 10.
 
 - **[SESS-27]** The backend trait MUST keep the scheduler (08) as the single
   source of timing truth: the backend advances nodes toward a scheduler-supplied
@@ -1235,10 +1235,19 @@ pub enum SessionError {
     through quantum-loop adapters, avoid QEMU backend construction or process
     launch, and reserve real QEMU for Contract A, guest non-mutation, and patch
     inertness fidelity properties only.
-- [ ] **T-SESS-13** Implement the read-only debugging / time-travel command set
+- [x] **T-SESS-13** Implement the read-only debugging / time-travel command set
   (attach_gdb/goto/reverse_step/reverse_continue) as repositioning over
   checkpoint-restore + deterministic replay, excluded from the schedule like
   query/pause, with mutating/forward-from-attach forking a clearly-marked
   NON-CANONICAL debug branch; add the optional `open_gdbstub` backend capability
-  (QEMU implements; SimDouble/mock reject). — satisfies [SESS-33], [SESS-32];
-  spec §4.4, §10; cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md).
+  (QEMU reports configured mediated endpoints; SimDouble/mock reject). — satisfies [SESS-33], [SESS-32];
+  spec §4.4, §10; cross-ref [`36-time-travel-debugging.md`](36-time-travel-debugging.md).
+  - Completed by `checks.crucible.phase5.sessionDebugTimeTravel`: the session
+    command enum now exposes `AttachGdb`, `DebugGoto`, `DebugReverseStep`,
+    `DebugReverseContinue`, and `DebugForkNonCanonical`; debug repositioning
+    delegates to `TemporalGraph::debug_goto` / reverse helpers, updates the
+    session boundary mirror without appending scheduler control-log entries, and
+    blocks forward/mutating commands until `DebugForkNonCanonical` records a
+    marked debug branch. The backend traits expose optional `open_gdbstub`;
+    `QemuNode` reports configured mediated endpoints while `SimDouble` and
+    `MockSimulationBackend` return typed `Unsupported` errors.

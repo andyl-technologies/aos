@@ -60,6 +60,15 @@ in
             [ "$status" -eq 1 ] || fail "S14 failed to scan $description in $path"
           }
 
+          require_present_regex() {
+            path="$1"
+            regex="$2"
+            description="$3"
+            [ -e "$path" ] || fail "S14 scan target missing: $path"
+            grep -E -R -q -- "$regex" "$path" \
+              || fail "S14 expected $description in $path"
+          }
+
           cp -r "$PKGS_SRC" pkgs
           chmod -R u+w pkgs
           cp -r "$CRATES_SRC" crates
@@ -79,8 +88,8 @@ in
           require_fixed "$risk_doc" "## 30.11d S14 — gdbstub attach/step does not disturb icount or plugin time control"
           require_fixed "$risk_doc" "Until S14 is green, debugging MUST default to **read-only"
           require_fixed "$debug_doc" "with gdb single-step disabled"
-          require_fixed "$session_doc" "async fn open_gdbstub"
-          require_fixed "$session_doc" 'Returns `Unsupported` on backends without a gdbstub'
+          require_fixed "$session_doc" 'optional `open_gdbstub`'
+          require_fixed "$session_doc" "reject \`attach_gdb\` with a typed error"
           require_fixed "$cli_doc" "attach-gdb"
 
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
@@ -89,11 +98,11 @@ in
           require_fixed "$decision_doc" '`s1_pause_retired=3200000005`'
 
           gdb_package_regex='pname = "gdb"|name = "gdb"|gdb-client|gdbserver'
-          session_impl_regex='open_gdbstub|GdbListen|GdbAttachInfo|AttachGdb|gdb_listen|gdb-listen|attach-gdb|crucible debug'
+          session_impl_regex='open_gdbstub|GdbListen|GdbAttachInfo|AttachGdb|DebugGoto|DebugReverseStep|DebugReverseContinue'
           raw_step_regex='gdb_(continue|step|single_step|handle_packet|put_packet)|gdbserver_state|gdb_handlesig|gdb_vm_state_change|gdbstub.*(step|continue)|crucible_.*gdb.*(step|continue)|qemu_plugin_crucible_.*(step|gdb)|sstep|single_step'
 
           require_absent_regex pkgs "$gdb_package_regex" "hermetic gdb client package"
-          require_absent_regex crates "$session_impl_regex" "session or CLI gdbstub implementation"
+          require_present_regex crates "$session_impl_regex" "session/backend gdbstub implementation"
           require_absent_regex pkgs/emulation "$raw_step_regex" "AOS QEMU integration gdbstub single-step mediation or continuation hook"
 
           mkdir -p "$out"
@@ -112,7 +121,7 @@ in
             echo qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin
             echo known_aos_qemu_gdbstub_step_hook_detected=false
             echo aos_qemu_gdbstub_mediation_patch_implemented=false
-            echo session_open_gdbstub_implemented=false
+            echo session_open_gdbstub_implemented=true
             echo cli_debug_command_implemented=false
             echo read_only_gdbstub_ops_tested=false
             echo read_only_fingerprint_neutral=not_tested
@@ -123,7 +132,7 @@ in
             echo raw_gdb_single_step_allowed_by_crucible_policy=false
             echo policy_enforcement_runtime=not_implemented
             echo default_debug_policy=read_only_attach_crucible_driven_step_reverse_step
-            echo live_gdbstub_attach_gate_status=fallback_pending_debug_surface
+            echo live_gdbstub_attach_gate_status=fallback_pending_hermetic_gdb_client_and_mediation_gate
             echo s1_decision_entry_consumed=true
             echo s1_result_status=PASS
             echo s1_horizon_extended_hash=9d1e61606ac54920

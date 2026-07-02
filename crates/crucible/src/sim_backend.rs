@@ -20,8 +20,9 @@ use thiserror::Error;
 use crate::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
     Checkpoint, CheckpointKind, ContentHash, ExecutionFingerprint, ExecutionHorizon,
-    FingerprintSample, Icount, NodeBlobRef, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorizer, SchedulingNodeKind, SimulationBackend, StepObservation, VirtualTime,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeBlobRef, NodeId, SchedulerError,
+    SchedulerNodeId, SchedulerSendAuthorizer, SchedulingNodeKind, SimulationBackend,
+    StepObservation, VirtualTime,
 };
 
 /// A deterministic in-process backend implementing [`Backend`].
@@ -1071,6 +1072,18 @@ impl SimulationBackend for SimDouble {
         })
     }
 
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, BackendError> {
+        let _ = node;
+        let _ = listen;
+        Err(BackendError::Unsupported {
+            capability: "open_gdbstub",
+        })
+    }
+
     fn shutdown(&mut self) -> Result<(), BackendError> {
         Backend::shutdown(&mut self.backend)
     }
@@ -1510,6 +1523,33 @@ mod tests {
             Err(error) => panic!("sim backend should fingerprint through trait: {error}"),
         };
         assert_eq!(sample.at, ceiling);
+    }
+
+    #[test]
+    fn sim_double_rejects_gdbstub_capability_with_typed_error() {
+        let mut double = match SimDouble::new(SimDoubleConfig::default()) {
+            Ok(double) => double,
+            Err(error) => panic!("sim double should construct: {error}"),
+        };
+        let listen = match GdbListen::new("127.0.0.1:9000") {
+            Ok(listen) => listen,
+            Err(error) => panic!("test listen endpoint should be valid: {error}"),
+        };
+        let error = SimulationBackend::open_gdbstub(
+            &mut double,
+            NodeId {
+                name: String::from("node-a"),
+            },
+            listen,
+        )
+        .expect_err("SimDouble must not fake a gdbstub");
+
+        assert_eq!(
+            error,
+            BackendError::Unsupported {
+                capability: "open_gdbstub",
+            }
+        );
     }
 
     #[test]

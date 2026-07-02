@@ -793,7 +793,7 @@ cluster's minimization failed its signature-preservation assertion or
 
 **Purpose.** Open the **gdb-protocol time-travel debugger** at a chosen
 coordinate of a run. `debug` is a **thin wrapper over the debugger of
-[`36-debugging-time-travel.md`](36-debugging-time-travel.md)** and the session's
+[`36-time-travel-debugging.md`](36-time-travel-debugging.md)** and the session's
 read-only debugging command set (20 §4.4): it instantiates the run from an
 artifact, savepoint, or a live `--session`, positions it at the requested
 coordinate (restore-nearest-checkpoint + deterministic replay, [SESS-33]), opens
@@ -839,7 +839,7 @@ without `open_gdbstub`, [SESS-32]); `5` = malformed/unresolvable
 artifact/savepoint; `64` = usage error (e.g. conflicting `--at*` flags).
 
 - **[CLI-27]** `crucible debug <artifact|savepoint|--session>` MUST be a thin
-  wrapper over the debugger of [`36-debugging-time-travel.md`](36-debugging-time-travel.md)
+  wrapper over the debugger of [`36-time-travel-debugging.md`](36-time-travel-debugging.md)
   and the session read-only debugging command set (20 §4.4): it MUST instantiate
   the run, position it at the coordinate selected by `--at` / `--at-event` /
   `--at-failure` / `--at-checkpoint` via restore-nearest-checkpoint + deterministic

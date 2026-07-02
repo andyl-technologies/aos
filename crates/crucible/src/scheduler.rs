@@ -34,12 +34,12 @@ use crate::{
     CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash,
     ControlFaultAction, ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState,
     DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault,
-    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, Icount, LinkId, MarkerId,
-    MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection, PendingFrame,
-    PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
-    ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, Shift,
-    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldLookaheadEdge, WorldStaticTopology, step,
+    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, GdbAttachInfo, GdbListen, Icount,
+    LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
+    PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SearchFrontierChoices, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
+    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -87,6 +87,28 @@ pub trait QuantumLoop {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let _ = control;
         Ok(Vec::new())
+    }
+
+    /// Opens the optional backend gdbstub channel outside scheduler order.
+    ///
+    /// Pure loops and backends without a real mediated gdbstub use the default
+    /// unsupported capability error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the wrapped backend rejects or does not
+    /// support the gdbstub capability.
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        let _ = node;
+        let _ = listen;
+        Err(BackendError::Unsupported {
+            capability: "open_gdbstub",
+        }
+        .into())
     }
 
     /// Shuts down scheduler/backend resources owned by this quantum loop.

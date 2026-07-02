@@ -1223,6 +1223,15 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    sessionDebugTimeTravel = import ./phase5-session-debug-time-travel.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionDebugTimeTravel";
+      taskIds = ["T-SESS-13"];
+      dependencies = [
+        phase5.sessionSimDoubleSuite
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
   };
   phase6 = {
     advancedDependencyLadder = greenBeforeAdvance {

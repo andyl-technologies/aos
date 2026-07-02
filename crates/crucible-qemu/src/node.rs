@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
-    Checkpoint, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, Icount, NodeId,
-    SimulationBackend, StepObservation, VirtualTime,
+    Checkpoint, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
+    GdbListen, Icount, NodeId, SimulationBackend, StepObservation, VirtualTime,
 };
 use thiserror::Error;
 
@@ -25,8 +25,8 @@ use crate::shutdown::{
 use crate::{
     QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverPolicy,
     QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
-    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuHostIoRuntime, QemuNodeRunStatus,
-    run_bounded_qemu_node_step,
+    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostIoRuntime,
+    QemuNodeRunStatus, run_bounded_qemu_node_step,
 };
 
 /// The role assigned to one QEMU node channel.
@@ -456,6 +456,7 @@ pub struct QemuNode {
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     last_observed_time: VirtualTime,
+    gdbstub: Option<QemuGdbstubChannelConfig>,
 }
 
 impl QemuNode {
@@ -478,7 +479,21 @@ impl QemuNode {
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
             last_observed_time: VirtualTime::default(),
+            gdbstub: None,
         }
+    }
+
+    /// Attaches a configured mediated gdbstub channel to this node wrapper.
+    #[must_use]
+    pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
+        self.gdbstub = Some(gdbstub);
+        self
+    }
+
+    /// Returns the configured gdbstub channel, when this node supports one.
+    #[must_use]
+    pub const fn gdbstub_channel(&self) -> Option<&QemuGdbstubChannelConfig> {
+        self.gdbstub.as_ref()
     }
 
     /// Returns the wrapper's current lifecycle state.
@@ -821,6 +836,28 @@ impl SimulationBackend for QemuNode {
         })
     }
 
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, BackendError> {
+        let Some(gdbstub) = self.gdbstub.as_ref() else {
+            return Err(BackendError::Unsupported {
+                capability: "open_gdbstub",
+            });
+        };
+        if listen.as_str() != gdbstub.operator_listen() {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "qemu gdbstub listen {} does not match configured operator listen {}",
+                    listen.as_str(),
+                    gdbstub.operator_listen()
+                ),
+            });
+        }
+        GdbAttachInfo::new(node, gdbstub.qemu_endpoint().to_owned(), listen)
+    }
+
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.shutdown_child()
             .map(|_| ())
@@ -893,7 +930,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use crucible::{CheckpointKind, ContentHash, ExecutionHorizon, NodeId};
+    use crucible::{CheckpointKind, ContentHash, ExecutionHorizon, GdbListen, NodeId};
 
     use crate::{
         QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuQuantumOperation,
@@ -1306,6 +1343,37 @@ mod tests {
                 ChannelCall::QmpQuit,
             ]
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node_with_runtime(
+            Rc::clone(&log),
+            false,
+            false,
+            false,
+            [QemuAsyncWaitOutcome::Completed],
+        )?
+        .with_gdbstub(QemuGdbstubChannelConfig::new(
+            "tcp:127.0.0.1:9001",
+            "127.0.0.1:9000",
+        )?);
+
+        let info = SimulationBackend::open_gdbstub(
+            &mut node,
+            node_id("vm-a"),
+            GdbListen::new("127.0.0.1:9000")?,
+        )?;
+
+        assert_eq!(info.node, node_id("vm-a"));
+        assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
+        assert_eq!(info.operator_listen.as_str(), "127.0.0.1:9000");
+        assert!(info.is_out_of_band_debug_proxy());
+        assert_eq!(recorded(&log), Vec::<ChannelCall>::new());
+        assert!(node.shutdown_child()?.reaped);
 
         Ok(())
     }
