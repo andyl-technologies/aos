@@ -993,6 +993,18 @@ harness, never cut for scope.
       callable builtin metadata, and a synthetic complete conversion. This is
       still metadata gating only; it does not attach executable addresses, export
       wrappers, lower Cranelift IR, or call `JITBuilder::symbol`.
+- [x] Current JIT module-readiness precursor:
+      `ratchet-jit::module::jit_module_readiness_preflight_for_artifact()`
+      composes a verified CLIF artifact with the address-free JIT runtime-symbol
+      declaration preflight. The checked
+      `jit_module_readiness_plan_for_artifact()` gate preserves callable builtin
+      declarations but currently rejects complete setup while helper and
+      value-only builtin declaration gaps remain. Tests pin artifact metadata,
+      callable builtin declaration visibility, representative helper gaps, the
+      incomplete-plan error, and a synthetic complete conversion. This is still
+      readiness metadata only: no `cranelift-jit`, `JITModule`, executable
+      buffer, symbol address, relocation, or `JITBuilder::symbol` registration
+      exists.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` combines helper ABI
       metadata, helper Rust-callable availability, and builtin call-shape

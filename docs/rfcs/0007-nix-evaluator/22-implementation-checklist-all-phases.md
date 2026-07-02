@@ -6621,6 +6621,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       metadata only: no `JITModule`, `JITBuilder::symbol`, executable address,
       exported wrapper, helper ABI signature, relocation, or native call is
       implemented.
+- [x] Current JIT module-readiness precursor:
+      `ratchet-jit::module::jit_module_readiness_preflight_for_artifact()`
+      composes a verified CLIF artifact with the address-free JIT runtime-symbol
+      declaration preflight and exposes the artifact metadata, callable builtin
+      declarations, and stable runtime-symbol gaps as one future module-setup
+      handoff. The checked `jit_module_readiness_plan_for_artifact()` gate
+      currently returns an incomplete-symbol error while helper and value-only
+      builtin declaration gaps remain. Tests pin artifact metadata, callable
+      builtin declaration visibility, representative helper gaps, the current
+      incomplete-plan error, deterministic IR-root function-name copying, and a
+      synthetic complete conversion. This remains module-readiness metadata only:
+      no `cranelift-jit`, `JITModule`, executable buffer, symbol address,
+      relocation, or `JITBuilder::symbol` registration is implemented.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps
