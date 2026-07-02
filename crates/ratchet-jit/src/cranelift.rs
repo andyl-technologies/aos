@@ -6,10 +6,15 @@
 //! native-address candidates into a `JITBuilder` symbol table. The declaration
 //! scaffold declares shape-known runtime symbols as imported functions. The
 //! artifact-definition scaffold additionally compiles one verified CLIF artifact
-//! into an encapsulated module. None of these paths finalize memory, return code
-//! pointers, or call native code.
+//! into an encapsulated module. The artifact-finalization scaffold finalizes one
+//! defined artifact and returns opaque code-pointer metadata. None of these
+//! paths transmutes code pointers or calls native code.
 
-use std::{error::Error, fmt, ptr};
+use std::{
+    error::Error,
+    fmt,
+    ptr::{self, NonNull},
+};
 
 use cranelift_codegen::{
     CodegenError, Context,
@@ -214,6 +219,48 @@ impl JitCraneliftRegisteredSymbol {
     }
 }
 
+/// A verified CLIF artifact finalized into executable memory.
+///
+/// The code pointer stored here is metadata tied to the lifetime of the owning
+/// [`JITModule`] inside [`JitCraneliftArtifactFinalizationPreflight`]. It is
+/// not a standalone ownership handle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitCraneliftFinalizedFunction {
+    defined_function: JitCraneliftDefinedFunction,
+    code_ptr: NonNull<u8>,
+}
+
+impl JitCraneliftFinalizedFunction {
+    fn new(defined_function: JitCraneliftDefinedFunction, code_ptr: NonNull<u8>) -> Self {
+        Self {
+            defined_function,
+            code_ptr,
+        }
+    }
+
+    /// Returns the artifact body that was finalized.
+    pub const fn defined_function(&self) -> &JitCraneliftDefinedFunction {
+        &self.defined_function
+    }
+
+    /// Returns the stable module symbol name for the finalized artifact body.
+    pub fn symbol_name(&self) -> &str {
+        self.defined_function.symbol_name()
+    }
+
+    /// Returns the opaque finalized code pointer.
+    ///
+    /// This is code-pointer metadata only. Callers must not cast or call this
+    /// pointer until the unsafe native-call boundary lands. The pointer's
+    /// validity is tied to the owning
+    /// [`JitCraneliftArtifactFinalizationPreflight`] and its encapsulated
+    /// [`JITModule`]; retaining it after that owner is dropped can leave stale
+    /// metadata.
+    pub const fn code_ptr(&self) -> NonNull<u8> {
+        self.code_ptr
+    }
+}
+
 /// A real `JITModule` created from a builder with runtime symbols registered.
 pub struct JitCraneliftSymbolRegistrationPreflight {
     registered_symbols: Vec<JitCraneliftRegisteredSymbol>,
@@ -261,6 +308,78 @@ impl JitCraneliftSymbolRegistrationPreflight {
 
     /// Returns the registration gap for `symbol_name`, when present.
     pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolRegistrationGap> {
+        self.symbol_gaps
+            .iter()
+            .find(|gap| gap.symbol_name() == symbol_name)
+    }
+
+    /// Returns true because this preflight owns an encapsulated `JITModule`.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        let _module = &self.module;
+        true
+    }
+}
+
+/// A real `JITModule` with one artifact body finalized into executable memory.
+pub struct JitCraneliftArtifactFinalizationPreflight {
+    artifact: JitModuleArtifactMetadata,
+    finalized_function: JitCraneliftFinalizedFunction,
+    imported_symbols: Vec<JitCraneliftImportedSymbol>,
+    symbol_gaps: Vec<JitRuntimeSymbolDeclarationGap>,
+    module: JITModule,
+}
+
+impl JitCraneliftArtifactFinalizationPreflight {
+    fn new(
+        artifact: JitModuleArtifactMetadata,
+        finalized_function: JitCraneliftFinalizedFunction,
+        imported_symbols: Vec<JitCraneliftImportedSymbol>,
+        symbol_gaps: Vec<JitRuntimeSymbolDeclarationGap>,
+        module: JITModule,
+    ) -> Self {
+        Self {
+            artifact,
+            finalized_function,
+            imported_symbols,
+            symbol_gaps,
+            module,
+        }
+    }
+
+    /// Returns the CLIF artifact metadata that seeded module setup.
+    pub const fn artifact(&self) -> &JitModuleArtifactMetadata {
+        &self.artifact
+    }
+
+    /// Returns the finalized artifact body metadata.
+    pub const fn finalized_function(&self) -> &JitCraneliftFinalizedFunction {
+        &self.finalized_function
+    }
+
+    /// Returns runtime symbols declared as imported functions in the module.
+    pub fn imported_symbols(&self) -> &[JitCraneliftImportedSymbol] {
+        &self.imported_symbols
+    }
+
+    /// Returns runtime symbols that still block complete module setup.
+    pub fn symbol_gaps(&self) -> &[JitRuntimeSymbolDeclarationGap] {
+        &self.symbol_gaps
+    }
+
+    /// Returns true when every stable runtime symbol has been declared.
+    pub fn is_complete(&self) -> bool {
+        self.symbol_gaps.is_empty()
+    }
+
+    /// Returns the imported-symbol declaration for `symbol_name`, when present.
+    pub fn imported_symbol_for(&self, symbol_name: &str) -> Option<&JitCraneliftImportedSymbol> {
+        self.imported_symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name() == symbol_name)
+    }
+
+    /// Returns the declaration gap for `symbol_name`, when present.
+    pub fn gap_for_symbol(&self, symbol_name: &str) -> Option<&JitRuntimeSymbolDeclarationGap> {
         self.symbol_gaps
             .iter()
             .find(|gap| gap.symbol_name() == symbol_name)
@@ -490,6 +609,18 @@ pub enum JitCraneliftModuleSetupError {
         /// The underlying Cranelift module error.
         source: ModuleError,
     },
+    /// The JIT module could not finalize defined functions.
+    FinalizeDefinitions {
+        /// The stable module symbol that was being finalized.
+        symbol_name: String,
+        /// The underlying Cranelift module error.
+        source: ModuleError,
+    },
+    /// Cranelift returned a null finalized function pointer.
+    FinalizedFunctionPointerNull {
+        /// The stable module symbol assigned to the artifact body.
+        symbol_name: String,
+    },
 }
 
 impl fmt::Display for JitCraneliftModuleSetupError {
@@ -523,6 +654,17 @@ impl fmt::Display for JitCraneliftModuleSetupError {
                 formatter,
                 "artifact function {symbol_name:?} could not be defined in the JIT module: {source}"
             ),
+            Self::FinalizeDefinitions {
+                symbol_name,
+                source,
+            } => write!(
+                formatter,
+                "artifact function {symbol_name:?} could not be finalized in the JIT module: {source}"
+            ),
+            Self::FinalizedFunctionPointerNull { symbol_name } => write!(
+                formatter,
+                "artifact function {symbol_name:?} finalized to a null code pointer"
+            ),
         }
     }
 }
@@ -538,6 +680,8 @@ impl Error for JitCraneliftModuleSetupError {
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
             Self::DefineArtifactFunction { source, .. } => Some(source),
+            Self::FinalizeDefinitions { source, .. } => Some(source),
+            Self::FinalizedFunctionPointerNull { .. } => None,
         }
     }
 }
@@ -675,6 +819,72 @@ pub fn jit_cranelift_artifact_definition_preflight_for_artifact(
     ))
 }
 
+/// Builds a real JIT module, defines one verified CLIF artifact, and finalizes it.
+///
+/// The returned preflight owns a [`JITModule`] with callable builtin imports,
+/// one artifact body declared as an exported function, and finalized executable
+/// memory for that body. The finalized code pointer is exposed only as opaque
+/// metadata for later unsafe call-boundary work. This does not cast the code
+/// pointer to a function pointer, call native code, or lower generic IR.
+/// Current crate-built artifacts are constant/literal bodies with no runtime
+/// call relocations; call-bearing artifacts require the later path that composes
+/// artifact finalization with complete runtime-symbol address registration.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftModuleSetupError::Readiness`] if runtime-symbol
+/// readiness metadata cannot be built. Returns
+/// [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot build
+/// an ISA for the current host. Returns
+/// [`JitCraneliftModuleSetupError::Settings`] if required JIT settings are
+/// rejected. Returns [`JitCraneliftModuleSetupError::TargetIsa`] if Cranelift
+/// rejects the native ISA configuration. Returns
+/// [`JitCraneliftModuleSetupError::DeclareRuntimeSymbol`] if Cranelift rejects
+/// an imported runtime-symbol declaration. Returns
+/// [`JitCraneliftModuleSetupError::DeclareArtifactFunction`] if Cranelift
+/// rejects the artifact function declaration. Returns
+/// [`JitCraneliftModuleSetupError::DefineArtifactFunction`] if Cranelift rejects
+/// the artifact function definition. Returns
+/// [`JitCraneliftModuleSetupError::FinalizeDefinitions`] if Cranelift cannot
+/// finalize the module definitions. Returns
+/// [`JitCraneliftModuleSetupError::FinalizedFunctionPointerNull`] if Cranelift
+/// reports a null code pointer after successful finalization.
+///
+/// # Panics
+///
+/// Panics if an artifact references imported runtime symbols whose addresses
+/// have not been registered before Cranelift relocation. Panics if Cranelift
+/// reports successful artifact definition and module finalization but then
+/// fails its own invariant for looking up the finalized function by [`FuncId`].
+pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
+    artifact: JitClifArtifact,
+) -> Result<JitCraneliftArtifactFinalizationPreflight, JitCraneliftModuleSetupError> {
+    let readiness = jit_module_readiness_preflight_for_artifact(&artifact)?;
+    let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
+    let artifact_metadata = readiness.artifact().clone();
+    let symbol_gaps = readiness.symbol_gaps().to_vec();
+    let (mut module, imported_symbols) =
+        module_with_imported_symbols(readiness.symbol_declarations())?;
+    let defined_function = define_artifact_function(&mut module, artifact, symbol_name)?;
+
+    module.finalize_definitions().map_err(|source| {
+        JitCraneliftModuleSetupError::FinalizeDefinitions {
+            symbol_name: defined_function.symbol_name().to_owned(),
+            source,
+        }
+    })?;
+    let code_ptr = finalized_function_pointer(&module, &defined_function)?;
+    let finalized_function = JitCraneliftFinalizedFunction::new(defined_function, code_ptr);
+
+    Ok(JitCraneliftArtifactFinalizationPreflight::new(
+        artifact_metadata,
+        finalized_function,
+        imported_symbols,
+        symbol_gaps,
+        module,
+    ))
+}
+
 /// Builds a complete JIT module setup for `artifact`.
 ///
 /// This strict gate only succeeds once runtime-symbol readiness is complete.
@@ -805,6 +1015,17 @@ fn define_artifact_function(
         Linkage::Export,
         func_id,
     ))
+}
+
+fn finalized_function_pointer(
+    module: &JITModule,
+    function: &JitCraneliftDefinedFunction,
+) -> Result<NonNull<u8>, JitCraneliftModuleSetupError> {
+    NonNull::new(module.get_finalized_function(function.func_id()) as *mut u8).ok_or_else(|| {
+        JitCraneliftModuleSetupError::FinalizedFunctionPointerNull {
+            symbol_name: function.symbol_name().to_owned(),
+        }
+    })
 }
 
 fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> String {
@@ -1137,6 +1358,74 @@ mod tests {
             "aos.jit.ir_root.1.thunk_body"
         );
         assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn artifact_finalization_preflight_finalizes_constant_artifact_code_pointer() {
+        let artifact =
+            lower_constant_thunk_body_artifact(Value::int(11)).expect("constant artifact lowers");
+        let preflight = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)
+            .expect("artifact finalization preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.constant_smoke.thunk_body"
+        );
+        assert_eq!(
+            preflight.finalized_function().defined_function().linkage(),
+            Linkage::Export
+        );
+        assert_ne!(
+            preflight.finalized_function().code_ptr().as_ptr() as usize,
+            0
+        );
+        assert!(
+            preflight
+                .imported_symbol_for("nix.builtin.derivationStrict")
+                .is_some()
+        );
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_force"),
+            Some(
+                JitRuntimeSymbolDeclarationGap::HelperWithoutCoreCallSignature {
+                    role: RuntimeHelperRole::ForcingControl,
+                    ..
+                }
+            )
+        ));
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn artifact_finalization_preflight_uses_deterministic_ir_root_symbol() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Null,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let artifact = lower_constant_ir_thunk_body_artifact(&arena, IrId::new(0))
+            .expect("IR root artifact lowers");
+        let preflight = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)
+            .expect("artifact finalization preflight builds");
+
+        assert_eq!(
+            preflight.artifact().function_name(),
+            &clif_name_for_ir_root(IrId::new(0))
+        );
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_ne!(
+            preflight.finalized_function().code_ptr().as_ptr() as usize,
+            0
+        );
         assert!(preflight.owns_encapsulated_module());
     }
 

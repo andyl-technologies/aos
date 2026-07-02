@@ -5,9 +5,10 @@
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
 //! `ratchet-core`, [`artifact`] records address-free CLIF artifact metadata,
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
-//! `JITModule` declaration and artifact-definition preflights, [`lower`] builds
-//! verified CLIF bodies for the first literal Core-IR and constant-thunk smoke
-//! tests, [`module`] composes artifacts with runtime-symbol declaration
+//! `JITModule` declaration, artifact-definition, and artifact-finalization
+//! preflights, [`lower`] builds verified CLIF bodies for the first literal
+//! Core-IR and constant-thunk smoke tests, [`module`] composes artifacts with
+//! runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
 //! and preflights future native-address registration metadata, [`tier`] names
@@ -19,13 +20,14 @@
 //! semantic candidate classification below both crates without making the JIT
 //! crate depend on the safe oracle stack.
 //!
-//! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, Cranelift
-//! finalization, full runtime symbol tables, and executable native calls are
-//! future work inside this crate. The current `JITBuilder::symbol` precursor
-//! registers only explicit opaque address metadata with an encapsulated builder.
-//! Unsafe blocks are allowed only behind the crate-level `unsafe_op_in_unsafe_fn`
-//! discipline and must carry local `// SAFETY:` invariants when those later
-//! slices land.
+//! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, full
+//! runtime symbol tables, and executable native calls are future work inside
+//! this crate. The current `JITBuilder::symbol` precursor registers only
+//! explicit opaque address metadata with an encapsulated builder, and the
+//! current finalization precursor exposes only opaque code-pointer metadata for
+//! constant/literal artifacts. Unsafe blocks are allowed only behind the
+//! crate-level `unsafe_op_in_unsafe_fn` discipline and must carry local
+//! `// SAFETY:` invariants when those later slices land.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -48,12 +50,14 @@ pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 pub use cranelift::{
     ACTIVE_CRANELIFT_CODEGEN_VERSION, ACTIVE_CRANELIFT_JIT_VERSION,
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
-    JitCraneliftArtifactDefinitionPreflight, JitCraneliftDefinedFunction,
-    JitCraneliftDependencyPin, JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight,
-    JitCraneliftModuleSetup, JitCraneliftModuleSetupError, JitCraneliftRegisteredSymbol,
+    JitCraneliftArtifactDefinitionPreflight, JitCraneliftArtifactFinalizationPreflight,
+    JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
+    JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
+    JitCraneliftModuleSetupError, JitCraneliftRegisteredSymbol,
     JitCraneliftSymbolRegistrationPreflight, PINNED_CRANELIFT_CODEGEN_VERSION,
     PINNED_CRANELIFT_JIT_VERSION, PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
-    jit_cranelift_artifact_definition_preflight_for_artifact, jit_cranelift_dependency_pin,
+    jit_cranelift_artifact_definition_preflight_for_artifact,
+    jit_cranelift_artifact_finalization_preflight_for_artifact, jit_cranelift_dependency_pin,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
     jit_cranelift_symbol_registration_preflight_with_candidates,

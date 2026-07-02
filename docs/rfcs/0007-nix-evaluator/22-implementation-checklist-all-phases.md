@@ -6697,6 +6697,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       runtime symbol addresses, call `JITBuilder::symbol`, finalize definitions,
       expose a code pointer, call native code, lower generic IR, or emit runtime
       calls.
+- [x] Current Cranelift artifact-finalization precursor:
+      `ratchet-jit::cranelift::jit_cranelift_artifact_finalization_preflight_for_artifact()`
+      takes one verified CLIF artifact through the same import declaration and
+      artifact definition path, calls `JITModule::finalize_definitions`, and
+      returns a non-null opaque finalized code pointer for the exported artifact
+      body. Tests pin constant-smoke and Core-IR-root symbol names, exported
+      linkage, non-null code-pointer metadata, callable builtin imports,
+      representative helper gaps, and encapsulated-module ownership. This
+      finalizes executable memory for the one artifact but still does not cast
+      the code pointer to a function type, call native code, lower generic IR,
+      emit runtime calls, or complete runtime-symbol registration. Call-bearing
+      artifacts still require a later finalization path that composes with
+      complete runtime-symbol address registration before relocation.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps
