@@ -6622,6 +6622,16 @@ nurseries build on the bump arena.
       final lock-free append-only interner, does not provide global cross-process
       ids, does not replace parser-local symbol ownership, and does not satisfy
       the loom/Miri/TSan audit.
+- [x] Current parallel output-collation precursor:
+      `ratchet-oracle::eval::parallel_output` normalizes worker-emitted output
+      fragments into stable task order, merges `StringContext`s through their
+      canonical set union, sorts unique `.drv` outputs by path, computes
+      content-only SHA-256 digests from `.drv` bytes, deduplicates identical
+      repeated `.drv` emissions, and rejects duplicate task fragments or
+      same-path conflicting bytes. This is the output collation contract only:
+      it is not the final thread-count differential `.drv` harness, does not
+      execute the parallel scheduler, does not materialize derivations, and does
+      not audit live attrset iteration under nondeterminism.
 - [ ] Per-worker bump nurseries + a concurrent (or per-worker-then-merged)
       hash-cons table; never-free in CLI mode sidesteps any moving-collector race
       ([13](13-parallel-evaluation.md) §5).

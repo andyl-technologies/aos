@@ -943,6 +943,17 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       with the parallel evaluator scheduler or loom/Miri audit (§4.3) — **P3.5**
       precursor, `C-12`/`R-4`.
 - [ ] Output-determinism guarantees under nondeterministic scheduling: order-independent string-context union, sorted `.drv` output collection, content-only SHA-256 hashing, deterministic-iteration attrsets (§4.4) — **P3.5**, `C-12`/`S-13`; differential `.drv` harness asserts identical output across thread counts `{1, 2, 8, N}`.
+- [x] Current parallel output-collation precursor:
+      `ratchet-oracle::eval::parallel_output` canonicalizes worker-emitted
+      output fragments by stable task index, unions existing canonical
+      `StringContext`s in order-independent form, collects `.drv` outputs in
+      lexicographic path order, computes SHA-256 digests only from `.drv` bytes,
+      deduplicates identical repeated `.drv` emissions, and rejects duplicate
+      task fragments or same-path conflicting bytes. This is the collation
+      contract only; it is not the final thread-count differential `.drv`
+      harness, does not execute the parallel scheduler, does not materialize
+      derivations, and does not audit live attrset iteration under nondeterminism
+      (§4.4) — **P3.5** precursor, `C-12`/`S-13`.
 
 ### Concurrency runtime — rayon, fibers, tokio (§5.5)
 

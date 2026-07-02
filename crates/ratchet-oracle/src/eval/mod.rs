@@ -12,6 +12,7 @@ pub mod internal_diff;
 pub mod module;
 pub mod parallel;
 pub mod parallel_heap;
+pub mod parallel_output;
 pub mod thunk;
 pub mod thunk_cas;
 pub mod thunk_wait;
@@ -34,6 +35,10 @@ pub use parallel_heap::{
     ParallelHashConsMergeError, ParallelHashConsMergeOutcome, ParallelWorkerNursery,
     ParallelWorkerNurseryAssignment, ParallelWorkerNurseryPlan,
     merge_parallel_hash_cons_candidates, parallel_worker_nursery_plan,
+};
+pub use parallel_output::{
+    ParallelDrvOutput, ParallelOutputCollation, ParallelOutputDeterminismError,
+    ParallelOutputFragment, collate_parallel_output_fragments, parallel_drv_output_content_sha256,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,
