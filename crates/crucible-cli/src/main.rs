@@ -43,6 +43,8 @@ const CRUCIBLE_AOS_QEMU_ENV: &str = "CRUCIBLE_AOS_QEMU";
 const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
+const DEFAULT_SELFTEST_RUNS: usize = 5;
+const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &["gate:replay-oracle"];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(
@@ -253,7 +255,11 @@ struct VerifyArgs {
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct SelftestArgs {}
+struct SelftestArgs {
+    /// Run this double-backed gate subset.
+    #[arg(long, value_name = "list")]
+    gates: Option<String>,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SaveArgs {}
@@ -5255,9 +5261,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Commands::Run(_) => Ok(()),
-        Commands::Selftest(_) => {
-            let report = run_selftest(cli)?;
+        Commands::Selftest(args) => {
+            let report = run_selftest(cli, args)?;
             if !cli.quiet {
+                for gate in &report.gates {
+                    println!(
+                        "crucible: selftest gate={} status={} corpus={} runs-per-entry={}",
+                        gate.name,
+                        gate.status.label(),
+                        gate.corpus_entries,
+                        gate.runs_per_entry
+                    );
+                }
                 for verified in report.verified {
                     println!(
                         "crucible: selftest {} PASS runs={}",
@@ -5330,14 +5345,59 @@ fn default_run_store_root(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| cli.artifact_dir.join("store"))
 }
 
-fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
+fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
+    let requested = match args.gates.as_deref() {
+        Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
+        None => BUILT_IN_CORPUS_SELFTEST_GATES.iter().copied().collect(),
+    };
+    if requested.is_empty() || requested.iter().any(|gate| gate.is_empty()) {
+        return Err(usage_error(
+            "--gates must name one or more comma-separated canonical gates",
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    for gate in &requested {
+        if !seen.insert(*gate) {
+            return Err(usage_error(format!(
+                "duplicate selftest gate `{gate}` in --gates"
+            )));
+        }
+        if crucible_harness::find_gate(gate).is_none() {
+            return Err(usage_error(format!(
+                "unknown selftest gate `{gate}`; use canonical gate names from RFC-0010 file 24"
+            )));
+        }
+        if !BUILT_IN_CORPUS_SELFTEST_GATES.contains(gate) {
+            return Err(usage_error(format!(
+                "selftest gate `{gate}` is not implemented by the built-in corpus runner yet; real-QEMU and extended gate runners remain tracked by T-CLI-8"
+            )));
+        }
+    }
+
+    Ok(requested.into_iter().map(ToOwned::to_owned).collect())
+}
+
+fn run_selftest(_cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+    let selected_gates = plan_selftest_gates(args)?;
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {
-        verified
-            .push(crucible::verify_example_scenario_runs(&fixture, 5).map_err(CliError::Selftest)?);
+        verified.push(
+            crucible::verify_example_scenario_runs(&fixture, DEFAULT_SELFTEST_RUNS)
+                .map_err(CliError::Selftest)?,
+        );
     }
-    Ok(SelftestReport { verified })
+    let gates = selected_gates
+        .into_iter()
+        .map(|gate| SelftestGateReport {
+            name: gate,
+            status: SelftestGateStatus::Passed,
+            corpus_entries: verified.len(),
+            runs_per_entry: DEFAULT_SELFTEST_RUNS,
+        })
+        .collect();
+    Ok(SelftestReport { gates, verified })
 }
 
 fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
@@ -7324,7 +7384,29 @@ enum DebugEngineOperation {
 
 #[derive(Debug)]
 struct SelftestReport {
+    gates: Vec<SelftestGateReport>,
     verified: Vec<crucible::ExampleScenarioVerifyReport>,
+}
+
+#[derive(Debug)]
+struct SelftestGateReport {
+    name: String,
+    status: SelftestGateStatus,
+    corpus_entries: usize,
+    runs_per_entry: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelftestGateStatus {
+    Passed,
+}
+
+impl SelftestGateStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "PASS",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -7959,6 +8041,7 @@ mod tests {
                     "--compare <A> <B>",
                 ],
             ),
+            ("selftest", &["--gates <list>"]),
             ("replay", &["ARTIFACT"]),
             ("serve", &["--listen <addr>", "--store <path>"]),
         ] {
@@ -10528,19 +10611,103 @@ mod tests {
     #[test]
     fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
         let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
-        let report = run_selftest(&cli)?;
+        let Commands::Selftest(args) = &cli.command else {
+            panic!("expected selftest command");
+        };
+        let report = run_selftest(&cli, args)?;
 
         let scenario_names = report
             .verified
             .iter()
             .map(|verified| verified.scenario_name.as_str())
             .collect::<Vec<_>>();
+        let gate_names = report
+            .gates
+            .iter()
+            .map(|gate| gate.name.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(report.verified.len(), 3);
         assert!(scenario_names.contains(&"happy-path.scn"));
         assert!(scenario_names.contains(&"partition-recovery.scn"));
         assert!(scenario_names.contains(&"crash-restart.scn"));
         assert!(report.verified.iter().all(|verified| verified.runs == 5));
+        assert_eq!(gate_names, BUILT_IN_CORPUS_SELFTEST_GATES);
+        assert!(report.gates.iter().all(|gate| {
+            gate.status == SelftestGateStatus::Passed
+                && gate.corpus_entries == 3
+                && gate.runs_per_entry == DEFAULT_SELFTEST_RUNS
+        }));
         dispatch(&cli)?;
+
+        let selected = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "selftest",
+            "--gates",
+            "gate:replay-oracle",
+        ]);
+        let Commands::Selftest(args) = &selected.command else {
+            panic!("expected selftest command");
+        };
+        let selected_report = run_selftest(&selected, args)?;
+        assert_eq!(
+            selected_report
+                .gates
+                .iter()
+                .map(|gate| gate.name.as_str())
+                .collect::<Vec<_>>(),
+            ["gate:replay-oracle"]
+        );
+        dispatch(&selected)?;
+
+        let unknown = Cli::parse_from(["crucible", "selftest", "--gates", "gate:not-real"]);
+        let Commands::Selftest(args) = &unknown.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&unknown, args) {
+            Ok(_) => panic!("unknown selftest gate must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let empty = Cli::parse_from(["crucible", "selftest", "--gates", "gate:replay-oracle,"]);
+        let Commands::Selftest(args) = &empty.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&empty, args) {
+            Ok(_) => panic!("empty selftest gate component must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let duplicate = Cli::parse_from([
+            "crucible",
+            "selftest",
+            "--gates",
+            "gate:replay-oracle,gate:replay-oracle",
+        ]);
+        let Commands::Selftest(args) = &duplicate.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&duplicate, args) {
+            Ok(_) => panic!("duplicate selftest gate must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let unsupported = Cli::parse_from(["crucible", "selftest", "--gates", "gate:qemu-inert"]);
+        let Commands::Selftest(args) = &unsupported.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&unsupported, args) {
+            Ok(_) => panic!("real-QEMU selftest gate must not be silently accepted"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
 
         Ok(())
     }
