@@ -273,8 +273,9 @@ long-held locks.
   `reverse_step`, `reverse_continue`) over the model time-travel APIs, keeps
   debug repositioning out of the scheduler replay/control log, guards
   forward/mutating use behind a marked NON-CANONICAL branch command, and adds the
-  optional backend `open_gdbstub` capability with QEMU reporting configured
-  mediated endpoints while SimDouble/mock return typed `Unsupported`.
+  optional backend `open_gdbstub` capability with `BackendQuantumLoop` routing to
+  the live backend, QEMU binding a retained mediated listener, and SimDouble/mock
+  returning typed `Unsupported`.
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

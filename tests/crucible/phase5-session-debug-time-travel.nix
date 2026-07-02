@@ -15,6 +15,7 @@
   simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuGdbstubProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -112,6 +113,14 @@
         needle = "fn open_gdbstub";
       }
       {
+        label = "backend-backed quantum loop adapter";
+        needle = "pub struct BackendQuantumLoop";
+      }
+      {
+        label = "backend adapter routes gdbstub to wrapped backend";
+        needle = "self.backend.open_gdbstub(node, listen)";
+      }
+      {
         label = "loop default rejects unsupported gdbstub";
         needle = "capability: \"open_gdbstub\"";
       }
@@ -172,6 +181,54 @@
         needle = "DebugNonCanonicalBranchRequired";
       }
       {
+        label = "non-canonical branch appends visible event marker";
+        needle = "append_boundary_event_log_entries(entries)";
+      }
+      {
+        label = "actor passes current event-log prefix";
+        needle = "apply_command_with_event_log";
+      }
+      {
+        label = "actor truncates stale debug future before marker append";
+        needle = "condition_event_log.truncate(base_len)";
+      }
+      {
+        label = "direct engine rejects missing branch event-log prefix";
+        needle = "event_log.len() != self.event_log_len";
+      }
+      {
+        label = "debug branch validates prefix before graph mutation";
+        needle = "validate_event_log_prefix(event_log)";
+      }
+      {
+        label = "malformed branch prefix regression test";
+        needle = "malformed same-length prefix must not mutate graph branch metadata";
+      }
+      {
+        label = "event-log stream skips duplicate live tail frames";
+        needle = "frame.cursor.next_sequence < self.next_cursor.next_sequence";
+      }
+      {
+        label = "event-log stream remembers generation reset cursor";
+        needle = "generation_start";
+      }
+      {
+        label = "event-log generation reset preserves lagging cursor";
+        needle = "self.next_cursor.min(self.hub.generation_start_cursor())";
+      }
+      {
+        label = "event-log stream skips stale generation frames";
+        needle = "frame.generation < self.generation";
+      }
+      {
+        label = "event-log active subscriber replacement marker test";
+        needle = "unread active stream should receive the replacement marker";
+      }
+      {
+        label = "event-log partial truncation subscriber regression test";
+        needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
+      }
+      {
         label = "debug branch flag";
         needle = "debug_branch_required";
       }
@@ -190,6 +247,10 @@
         needle = "gdbstub: Option<QemuGdbstubChannelConfig>";
       }
       {
+        label = "QEMU node retains active gdbstub proxy";
+        needle = "active_gdbstub: Option<QemuGdbstubProxyServer>";
+      }
+      {
         label = "QEMU gdbstub builder hook";
         needle = "pub fn with_gdbstub";
       }
@@ -198,12 +259,26 @@
         needle = "pub const fn gdbstub_channel";
       }
       {
-        label = "QEMU reports configured open_gdbstub endpoint";
+        label = "QEMU reports bound open_gdbstub listener";
         needle = "fn open_gdbstub";
+      }
+      {
+        label = "QEMU open_gdbstub binds proxy server";
+        needle = "spawn_one()";
       }
       {
         label = "QEMU gdbstub source test";
         needle = "qemu_node_open_gdbstub_reports_configured_channel";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/gdbstub_proxy.rs" qemuGdbstubProxy [
+      {
+        label = "cancellable background gdbstub server";
+        needle = "pub struct QemuGdbstubProxyServer";
+      }
+      {
+        label = "actual gdbstub listener address";
+        needle = "pub const fn local_addr";
       }
     ];
 
@@ -243,7 +318,7 @@ in
             printf 'schedule_exclusion=query_pause_class\n'
             printf 'non_canonical_branch_guard=true\n'
             printf 'backend_open_gdbstub=optional\n'
-            printf 'qemu_open_gdbstub=configured_endpoint\n'
+            printf 'qemu_open_gdbstub=bound_mediated_listener\n'
             printf 'simdouble_open_gdbstub=unsupported\n'
             printf 'mock_open_gdbstub=unsupported\n'
           } > "$out/result"

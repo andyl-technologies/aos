@@ -38,8 +38,8 @@ use crate::{
     LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
     PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId,
     RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SearchFrontierChoices, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
-    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    SearchFrontierChoices, Shift, SimDuration, SimInstant, SimulationBackend, TimeConversionError,
+    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -121,6 +121,82 @@ pub trait QuantumLoop {
     /// Returns [`SchedulerError`] when shutdown cannot complete cleanly.
     fn shutdown(&mut self) -> Result<(), SchedulerError> {
         Ok(())
+    }
+}
+
+/// Quantum-loop adapter that exposes optional capabilities from a live backend.
+///
+/// The authoritative scheduler loop remains responsible for virtual-time
+/// ordering and control admission. The backend is used only for backend-owned
+/// capabilities that do not belong in the pure scheduler, such as opening a
+/// mediated gdbstub endpoint.
+#[derive(Clone, Debug)]
+pub struct BackendQuantumLoop<L, B> {
+    loop_impl: L,
+    backend: B,
+}
+
+impl<L, B> BackendQuantumLoop<L, B> {
+    /// Builds an adapter from an authoritative quantum loop and backend.
+    #[must_use]
+    pub const fn new(loop_impl: L, backend: B) -> Self {
+        Self { loop_impl, backend }
+    }
+
+    /// Returns the wrapped quantum loop.
+    #[must_use]
+    pub const fn loop_impl(&self) -> &L {
+        &self.loop_impl
+    }
+
+    /// Returns the wrapped backend.
+    #[must_use]
+    pub const fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Returns mutable access to the wrapped backend.
+    #[must_use]
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    /// Consumes the adapter and returns its parts.
+    #[must_use]
+    pub fn into_parts(self) -> (L, B) {
+        (self.loop_impl, self.backend)
+    }
+}
+
+impl<L, B> QuantumLoop for BackendQuantumLoop<L, B>
+where
+    L: QuantumLoop,
+    B: SimulationBackend,
+{
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.loop_impl.drive_quantum(request)
+    }
+
+    fn apply_control_at_boundary(
+        &mut self,
+        control: Vec<ControlOperation>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.loop_impl.apply_control_at_boundary(control)
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        self.backend.open_gdbstub(node, listen).map_err(Into::into)
+    }
+
+    fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        let loop_result = self.loop_impl.shutdown();
+        let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
+        loop_result?;
+        backend_result
     }
 }
 
@@ -11724,6 +11800,116 @@ mod tests {
         assert_eq!(
             outcome.as_ref().map(|outcome| &outcome.configuration),
             Ok(&config)
+        );
+    }
+
+    #[test]
+    fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
+        struct StubLoop;
+
+        impl QuantumLoop for StubLoop {
+            fn drive_quantum(
+                &mut self,
+                request: QuantumRequest,
+            ) -> Result<QuantumOutcome, SchedulerError> {
+                Ok(QuantumOutcome {
+                    configuration: request.configuration,
+                    frontier: VirtualTime { ticks: 0 },
+                    advanced_node: None,
+                    resolved_events: Vec::new(),
+                    decisions: Vec::new(),
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: EventLogOffset::default(),
+                    scheduler_quiescence: None,
+                })
+            }
+        }
+
+        #[derive(Default)]
+        struct GdbBackend {
+            opened: Vec<(NodeId, String)>,
+        }
+
+        impl SimulationBackend for GdbBackend {
+            fn step_to(
+                &mut self,
+                _ceiling: VirtualTime,
+            ) -> Result<crate::StepObservation, BackendError> {
+                Err(BackendError::NotImplemented {
+                    operation: "step_to",
+                })
+            }
+
+            fn apply(
+                &mut self,
+                _effect: &crate::BackendEffect,
+                _at: VirtualTime,
+            ) -> Result<(), BackendError> {
+                Err(BackendError::NotImplemented { operation: "apply" })
+            }
+
+            fn snapshot(&mut self) -> Result<crate::BackendSnapshot, BackendError> {
+                Err(BackendError::NotImplemented {
+                    operation: "snapshot",
+                })
+            }
+
+            fn restore(&mut self, _snapshot: &crate::BackendSnapshot) -> Result<(), BackendError> {
+                Err(BackendError::NotImplemented {
+                    operation: "restore",
+                })
+            }
+
+            fn now(&self) -> VirtualTime {
+                VirtualTime::default()
+            }
+
+            fn fingerprint(
+                &mut self,
+                _node: NodeId,
+            ) -> Result<crate::FingerprintSample, BackendError> {
+                Err(BackendError::NotImplemented {
+                    operation: "fingerprint",
+                })
+            }
+
+            fn open_gdbstub(
+                &mut self,
+                node: NodeId,
+                listen: GdbListen,
+            ) -> Result<GdbAttachInfo, BackendError> {
+                self.opened.push((node.clone(), listen.as_str().to_owned()));
+                GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen)
+            }
+
+            fn shutdown(&mut self) -> Result<(), BackendError> {
+                Ok(())
+            }
+        }
+
+        let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
+        let info = adapter
+            .open_gdbstub(
+                NodeId {
+                    name: String::from("vm-a"),
+                },
+                GdbListen::new("127.0.0.1:9000")
+                    .unwrap_or_else(|error| panic!("test listen should be stable: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
+
+        assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
+        assert_eq!(
+            adapter.backend().opened,
+            vec![(
+                NodeId {
+                    name: String::from("vm-a"),
+                },
+                String::from("127.0.0.1:9000"),
+            )]
         );
     }
 

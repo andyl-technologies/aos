@@ -1372,6 +1372,14 @@ pub const fn lifecycle_transition(
         (State::Running, Command::Stop) => Accepted { to: State::Stopped },
         (
             State::Running,
+            Command::AttachGdb
+            | Command::DebugGoto
+            | Command::DebugReverseStep
+            | Command::DebugReverseContinue
+            | Command::DebugForkNonCanonical,
+        ) => Accepted { to: State::Paused },
+        (
+            State::Running,
             Command::Snapshot
             | Command::Inject
             | Command::InjectFault
@@ -1379,12 +1387,7 @@ pub const fn lifecycle_transition(
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
-            | Command::Query
-            | Command::AttachGdb
-            | Command::DebugGoto
-            | Command::DebugReverseStep
-            | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::Query,
         ) => Accepted { to: State::Running },
         (State::Running, Command::Fork) => Accepted { to: State::Paused },
         (State::Running, Command::Start | Command::Continue) => Rejected,
@@ -1986,6 +1989,8 @@ impl EventLogCursor {
 /// One event-log entry delivered to a control-plane subscriber.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionEventLogFrame {
+    /// Event-log stream generation that produced this frame.
+    pub generation: u64,
     /// Cursor position of this entry.
     pub cursor: EventLogCursor,
     /// Cursor position immediately after this entry.
@@ -1995,9 +2000,10 @@ pub struct SessionEventLogFrame {
 }
 
 impl SessionEventLogFrame {
-    fn new(entry: SchedulerEventLogEntry) -> Self {
+    fn new(entry: SchedulerEventLogEntry, generation: u64) -> Self {
         let sequence = entry.sequence();
         Self {
+            generation,
             cursor: EventLogCursor::new(sequence),
             next_cursor: EventLogCursor::new(sequence.saturating_add(1)),
             entry,
@@ -2025,6 +2031,8 @@ pub struct SessionEventLog {
 #[derive(Debug)]
 struct SessionEventLogInner {
     entries: Mutex<Vec<SchedulerEventLogEntry>>,
+    generation: AtomicU64,
+    generation_start: AtomicU64,
     tail: broadcast::Sender<SessionEventLogFrame>,
 }
 
@@ -2036,6 +2044,8 @@ impl SessionEventLog {
         Self {
             inner: Arc::new(SessionEventLogInner {
                 entries: Mutex::new(Vec::new()),
+                generation: AtomicU64::new(0),
+                generation_start: AtomicU64::new(0),
                 tail,
             }),
         }
@@ -2072,6 +2082,7 @@ impl SessionEventLog {
         let receiver = self.inner.tail.subscribe();
         SessionEventLogStream {
             hub: self.clone(),
+            generation: self.generation(),
             next_cursor,
             replay_exhausted: false,
             backlog: VecDeque::new(),
@@ -2084,15 +2095,35 @@ impl SessionEventLog {
             return;
         }
 
+        let generation = self.generation();
         let frames = entries
             .iter()
             .cloned()
-            .map(SessionEventLogFrame::new)
+            .map(|entry| SessionEventLogFrame::new(entry, generation))
             .collect::<Vec<_>>();
         self.lock_entries().extend(entries.iter().cloned());
         for frame in frames {
             let _ = self.inner.tail.send(frame);
         }
+    }
+
+    fn truncate_to_len(&self, len: usize) {
+        let mut entries = self.lock_entries();
+        if entries.len() > len {
+            entries.truncate(len);
+            self.inner
+                .generation_start
+                .store(usize_to_u64(len), Ordering::Release);
+            self.inner.generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.inner.generation.load(Ordering::Acquire)
+    }
+
+    fn generation_start_cursor(&self) -> EventLogCursor {
+        EventLogCursor::new(self.inner.generation_start.load(Ordering::Acquire))
     }
 
     fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
@@ -2109,7 +2140,11 @@ impl SessionEventLog {
             .unwrap_or_default()
     }
 
-    fn replay_batch_from(&self, cursor: EventLogCursor) -> VecDeque<SessionEventLogFrame> {
+    fn replay_batch_from(
+        &self,
+        cursor: EventLogCursor,
+        generation: u64,
+    ) -> VecDeque<SessionEventLogFrame> {
         let entries = self.lock_entries();
         let start = entries.partition_point(|entry| entry.sequence() < cursor.next_sequence);
         entries
@@ -2117,7 +2152,7 @@ impl SessionEventLog {
             .skip(start)
             .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
             .cloned()
-            .map(SessionEventLogFrame::new)
+            .map(|entry| SessionEventLogFrame::new(entry, generation))
             .collect()
     }
 }
@@ -2132,6 +2167,7 @@ impl Default for SessionEventLog {
 #[derive(Debug)]
 pub struct SessionEventLogStream {
     hub: SessionEventLog,
+    generation: u64,
     next_cursor: EventLogCursor,
     replay_exhausted: bool,
     backlog: VecDeque<SessionEventLogFrame>,
@@ -2155,12 +2191,25 @@ impl SessionEventLogStream {
         &mut self,
     ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
         loop {
+            let hub_generation = self.hub.generation();
+            if hub_generation > self.generation {
+                self.generation = hub_generation;
+                self.next_cursor = self.next_cursor.min(self.hub.generation_start_cursor());
+                self.replay_exhausted = false;
+                self.backlog.clear();
+            }
+
             if self.backlog.is_empty() && !self.replay_exhausted {
-                self.backlog = self.hub.replay_batch_from(self.next_cursor);
+                self.backlog = self
+                    .hub
+                    .replay_batch_from(self.next_cursor, self.generation);
                 self.replay_exhausted = self.backlog.is_empty();
             }
 
             if let Some(frame) = self.backlog.pop_front() {
+                if frame.generation < self.generation {
+                    continue;
+                }
                 if frame.cursor.next_sequence < self.next_cursor.next_sequence {
                     continue;
                 }
@@ -2169,6 +2218,15 @@ impl SessionEventLogStream {
             }
 
             match self.receiver.recv().await {
+                Ok(frame) if frame.generation < self.generation => {}
+                Ok(frame) if frame.generation > self.generation => {
+                    self.generation = frame.generation;
+                    self.next_cursor = frame.cursor;
+                    self.replay_exhausted = true;
+                    self.backlog.clear();
+                    self.next_cursor = frame.next_cursor;
+                    return Ok(Some(frame));
+                }
                 Ok(frame) if frame.cursor.next_sequence < self.next_cursor.next_sequence => {}
                 Ok(frame) => {
                     self.next_cursor = frame.next_cursor;
@@ -2824,6 +2882,31 @@ impl<L> Engine<L> {
         Ok(())
     }
 
+    fn validate_event_log_prefix(
+        &self,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
+        let current_event_log_len = usize_to_u64(self.event_log_len);
+        if event_log.len() != self.event_log_len {
+            return Err(SessionError::EventLogOffsetMismatch {
+                current: current_event_log_len,
+                emitted: 0,
+                next: usize_to_u64(event_log.len()),
+            });
+        }
+        for (index, entry) in event_log.iter().enumerate() {
+            let expected_sequence = usize_to_u64(index);
+            if entry.sequence() != expected_sequence {
+                return Err(SessionError::EventLogOffsetMismatch {
+                    current: current_event_log_len,
+                    emitted: 0,
+                    next: entry.sequence(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn record_boundary_control(
         &mut self,
         command: &SessionCommand,
@@ -3309,7 +3392,27 @@ impl<L: QuantumLoop> Engine<L> {
     where
         L: QuantumLoop,
     {
-        self.reject_debug_forward_without_branch(&command)?;
+        self.apply_command_with_event_log(command, &[])
+    }
+
+    /// Applies one actor-owned command with the current event-log prefix.
+    ///
+    /// `event_log` is used only by debugger branch-marking commands that must
+    /// append visible non-canonical fork metadata to the actor-owned log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidTransition`] if the command is not valid
+    /// in the current state. Returns [`SessionError::Engine`] or
+    /// [`SessionError::Scheduler`] if the model or scheduler boundary fails.
+    pub fn apply_command_with_event_log(
+        &mut self,
+        command: SessionCommand,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<EngineSnapshot, SessionError>
+    where
+        L: QuantumLoop,
+    {
         match &command {
             SessionCommand::Start => {
                 if matches!(self.state, EngineState::Loaded) {
@@ -3320,6 +3423,7 @@ impl<L: QuantumLoop> Engine<L> {
             }
             SessionCommand::Continue => {
                 if matches!(self.state, EngineState::Paused { .. }) {
+                    self.reject_debug_forward_without_branch(&command)?;
                     self.active_step = None;
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
@@ -3344,6 +3448,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::Step { mode } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     self.active_step = Some(ActiveStep::new(*mode, self.frontier));
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
@@ -3376,6 +3481,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::Inject => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     let control = ControlOperationKind::Inject;
                     self.apply_control_operation_at_boundary(control.clone())?;
                     self.record_boundary_control(&command, Some(control));
@@ -3387,6 +3493,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::InjectFault { spec, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     let control = ControlOperationKind::InjectFault {
                         tag: spec.tag.clone(),
                         fault: spec.fault.clone(),
@@ -3402,6 +3509,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::HealFault { tag, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     let control = ControlOperationKind::HealFault { tag: tag.clone() };
                     self.apply_control_operation_at_boundary(control.clone())?;
                     self.record_boundary_control(&command, Some(control));
@@ -3414,6 +3522,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::SetBreakpoint { spec, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
@@ -3425,6 +3534,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::RemoveBreakpoint { id, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
+                    self.reject_debug_forward_without_branch(&command)?;
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
@@ -3461,6 +3571,7 @@ impl<L: QuantumLoop> Engine<L> {
                     }
                     self.pending_control.clear();
                     self.active_step = None;
+                    self.debug_branch_required = false;
                     self.state = EngineState::Stopped {
                         outcome: Outcome::Stopped,
                     };
@@ -3503,6 +3614,12 @@ impl<L: QuantumLoop> Engine<L> {
                     )?;
                     let attach = self.graph.debug_attach(&request)?;
                     self.debug_attach = Some(attach.clone());
+                    if matches!(self.state, EngineState::Running) {
+                        self.active_step = None;
+                        self.state = EngineState::Paused {
+                            reason: PauseReason::UserRequested,
+                        };
+                    }
                     reply.complete(Ok(attach));
                     Ok(self.snapshot())
                 }
@@ -3540,6 +3657,11 @@ impl<L: QuantumLoop> Engine<L> {
                     let report = self.graph.debug_reverse_continue(&attach, request)?;
                     if let Some(matched) = report.matched.as_ref() {
                         let _refreshed = self.update_debug_position(&attach, &matched.goto)?;
+                    } else if matches!(self.state, EngineState::Running) {
+                        self.active_step = None;
+                        self.state = EngineState::Paused {
+                            reason: PauseReason::UserRequested,
+                        };
                     }
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
@@ -3550,11 +3672,25 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::DebugForkNonCanonical { request, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    self.validate_event_log_prefix(event_log)?;
                     let attach = self.current_debug_attach("debug-fork-non-canonical")?;
                     let report = self
                         .graph
-                        .debug_non_canonical_branch(&attach, request, &[])?;
+                        .debug_non_canonical_branch(&attach, request, event_log)?;
+                    let entries = report
+                        .event_log_with_fork_marker
+                        .iter()
+                        .skip(event_log.len())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    self.append_boundary_event_log_entries(entries)?;
                     self.debug_branch_required = false;
+                    if matches!(self.state, EngineState::Running) {
+                        self.active_step = None;
+                        self.state = EngineState::Paused {
+                            reason: PauseReason::UserRequested,
+                        };
+                    }
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -3960,8 +4096,19 @@ impl<L> SessionActor<L> {
     }
 
     fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
+        let base_len = self.engine.event_log_len().saturating_sub(entries.len());
+        self.event_log.truncate_to_len(base_len);
+        self.condition_event_log.truncate(base_len);
         self.event_log.append_entries(entries);
         self.condition_event_log.extend(entries.iter().cloned());
+    }
+
+    fn condition_event_log_prefix(&self) -> Vec<SchedulerEventLogEntry> {
+        self.condition_event_log
+            .iter()
+            .take(self.engine.event_log_len())
+            .cloned()
+            .collect()
     }
 }
 
@@ -4103,7 +4250,11 @@ where
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
-        if let Err(error) = self.engine.apply_command(command.clone()) {
+        let condition_event_log = self.condition_event_log_prefix();
+        if let Err(error) = self
+            .engine
+            .apply_command_with_event_log(command.clone(), &condition_event_log)
+        {
             command.complete_error(error.clone());
             return Err(error);
         }
@@ -4237,6 +4388,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use crucible::{
         Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind, ChoiceTag,
         DebugNonCanonicalBranchAction, DebugNonCanonicalBranchTrigger, DebugOperatorControlKind,
@@ -4833,6 +4986,67 @@ mod tests {
         let branch = receive_reply(branch_receiver).await;
         assert!(branch.proves_non_canonical_debug_branch());
         assert!(!engine.debug_branch_required());
+        let branch_entries = engine.drain_event_log_entries();
+        assert_eq!(branch_entries.len(), 1);
+        assert_eq!(branch_entries[0].sequence(), 0);
+        let branch_count = engine.graph.debug_non_canonical_branch_count();
+        let stale_prefix_error = engine
+            .apply_command(SessionCommand::DebugForkNonCanonical {
+                request: DebugNonCanonicalBranchRequest::new(
+                    first.clone(),
+                    engine.frontier(),
+                    DebugNonCanonicalBranchTrigger::OperatorContinue,
+                )
+                .with_action(DebugNonCanonicalBranchAction::operator_control(
+                    DebugOperatorControlKind::Continue,
+                )),
+                reply: CommandReply::discard(),
+            })
+            .expect_err("direct branch without a nonzero event-log prefix must fail first");
+        assert!(matches!(
+            stale_prefix_error,
+            SessionError::EventLogOffsetMismatch {
+                current: 1,
+                emitted: 0,
+                next: 0,
+            }
+        ));
+        assert_eq!(
+            engine.graph.debug_non_canonical_branch_count(),
+            branch_count,
+            "prefix mismatch must not mutate graph branch metadata"
+        );
+        let malformed_prefix_error = engine
+            .apply_command_with_event_log(
+                SessionCommand::DebugForkNonCanonical {
+                    request: DebugNonCanonicalBranchRequest::new(
+                        first.clone(),
+                        engine.frontier(),
+                        DebugNonCanonicalBranchTrigger::OperatorContinue,
+                    )
+                    .with_action(
+                        DebugNonCanonicalBranchAction::operator_control(
+                            DebugOperatorControlKind::Continue,
+                        ),
+                    ),
+                    reply: CommandReply::discard(),
+                },
+                &[test_event_log_entry(7)],
+            )
+            .expect_err("same-length malformed branch prefix must fail before graph mutation");
+        assert!(matches!(
+            malformed_prefix_error,
+            SessionError::EventLogOffsetMismatch {
+                current: 1,
+                emitted: 0,
+                next: 7,
+            }
+        ));
+        assert_eq!(
+            engine.graph.debug_non_canonical_branch_count(),
+            branch_count,
+            "malformed same-length prefix must not mutate graph branch metadata"
+        );
         if let Err(error) = engine.apply_command(SessionCommand::Continue) {
             panic!("continue after non-canonical branch marker should be accepted: {error}");
         }
@@ -4854,6 +5068,194 @@ mod tests {
         assert_eq!(engine.configuration().id(), root.id());
         assert!(engine.debug_branch_required());
         assert!(engine.boundary_control_log().is_empty());
+        if let Err(error) = engine.apply_command(SessionCommand::Stop) {
+            panic!("stop after debug reposition should be accepted: {error}");
+        }
+        let terminal_continue = engine
+            .apply_command(SessionCommand::Continue)
+            .expect_err("terminal continue should fail as invalid transition, not debug guard");
+        assert!(matches!(
+            terminal_continue,
+            SessionError::InvalidTransition { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
+        let (_root, first, second, graph) = debug_time_travel_fixture();
+        let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+        let (_sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::Start)
+            .await
+        {
+            panic!("debug actor fixture should instantiate: {error}");
+        }
+        let (attach_reply, attach_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::AttachGdb {
+                node: node_id("guest-a"),
+                listen: gdb_listen("127.0.0.1:9000"),
+                reply: attach_reply,
+            })
+            .await
+        {
+            panic!("debug actor should attach gdb: {error}");
+        }
+        let attach = receive_reply(attach_receiver).await;
+        assert_eq!(attach.configuration, second.id());
+
+        let mut unread_stream = actor.event_log_stream(EventLogCursor::new(0));
+        let mut past_stream = actor.event_log_stream(EventLogCursor::new(0));
+
+        actor.append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)]);
+        actor.engine.event_log_len = 2;
+        for expected in [test_event_log_entry(0), test_event_log_entry(1)] {
+            let frame = past_stream
+                .recv()
+                .await
+                .expect("past stream should not lag before rewind")
+                .expect("past stream should receive the stale prefix before rewind");
+            assert_eq!(frame.generation, 0);
+            assert_eq!(frame.entry, expected);
+        }
+        assert_eq!(past_stream.cursor(), EventLogCursor::new(2));
+
+        let (goto_reply, goto_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::DebugGoto {
+                request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
+                reply: goto_reply,
+            })
+            .await
+        {
+            panic!("debug goto should rewind actor to first prefix: {error}");
+        }
+        let goto = receive_reply(goto_receiver).await;
+        assert_eq!(goto.target_configuration, first.id());
+        assert_eq!(actor.engine.event_log_len(), 0);
+
+        let branch_request = DebugNonCanonicalBranchRequest::new(
+            first.clone(),
+            actor.engine.frontier(),
+            DebugNonCanonicalBranchTrigger::OperatorContinue,
+        )
+        .with_action(DebugNonCanonicalBranchAction::operator_control(
+            DebugOperatorControlKind::Continue,
+        ));
+        let (branch_reply, branch_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::DebugForkNonCanonical {
+                request: branch_request,
+                reply: branch_reply,
+            })
+            .await
+        {
+            panic!("debug branch should append through actor event log: {error}");
+        }
+        let branch = receive_reply(branch_receiver).await;
+        assert!(branch.proves_non_canonical_debug_branch());
+        let marker = branch.branch.fork_marker.entry.clone();
+        let mut replay = actor.event_log_stream(EventLogCursor::new(0));
+        let frame = replay
+            .recv()
+            .await
+            .expect("event-log stream should not lag")
+            .expect("debug branch marker should be visible after stale future truncation");
+        assert_eq!(frame.cursor, EventLogCursor::new(0));
+        assert!(frame.generation > 0);
+        assert_eq!(frame.entry, marker);
+        assert_ne!(frame.entry, test_event_log_entry(0));
+        assert_ne!(frame.entry, test_event_log_entry(1));
+
+        let unread_frame = tokio::time::timeout(Duration::from_millis(100), unread_stream.recv())
+            .await
+            .expect("unread active stream should yield the replacement marker")
+            .expect("unread active stream should not lag")
+            .expect("unread active stream should receive the replacement marker");
+        assert_eq!(unread_frame.cursor, EventLogCursor::new(0));
+        assert!(unread_frame.generation > 0);
+        assert_eq!(unread_frame.entry, marker);
+        assert_ne!(unread_frame.entry, test_event_log_entry(0));
+        assert_ne!(unread_frame.entry, test_event_log_entry(1));
+
+        let past_frame = tokio::time::timeout(Duration::from_millis(100), past_stream.recv())
+            .await
+            .expect("past active stream should rewind to the replacement marker")
+            .expect("past active stream should not lag")
+            .expect("past active stream should receive the replacement marker");
+        assert_eq!(past_frame.cursor, EventLogCursor::new(0));
+        assert!(past_frame.generation > 0);
+        assert_eq!(past_frame.entry, marker);
+        assert_ne!(past_frame.entry, test_event_log_entry(0));
+        assert_ne!(past_frame.entry, test_event_log_entry(1));
+
+        assert_eq!(actor.event_log.len(), 1);
+        assert_eq!(actor.condition_event_log.len(), 1);
+        assert_eq!(actor.condition_event_log[0], marker);
+    }
+
+    #[tokio::test]
+    async fn event_log_stream_does_not_duplicate_replayed_live_frame() {
+        let hub = SessionEventLog::new();
+        let mut stream = hub.subscribe(EventLogCursor::new(0));
+        let entry = test_event_log_entry(0);
+
+        hub.append_entries(std::slice::from_ref(&entry));
+        let frame = stream
+            .recv()
+            .await
+            .expect("event-log stream should not lag")
+            .expect("appended entry should be visible");
+
+        assert_eq!(frame.entry, entry);
+        assert_eq!(stream.cursor(), EventLogCursor::new(1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream() {
+        let hub = SessionEventLog::new();
+        let entries = (0..10).map(test_event_log_entry).collect::<Vec<_>>();
+        hub.append_entries(&entries);
+        let mut stream = hub.subscribe(EventLogCursor::new(0));
+
+        for expected in entries.iter().take(2) {
+            let frame = stream
+                .recv()
+                .await
+                .expect("event-log stream should not lag")
+                .expect("retained prefix entry should be visible before truncation");
+            assert_eq!(frame.generation, 0);
+            assert_eq!(&frame.entry, expected);
+        }
+        assert_eq!(stream.cursor(), EventLogCursor::new(2));
+
+        let replacement = test_event_log_entry(5);
+        hub.truncate_to_len(5);
+        hub.append_entries(std::slice::from_ref(&replacement));
+
+        for expected in entries[2..5].iter().chain(std::iter::once(&replacement)) {
+            let frame = tokio::time::timeout(Duration::from_millis(100), stream.recv())
+                .await
+                .expect("lagging stream should not skip retained prefix after truncation")
+                .expect("lagging stream should not lag")
+                .expect("lagging stream should receive retained prefix after truncation");
+            assert!(frame.generation > 0);
+            assert_eq!(&frame.entry, expected);
+        }
+        assert_eq!(stream.cursor(), EventLogCursor::new(6));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
