@@ -188,7 +188,7 @@
       }
       {
         label = "mock artifact carries resolved seed";
-        needle = "mock_failure_reproduction_artifact_bytes(cli, plan.seed.value)";
+        needle = "mock_failure_reproduction_artifact_bytes_for_backend";
       }
       {
         label = "backend outcome status";

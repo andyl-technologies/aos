@@ -27,6 +27,11 @@ const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
+const CRUCIBLE_QEMU_ENV: &str = "CRUCIBLE_QEMU";
+const CRUCIBLE_PLUGIN_ENV: &str = "CRUCIBLE_PLUGIN";
+const CRUCIBLE_AOS_QEMU_ENV: &str = "CRUCIBLE_AOS_QEMU";
+const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
+const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 
 #[derive(Parser, Debug, PartialEq, Eq)]
@@ -1432,7 +1437,7 @@ impl BackendSelectionPlan {
                         && match (self.requested_backend, &self.resolved_backend, self.reason) {
                             (
                                 Backend::Auto,
-                                Some(ResolvedLocalBackend::Qemu { qemu, plugin }),
+                                Some(ResolvedLocalBackend::Qemu { qemu, plugin, .. }),
                                 BackendSelectionReason::AutoQemuArtifactsSupplied,
                             ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
                             (
@@ -1447,13 +1452,46 @@ impl BackendSelectionPlan {
                             ) => true,
                             (
                                 Backend::Qemu,
-                                Some(ResolvedLocalBackend::Qemu { qemu, plugin }),
+                                Some(ResolvedLocalBackend::Qemu { qemu, plugin, .. }),
                                 BackendSelectionReason::ExplicitQemu,
                             ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
                             _ => false,
                         }
                 }
             }
+    }
+
+    fn proves_t_cli_5(&self) -> bool {
+        match (&self.target, &self.resolved_backend, self.requested_backend) {
+            (BackendExecutionTarget::RemoteDaemon, None, _) => true,
+            (BackendExecutionTarget::Local, Some(ResolvedLocalBackend::Double), Backend::Auto)
+            | (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Double),
+                Backend::Double,
+            ) => true,
+            (
+                BackendExecutionTarget::Local,
+                Some(ResolvedLocalBackend::Qemu {
+                    qemu,
+                    plugin,
+                    qemu_build_id,
+                    plugin_abi,
+                    qemu_source,
+                    plugin_source,
+                }),
+                Backend::Auto | Backend::Qemu,
+            ) => {
+                let required_plugin_abi = required_qemu_plugin_abi();
+                !qemu.as_os_str().is_empty()
+                    && !plugin.as_os_str().is_empty()
+                    && is_content_address(qemu_build_id)
+                    && plugin_abi == &required_plugin_abi
+                    && qemu_source.is_hermetic()
+                    && plugin_source.is_hermetic()
+            }
+            _ => false,
+        }
     }
 
     fn should_announce(&self, quiet: bool) -> bool {
@@ -1472,14 +1510,14 @@ impl BackendSelectionPlan {
                 Some(ResolvedLocalBackend::Qemu { .. }),
                 BackendSelectionReason::AutoQemuArtifactsSupplied,
             ) => String::from(
-                "crucible: backend = qemu (--backend auto; patched QEMU and plugin supplied)",
+                "crucible: backend = qemu (--backend auto; patched QEMU and plugin discovered)",
             ),
             (
                 BackendExecutionTarget::Local,
                 Some(ResolvedLocalBackend::Double),
                 BackendSelectionReason::AutoFallbackDouble,
             ) => String::from(
-                "crucible: backend = double (--backend auto; patched QEMU/plugin not both supplied and readable)",
+                "crucible: backend = double (--backend auto; patched QEMU/plugin not discoverable)",
             ),
             (
                 BackendExecutionTarget::Local,
@@ -1491,7 +1529,7 @@ impl BackendSelectionPlan {
                 Some(ResolvedLocalBackend::Qemu { .. }),
                 BackendSelectionReason::ExplicitQemu,
             ) => String::from(
-                "crucible: backend = qemu (explicit --backend qemu with --qemu and --plugin)",
+                "crucible: backend = qemu (explicit --backend qemu with hermetic QEMU/plugin discovery)",
             ),
             (BackendExecutionTarget::RemoteDaemon, None, BackendSelectionReason::RemoteDaemon) => {
                 format!(
@@ -1512,8 +1550,52 @@ enum BackendExecutionTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ResolvedLocalBackend {
-    Qemu { qemu: PathBuf, plugin: PathBuf },
+    Qemu {
+        qemu: PathBuf,
+        plugin: PathBuf,
+        qemu_build_id: String,
+        plugin_abi: String,
+        qemu_source: QemuDiscoverySource,
+        plugin_source: QemuDiscoverySource,
+    },
     Double,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum QemuDiscoverySource {
+    Flag,
+    Environment,
+    AosPackageSet,
+}
+
+impl QemuDiscoverySource {
+    const fn is_hermetic(self) -> bool {
+        matches!(self, Self::Flag | Self::Environment | Self::AosPackageSet)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QemuDiscoveryCandidate {
+    path: PathBuf,
+    source: QemuDiscoverySource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QemuArtifactIdentity {
+    qemu_build_id: String,
+    plugin_abi: String,
+}
+
+#[derive(Debug)]
+struct QemuBuildMarker {
+    raw_build_id: String,
+    artifact_build_id: String,
+}
+
+#[derive(Debug)]
+struct PluginBuildMarker {
+    plugin_abi: String,
+    qemu_build_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1544,7 +1626,29 @@ impl BackendRouteRecorder for NullBackendRouteRecorder {
     fn record_backend_announcement(&mut self, _message: &str) {}
 }
 
+#[cfg(not(test))]
 fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
+    plan_backend_selection_with_discovery(
+        cli,
+        &ProcessQemuDiscoveryEnvironment,
+        &CompileTimeAosQemuPackageSet,
+    )
+}
+
+#[cfg(test)]
+fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
+    plan_backend_selection_with_discovery(
+        cli,
+        &ProcessQemuDiscoveryEnvironment,
+        &NoAosQemuPackageSet,
+    )
+}
+
+fn plan_backend_selection_with_discovery(
+    cli: &Cli,
+    environment: &impl QemuDiscoveryEnvironment,
+    package_set: &impl AosQemuPackageSet,
+) -> Result<Option<BackendSelectionPlan>, CliError> {
     if !subcommand_uses_backend_selection(&cli.command) {
         return Ok(None);
     }
@@ -1577,42 +1681,13 @@ fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, Cli
             ResolvedLocalBackend::Double,
             BackendSelectionReason::ExplicitDouble,
         ),
-        Backend::Qemu => match (&cli.qemu, &cli.plugin) {
-            (Some(qemu), Some(plugin)) => {
-                validate_qemu_artifacts(qemu, plugin)?;
-                (
-                    ResolvedLocalBackend::Qemu {
-                        qemu: qemu.clone(),
-                        plugin: plugin.clone(),
-                    },
-                    BackendSelectionReason::ExplicitQemu,
-                )
-            }
-            (None, None) => {
-                return Err(qemu_backend_config_error(
-                    "--backend qemu requires --qemu <path> and --plugin <path>",
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(qemu_backend_config_error(
-                    "--backend qemu requires --qemu <path>",
-                ));
-            }
-            (Some(_), None) => {
-                return Err(qemu_backend_config_error(
-                    "--backend qemu requires --plugin <path>",
-                ));
-            }
-        },
-        Backend::Auto => match (&cli.qemu, &cli.plugin) {
-            (Some(qemu), Some(plugin)) if qemu_artifacts_are_readable(qemu, plugin) => (
-                ResolvedLocalBackend::Qemu {
-                    qemu: qemu.clone(),
-                    plugin: plugin.clone(),
-                },
-                BackendSelectionReason::AutoQemuArtifactsSupplied,
-            ),
-            _ => (
+        Backend::Qemu => (
+            require_qemu_artifacts(cli, environment, package_set)?,
+            BackendSelectionReason::ExplicitQemu,
+        ),
+        Backend::Auto => match discover_qemu_artifacts(cli, environment, package_set)? {
+            Some(artifacts) => (artifacts, BackendSelectionReason::AutoQemuArtifactsSupplied),
+            None => (
                 ResolvedLocalBackend::Double,
                 BackendSelectionReason::AutoFallbackDouble,
             ),
@@ -1632,37 +1707,338 @@ fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, Cli
     }))
 }
 
-fn qemu_artifacts_are_readable(qemu: &Path, plugin: &Path) -> bool {
-    validate_qemu_artifacts(qemu, plugin).is_ok()
+trait QemuDiscoveryEnvironment {
+    fn variable(&self, name: &'static str) -> Option<String>;
 }
 
-fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<(), CliError> {
+#[derive(Default)]
+struct ProcessQemuDiscoveryEnvironment;
+
+impl QemuDiscoveryEnvironment for ProcessQemuDiscoveryEnvironment {
+    fn variable(&self, name: &'static str) -> Option<String> {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    }
+}
+
+trait AosQemuPackageSet {
+    fn qemu_path(&self) -> Option<PathBuf>;
+
+    fn plugin_path(&self) -> Option<PathBuf>;
+}
+
+#[derive(Default)]
+struct CompileTimeAosQemuPackageSet;
+
+impl AosQemuPackageSet for CompileTimeAosQemuPackageSet {
+    fn qemu_path(&self) -> Option<PathBuf> {
+        option_env!("CRUCIBLE_AOS_QEMU").map(PathBuf::from)
+    }
+
+    fn plugin_path(&self) -> Option<PathBuf> {
+        option_env!("CRUCIBLE_AOS_PLUGIN").map(PathBuf::from)
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct NoAosQemuPackageSet;
+
+#[cfg(test)]
+impl AosQemuPackageSet for NoAosQemuPackageSet {
+    fn qemu_path(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn plugin_path(&self) -> Option<PathBuf> {
+        None
+    }
+}
+
+fn require_qemu_artifacts(
+    cli: &Cli,
+    environment: &impl QemuDiscoveryEnvironment,
+    package_set: &impl AosQemuPackageSet,
+) -> Result<ResolvedLocalBackend, CliError> {
+    discover_qemu_artifacts(cli, environment, package_set)?.ok_or_else(|| {
+        qemu_backend_config_error(format!(
+            "--backend qemu could not discover both patched QEMU and plugin; {}",
+            qemu_discovery_order_help()
+        ))
+    })
+}
+
+fn discover_qemu_artifacts(
+    cli: &Cli,
+    environment: &impl QemuDiscoveryEnvironment,
+    package_set: &impl AosQemuPackageSet,
+) -> Result<Option<ResolvedLocalBackend>, CliError> {
+    let qemu = select_qemu_candidate(
+        cli.qemu.as_ref(),
+        environment.variable(CRUCIBLE_QEMU_ENV),
+        package_set.qemu_path(),
+    );
+    let plugin = select_plugin_candidate(
+        cli.plugin.as_ref(),
+        environment.variable(CRUCIBLE_PLUGIN_ENV),
+        package_set.plugin_path(),
+    );
+    let (Some(qemu), Some(plugin)) = (qemu, plugin) else {
+        return Ok(None);
+    };
+    let identity = validate_qemu_artifacts(&qemu.path, &plugin.path)?;
+    Ok(Some(ResolvedLocalBackend::Qemu {
+        qemu: qemu.path,
+        plugin: plugin.path,
+        qemu_build_id: identity.qemu_build_id,
+        plugin_abi: identity.plugin_abi,
+        qemu_source: qemu.source,
+        plugin_source: plugin.source,
+    }))
+}
+
+fn select_qemu_candidate(
+    flag: Option<&PathBuf>,
+    environment: Option<String>,
+    package_set: Option<PathBuf>,
+) -> Option<QemuDiscoveryCandidate> {
+    select_qemu_discovery_candidate(flag, environment, package_set)
+}
+
+fn select_plugin_candidate(
+    flag: Option<&PathBuf>,
+    environment: Option<String>,
+    package_set: Option<PathBuf>,
+) -> Option<QemuDiscoveryCandidate> {
+    select_qemu_discovery_candidate(flag, environment, package_set)
+}
+
+fn select_qemu_discovery_candidate(
+    flag: Option<&PathBuf>,
+    environment: Option<String>,
+    package_set: Option<PathBuf>,
+) -> Option<QemuDiscoveryCandidate> {
+    if let Some(path) = flag {
+        return Some(QemuDiscoveryCandidate {
+            path: path.clone(),
+            source: QemuDiscoverySource::Flag,
+        });
+    }
+    if let Some(value) = environment.filter(|value| !value.trim().is_empty()) {
+        return Some(QemuDiscoveryCandidate {
+            path: PathBuf::from(value),
+            source: QemuDiscoverySource::Environment,
+        });
+    }
+    package_set.map(|path| QemuDiscoveryCandidate {
+        path,
+        source: QemuDiscoverySource::AosPackageSet,
+    })
+}
+
+fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<QemuArtifactIdentity, CliError> {
     validate_readable_file_artifact("patched QEMU", qemu)?;
     validate_readable_file_artifact("plugin", plugin)?;
-    Ok(())
+    let qemu_marker = read_qemu_build_marker(qemu)?;
+    let plugin_marker = read_plugin_build_marker(plugin)?;
+    let required_plugin_abi = required_qemu_plugin_abi();
+    if plugin_marker.plugin_abi != required_plugin_abi {
+        return Err(qemu_backend_config_error(format!(
+            "plugin `{}` advertises ABI `{}` but this CLI requires `{}`; {}",
+            plugin.display(),
+            plugin_marker.plugin_abi,
+            required_plugin_abi,
+            qemu_discovery_order_help()
+        )));
+    }
+    if plugin_marker.qemu_build_id != qemu_marker.raw_build_id {
+        return Err(qemu_backend_config_error(format!(
+            "plugin `{}` was built for QEMU identity `{}` but patched QEMU `{}` advertises `{}`; {}",
+            plugin.display(),
+            plugin_marker.qemu_build_id,
+            qemu.display(),
+            qemu_marker.raw_build_id,
+            qemu_discovery_order_help()
+        )));
+    }
+    Ok(QemuArtifactIdentity {
+        qemu_build_id: qemu_marker.artifact_build_id,
+        plugin_abi: plugin_marker.plugin_abi,
+    })
 }
 
 fn validate_readable_file_artifact(label: &'static str, path: &Path) -> Result<(), CliError> {
     if !path.is_file() {
         return Err(qemu_backend_config_error(format!(
-            "--backend qemu cannot read {label} artifact `{}`: not a regular file",
-            path.display()
+            "--backend qemu cannot read {label} artifact `{}`: not a regular file; {}",
+            path.display(),
+            qemu_discovery_order_help()
         )));
     }
     fs::File::open(path).map_err(|error| {
         qemu_backend_config_error(format!(
-            "--backend qemu cannot read {label} artifact `{}`: {error}",
-            path.display()
+            "--backend qemu cannot read {label} artifact `{}`: {error}; {}",
+            path.display(),
+            qemu_discovery_order_help()
         ))
     })?;
     Ok(())
 }
 
 fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
-    CliError::Backend(format!(
-        "{}; provide both artifacts explicitly for now, or use --backend double",
-        reason.into()
-    ))
+    CliError::Backend(reason.into())
+}
+
+fn required_qemu_plugin_abi() -> String {
+    format!(
+        "{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{}",
+        crucible_shmem::ABI_VERSION
+    )
+}
+
+fn qemu_discovery_order_help() -> String {
+    format!(
+        "discovery order is --qemu/--plugin, {CRUCIBLE_QEMU_ENV}/{CRUCIBLE_PLUGIN_ENV}, then AOS package-set hints {CRUCIBLE_AOS_QEMU_ENV}/{CRUCIBLE_AOS_PLUGIN_ENV}; host $PATH QEMU is never used; supply a matched qemu-crucible/crucible-qemu-plugin pair or use --backend double"
+    )
+}
+
+fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
+    let marker = existing_metadata_path(qemu_build_marker_paths(qemu)).ok_or_else(|| {
+        qemu_backend_config_error(format!(
+            "patched QEMU `{}` is missing its sim-capability marker `share/aos/crucible/qemu-build-identity.env`; {}",
+            qemu.display(),
+            qemu_discovery_order_help()
+        ))
+    })?;
+    let fields = read_key_value_metadata(&marker)?;
+    let patches_applied =
+        required_metadata_field(&fields, "qemu_crucible_patches_applied", &marker)?;
+    if patches_applied != "true" {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU `{}` is not the patched Crucible build (qemu_crucible_patches_applied={patches_applied}); {}",
+            qemu.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    let plugins_enabled = required_metadata_field(&fields, "qemu_plugins_enabled", &marker)?;
+    if plugins_enabled != "true" {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU `{}` was built without plugin support (qemu_plugins_enabled={plugins_enabled}); {}",
+            qemu.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    let raw_build_id = required_metadata_field(&fields, "qemu_build_id", &marker)?;
+    if raw_build_id.is_empty() {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU marker `{}` has an empty qemu_build_id; {}",
+            marker.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    let artifact_build_id = if is_content_address(&raw_build_id) {
+        raw_build_id.clone()
+    } else {
+        content_address_bytes(raw_build_id.as_bytes())
+    };
+    Ok(QemuBuildMarker {
+        raw_build_id,
+        artifact_build_id,
+    })
+}
+
+fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError> {
+    let marker = existing_metadata_path(plugin_build_marker_paths(plugin)).ok_or_else(|| {
+        qemu_backend_config_error(format!(
+            "plugin `{}` is missing `nix-support/crucible-qemu-plugin-build-info`; {}",
+            plugin.display(),
+            qemu_discovery_order_help()
+        ))
+    })?;
+    let fields = read_key_value_metadata(&marker)?;
+    let plugin_abi = required_metadata_field(&fields, "plugin_abi", &marker)?;
+    let qemu_build_id = required_metadata_field(&fields, "qemu_build_id", &marker)?;
+    if plugin_abi.is_empty() || qemu_build_id.is_empty() {
+        return Err(qemu_backend_config_error(format!(
+            "plugin marker `{}` must contain non-empty plugin_abi and qemu_build_id; {}",
+            marker.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    Ok(PluginBuildMarker {
+        plugin_abi,
+        qemu_build_id,
+    })
+}
+
+fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(parent) = qemu.parent() {
+        if parent.file_name().and_then(|name| name.to_str()) == Some("bin") {
+            if let Some(root) = parent.parent() {
+                paths.push(root.join("share/aos/crucible/qemu-build-identity.env"));
+            }
+        }
+        paths.push(parent.join("qemu-build-identity.env"));
+    }
+    paths
+}
+
+fn plugin_build_marker_paths(plugin: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(parent) = plugin.parent() {
+        if parent.file_name().and_then(|name| name.to_str()) == Some("lib") {
+            if let Some(root) = parent.parent() {
+                paths.push(root.join("nix-support/crucible-qemu-plugin-build-info"));
+            }
+        }
+        paths.push(parent.join("crucible-qemu-plugin-build-info"));
+    }
+    paths
+}
+
+fn existing_metadata_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
+    paths.into_iter().find(|path| path.is_file())
+}
+
+fn read_key_value_metadata(path: &Path) -> Result<BTreeMap<String, String>, CliError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        qemu_backend_config_error(format!(
+            "cannot read metadata marker `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let mut fields = BTreeMap::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            return Err(qemu_backend_config_error(format!(
+                "metadata marker `{}` line {} is not key=value",
+                path.display(),
+                line_index + 1
+            )));
+        };
+        fields.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    Ok(fields)
+}
+
+fn required_metadata_field(
+    fields: &BTreeMap<String, String>,
+    key: &'static str,
+    marker: &Path,
+) -> Result<String, CliError> {
+    fields.get(key).cloned().ok_or_else(|| {
+        qemu_backend_config_error(format!(
+            "metadata marker `{}` is missing `{key}`; {}",
+            marker.display(),
+            qemu_discovery_order_help()
+        ))
+    })
 }
 
 fn subcommand_uses_backend_selection(command: &Commands) -> bool {
@@ -1688,6 +2064,11 @@ fn execute_backend_selection_plan(
     if !plan.proves_t_cli_3() {
         return Err(CliError::Backend(
             "CLI backend selection violates the RFC-0010 local/remote split".to_string(),
+        ));
+    }
+    if !plan.proves_t_cli_5() {
+        return Err(CliError::Backend(
+            "CLI QEMU discovery violates the RFC-0010 hermetic discovery contract".to_string(),
         ));
     }
 
@@ -2001,7 +2382,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 emit_mock_failure_artifact: true
             })
         ) {
-            mark_mock_failure_outcome(cli, &mut outcome, ergonomics_plan.as_ref())?;
+            mark_mock_failure_outcome(cli, &backend_plan, &mut outcome, ergonomics_plan.as_ref())?;
         }
         if backend_plan.should_announce(cli.quiet) {
             println!("{}", backend_plan.announcement());
@@ -2105,7 +2486,8 @@ fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
 }
 
 fn mark_mock_failure_outcome(
-    cli: &Cli,
+    _cli: &Cli,
+    backend_plan: &BackendSelectionPlan,
     outcome: &mut BackendCommandOutcome,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
 ) -> Result<(), CliError> {
@@ -2114,7 +2496,10 @@ fn mark_mock_failure_outcome(
             "run requires a resolved seed before emitting a reproduction artifact".to_string(),
         ));
     };
-    let artifact = mock_failure_reproduction_artifact_bytes(cli, plan.seed.value)?;
+    let artifact = mock_failure_reproduction_artifact_bytes_for_backend(
+        plan.seed.value,
+        backend_plan.resolved_backend.as_ref(),
+    )?;
     outcome.status = BackendCommandStatus::Failed;
     outcome.exit_code = 1;
     outcome.stderr.push(String::from(
@@ -2820,21 +3205,32 @@ fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Resul
 }
 
 fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
-    let qemu_build_id = match &cli.qemu {
-        Some(path) => content_address_file(path)?,
-        None => content_address_bytes(b"mock-backend-source-v1"),
+    let backend_plan = plan_backend_selection(cli)?;
+    let resolved_backend = backend_plan
+        .as_ref()
+        .and_then(|plan| plan.resolved_backend.as_ref());
+    Ok(expected_replay_identity_for_backend(resolved_backend))
+}
+
+fn expected_replay_identity_for_backend(backend: Option<&ResolvedLocalBackend>) -> CliIdentity {
+    let (qemu_build_id, plugin_abi) = match backend {
+        Some(ResolvedLocalBackend::Qemu {
+            qemu_build_id,
+            plugin_abi,
+            ..
+        }) => (qemu_build_id.clone(), plugin_abi.clone()),
+        Some(ResolvedLocalBackend::Double) | None => (
+            content_address_bytes(b"mock-backend-source-v1"),
+            String::from("simdouble-mock-plugin-abi"),
+        ),
     };
-    let plugin_abi = match &cli.plugin {
-        Some(path) => format!("content-addressed-plugin:{}", content_address_file(path)?),
-        None => String::from("simdouble-mock-plugin-abi"),
-    };
-    Ok(CliIdentity {
+    CliIdentity {
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
         engine_abi: String::from("crucible-harness-e2e-v1"),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id,
         plugin_abi,
-    })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3230,10 +3626,22 @@ fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponen
     );
 }
 
+#[cfg(test)]
 fn mock_failure_reproduction_artifact_bytes(cli: &Cli, seed: u64) -> Result<Vec<u8>, CliError> {
+    let backend_plan = plan_backend_selection(cli)?;
+    let resolved_backend = backend_plan
+        .as_ref()
+        .and_then(|plan| plan.resolved_backend.as_ref());
+    mock_failure_reproduction_artifact_bytes_for_backend(seed, resolved_backend)
+}
+
+fn mock_failure_reproduction_artifact_bytes_for_backend(
+    seed: u64,
+    backend: Option<&ResolvedLocalBackend>,
+) -> Result<Vec<u8>, CliError> {
     let scenario_material = b"scenario\tmock-failure\nnode\tnode-a\tserver\n";
     let scenario_digest = content_address_bytes(scenario_material);
-    let identity = expected_replay_identity(cli)?;
+    let identity = expected_replay_identity_for_backend(backend);
     let payload_digest = content_address_bytes(b"mock-failure-decision");
     let fingerprint_digest = content_address_bytes(b"mock-failure-fingerprint");
     let decisions = vec![CliDecision {
@@ -3318,7 +3726,8 @@ fn mock_failure_reproduction_artifact_bytes(cli: &Cli, seed: u64) -> Result<Vec<
     );
 
     let bytes = text.into_bytes();
-    validate_replayable_reproduction_artifact(cli, &bytes)?;
+    let artifact = decode_reproduction_artifact(&bytes)?;
+    verify_replay_identity(&artifact.identity, &identity)?;
     Ok(bytes)
 }
 
@@ -3348,8 +3757,10 @@ fn content_address_bytes(bytes: &[u8]) -> String {
     )
 }
 
-fn content_address_file(path: &Path) -> Result<String, CliError> {
-    Ok(content_address_bytes(&fs::read(path)?))
+fn is_content_address(digest: &str) -> bool {
+    digest
+        .strip_prefix(CONTENT_ADDRESS_PREFIX)
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 fn stable_digest(material: &[u8]) -> [u8; 32] {
@@ -3523,12 +3934,7 @@ fn validate_required_field(field: &'static str, value: &str) -> Result<(), CliEr
 }
 
 fn validate_digest(field: &'static str, digest: &str) -> Result<(), CliError> {
-    let Some(hex) = digest.strip_prefix(CONTENT_ADDRESS_PREFIX) else {
-        return Err(artifact_error(format!(
-            "field `{field}` is not a content address: `{digest}`"
-        )));
-    };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_content_address(digest) {
         return Err(artifact_error(format!(
             "field `{field}` is not a content address: `{digest}`"
         )));
@@ -4247,6 +4653,38 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeQemuDiscoveryEnvironment {
+        qemu: Option<String>,
+        plugin: Option<String>,
+    }
+
+    impl QemuDiscoveryEnvironment for FakeQemuDiscoveryEnvironment {
+        fn variable(&self, name: &'static str) -> Option<String> {
+            match name {
+                CRUCIBLE_QEMU_ENV => self.qemu.clone(),
+                CRUCIBLE_PLUGIN_ENV => self.plugin.clone(),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeAosQemuPackageSet {
+        qemu: Option<PathBuf>,
+        plugin: Option<PathBuf>,
+    }
+
+    impl AosQemuPackageSet for FakeAosQemuPackageSet {
+        fn qemu_path(&self) -> Option<PathBuf> {
+            self.qemu.clone()
+        }
+
+        fn plugin_path(&self) -> Option<PathBuf> {
+            self.plugin.clone()
+        }
+    }
+
     fn canonical_trace_entries() -> Vec<CanonicalLogEntry> {
         vec![
             CanonicalLogEntry {
@@ -4267,14 +4705,48 @@ mod tests {
     }
 
     fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
-        let qemu = temp.path().join("qemu-system-x86_64");
-        let plugin = temp.path().join("crucible-qemu-plugin.so");
+        qemu_artifacts_in_dir(
+            temp.path(),
+            "test-qemu-build-v1",
+            &required_qemu_plugin_abi(),
+        )
+    }
+
+    fn qemu_artifacts_in_dir(
+        dir: &Path,
+        qemu_build_id: &str,
+        plugin_abi: &str,
+    ) -> Result<(String, String), Box<dyn Error>> {
+        fs::create_dir_all(dir)?;
+        let qemu = dir.join("qemu-system-x86_64");
+        let plugin = dir.join("crucible-qemu-plugin.so");
         fs::write(&qemu, b"patched-qemu")?;
         fs::write(&plugin, b"plugin")?;
+        write_qemu_artifact_markers(dir, qemu_build_id, plugin_abi)?;
         Ok((
             qemu.to_string_lossy().into_owned(),
             plugin.to_string_lossy().into_owned(),
         ))
+    }
+
+    fn write_qemu_artifact_markers(
+        dir: &Path,
+        qemu_build_id: &str,
+        plugin_abi: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        fs::write(
+            dir.join("qemu-build-identity.env"),
+            format!(
+                "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_build_id={qemu_build_id}\n"
+            ),
+        )?;
+        fs::write(
+            dir.join("crucible-qemu-plugin-build-info"),
+            format!(
+                "package=crucible-qemu-plugin\nqemu_package=qemu-crucible\nqemu_build_id={qemu_build_id}\nplugin_abi={plugin_abi}\n"
+            ),
+        )?;
+        Ok(())
     }
 
     fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
@@ -4662,13 +5134,13 @@ mod tests {
             &plugin,
             "run",
         ]);
-        let auto_plan = plan_backend_selection(&auto_with_unusable_artifact)?
-            .expect("run should require backend selection");
-        assert_eq!(
-            auto_plan.resolved_backend,
-            Some(ResolvedLocalBackend::Double)
-        );
-        assert_eq!(auto_plan.reason, BackendSelectionReason::AutoFallbackDouble);
+        let error = match plan_backend_selection(&auto_with_unusable_artifact) {
+            Ok(_) => panic!("auto with a complete but invalid QEMU candidate pair must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("not a regular file"));
 
         let qemu_cli = Cli::parse_from([
             "crucible",
@@ -4688,6 +5160,231 @@ mod tests {
             Some(ResolvedLocalBackend::Qemu { .. })
         ));
         assert!(qemu_plan.proves_t_cli_3());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let plugin_abi = required_qemu_plugin_abi();
+        let (flag_qemu, flag_plugin) =
+            qemu_artifacts_in_dir(&temp.path().join("flag"), "flag-qemu-build", &plugin_abi)?;
+        let (env_qemu, env_plugin) =
+            qemu_artifacts_in_dir(&temp.path().join("env"), "env-qemu-build", &plugin_abi)?;
+        let (aos_qemu, aos_plugin) =
+            qemu_artifacts_in_dir(&temp.path().join("aos"), "aos-qemu-build", &plugin_abi)?;
+        let env = FakeQemuDiscoveryEnvironment {
+            qemu: Some(env_qemu.clone()),
+            plugin: Some(env_plugin.clone()),
+        };
+        let package_set = FakeAosQemuPackageSet {
+            qemu: Some(PathBuf::from(&aos_qemu)),
+            plugin: Some(PathBuf::from(&aos_plugin)),
+        };
+
+        let flag_cli = Cli::parse_from([
+            "crucible",
+            "--qemu",
+            &flag_qemu,
+            "--plugin",
+            &flag_plugin,
+            "run",
+        ]);
+        let flag_plan = plan_backend_selection_with_discovery(&flag_cli, &env, &package_set)?
+            .expect("run should require backend selection");
+        let Some(ResolvedLocalBackend::Qemu {
+            qemu,
+            plugin,
+            qemu_source,
+            plugin_source,
+            ..
+        }) = &flag_plan.resolved_backend
+        else {
+            panic!("flags should resolve QEMU");
+        };
+        assert_eq!(qemu, &PathBuf::from(&flag_qemu));
+        assert_eq!(plugin, &PathBuf::from(&flag_plugin));
+        assert_eq!(*qemu_source, QemuDiscoverySource::Flag);
+        assert_eq!(*plugin_source, QemuDiscoverySource::Flag);
+        assert!(flag_plan.proves_t_cli_5());
+
+        let env_cli = Cli::parse_from(["crucible", "--backend", "qemu", "run"]);
+        let env_plan = plan_backend_selection_with_discovery(&env_cli, &env, &package_set)?
+            .expect("run should require backend selection");
+        let Some(ResolvedLocalBackend::Qemu {
+            qemu,
+            plugin,
+            qemu_source,
+            plugin_source,
+            ..
+        }) = &env_plan.resolved_backend
+        else {
+            panic!("environment should resolve QEMU");
+        };
+        assert_eq!(qemu, &PathBuf::from(&env_qemu));
+        assert_eq!(plugin, &PathBuf::from(&env_plugin));
+        assert_eq!(*qemu_source, QemuDiscoverySource::Environment);
+        assert_eq!(*plugin_source, QemuDiscoverySource::Environment);
+        assert!(env_plan.proves_t_cli_5());
+
+        let empty_env = FakeQemuDiscoveryEnvironment::default();
+        let aos_cli = Cli::parse_from(["crucible", "run"]);
+        let aos_plan = plan_backend_selection_with_discovery(&aos_cli, &empty_env, &package_set)?
+            .expect("run should require backend selection");
+        let Some(ResolvedLocalBackend::Qemu {
+            qemu,
+            plugin,
+            qemu_source,
+            plugin_source,
+            ..
+        }) = &aos_plan.resolved_backend
+        else {
+            panic!("AOS package set should resolve QEMU");
+        };
+        assert_eq!(qemu, &PathBuf::from(&aos_qemu));
+        assert_eq!(plugin, &PathBuf::from(&aos_plugin));
+        assert_eq!(*qemu_source, QemuDiscoverySource::AosPackageSet);
+        assert_eq!(*plugin_source, QemuDiscoverySource::AosPackageSet);
+        assert_eq!(
+            aos_plan.reason,
+            BackendSelectionReason::AutoQemuArtifactsSupplied
+        );
+        assert!(aos_plan.proves_t_cli_5());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints()
+    -> Result<(), Box<dyn Error>> {
+        let (Some(qemu_hint), Some(plugin_hint)) = (
+            option_env!("CRUCIBLE_AOS_QEMU"),
+            option_env!("CRUCIBLE_AOS_PLUGIN"),
+        ) else {
+            return Ok(());
+        };
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let plan = plan_backend_selection_with_discovery(
+            &cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &CompileTimeAosQemuPackageSet,
+        )?
+        .expect("run should require backend selection");
+        let Some(ResolvedLocalBackend::Qemu {
+            qemu,
+            plugin,
+            qemu_source,
+            plugin_source,
+            ..
+        }) = &plan.resolved_backend
+        else {
+            panic!("compile-time AOS hints should resolve QEMU");
+        };
+
+        assert_eq!(qemu, &PathBuf::from(qemu_hint));
+        assert_eq!(plugin, &PathBuf::from(plugin_hint));
+        assert_eq!(*qemu_source, QemuDiscoverySource::AosPackageSet);
+        assert_eq!(*plugin_source, QemuDiscoverySource::AosPackageSet);
+        assert_eq!(
+            plan.reason,
+            BackendSelectionReason::AutoQemuArtifactsSupplied
+        );
+        assert!(plan.proves_t_cli_5());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4()
+    -> Result<(), Box<dyn Error>> {
+        let missing_cli = Cli::parse_from(["crucible", "--backend", "qemu", "run"]);
+        let error = match plan_backend_selection_with_discovery(
+            &missing_cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        ) {
+            Ok(_) => panic!("explicit qemu without hermetic sources must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains(CRUCIBLE_QEMU_ENV));
+        assert!(error.to_string().contains("host $PATH QEMU is never used"));
+
+        let temp = TempDir::new()?;
+        let plugin_abi = required_qemu_plugin_abi();
+        let (qemu, plugin) =
+            qemu_artifacts_in_dir(&temp.path().join("mismatch"), "qemu-build-a", &plugin_abi)?;
+        fs::write(
+            temp.path()
+                .join("mismatch")
+                .join("crucible-qemu-plugin-build-info"),
+            format!(
+                "package=crucible-qemu-plugin\nqemu_build_id=qemu-build-b\nplugin_abi={plugin_abi}\n"
+            ),
+        )?;
+        let mismatch_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection_with_discovery(
+            &mismatch_cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        ) {
+            Ok(_) => panic!("mismatched plugin must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("built for QEMU identity"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let plugin_abi = required_qemu_plugin_abi();
+        let (qemu, plugin) =
+            qemu_artifacts_in_dir(temp.path(), "artifact-qemu-build", &plugin_abi)?;
+        let cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let backend_plan = plan_backend_selection_with_discovery(
+            &cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        )?
+        .expect("run should require backend selection");
+        let bytes = mock_failure_reproduction_artifact_bytes_for_backend(
+            0x0010_0005,
+            backend_plan.resolved_backend.as_ref(),
+        )?;
+        let artifact = decode_reproduction_artifact(&bytes)?;
+
+        assert_eq!(
+            artifact.identity.qemu_build_id,
+            content_address_bytes(b"artifact-qemu-build")
+        );
+        assert_eq!(artifact.identity.plugin_abi, plugin_abi);
+        assert!(backend_plan.proves_t_cli_5());
 
         Ok(())
     }
@@ -5212,7 +5909,7 @@ mod tests {
         let mut runner = RecordingBackendCommandRunner::default();
         let mut outcome =
             execute_backend_routed_command(&thin, &backend, Some(&plan), &mut runner)?;
-        mark_mock_failure_outcome(&cli, &mut outcome, Some(&plan))?;
+        mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan))?;
 
         emit_backend_command_output(&cli, &outcome)?;
 
@@ -5531,14 +6228,19 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let artifact_path = temp.path().join("case.crucible");
-        let qemu_path = temp.path().join("qemu-system-x86_64");
-        fs::write(&qemu_path, b"different-local-qemu-binary")?;
+        let plugin_abi = required_qemu_plugin_abi();
+        let (qemu, plugin) =
+            qemu_artifacts_in_dir(temp.path(), "different-local-qemu-build", &plugin_abi)?;
         let artifact = mock_e2e_reproduction_artifact()?;
         fs::write(&artifact_path, artifact.encode()?)?;
         let cli = Cli::parse_from([
             "crucible",
+            "--backend",
+            "qemu",
             "--qemu",
-            qemu_path.to_str().unwrap_or("."),
+            &qemu,
+            "--plugin",
+            &plugin,
             "run",
         ]);
 
