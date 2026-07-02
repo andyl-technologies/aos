@@ -9,7 +9,7 @@
 
 use std::num::NonZeroUsize;
 
-use ratchet_core::{IrArena, IrId, RuntimeSymbolKind, RuntimeSymbolNameError};
+use ratchet_core::{IrArena, IrId, RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError};
 use ratchet_jit::{
     JitCompiledCodePointer, JitCraneliftRegisteredTier1PromotionPreflight,
     JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftTier1PromotionError,
@@ -184,6 +184,15 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
     /// Returns JIT address candidates in runtime symbol-manifest order.
     pub fn address_candidates(&self) -> &[JitRuntimeSymbolAddressCandidate] {
         &self.address_candidates
+    }
+
+    /// Returns allocation-helper address candidates in runtime symbol-manifest order.
+    pub fn allocation_address_candidates(
+        &self,
+    ) -> impl Iterator<Item = &JitRuntimeSymbolAddressCandidate> {
+        self.address_candidates.iter().filter(|candidate| {
+            candidate.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
+        })
     }
 
     /// Returns runtime symbols that still lack Rust-callable address metadata.

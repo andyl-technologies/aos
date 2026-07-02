@@ -1330,11 +1330,13 @@ harness, never cut for scope.
       helper addresses for the currently covered allocation, environment-access,
       and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
       while preserving oracle missing bindings for unbound helpers and builtins.
-      Tests feed those candidates through the JIT registration preflight and the
-      registered env-slot promotion path for `aos_env_get`. This is integration
-      preflight plumbing only: the addresses are not exported C ABI wrappers, not
-      serialized or relinkable native targets, and no finalized code pointer or
-      registered helper address is cast, dereferenced, or called.
+      It also exposes the allocation-helper candidate subset in manifest order.
+      Tests feed only that allocation-filtered subset through the JIT
+      registration preflight, and still cover the registered env-slot promotion
+      path for `aos_env_get`. This is integration preflight plumbing only: the
+      addresses are not exported C ABI wrappers, not serialized or relinkable
+      native targets, and no finalized code pointer or registered helper address
+      is cast, dereferenced, or called.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and delegates to the

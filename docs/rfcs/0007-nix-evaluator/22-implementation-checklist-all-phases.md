@@ -5295,13 +5295,14 @@ and helps the oracle directly.
       runtime-symbol address candidates. It projects process-local callable
       helper addresses for currently covered allocation, environment-access, and
       write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
-      carrying oracle missing bindings for unbound helpers and builtins. Tests
-      feed those candidates through JIT registration and registered env-slot
-      tier-1 promotion for `aos_env_get`. This is safe integration preflight
-      plumbing only: it does not export C ABI wrappers, make addresses
-      serializable or relinkable, cast finalized code pointers, dereference
-      registered addresses, call native code, or complete runtime-symbol
-      registration.
+      carrying oracle missing bindings for unbound helpers and builtins. The
+      bridge now exposes allocation-helper candidates as an allocation-filtered
+      manifest-order subset. Tests feed only those seven allocation candidates
+      through JIT registration and still cover registered env-slot tier-1
+      promotion for `aos_env_get`. This is safe integration preflight plumbing
+      only: it does not export C ABI wrappers, make addresses serializable or
+      relinkable, cast finalized code pointers, dereference registered
+      addresses, call native code, or complete runtime-symbol registration.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
       derives oracle helper address candidates and drives the registered-symbol
