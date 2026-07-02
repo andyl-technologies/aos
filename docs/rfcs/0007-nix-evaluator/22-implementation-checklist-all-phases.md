@@ -5145,6 +5145,23 @@ and helps the oracle directly.
       rebuilds, retained-edge filtering, and overflow rejection. This still does
       not mutate the source snapshot, own card-table construction, rescan old
       fields, or invoke the collector.
+- [x] Current dirty old-field rescan precursor:
+      `ratchet-value::heap::gc::MinorGcOldObjectFields` and
+      `MinorGcOldFieldRescanPlan::from_dirty_cards` rescan caller-supplied
+      precise old/permanent object fields whose source card is dirty, filter
+      non-young field values and clean/young source objects, classify copied
+      young targets as retained remembered edges at their relocated nursery
+      destination, and drop promoted or dead young targets. The rescan plan
+      preserves object/field order and exposes retained edges for remembered-set
+      rebuilds. `MinorGcRememberedSetRefreshPlan::rebuild_remembered_set_with_old_field_rescan`
+      merges retained snapshot edges with dirty-card rescan edges through the
+      same deduplicating remembered-set insertion path while advancing the epoch
+      once. Unit tests cover copied, promoted, dead, clean-card,
+      permanent-source, and young-source cases plus deduplication between refresh
+      and rescan edges. This remains caller-owned metadata; discovering old
+      objects from card pages, owning dirty-card scanning state, mutating old
+      fields, publishing the remembered set into evaluator state, and collector
+      dispatch remain open.
 - [x] Current minor-GC commit-plan precursor:
       `ratchet-value::heap::gc::MinorGcCommitPlan::from_parts` composes the
       validated object-copy schedule, forwarding-pointer plan, reference-rewrite

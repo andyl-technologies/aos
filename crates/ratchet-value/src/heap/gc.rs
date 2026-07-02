@@ -11,8 +11,12 @@
 
 use crate::value::tag::POINTER_TAG_MASK;
 
+mod old_field_rescan;
 mod owned_destination;
 
+pub use old_field_rescan::{
+    MinorGcOldFieldRescan, MinorGcOldFieldRescanPlan, MinorGcOldObjectFields,
+};
 pub use owned_destination::{
     MinorGcOwnedDestinationStorage, MinorGcOwnedDestinationStorageCopyReport,
     MinorGcSourceObjectBytes,
@@ -1905,6 +1909,32 @@ impl MinorGcRememberedSetRefreshPlan {
         Ok(set)
     }
 
+    /// Rebuilds the remembered set after also rescanning dirty old fields.
+    ///
+    /// Retained copied-young edges from this refresh plan are inserted first.
+    /// Edges discovered by the dirty-card rescan are inserted second through the
+    /// same deduplicating remembered-set path, so rescanned duplicates do not
+    /// perturb the retained snapshot order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::RememberedSetEpochOverflow`] if the source
+    /// epoch cannot advance. Returns [`GenerationalGcError`] if the rebuilt set
+    /// cannot reserve storage for retained or rescanned edges.
+    pub fn rebuild_remembered_set_with_old_field_rescan(
+        &self,
+        old_field_rescan: &MinorGcOldFieldRescanPlan,
+    ) -> Result<RememberedSet, GenerationalGcError> {
+        let mut set = RememberedSet::with_epoch(self.source_epoch.checked_next()?);
+        for edge in self
+            .retained_edges()
+            .chain(old_field_rescan.retained_edges())
+        {
+            set.record(edge)?;
+        }
+        Ok(set)
+    }
+
     /// Returns the number of remembered edges examined.
     pub fn len(&self) -> usize {
         self.refreshes.len()
@@ -3786,6 +3816,15 @@ pub enum GenerationalGcError {
     MinorGcRememberedSetRefreshAllocationFailed {
         /// The requested remembered-set refresh capacity.
         refreshes: usize,
+    },
+    /// The dirty old-field rescan plan length overflowed.
+    #[error("minor-GC old-field rescan length overflow")]
+    MinorGcOldFieldRescanLengthOverflow,
+    /// The dirty old-field rescan plan could not reserve storage.
+    #[error("failed to reserve {rescans} minor-GC old-field rescans")]
+    MinorGcOldFieldRescanAllocationFailed {
+        /// The requested old-field rescan capacity.
+        rescans: usize,
     },
     /// A young frontier object had no age metadata.
     #[error("missing nursery age metadata for 0x{address:x}", address = address.address_bits())]
