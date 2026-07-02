@@ -60,8 +60,8 @@
         needle = "Completed by `checks.crucible.phase5.apiLifecycleUnary`";
       }
       {
-        label = "T-API-5 remains next";
-        needle = "- [ ] **T-API-5**";
+        label = "T-API-5 completion note";
+        needle = "Completed by `checks.crucible.phase5.apiOpenSetPayload`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [

@@ -16,6 +16,8 @@
 
 use thiserror::Error;
 
+use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
+
 /// RPC protocol major version for wire-incompatible changes.
 pub const RPC_PROTOCOL_MAJOR: u16 = 1;
 /// RPC protocol minor version for backward-compatible additions.
@@ -45,13 +47,8 @@ pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion 
 pub const GOLDEN_VECTOR_RPC_REGENERATION_RULE: &str =
     "Regenerate every RPC golden vector whenever RPC_PROTOCOL_VERSION changes.";
 
-/// Open-set payload kinds advertised through `Hello`.
-pub const RPC_OPEN_SET_PAYLOAD_KINDS: &[&str] = &[
-    "command.continue",
-    "event.fault-injected",
-    "state.update",
-    "session.closed",
-];
+/// Open-set payload categories advertised through `Hello`.
+pub const RPC_OPEN_SET_PAYLOAD_KINDS: &[&str] = OPEN_SET_CAPABILITY_CATEGORIES;
 
 /// Semantic control-plane RPC protocol version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,7 +202,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=1.0.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=command.continue,event.fault-injected,state.update,session.closed\n",
+        bytes: b"crucible.rpc/hello-response\nversion=1.0.0+crucible-rpc-abi-v1\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -224,9 +221,9 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
         message: RpcGoldenVectorMessage::CommandRequest {
             request_id: 9001,
             session_epoch: 7,
-            command_kind: "command.continue",
+            command_kind: "crucible.cmd.continue",
         },
-        bytes: b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=command.continue\n",
+        bytes: b"crucible.rpc/send-command-request\nrequest-id=9001\nsession-epoch=7\ncommand-kind=crucible.cmd.continue\n",
     },
     RpcGoldenVector {
         name: "send-command-response",
@@ -238,14 +235,14 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 6] = [
         bytes: b"crucible.rpc/send-command-response\nrequest-id=9001\nstatus=ok\n",
     },
     RpcGoldenVector {
-        name: "event-fault-injected",
+        name: "event-fault-activated",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         message: RpcGoldenVectorMessage::Event {
             seq: 1234,
             class: RpcEventClass::Fault,
-            payload_kind: "event.fault-injected",
+            payload_kind: "crucible.event.fault_activated",
         },
-        bytes: b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=event.fault-injected\n",
+        bytes: b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.fault_activated\n",
     },
 ];
 
