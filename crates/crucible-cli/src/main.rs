@@ -813,7 +813,7 @@ fn plan_debug_invocation(cli: &Cli, args: &DebugArgs) -> Result<DebugInvocationP
 
     let verb = debug_verb(args)?;
     let read_only = args.read_only || !args.allow_mutate;
-    let mut session_commands = vec![SessionCommand::Query, SessionCommand::Snapshot];
+    let mut session_commands = vec![SessionCommand::query_snapshot(), SessionCommand::Snapshot];
     let mut engine_operations = vec![
         DebugEngineOperation::ResolveTarget,
         DebugEngineOperation::Instantiate,
@@ -835,18 +835,18 @@ fn plan_debug_invocation(cli: &Cli, args: &DebugArgs) -> Result<DebugInvocationP
             engine_operations.push(DebugEngineOperation::Goto);
         }
         DebugInteractiveVerbPlan::ReverseStep { .. } => {
-            session_commands.push(SessionCommand::Query);
+            session_commands.push(SessionCommand::query_snapshot());
             engine_operations.push(DebugEngineOperation::ReverseStep);
             engine_operations.push(DebugEngineOperation::RestoreNearestCheckpointReplay);
         }
         DebugInteractiveVerbPlan::ReverseContinue { .. } => {
-            session_commands.push(SessionCommand::Query);
+            session_commands.push(SessionCommand::query_snapshot());
             engine_operations.push(DebugEngineOperation::ReverseContinue);
         }
     }
 
     if args.allow_mutate {
-        session_commands.push(SessionCommand::Fork);
+        session_commands.push(SessionCommand::fork_current());
         engine_operations.push(DebugEngineOperation::NonCanonicalBranchFork);
     }
     if checkpoint_stride.is_some() {
@@ -2171,7 +2171,9 @@ impl DebugInvocationPlan {
             && self.session_commands.iter().all(|command| {
                 matches!(
                     command,
-                    SessionCommand::Query | SessionCommand::Snapshot | SessionCommand::Fork
+                    SessionCommand::Query { .. }
+                        | SessionCommand::Snapshot
+                        | SessionCommand::Fork { .. }
                 )
             })
     }
@@ -2180,7 +2182,9 @@ impl DebugInvocationPlan {
         if self.allow_mutate {
             !self.read_only
                 && self.non_canonical_branch_label.as_deref() == Some("NON-CANONICAL debug branch")
-                && self.session_commands.contains(&SessionCommand::Fork)
+                && self
+                    .session_commands
+                    .contains(&SessionCommand::fork_current())
                 && self
                     .engine_operations
                     .contains(&DebugEngineOperation::NonCanonicalBranchFork)
@@ -2903,7 +2907,10 @@ mod tests {
             plan.non_canonical_branch_label.as_deref(),
             Some("NON-CANONICAL debug branch")
         );
-        assert!(plan.session_commands.contains(&SessionCommand::Fork));
+        assert!(
+            plan.session_commands
+                .contains(&SessionCommand::fork_current())
+        );
         assert!(
             plan.engine_operations
                 .contains(&DebugEngineOperation::NonCanonicalBranchFork)

@@ -63,7 +63,7 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
         acknowledge_operation(&sender, &live, SessionCommand::Inject, "inject").await;
     assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
     let query_acknowledged =
-        acknowledge_operation(&sender, &live, SessionCommand::Query, "query").await;
+        acknowledge_operation(&sender, &live, SessionCommand::query_snapshot(), "query").await;
     assert_eq!(query_acknowledged.state_kind, LiveStateKind::Running);
     assert_eq!(
         observed_control_operations(&observed_control),
@@ -77,7 +77,8 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
     assert_eq!(paused.state_kind, LiveStateKind::Paused);
     let fork_acknowledged =
-        acknowledge_boundary_operation(&sender, &live, SessionCommand::Fork, "fork").await;
+        acknowledge_boundary_operation(&sender, &live, SessionCommand::fork_current(), "fork")
+            .await;
     assert_eq!(fork_acknowledged.state_kind, LiveStateKind::Paused);
 
     send_command(&sender, SessionCommand::Continue).await;
@@ -147,10 +148,7 @@ async fn gate_control_responsive_accepts_typed_fault_control_commands() {
     let inject_acknowledged = acknowledge_operation(
         &sender,
         &live,
-        SessionCommand::InjectFault {
-            tag: tag.clone(),
-            fault: fault.clone(),
-        },
+        SessionCommand::inject_fault(tag.clone(), fault.clone()),
         "inject-fault",
     )
     .await;
@@ -158,7 +156,7 @@ async fn gate_control_responsive_accepts_typed_fault_control_commands() {
     let heal_acknowledged = acknowledge_operation(
         &sender,
         &live,
-        SessionCommand::HealFault { tag: tag.clone() },
+        SessionCommand::heal_fault(tag.clone()),
         "heal-fault",
     )
     .await;
@@ -225,10 +223,7 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
     acknowledge_operation(
         &sender,
         &live,
-        SessionCommand::InjectFault {
-            tag: tag.clone(),
-            fault,
-        },
+        SessionCommand::inject_fault(tag.clone(), fault),
         "stream-inject-fault",
     )
     .await;
