@@ -77,7 +77,10 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
-pub use server::{LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode};
+pub use server::{
+    LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode,
+    serve_lifecycle_http2_with_mode_until_shutdown,
+};
 pub use session_mapping::{
     API_COMMAND_MAPPINGS, API_METHOD_MAPPINGS, ApiCommandMapping, ApiDispatch, ApiMappingError,
     ApiMethod, ApiMethodMapping, ApiRequestShape, CommandDispatchCardinality,

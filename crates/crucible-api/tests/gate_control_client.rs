@@ -20,16 +20,17 @@ use crucible_api::{
     ControlWireModel, CreateSessionRequest, CreateSessionResponse, DestroySessionRequest,
     DestroySessionResponse, EventLogCursor, GOLDEN_RPC_VECTORS, GetReproductionRequest,
     GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessLifecycleClient,
-    InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, ListScenariosResponse,
-    ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource,
-    OpenSetEventTime, OpenSetPayload, QuiescentLifecycleLoop, RPC_OPEN_SET_PAYLOAD_KINDS,
-    RPC_PROTOCOL_VERSION, ReproductionCommandPayload, ReproductionCommandRecord,
-    ReproductionCommandResult, RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol,
-    ScenarioCatalogEntry, ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef,
-    SessionSummary, StateUpdate, StreamingApiError, StreamingCapabilitySet, StreamingEventFrame,
-    StreamingFrame, StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model,
-    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
-    rpc_status_code_wire_name, serve_lifecycle_http2, session_command_for_open_set_command_kind,
+    InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, LifecycleServerMode,
+    ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope,
+    OpenSetEventSource, OpenSetEventTime, OpenSetPayload, QuiescentLifecycleLoop,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ReproductionCommandPayload,
+    ReproductionCommandRecord, ReproductionCommandResult, RpcControlClient, RpcEndpoint,
+    RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry, ScenarioSummary, SendRequest,
+    SendResponse, SessionId, SessionRef, SessionSummary, StateUpdate, StreamingApiError,
+    StreamingCapabilitySet, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
+    WatchStream, assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
+    open_set_command_kind, rpc_status_code_wire_name, serve_lifecycle_http2,
+    serve_lifecycle_http2_with_mode_until_shutdown, session_command_for_open_set_command_kind,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
@@ -38,7 +39,7 @@ use crucible_session::{
     QueryResult, SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport,
 };
 use futures_util::stream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 #[tokio::test(flavor = "current_thread")]
 async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
@@ -764,6 +765,66 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         Err(error) if error.is_cancelled() => {}
         other => panic!("production HTTP/2 server task should abort cleanly: {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 listener should bind: {error}"));
+    let addr = listener.local_addr().unwrap_or_else(|error| {
+        panic!("production HTTP/2 listener should report address: {error}")
+    });
+    let control_plane = LifecycleControlPlane::new(
+        "production-http2-active-watch-shutdown-server",
+        Vec::new(),
+        test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
+    );
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        serve_lifecycle_http2_with_mode_until_shutdown(
+            listener,
+            control_plane,
+            LifecycleServerMode::read_write(),
+            async move {
+                let _ = shutdown_receiver.await;
+            },
+        )
+        .await
+    });
+
+    let rpc = RpcControlClient::new(RpcEndpoint::http2(format!("http://{addr}")))
+        .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
+    let scenario = generated_scenario(93);
+    let created = rpc
+        .create_session(
+            CreateSessionRequest::inline(scenario.clone(), scenario.seed()).with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production HTTP/2 create should decode: {error}"));
+    let mut watch = rpc
+        .watch_attach(
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_client_name("production-http2-active-watch"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("active Watch should attach before shutdown: {error}"));
+    assert_eq!(watch.attached().session, created.session);
+
+    shutdown_sender
+        .send(())
+        .unwrap_or_else(|_| panic!("shutdown receiver should still be active"));
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap_or_else(|_| panic!("server should finish after shutdown with active Watch"))
+        .unwrap_or_else(|error| panic!("server task should join after shutdown: {error}"))
+        .unwrap_or_else(|error| panic!("server should not fail during shutdown: {error}"));
+    let stream_end = tokio::time::timeout(Duration::from_millis(100), watch.recv_state_update())
+        .await
+        .unwrap_or_else(|_| panic!("Watch stream should close after server shutdown"))
+        .unwrap_or_else(|error| panic!("Watch stream should close cleanly: {error}"));
+    assert!(stream_end.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

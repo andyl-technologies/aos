@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,7 +27,7 @@ use crucible::DagStore;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
-    RpcControlClient, RpcEndpoint, serve_lifecycle_http2_with_mode,
+    RpcControlClient, RpcEndpoint, serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_session::{
     CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
@@ -4320,34 +4321,75 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
     validate_serve_invocation(args)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()?;
-    runtime.block_on(async {
-        let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-        let address = listener.local_addr()?;
-        if !cli.quiet {
-            let mode = if args.read_only {
-                "read-only"
-            } else {
-                "read-write"
-            };
-            println!("crucible: serving API daemon at http://{address} mode={mode}");
-        }
-        let mut control_plane = LifecycleControlPlane::new(
-            "crucible-cli-daemon",
-            Vec::new(),
-            |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-        );
-        if let Some(max_sessions) = args.max_sessions {
-            control_plane = control_plane.with_max_sessions(max_sessions);
-        }
+        .build()
+        .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
+    runtime.block_on(run_serve_invocation_until_shutdown(
+        cli,
+        args,
+        serve_shutdown_signal(),
+    ))
+}
+
+async fn run_serve_invocation_until_shutdown<S>(
+    cli: &Cli,
+    args: &ServeArgs,
+    shutdown: S,
+) -> Result<(), CliError>
+where
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
+    let listener = tokio::net::TcpListener::bind(&args.listen)
+        .await
+        .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
+    if !cli.quiet {
         let mode = if args.read_only {
-            LifecycleServerMode::read_only()
+            "read-only"
         } else {
-            LifecycleServerMode::read_write()
+            "read-write"
         };
-        serve_lifecycle_http2_with_mode(listener, control_plane, mode).await?;
-        Ok(())
-    })
+        println!("crucible: serving API daemon at http://{address} mode={mode}");
+    }
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-cli-daemon",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    if let Some(max_sessions) = args.max_sessions {
+        control_plane = control_plane.with_max_sessions(max_sessions);
+    }
+    let mode = if args.read_only {
+        LifecycleServerMode::read_only()
+    } else {
+        LifecycleServerMode::read_write()
+    };
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+    let server =
+        serve_lifecycle_http2_with_mode_until_shutdown(listener, control_plane, mode, async move {
+            let _ = shutdown_receiver.await;
+        });
+    tokio::pin!(server);
+    tokio::pin!(shutdown);
+    tokio::select! {
+        result = &mut server => {
+            result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
+            Ok(())
+        }
+        signal = &mut shutdown => {
+            signal?;
+            let _ = shutdown_sender.send(());
+            server.await.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
+            Ok(())
+        }
+    }
+}
+
+async fn serve_shutdown_signal() -> Result<(), CliError> {
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))
 }
 
 fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
@@ -7550,6 +7592,7 @@ enum CliError {
     Store(crucible::DagStoreError),
     Artifact(String),
     Usage(String),
+    Serve(String),
     Backend(String),
     Identity(String),
     Outcome(BackendCommandStatus),
@@ -7566,6 +7609,7 @@ impl CliError {
             Self::Store(_) => 5,
             Self::Artifact(_) => 5,
             Self::Usage(_) => 64,
+            Self::Serve(_) => 3,
             Self::Backend(_) => 4,
             Self::Identity(_) => 3,
             Self::Outcome(BackendCommandStatus::Passed) => 0,
@@ -7587,6 +7631,7 @@ impl fmt::Display for CliError {
             Self::Store(error) => write!(formatter, "{error}"),
             Self::Artifact(error) => write!(formatter, "{error}"),
             Self::Usage(error) => write!(formatter, "{error}"),
+            Self::Serve(error) => write!(formatter, "{error}"),
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
@@ -7605,6 +7650,7 @@ impl Error for CliError {
             Self::Store(error) => Some(error),
             Self::Artifact(_) => None,
             Self::Usage(_) => None,
+            Self::Serve(_) => None,
             Self::Backend(_) => None,
             Self::Identity(_) => None,
             Self::Outcome(_) => None,
@@ -7624,6 +7670,10 @@ impl From<io::Error> for CliError {
 
 fn usage_error(reason: impl Into<String>) -> CliError {
     CliError::Usage(reason.into())
+}
+
+fn serve_error(reason: impl Into<String>) -> CliError {
+    CliError::Serve(reason.into())
 }
 
 fn backend_error(reason: impl Into<String>) -> CliError {
@@ -8274,6 +8324,63 @@ mod tests {
             panic!("expected serve command");
         };
         assert!(args.read_only);
+    }
+
+    #[test]
+    fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("current-thread runtime should build: {error}"));
+
+        let clean_shutdown = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--max-sessions",
+            "1",
+        ]);
+        let Commands::Serve(args) = &clean_shutdown.command else {
+            panic!("expected serve command");
+        };
+        runtime
+            .block_on(run_serve_invocation_until_shutdown(
+                &clean_shutdown,
+                args,
+                async { Ok(()) },
+            ))
+            .unwrap_or_else(|error| panic!("injected serve shutdown should exit cleanly: {error}"));
+
+        let shutdown_error_cli =
+            Cli::parse_from(["crucible", "--quiet", "serve", "--listen", "127.0.0.1:0"]);
+        let Commands::Serve(args) = &shutdown_error_cli.command else {
+            panic!("expected serve command");
+        };
+        let error = match runtime.block_on(run_serve_invocation_until_shutdown(
+            &shutdown_error_cli,
+            args,
+            async { Err(serve_error("serve shutdown signal error: injected")) },
+        )) {
+            Ok(_) => panic!("serve shutdown signal errors must fail the invocation"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Serve(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("serve shutdown signal error"));
+
+        let bind_error = Cli::parse_from(["crucible", "serve", "--listen", "127.0.0.1:70000"]);
+        let Commands::Serve(args) = &bind_error.command else {
+            panic!("expected serve command");
+        };
+        let error = match run_serve_invocation(&bind_error, args) {
+            Ok(_) => panic!("invalid serve listen address must fail before serving"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Serve(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("serve bind error"));
     }
 
     #[test]

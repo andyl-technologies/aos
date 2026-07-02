@@ -6,6 +6,7 @@
 //! unary `Send` responses without taking ownership of scheduler semantics.
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::Router;
@@ -22,7 +23,7 @@ use crucible_session::{
 };
 use futures_util::stream;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
@@ -78,6 +79,7 @@ impl LifecycleServerMode {
 struct Http2LifecycleState<L, F> {
     control_plane: SharedLifecycleControlPlane<L, F>,
     mode: LifecycleServerMode,
+    shutdown: watch::Receiver<bool>,
 }
 
 impl<L, F> Clone for Http2LifecycleState<L, F> {
@@ -85,6 +87,7 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
         Self {
             control_plane: Arc::clone(&self.control_plane),
             mode: self.mode,
+            shutdown: self.shutdown.clone(),
         }
     }
 }
@@ -129,11 +132,48 @@ where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
 {
+    serve_lifecycle_http2_with_mode_until_shutdown(
+        listener,
+        control_plane,
+        mode,
+        std::future::pending(),
+    )
+    .await
+}
+
+/// Serves a [`LifecycleControlPlane`] over HTTP/2 until a shutdown future resolves.
+///
+/// This variant is used by process-level hosts that need clean signal-driven
+/// termination while preserving the same router and transport behavior as
+/// [`serve_lifecycle_http2_with_mode`].
+///
+/// # Errors
+///
+/// Returns the underlying `axum` server I/O error if the listener fails while
+/// serving requests.
+pub async fn serve_lifecycle_http2_with_mode_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let app = lifecycle_router(Http2LifecycleState {
         control_plane: Arc::new(Mutex::new(control_plane)),
         mode,
+        shutdown: shutdown_receiver.clone(),
     });
-    axum::serve(listener, app).await
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            let _ = shutdown_sender.send(true);
+        })
+        .await
 }
 
 fn lifecycle_router<L, F>(state: Http2LifecycleState<L, F>) -> Router
@@ -368,7 +408,7 @@ where
         Ok(control) => control,
         Err(error) => return streaming_error_response(error),
     };
-    http2_stream_response(control_event_body(control))
+    http2_stream_response(control_event_body(control, state.shutdown.clone()))
 }
 
 async fn handle_control_send<L, F>(
@@ -411,7 +451,7 @@ where
         Ok(watch) => watch,
         Err(error) => return streaming_error_response(error),
     };
-    http2_stream_response(watch_event_body(watch))
+    http2_stream_response(watch_event_body(watch, state.shutdown.clone()))
 }
 
 async fn handle_send_command<L, F>(
@@ -958,21 +998,33 @@ fn query_result_wire(result: Option<&QueryResult>) -> String {
 
 fn control_event_body(
     control: ControlStream,
+    shutdown: watch::Receiver<bool>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
     let attached = framed_rpc_message(encode_attached_response(control.attached()));
     stream::unfold(
-        (control, Some(attached)),
-        |(mut control, pending)| async move {
+        (control, shutdown, Some(attached)),
+        |(mut control, mut shutdown, pending)| async move {
             if let Some(message) = pending {
-                return Some((Ok(message), (control, None)));
+                return Some((Ok(message), (control, shutdown, None)));
             }
-            let frame = match control.recv_frame().await {
-                Ok(Some(frame)) => frame,
-                Ok(None) | Err(_) => return None,
+            if *shutdown.borrow() {
+                return None;
+            }
+            let frame = tokio::select! {
+                frame = control.recv_frame() => match frame {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) | Err(_) => return None,
+                },
+                changed = shutdown.changed() => {
+                    if changed.is_ok() && *shutdown.borrow() {
+                        return None;
+                    }
+                    return None;
+                }
             };
             Some((
                 Ok(framed_rpc_message(encode_streaming_frame(&frame))),
-                (control, None),
+                (control, shutdown, None),
             ))
         },
     )
@@ -980,21 +1032,36 @@ fn control_event_body(
 
 fn watch_event_body(
     watch: WatchStream,
+    shutdown: watch::Receiver<bool>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
     let attached = framed_rpc_message(encode_attached_response(watch.attached()));
-    stream::unfold((watch, Some(attached)), |(mut watch, pending)| async move {
-        if let Some(message) = pending {
-            return Some((Ok(message), (watch, None)));
-        }
-        let frame = match watch.recv_frame().await {
-            Ok(Some(frame)) => frame,
-            Ok(None) | Err(_) => return None,
-        };
-        Some((
-            Ok(framed_rpc_message(encode_streaming_frame(&frame))),
-            (watch, None),
-        ))
-    })
+    stream::unfold(
+        (watch, shutdown, Some(attached)),
+        |(mut watch, mut shutdown, pending)| async move {
+            if let Some(message) = pending {
+                return Some((Ok(message), (watch, shutdown, None)));
+            }
+            if *shutdown.borrow() {
+                return None;
+            }
+            let frame = tokio::select! {
+                frame = watch.recv_frame() => match frame {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) | Err(_) => return None,
+                },
+                changed = shutdown.changed() => {
+                    if changed.is_ok() && *shutdown.borrow() {
+                        return None;
+                    }
+                    return None;
+                }
+            };
+            Some((
+                Ok(framed_rpc_message(encode_streaming_frame(&frame))),
+                (watch, shutdown, None),
+            ))
+        },
+    )
 }
 
 fn encode_streaming_frame(frame: &StreamingFrame) -> String {
@@ -1444,6 +1511,11 @@ mod tests {
         QuiescentLifecycleLoop::new()
     }
 
+    fn open_shutdown_receiver() -> watch::Receiver<bool> {
+        let (_sender, receiver) = watch::channel(false);
+        receiver
+    }
+
     fn test_state(mode: LifecycleServerMode) -> TestState {
         Http2LifecycleState {
             control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
@@ -1452,6 +1524,7 @@ mod tests {
                 quiescent_loop as fn(&ScenarioDef, Seed) -> QuiescentLifecycleLoop,
             ))),
             mode,
+            shutdown: open_shutdown_receiver(),
         }
     }
 
@@ -1466,6 +1539,7 @@ mod tests {
                 .with_max_sessions(max_sessions),
             )),
             mode,
+            shutdown: open_shutdown_receiver(),
         }
     }
 
