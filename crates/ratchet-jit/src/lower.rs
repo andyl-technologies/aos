@@ -2,10 +2,11 @@
 //!
 //! This module starts the tier-1 lowering path without executable code. It can
 //! build verified Cranelift [`Function`] values for compiled thunk bodies that
-//! return constant runtime [`Value`] words or perform one bounded local
-//! environment-slot read through the `aos_env_get` helper. These bodies use the
-//! same two-word `Value` ABI as [`crate::abi`], but they are not placed in a
-//! `JITModule`, finalized, or called.
+//! return constant runtime [`Value`] words, perform one bounded local
+//! environment-slot read through the `aos_env_get` helper, or force that loaded
+//! value through `aos_force`. These bodies use the same two-word `Value` ABI as
+//! [`crate::abi`], but they are not placed in a `JITModule`, finalized, or
+//! called.
 
 use std::{error::Error, fmt};
 
@@ -46,7 +47,11 @@ pub const AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE: u32 = 8;
 /// User-external function index reserved for the `aos_env_get` helper.
 pub const AOS_ENV_GET_FUNCTION_INDEX: u32 = 0;
 
+/// User-external function index reserved for the `aos_force` helper.
+pub const AOS_FORCE_FUNCTION_INDEX: u32 = 1;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
+const AOS_FORCE_SYMBOL: &str = "aos_force";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -58,6 +63,14 @@ pub fn clif_external_name_for_aos_env_get() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_ENV_GET_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_force`.
+pub fn clif_external_name_for_aos_force() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_FORCE_FUNCTION_INDEX,
     )
 }
 
@@ -277,6 +290,73 @@ pub fn lower_env_get_ir_root_thunk_body_artifact(
     ir: &Ir,
 ) -> Result<JitClifArtifact, JitLowerError> {
     lower_env_get_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
+/// Lowers a local-slot IR root and forces the loaded value in CLIF.
+///
+/// This bounded force-call precursor accepts the same direct [`IrKind::LocalVar`]
+/// root plus one direct [`IrKind::ThunkAlloc`] wrapper as
+/// [`lower_env_get_ir_thunk_body`]. The generated function imports
+/// `aos_env_get`, imports `aos_force`, reads the local slot, passes the loaded
+/// two-word `Value` with the compiled thunk `rt` parameter to `aos_force`, and
+/// returns the forced two-word `Value`.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns the same IR-shape errors as [`lower_env_get_ir_thunk_body`]. Also
+/// returns runtime ABI signature-conversion and verifier errors for either
+/// imported helper.
+pub fn lower_forced_env_get_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let slot = env_slot_for_root(arena, root)?;
+    lower_forced_env_get_slot_thunk_body_with_name(slot, clif_name_for_ir_root(root))
+}
+
+/// Lowers a forced local-slot IR root into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_forced_env_get_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_env_get_ir_thunk_body`].
+pub fn lower_forced_env_get_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_forced_env_get_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a forced local-slot access.
+///
+/// This delegates to [`lower_forced_env_get_ir_thunk_body`] using the artifact's
+/// root id and arena.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_env_get_ir_thunk_body`].
+pub fn lower_forced_env_get_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_forced_env_get_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root of a lowered IR artifact as a forced local-slot CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_env_get_ir_root_thunk_body`].
+pub fn lower_forced_env_get_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_forced_env_get_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
 /// A failure while lowering safe metadata into CLIF.
@@ -572,17 +652,44 @@ fn lower_env_get_slot_thunk_body_with_name(
     Ok(function)
 }
 
+fn lower_forced_env_get_slot_thunk_body_with_name(
+    slot: u32,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let env_get = import_env_get_function(&mut function)?;
+    let force = import_runtime_helper_function(
+        &mut function,
+        AOS_FORCE_SYMBOL,
+        clif_external_name_for_aos_force(),
+    )?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_forced_env_get_return(&mut function, entry_block, env_get, force, slot)?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
 fn import_env_get_function(
     function: &mut Function,
 ) -> Result<cranelift_codegen::ir::FuncRef, JitLowerError> {
-    let runtime_signature = runtime_helper_call_signature(AOS_ENV_GET_SYMBOL).ok_or(
-        JitLowerError::MissingRuntimeHelperSignature {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-        },
-    )?;
+    import_runtime_helper_function(
+        function,
+        AOS_ENV_GET_SYMBOL,
+        clif_external_name_for_aos_env_get(),
+    )
+}
+
+fn import_runtime_helper_function(
+    function: &mut Function,
+    symbol_name: &'static str,
+    external_name: UserExternalName,
+) -> Result<cranelift_codegen::ir::FuncRef, JitLowerError> {
+    let runtime_signature = runtime_helper_call_signature(symbol_name)
+        .ok_or(JitLowerError::MissingRuntimeHelperSignature { symbol_name })?;
     let signature = clif_signature_for_runtime_call(runtime_signature)?;
     let signature_ref = function.import_signature(signature);
-    let user_name = function.declare_imported_user_function(clif_external_name_for_aos_env_get());
+    let user_name = function.declare_imported_user_function(external_name);
 
     Ok(function.import_function(ExtFuncData {
         name: ExternalName::user(user_name),
@@ -660,6 +767,52 @@ fn emit_env_get_return(
     Ok(())
 }
 
+fn emit_forced_env_get_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    force: cranelift_codegen::ir::FuncRef,
+    slot: u32,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
+    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
+
+    if env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: env_get_results.len(),
+        });
+    }
+
+    let force_call = cursor
+        .ins()
+        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+
+    if force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: force_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&force_results);
+    Ok(())
+}
+
 fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
     let flags = settings::Flags::new(settings::builder());
     verify_function(function, &flags).map_err(JitLowerError::Verifier)
@@ -711,6 +864,14 @@ mod tests {
 
         assert_eq!(name.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
         assert_eq!(name.index, AOS_ENV_GET_FUNCTION_INDEX);
+    }
+
+    #[test]
+    fn force_external_name_uses_reserved_namespace_and_index() {
+        let name = clif_external_name_for_aos_force();
+
+        assert_eq!(name.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
+        assert_eq!(name.index, AOS_FORCE_FUNCTION_INDEX);
     }
 
     #[test]
@@ -1352,6 +1513,129 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn forced_env_get_ir_thunk_body_imports_env_get_and_force_signatures() {
+        let arena = IrArena::from_raw_parts(vec![local_var_node(11)], Vec::new());
+
+        let function = lower_forced_env_get_ir_thunk_body(&arena, IrId::new(0))
+            .expect("forced local var root lowers");
+        let env_get_import = imported_function_by_user_external_name(
+            &function,
+            clif_external_name_for_aos_env_get(),
+        );
+        let force_import =
+            imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+        let expected_env_get_signature = clif_signature_for_runtime_call(
+            runtime_helper_call_signature(AOS_ENV_GET_SYMBOL)
+                .expect("env-get helper signature is core-owned"),
+        )
+        .expect("env-get signature lowers to CLIF");
+        let expected_force_signature = clif_signature_for_runtime_call(
+            runtime_helper_call_signature(AOS_FORCE_SYMBOL)
+                .expect("force helper signature is core-owned"),
+        )
+        .expect("force signature lowers to CLIF");
+
+        assert_eq!(
+            function.dfg.signatures[env_get_import.1.signature],
+            expected_env_get_signature
+        );
+        assert_eq!(
+            function.dfg.signatures[force_import.1.signature],
+            expected_force_signature
+        );
+    }
+
+    #[test]
+    fn forced_env_get_ir_thunk_body_calls_env_get_then_force_with_entry_rt() {
+        let arena = IrArena::from_raw_parts(vec![local_var_node(13)], Vec::new());
+
+        let function = lower_forced_env_get_ir_thunk_body(&arena, IrId::new(0))
+            .expect("forced local var root lowers");
+        let (env_get, _) = imported_function_by_user_external_name(
+            &function,
+            clif_external_name_for_aos_env_get(),
+        );
+        let (force, _) =
+            imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+        let calls = call_insts(&function);
+        assert_eq!(calls.len(), 2);
+        let env_get_call = calls[0];
+        let force_call = calls[1];
+        let InstructionData::Call { func_ref, .. } = function.dfg.insts[env_get_call] else {
+            panic!("forced env-get function emits env-get call first");
+        };
+        assert_eq!(func_ref, env_get);
+        let InstructionData::Call { func_ref, .. } = function.dfg.insts[force_call] else {
+            panic!("forced env-get function emits force call second");
+        };
+        assert_eq!(func_ref, force);
+
+        assert_eq!(
+            opcodes(&function),
+            vec![Opcode::Iconst, Opcode::Call, Opcode::Call, Opcode::Return]
+        );
+        assert_eq!(
+            function.dfg.inst_args(env_get_call)[0],
+            entry_block_values(&function)[1]
+        );
+        assert_eq!(
+            function
+                .dfg
+                .value_type(function.dfg.inst_args(env_get_call)[1]),
+            types::I32
+        );
+        assert_eq!(iconst_words(&function), vec![13]);
+        assert_eq!(
+            function.dfg.inst_args(force_call),
+            &[
+                entry_block_values(&function)[0],
+                function.dfg.inst_results(env_get_call)[0],
+                function.dfg.inst_results(env_get_call)[1],
+            ]
+        );
+        assert_eq!(
+            return_operands(&function),
+            function.dfg.inst_results(force_call)
+        );
+        verify_clif_function(&function).expect("forced env-get function verifies independently");
+    }
+
+    #[test]
+    fn forced_env_get_ir_thunk_body_lowers_direct_local_thunk_alloc_root() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(17),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let artifact = lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(1))
+            .expect("direct forced local thunk allocation lowers");
+
+        assert_eq!(artifact.tier(), JitTier::Tier1Baseline);
+        assert_eq!(artifact.kind(), JitClifArtifactKind::ThunkBody);
+        assert_eq!(
+            artifact.source(),
+            JitClifArtifactSource::IrRoot(IrId::new(1))
+        );
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(1))
+        );
+        assert_eq!(
+            artifact.function().dfg.ext_funcs.len(),
+            2,
+            "forced env-get artifacts import env-get and force"
+        );
+    }
+
     fn lowered_ir(source: &str) -> Ir {
         lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
             .expect("IR lowers")
@@ -1386,6 +1670,18 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         imports[0]
+    }
+
+    fn imported_function_by_user_external_name(
+        function: &Function,
+        expected: UserExternalName,
+    ) -> (FuncRef, &ExtFuncData) {
+        function
+            .dfg
+            .ext_funcs
+            .iter()
+            .find(|(_func_ref, import)| imported_user_external_name(function, import) == expected)
+            .expect("imported function with expected user external name exists")
     }
 
     fn imported_user_external_name(function: &Function, import: &ExtFuncData) -> UserExternalName {
@@ -1458,18 +1754,22 @@ mod tests {
     }
 
     fn single_call_inst(function: &Function) -> cranelift_codegen::ir::Inst {
+        let calls = call_insts(function);
+
+        assert_eq!(calls.len(), 1);
+        calls[0]
+    }
+
+    fn call_insts(function: &Function) -> Vec<cranelift_codegen::ir::Inst> {
         let entry_block = function
             .layout
             .entry_block()
             .expect("lowered function has an entry block");
-        let calls = function
+        function
             .layout
             .block_insts(entry_block)
             .filter(|inst| function.dfg.insts[*inst].opcode() == Opcode::Call)
-            .collect::<Vec<_>>();
-
-        assert_eq!(calls.len(), 1);
-        calls[0]
+            .collect()
     }
 
     fn opcodes(function: &Function) -> Vec<Opcode> {

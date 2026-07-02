@@ -76,14 +76,16 @@ pub use cranelift::{
     jit_cranelift_tier1_slot_preflight_for_artifact,
 };
 pub use lower::{
-    AOS_ENV_GET_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
+    AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
     AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, JitLowerError, clif_external_name_for_aos_env_get,
-    clif_name_for_ir_root, lower_constant_ir_root_thunk_body,
+    clif_external_name_for_aos_force, clif_name_for_ir_root, lower_constant_ir_root_thunk_body,
     lower_constant_ir_root_thunk_body_artifact, lower_constant_ir_thunk_body,
     lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,
     lower_constant_thunk_body_artifact, lower_env_get_ir_root_thunk_body,
     lower_env_get_ir_root_thunk_body_artifact, lower_env_get_ir_thunk_body,
-    lower_env_get_ir_thunk_body_artifact,
+    lower_env_get_ir_thunk_body_artifact, lower_forced_env_get_ir_root_thunk_body,
+    lower_forced_env_get_ir_root_thunk_body_artifact, lower_forced_env_get_ir_thunk_body,
+    lower_forced_env_get_ir_thunk_body_artifact,
 };
 pub use module::{
     JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleArtifactRuntimeImportGap,

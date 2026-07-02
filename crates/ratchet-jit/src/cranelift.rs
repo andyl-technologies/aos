@@ -1079,6 +1079,11 @@ pub enum JitCraneliftModuleSetupError {
         /// Stable runtime symbols imported by the artifact body.
         symbol_names: Vec<String>,
     },
+    /// A call-bearing artifact imports runtime symbols that are not finalized yet.
+    ArtifactRuntimeImportsCannotFinalize {
+        /// Stable runtime symbols blocking registered finalization.
+        symbol_names: Vec<String>,
+    },
     /// A tier-1 artifact could not be lowered from Core IR.
     LowerTier1Artifact {
         /// The Core IR root requested for tier-1 compilation.
@@ -1143,6 +1148,11 @@ impl fmt::Display for JitCraneliftModuleSetupError {
                 "artifact runtime imports require registered native symbols before Cranelift definition: {}",
                 symbol_names.join(", ")
             ),
+            Self::ArtifactRuntimeImportsCannotFinalize { symbol_names } => write!(
+                formatter,
+                "artifact runtime imports are not eligible for registered Cranelift finalization yet: {}",
+                symbol_names.join(", ")
+            ),
             Self::LowerTier1Artifact { root, source } => write!(
                 formatter,
                 "IR root {root:?} could not be lowered for tier-1 compilation: {source}"
@@ -1199,6 +1209,7 @@ impl Error for JitCraneliftModuleSetupError {
             Self::Readiness(error) => Some(error),
             Self::RuntimeSymbolRegistration(error) => Some(error),
             Self::ArtifactRuntimeImportsRequireRegistration { .. } => None,
+            Self::ArtifactRuntimeImportsCannotFinalize { .. } => None,
             Self::LowerTier1Artifact { source, .. } => Some(source),
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
@@ -1382,6 +1393,9 @@ pub fn jit_cranelift_registered_artifact_definition_preflight_with_candidates(
 /// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration`]
 /// when the artifact imports a runtime symbol without matching native-address
 /// registration metadata. Returns
+/// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize`] when
+/// the artifact imports runtime helpers that are not eligible for finalization
+/// yet. Returns
 /// [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot build
 /// an ISA for the current host. Returns
 /// [`JitCraneliftModuleSetupError::Settings`] if required JIT settings are
@@ -1411,6 +1425,7 @@ pub fn jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
         require_resolved_artifact_imports(jit_module_readiness_preflight_for_artifact(&artifact)?)?;
     let registration = jit_runtime_symbol_registration_preflight_with_candidates(candidates)?;
     require_registered_artifact_imports(&readiness, &registration)?;
+    require_finalizable_artifact_imports(&readiness)?;
 
     let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
     let artifact_metadata = readiness.artifact().clone();
@@ -1895,6 +1910,29 @@ fn require_registered_artifact_imports(
     }
 }
 
+fn require_finalizable_artifact_imports(
+    readiness: &JitModuleReadinessPreflight,
+) -> Result<(), JitCraneliftModuleSetupError> {
+    let nonfinalizable_symbol_names = readiness
+        .artifact_runtime_imports()
+        .iter()
+        .filter(|artifact_import| artifact_import.symbol_name() == "aos_force")
+        .map(|artifact_import| artifact_import.symbol_name().to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if nonfinalizable_symbol_names.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize {
+                symbol_names: nonfinalizable_symbol_names,
+            },
+        )
+    }
+}
+
 fn module_with_imported_symbols(
     declarations: &[JitRuntimeSymbolDeclaration],
 ) -> Result<(JITModule, Vec<JitCraneliftImportedSymbol>), JitCraneliftModuleSetupError> {
@@ -2075,6 +2113,10 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_ENV_GET_FUNCTION_INDEX,
         ) => Some("aos_env_get"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_FORCE_FUNCTION_INDEX,
+        ) => Some("aos_force"),
         _ => None,
     }
 }
@@ -2197,7 +2239,7 @@ mod tests {
         lower::{
             AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, clif_name_for_ir_root,
             lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body_artifact,
-            lower_env_get_ir_thunk_body_artifact,
+            lower_env_get_ir_thunk_body_artifact, lower_forced_env_get_ir_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
         tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
@@ -2233,6 +2275,21 @@ mod tests {
         );
 
         lower_env_get_ir_thunk_body_artifact(&arena, IrId::new(0)).expect("env-get artifact lowers")
+    }
+
+    fn forced_env_get_artifact(slot: u32) -> JitClifArtifact {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            )],
+            Vec::new(),
+        );
+
+        lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
+            .expect("forced env-get artifact lowers")
     }
 
     fn artifact_with_unknown_runtime_helper_import() -> JitClifArtifact {
@@ -2497,6 +2554,70 @@ mod tests {
     }
 
     #[test]
+    fn registered_artifact_definition_defines_forced_env_get_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            forced_env_get_artifact(4),
+            &candidates,
+        )
+        .expect("registered forced env-get artifact definition preflight builds");
+
+        assert_eq!(
+            preflight.defined_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
+        assert_eq!(
+            preflight
+                .artifact_runtime_imports()
+                .iter()
+                .map(|runtime_import| runtime_import.symbol_name())
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_force"]
+        );
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_force")
+                .expect("force helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            5
+        );
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(preflight.registration_gap_for_symbol("aos_force").is_none());
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
     fn registered_artifact_definition_requires_candidates_for_artifact_imports() {
         let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
             env_get_artifact(4),
@@ -2513,6 +2634,31 @@ mod tests {
         };
 
         assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn registered_artifact_definition_requires_force_candidate_for_forced_artifacts() {
+        let candidates = [synthetic_address_candidate(
+            "aos_env_get",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+            3,
+        )];
+
+        let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            forced_env_get_artifact(4),
+            &candidates,
+        ) else {
+            panic!("forced env-get artifact definition requires registered force helper candidate");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
+            symbol_names,
+        } = error
+        else {
+            panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_force".to_owned()]);
     }
 
     #[test]
@@ -2703,6 +2849,37 @@ mod tests {
         };
 
         assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn registered_artifact_finalization_rejects_forced_artifacts_after_registration() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+        ];
+
+        let Err(error) = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+            forced_env_get_artifact(4),
+            &candidates,
+        ) else {
+            panic!("forced env-get artifact finalization remains intentionally gated");
+        };
+
+        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
+            error
+        else {
+            panic!("expected forced artifact finalization guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_force".to_owned()]);
     }
 
     #[test]

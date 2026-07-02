@@ -6873,6 +6873,27 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       lowerer, but still no `JITModule`, real symbol relocation, native helper
       address, executable buffer, raw pointer call, upvalue frame traversal,
       force/select/app lowering, or generic IR traversal is implemented.
+- [x] Current forced env-slot CLIF precursor:
+      `ratchet-jit::lower::lower_forced_env_get_ir_thunk_body()` lowers the
+      same bounded local-slot shapes as the env-get precursor, then emits an
+      `aos_force(rt, value)` helper call over the loaded two-word runtime
+      `Value`. The generated body imports both `aos_env_get` and `aos_force`
+      through deterministic user-external CLIF metadata, passes the compiled
+      thunk `rt` parameter into the force call, and returns the forced
+      two-word `Value`. Module-readiness metadata now resolves the `aos_force`
+      artifact import alongside `aos_env_get`, and the existing registered
+      artifact-definition path can rewrite both helper imports with synthetic
+      candidates. Tests pin helper namespace/index metadata, imported signature
+      parity, call ordering and operands, direct `ThunkAlloc` artifact metadata,
+      readiness import resolution, registered definition of the forced artifact,
+      the missing-`aos_force` candidate guard, and the explicit registered
+      finalization rejection for forced artifacts. The new lowerer entrypoints
+      remain verified non-executable CLIF construction; registered Cranelift
+      coverage stops at the existing definition-only `JITModule` preflight with
+      synthetic candidates. Forced artifacts are not eligible for the registered
+      finalization preflight yet, so no executable pointer exposure, real
+      exported wrapper address, raw pointer call, select/app lowering, or
+      generic IR traversal is implemented.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` reserves a Cranelift
       user-function namespace for verified CLIF functions lowered from Core IR
