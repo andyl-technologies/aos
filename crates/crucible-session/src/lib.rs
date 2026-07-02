@@ -23,9 +23,12 @@ use std::sync::{Arc, Mutex};
 use crucible::{
     Action, Checkpoint, Condition, ConditionEvaluationError, ConditionEvaluationPass,
     ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Configuration, ContentHash,
-    ControlOperation, ControlOperationKind, DebugReverseStepGrain, Decision, EngineError, Fault,
-    FaultTag, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
-    Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
+    ControlOperation, ControlOperationKind, DebugAttachReport, DebugAttachRequest, DebugGotoReport,
+    DebugGotoRequest, DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest,
+    DebugReverseContinueReport, DebugReverseContinueRequest, DebugReverseStepGrain,
+    DebugReverseStepReport, DebugReverseStepRequest, Decision, EngineError, Fault, FaultTag,
+    GdbListen, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
+    RuntimeState, Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SimDuration,
     TemporalGraph, VirtualTime,
 };
@@ -907,6 +910,43 @@ pub enum SessionCommand {
         /// Completion route returning the query result.
         reply: CommandReply<QueryResult>,
     },
+    /// Attach the debugger gdbstub to the current boundary.
+    AttachGdb {
+        /// Node whose backend gdbstub should be exposed.
+        node: NodeId,
+        /// Operator-facing gdb-protocol listener.
+        listen: GdbListen,
+        /// Completion route returning the debug attach report.
+        reply: CommandReply<DebugAttachReport>,
+    },
+    /// Move the attached debugger to another coordinate.
+    DebugGoto {
+        /// Restore-plus-replay request.
+        request: DebugGotoRequest,
+        /// Completion route returning the goto report.
+        reply: CommandReply<DebugGotoReport>,
+    },
+    /// Reverse-step the attached debugger by one supported grain.
+    DebugReverseStep {
+        /// Reverse-step request.
+        request: DebugReverseStepRequest,
+        /// Completion route returning the reverse-step report.
+        reply: CommandReply<DebugReverseStepReport>,
+    },
+    /// Reverse-continue the attached debugger to a prior matching prefix.
+    DebugReverseContinue {
+        /// Reverse-continue request.
+        request: DebugReverseContinueRequest,
+        /// Completion route returning the reverse-continue report.
+        reply: CommandReply<DebugReverseContinueReport>,
+    },
+    /// Mark forward or mutating debugger use as a non-canonical debug branch.
+    DebugForkNonCanonical {
+        /// Non-canonical branch request with operator evidence.
+        request: DebugNonCanonicalBranchRequest,
+        /// Completion route returning the branch report.
+        reply: CommandReply<DebugNonCanonicalBranchReport>,
+    },
 }
 
 impl SessionCommand {
@@ -949,7 +989,15 @@ impl SessionCommand {
     /// Returns whether the command is observation-only.
     #[must_use]
     pub const fn is_read_only(&self) -> bool {
-        matches!(self, Self::Query { .. } | Self::Snapshot)
+        matches!(
+            self,
+            Self::Query { .. }
+                | Self::Snapshot
+                | Self::AttachGdb { .. }
+                | Self::DebugGoto { .. }
+                | Self::DebugReverseStep { .. }
+                | Self::DebugReverseContinue { .. }
+        )
     }
 
     const fn is_terminal_accepted(&self) -> bool {
@@ -972,11 +1020,29 @@ impl SessionCommand {
                 | Self::RemoveBreakpoint { .. }
                 | Self::CreateSavepoint { .. }
                 | Self::Query { .. }
+                | Self::AttachGdb { .. }
+                | Self::DebugGoto { .. }
+                | Self::DebugReverseStep { .. }
+                | Self::DebugReverseContinue { .. }
+                | Self::DebugForkNonCanonical { .. }
         )
     }
 
     const fn requires_running_quantum_ack(&self) -> bool {
         matches!(self, Self::Snapshot | Self::Query { .. })
+    }
+
+    const fn requires_non_canonical_debug_branch(&self) -> bool {
+        matches!(
+            self,
+            Self::Continue
+                | Self::Step { .. }
+                | Self::Inject
+                | Self::InjectFault { .. }
+                | Self::HealFault { .. }
+                | Self::SetBreakpoint { .. }
+                | Self::RemoveBreakpoint { .. }
+        )
     }
 
     fn complete_error(&self, error: SessionError) {
@@ -988,6 +1054,11 @@ impl SessionCommand {
             Self::CreateSavepoint { reply, .. } => reply.complete(Err(error)),
             Self::Fork { reply, .. } => reply.complete(Err(error)),
             Self::Query { reply, .. } => reply.complete(Err(error)),
+            Self::AttachGdb { reply, .. } => reply.complete(Err(error)),
+            Self::DebugGoto { reply, .. } => reply.complete(Err(error)),
+            Self::DebugReverseStep { reply, .. } => reply.complete(Err(error)),
+            Self::DebugReverseContinue { reply, .. } => reply.complete(Err(error)),
+            Self::DebugForkNonCanonical { reply, .. } => reply.complete(Err(error)),
             Self::Start | Self::Continue | Self::Pause | Self::Step { .. } | Self::Stop => {}
             Self::Snapshot | Self::Inject => {}
         }
@@ -1033,6 +1104,16 @@ pub enum SessionCommandKind {
     Query,
     /// Capture a boundary snapshot through the current implementation shim.
     Snapshot,
+    /// Attach an out-of-band debugger gdbstub.
+    AttachGdb,
+    /// Move an attached debugger to a coordinate.
+    DebugGoto,
+    /// Reverse-step an attached debugger.
+    DebugReverseStep,
+    /// Reverse-continue an attached debugger.
+    DebugReverseContinue,
+    /// Mark a non-canonical debug branch before forward or mutating debug use.
+    DebugForkNonCanonical,
 }
 
 impl SessionCommandKind {
@@ -1041,7 +1122,7 @@ impl SessionCommandKind {
     /// This covers the RFC §4 command surface plus the current implementation's
     /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
     /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 23] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -1060,7 +1141,40 @@ impl SessionCommandKind {
         Self::Fork,
         Self::Query,
         Self::Snapshot,
+        Self::AttachGdb,
+        Self::DebugGoto,
+        Self::DebugReverseStep,
+        Self::DebugReverseContinue,
+        Self::DebugForkNonCanonical,
     ];
+
+    const fn operation_name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Continue => "continue",
+            Self::Pause => "pause",
+            Self::StepQuantum => "step-quantum",
+            Self::StepEvent => "step-event",
+            Self::StepAssertion => "step-assertion",
+            Self::StepTimer => "step-timer",
+            Self::StepDuration => "step-duration",
+            Self::Stop => "stop",
+            Self::Inject => "inject",
+            Self::InjectFault => "inject-fault",
+            Self::HealFault => "heal-fault",
+            Self::SetBreakpoint => "set-breakpoint",
+            Self::RemoveBreakpoint => "remove-breakpoint",
+            Self::CreateSavepoint => "create-savepoint",
+            Self::Fork => "fork",
+            Self::Query => "query",
+            Self::Snapshot => "snapshot",
+            Self::AttachGdb => "attach-gdb",
+            Self::DebugGoto => "debug-goto",
+            Self::DebugReverseStep => "debug-reverse-step",
+            Self::DebugReverseContinue => "debug-reverse-continue",
+            Self::DebugForkNonCanonical => "debug-fork-non-canonical",
+        }
+    }
 
     /// Returns a representative engine command for kinds implemented by the
     /// current [`SessionCommand`] enum.
@@ -1119,6 +1233,11 @@ impl SessionCommandKind {
             Self::Fork => SessionCommand::fork_current(),
             Self::Query => SessionCommand::query_snapshot(),
             Self::Snapshot => SessionCommand::Snapshot,
+            Self::AttachGdb
+            | Self::DebugGoto
+            | Self::DebugReverseStep
+            | Self::DebugReverseContinue
+            | Self::DebugForkNonCanonical => return None,
         };
         Some(command)
     }
@@ -1155,6 +1274,11 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::CreateSavepoint { .. } => Self::CreateSavepoint,
             SessionCommand::Stop => Self::Stop,
             SessionCommand::Query { .. } => Self::Query,
+            SessionCommand::AttachGdb { .. } => Self::AttachGdb,
+            SessionCommand::DebugGoto { .. } => Self::DebugGoto,
+            SessionCommand::DebugReverseStep { .. } => Self::DebugReverseStep,
+            SessionCommand::DebugReverseContinue { .. } => Self::DebugReverseContinue,
+            SessionCommand::DebugForkNonCanonical { .. } => Self::DebugForkNonCanonical,
         }
     }
 }
@@ -1201,7 +1325,12 @@ pub const fn lifecycle_transition(
             | Command::InjectFault
             | Command::HealFault
             | Command::CreateSavepoint
-            | Command::Fork,
+            | Command::Fork
+            | Command::AttachGdb
+            | Command::DebugGoto
+            | Command::DebugReverseStep
+            | Command::DebugReverseContinue
+            | Command::DebugForkNonCanonical,
         ) => Rejected,
 
         (
@@ -1233,7 +1362,12 @@ pub const fn lifecycle_transition(
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
-            | Command::Query,
+            | Command::Query
+            | Command::AttachGdb
+            | Command::DebugGoto
+            | Command::DebugReverseStep
+            | Command::DebugReverseContinue
+            | Command::DebugForkNonCanonical,
         ) => Accepted { to: State::Paused },
         (State::Running, Command::Stop) => Accepted { to: State::Stopped },
         (
@@ -1245,7 +1379,12 @@ pub const fn lifecycle_transition(
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
-            | Command::Query,
+            | Command::Query
+            | Command::AttachGdb
+            | Command::DebugGoto
+            | Command::DebugReverseStep
+            | Command::DebugReverseContinue
+            | Command::DebugForkNonCanonical,
         ) => Accepted { to: State::Running },
         (State::Running, Command::Fork) => Accepted { to: State::Paused },
         (State::Running, Command::Start | Command::Continue) => Rejected,
@@ -1272,7 +1411,12 @@ pub const fn lifecycle_transition(
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
-            | Command::Stop,
+            | Command::Stop
+            | Command::AttachGdb
+            | Command::DebugGoto
+            | Command::DebugReverseStep
+            | Command::DebugReverseContinue
+            | Command::DebugForkNonCanonical,
         ) => Rejected,
     }
 }
@@ -2151,6 +2295,8 @@ pub struct Engine<L> {
     quanta: u64,
     pending_control: Vec<ControlOperation>,
     pending_event_log_entries: Vec<SchedulerEventLogEntry>,
+    debug_attach: Option<DebugAttachReport>,
+    debug_branch_required: bool,
     next_control_sequence: u64,
     boundary_control_log: Vec<SessionControlLogEntry>,
     next_boundary_control_sequence: u64,
@@ -2178,6 +2324,8 @@ impl<L> Engine<L> {
             quanta: 0,
             pending_control: Vec::new(),
             pending_event_log_entries: Vec::new(),
+            debug_attach: None,
+            debug_branch_required: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -2211,6 +2359,8 @@ impl<L> Engine<L> {
             quanta: 0,
             pending_control: Vec::new(),
             pending_event_log_entries: Vec::new(),
+            debug_attach: None,
+            debug_branch_required: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -2286,6 +2436,18 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn breakpoint_firings(&self) -> &[BreakpointFiring] {
         &self.breakpoint_firings
+    }
+
+    /// Returns the active debug attach, if one is open.
+    #[must_use]
+    pub fn debug_attach(&self) -> Option<&DebugAttachReport> {
+        self.debug_attach.as_ref()
+    }
+
+    /// Returns whether forward or mutating use must first mark a debug branch.
+    #[must_use]
+    pub const fn debug_branch_required(&self) -> bool {
+        self.debug_branch_required
     }
 
     /// Returns the number of scheduler quanta driven by this engine.
@@ -2517,6 +2679,81 @@ impl<L> Engine<L> {
             state: self.state.clone(),
             operation,
         }
+    }
+
+    fn current_debug_attach(
+        &self,
+        operation: &'static str,
+    ) -> Result<DebugAttachReport, SessionError> {
+        self.debug_attach
+            .clone()
+            .ok_or(SessionError::DebugAttachRequired { operation })
+    }
+
+    fn reject_debug_forward_without_branch(
+        &self,
+        command: &SessionCommand,
+    ) -> Result<(), SessionError> {
+        if self.debug_branch_required && command.requires_non_canonical_debug_branch() {
+            return Err(SessionError::DebugNonCanonicalBranchRequired {
+                operation: SessionCommandKind::from(command).operation_name(),
+            });
+        }
+        Ok(())
+    }
+
+    fn update_debug_position(
+        &mut self,
+        previous_attach: &DebugAttachReport,
+        goto: &DebugGotoReport,
+    ) -> Result<DebugAttachReport, SessionError> {
+        let configuration = self
+            .graph
+            .checkpoint_configuration(goto.target_configuration)
+            .or_else(|| self.graph.checkpoint_configuration(goto.target_checkpoint))
+            .cloned()
+            .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                checkpoint: goto.target_configuration,
+            }))?;
+        let frontier = self
+            .graph
+            .checkpoint_record(goto.target_configuration)
+            .or_else(|| self.graph.checkpoint_record(goto.target_checkpoint))
+            .map_or_else(
+                || {
+                    let ticks = goto
+                        .runtime
+                        .runtime
+                        .node_icounts
+                        .values()
+                        .map(|icount| icount.retired)
+                        .min()
+                        .unwrap_or_default();
+                    VirtualTime { ticks }
+                },
+                |checkpoint| checkpoint.virtual_time,
+            );
+        self.configuration = configuration.clone();
+        self.runtime = Some(goto.runtime.runtime.clone());
+        self.runtime_instantiated = true;
+        self.frontier = frontier;
+        self.event_log_len = u64_to_usize(goto.runtime.runtime.event_log.events);
+        self.active_step = None;
+        if matches!(self.state, EngineState::Running) {
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+        self.debug_branch_required = true;
+        let request = DebugAttachRequest {
+            configuration,
+            node: previous_attach.gdbstub.node.clone(),
+            qemu_gdbstub: previous_attach.gdbstub.qemu_endpoint.clone(),
+            gdb_listen: previous_attach.gdbstub.operator_listen.clone(),
+        };
+        let refreshed = self.graph.debug_attach(&request)?;
+        self.debug_attach = Some(refreshed.clone());
+        Ok(refreshed)
     }
 
     fn admit_control_operation(&mut self, kind: ControlOperationKind) {
@@ -3051,7 +3288,12 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::RemoveBreakpoint
             | SessionCommandKind::CreateSavepoint
             | SessionCommandKind::Query
-            | SessionCommandKind::Snapshot => {}
+            | SessionCommandKind::Snapshot
+            | SessionCommandKind::AttachGdb
+            | SessionCommandKind::DebugGoto
+            | SessionCommandKind::DebugReverseStep
+            | SessionCommandKind::DebugReverseContinue
+            | SessionCommandKind::DebugForkNonCanonical => {}
         }
         Ok(())
     }
@@ -3063,10 +3305,11 @@ impl<L: QuantumLoop> Engine<L> {
     /// Returns [`SessionError::InvalidTransition`] if the command is not valid
     /// in the current state. Returns [`SessionError::Engine`] or
     /// [`SessionError::Scheduler`] if the model or scheduler boundary fails.
-    pub fn apply_command(
-        &mut self,
-        command: SessionCommand,
-    ) -> Result<EngineSnapshot, SessionError> {
+    pub fn apply_command(&mut self, command: SessionCommand) -> Result<EngineSnapshot, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.reject_debug_forward_without_branch(&command)?;
         match &command {
             SessionCommand::Start => {
                 if matches!(self.state, EngineState::Loaded) {
@@ -3241,6 +3484,84 @@ impl<L: QuantumLoop> Engine<L> {
                 reply.complete(Ok(result));
                 Ok(snapshot)
             }
+            SessionCommand::AttachGdb {
+                node,
+                listen,
+                reply,
+            } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let info = self
+                        .quantum_loop
+                        .open_gdbstub(node.clone(), listen.clone())?;
+                    let qemu_endpoint = info.qemu_endpoint.clone();
+                    let operator_listen = info.operator_listen.as_str().to_owned();
+                    let request = DebugAttachRequest::new(
+                        self.configuration.clone(),
+                        info.node,
+                        qemu_endpoint,
+                        operator_listen,
+                    )?;
+                    let attach = self.graph.debug_attach(&request)?;
+                    self.debug_attach = Some(attach.clone());
+                    reply.complete(Ok(attach));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::DebugGoto { request, reply } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let attach = self.current_debug_attach("debug-goto")?;
+                    let report = self.graph.debug_goto(&attach, request)?;
+                    let _refreshed = self.update_debug_position(&attach, &report)?;
+                    reply.complete(Ok(report));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::DebugReverseStep { request, reply } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let attach = self.current_debug_attach("debug-reverse-step")?;
+                    let report = self.graph.debug_reverse_step(&attach, request)?;
+                    let _refreshed = self.update_debug_position(&attach, &report.goto)?;
+                    reply.complete(Ok(report));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::DebugReverseContinue { request, reply } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let attach = self.current_debug_attach("debug-reverse-continue")?;
+                    let report = self.graph.debug_reverse_continue(&attach, request)?;
+                    if let Some(matched) = report.matched.as_ref() {
+                        let _refreshed = self.update_debug_position(&attach, &matched.goto)?;
+                    }
+                    reply.complete(Ok(report));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::DebugForkNonCanonical { request, reply } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    let attach = self.current_debug_attach("debug-fork-non-canonical")?;
+                    let report = self
+                        .graph
+                        .debug_non_canonical_branch(&attach, request, &[])?;
+                    self.debug_branch_required = false;
+                    reply.complete(Ok(report));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
         }
     }
 
@@ -3418,6 +3739,18 @@ pub enum SessionError {
         action: &'static str,
         /// Stable reason for rejecting the fault action.
         reason: &'static str,
+    },
+    /// A debug command that needs an active gdb attach was issued before attach.
+    #[error("debug operation {operation} requires an active gdb attach")]
+    DebugAttachRequired {
+        /// Debug operation that requires an attach.
+        operation: &'static str,
+    },
+    /// A command would advance or mutate from a repositioned debug coordinate.
+    #[error("debug operation {operation} requires a NON-CANONICAL debug branch first")]
+    DebugNonCanonicalBranchRequired {
+        /// Operation blocked until branch metadata is recorded.
+        operation: &'static str,
     },
 }
 
@@ -3905,11 +4238,14 @@ where
 mod tests {
     use super::*;
     use crucible::{
-        Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind,
+        Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind, ChoiceTag,
+        DebugNonCanonicalBranchAction, DebugNonCanonicalBranchTrigger, DebugOperatorControlKind,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, Event, EventGraph, EventGraphState,
-        EventId, EventKey, GenesisCheckpoint, LogLevel, MembershipFault, NodeId, NodeLifecycle,
-        Predicate, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerNodeId,
-        SchedulingNodeKind, Seed, TimerId, TriggerActionApplication, VirtualTime, step,
+        EventId, EventKey, GdbAttachInfo, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
+        NodeLifecycle, NodeTemplate, OverrideDecision, Predicate, ReadyPoint, ScenarioDef,
+        ScheduledEvent, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint,
+        Seed, TimerId, TriggerActionApplication, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+        World, WorldNode, bake, step, try_step,
     };
 
     #[test]
@@ -4117,6 +4453,11 @@ mod tests {
                 SessionCommandKind::Fork,
                 SessionCommandKind::Query,
                 SessionCommandKind::Snapshot,
+                SessionCommandKind::AttachGdb,
+                SessionCommandKind::DebugGoto,
+                SessionCommandKind::DebugReverseStep,
+                SessionCommandKind::DebugReverseContinue,
+                SessionCommandKind::DebugForkNonCanonical,
             ]
         );
         assert_eq!(
@@ -4403,6 +4744,116 @@ mod tests {
         let fork = receive_reply(fork_receiver).await;
         assert_eq!(fork.checkpoint, engine.configuration().id());
         assert_eq!(fork.configuration, engine.configuration().id());
+    }
+
+    #[tokio::test]
+    async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
+        let (root, first, second, graph) = debug_time_travel_fixture();
+        let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("debug fixture should instantiate: {error}");
+        }
+        let (attach_reply, attach_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            reply: attach_reply,
+        }) {
+            panic!("attach-gdb should use the loop gdbstub capability: {error}");
+        }
+        let attach = receive_reply(attach_receiver).await;
+        assert_eq!(attach.configuration, second.id());
+        assert!(attach.has_four_channel_debug_boundary());
+        assert!(engine.boundary_control_log().is_empty());
+
+        let (reverse_continue_reply, reverse_continue_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugReverseContinue {
+            request: DebugReverseContinueRequest::new(
+                second.clone(),
+                Condition::At {
+                    at: VirtualTime { ticks: 1 },
+                },
+                Vec::new(),
+            ),
+            reply: reverse_continue_reply,
+        }) {
+            panic!("reverse-continue with no matching prefix should complete: {error}");
+        }
+        assert!(
+            receive_reply(reverse_continue_receiver)
+                .await
+                .matched
+                .is_none()
+        );
+        assert!(!engine.debug_branch_required());
+
+        let (goto_reply, goto_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
+            reply: goto_reply,
+        }) {
+            panic!("debug goto should delegate to restore-plus-replay: {error}");
+        }
+        let goto = receive_reply(goto_receiver).await;
+        assert_eq!(goto.target_configuration, first.id());
+        assert_eq!(engine.configuration().id(), first.id());
+        assert_eq!(
+            engine.debug_attach().map(|active| active.configuration),
+            Some(first.id())
+        );
+        assert!(engine.debug_branch_required());
+        assert!(engine.boundary_control_log().is_empty());
+
+        let blocked = engine
+            .apply_command(SessionCommand::Continue)
+            .expect_err("continuing after debug reposition must require branch metadata");
+        assert!(matches!(
+            blocked,
+            SessionError::DebugNonCanonicalBranchRequired {
+                operation: "continue"
+            }
+        ));
+
+        let branch_request = DebugNonCanonicalBranchRequest::new(
+            first.clone(),
+            engine.frontier(),
+            DebugNonCanonicalBranchTrigger::OperatorContinue,
+        )
+        .with_action(DebugNonCanonicalBranchAction::operator_control(
+            DebugOperatorControlKind::Continue,
+        ));
+        let (branch_reply, branch_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
+            request: branch_request,
+            reply: branch_reply,
+        }) {
+            panic!("non-canonical debug branch should clear forward guard: {error}");
+        }
+        let branch = receive_reply(branch_receiver).await;
+        assert!(branch.proves_non_canonical_debug_branch());
+        assert!(!engine.debug_branch_required());
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue after non-canonical branch marker should be accepted: {error}");
+        }
+
+        let (reverse_step_reply, reverse_step_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(
+                first.clone(),
+                DebugReverseStepGrain::Instruction,
+                Vec::new(),
+            ),
+            reply: reverse_step_reply,
+        }) {
+            panic!("reverse-step should delegate through debug goto: {error}");
+        }
+        let reverse_step = receive_reply(reverse_step_receiver).await;
+        assert_eq!(reverse_step.target_configuration, root.id());
+        assert!(reverse_step.realized_by_goto());
+        assert_eq!(engine.configuration().id(), root.id());
+        assert!(engine.debug_branch_required());
+        assert!(engine.boundary_control_log().is_empty());
     }
 
     #[tokio::test]
@@ -7664,6 +8115,107 @@ mod tests {
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
                 scheduler_quiescence: None,
             })
+        }
+    }
+
+    struct DebugGdbLoop;
+
+    impl QuantumLoop for DebugGdbLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime::default(),
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn open_gdbstub(
+            &mut self,
+            node: NodeId,
+            listen: GdbListen,
+        ) -> Result<GdbAttachInfo, SchedulerError> {
+            GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
+        }
+    }
+
+    fn debug_time_travel_fixture() -> (Configuration, Configuration, Configuration, TemporalGraph) {
+        let world = single_node_debug_world("session-command")
+            .unwrap_or_else(|error| panic!("debug world should build: {error}"));
+        let scenario = world.scenario_def();
+        let root = Configuration::genesis(scenario.clone());
+        let first = try_step(
+            &root,
+            override_decision("session/debug-time-travel", "first"),
+        )
+        .unwrap_or_else(|error| panic!("first debug step should build: {error}"));
+        let second = try_step(
+            &first,
+            override_decision("session/debug-time-travel", "second"),
+        )
+        .unwrap_or_else(|error| panic!("second debug step should build: {error}"));
+        let mut graph = TemporalGraph::empty()
+            .with_baked_genesis(
+                &scenario,
+                bake(&world).unwrap_or_else(|error| panic!("debug world should bake: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("debug graph should have baked genesis: {error}"));
+        graph
+            .record_thin_checkpoint(&first)
+            .unwrap_or_else(|error| panic!("first checkpoint should record: {error}"));
+        graph
+            .record_thin_checkpoint(&second)
+            .unwrap_or_else(|error| panic!("second checkpoint should record: {error}"));
+        (root, first, second, graph)
+    }
+
+    fn single_node_debug_world(label: &str) -> Result<World, EngineError> {
+        World::from_nodes(vec![WorldNode {
+            id: node_id("guest-a"),
+            arch: VmArchitecture::X86_64,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: format!("crucible-session-debug={label}"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: crucible::Icount { retired: 100 },
+            },
+            white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }])
+    }
+
+    fn override_decision(point: &str, choice: &str) -> Decision {
+        Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: point.to_owned(),
+            },
+            choice: ChoiceTag {
+                name: choice.to_owned(),
+            },
+        })
+    }
+
+    fn gdb_listen(endpoint: &str) -> GdbListen {
+        GdbListen::new(endpoint)
+            .unwrap_or_else(|error| panic!("test gdb listen should be stable: {error}"))
+    }
+
+    fn node_id(name: &str) -> NodeId {
+        NodeId {
+            name: name.to_owned(),
         }
     }
 

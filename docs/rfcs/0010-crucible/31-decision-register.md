@@ -807,13 +807,14 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** file 36 ([DBG-*]), [SESS-32], [SESS-33], [CLI-27]; references
   [ADV-33], [INV-2], D-8.
 - **Phase-0 S14 outcome:** `checks.crucible.phase0.s14GdbstubFallback` found no
-  hermetic gdb client package, no implemented session/CLI `open_gdbstub` path,
-  and no known gdbstub single-step mediation hook in the scanned AOS QEMU
-  patch/plugin integration surface. D-30 remains the target architecture
-  decision, but Phase 0 enables only the conservative policy fallback:
+  hermetic gdb client package and no known gdbstub single-step mediation hook in
+  the scanned AOS QEMU patch/plugin integration surface. The session/backend
+  `open_gdbstub` path is implemented by
+  `checks.crucible.phase5.sessionDebugTimeTravel`; D-30 remains the target
+  architecture decision, but Phase 0 still enables only the conservative policy fallback:
   `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`.
   Live read-only attach neutrality and gdb single-step routing are not claimed
-  until the debug surface is implemented and S14 passes without fallback.
+  until a hermetic gdb client, CLI live attach path, and S14 gate pass without fallback.
 
 ---
 
@@ -1660,15 +1661,17 @@ register.
 - **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
   - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is
     not runnable yet because the current repository has no hermetic gdb client,
-    backend `open_gdbstub` implementation, CLI debug command, or AOS QEMU gdbstub
-    mediation hook/gate.
+    CLI live attach command, or AOS QEMU gdbstub mediation hook/gate. The
+    session/backend `open_gdbstub` surface is implemented by
+    `checks.crucible.phase5.sessionDebugTimeTravel`, but that is not a live S14
+    neutrality measurement.
   - **Check:** `checks.crucible.phase0.s14GdbstubFallback`.
   - **Result:** `scan_scope=pkgs_emulation_crates_rfc_debug_specs`,
     `hermetic_gdb_client_available=false`,
     `qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin`,
     `known_aos_qemu_gdbstub_step_hook_detected=false`,
     `aos_qemu_gdbstub_mediation_patch_implemented=false`,
-    `session_open_gdbstub_implemented=false`,
+    `session_open_gdbstub_implemented=true`,
     `cli_debug_command_implemented=false`,
     `read_only_gdbstub_ops_tested=false`,
     `read_only_fingerprint_neutral=not_tested`,
@@ -1678,7 +1681,7 @@ register.
     `raw_gdb_single_step_allowed_by_crucible_policy=false`,
     `policy_enforcement_runtime=not_implemented`,
     `default_debug_policy=read_only_attach_crucible_driven_step_reverse_step`,
-    `live_gdbstub_attach_gate_status=fallback_pending_debug_surface`,
+    `live_gdbstub_attach_gate_status=fallback_pending_hermetic_gdb_client_and_mediation_gate`,
     `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
     `s1_horizon_extended_hash=9d1e61606ac54920`,
     `s1_pause_retired=3200000005`,

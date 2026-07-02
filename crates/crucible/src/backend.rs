@@ -123,6 +123,29 @@ pub trait SimulationBackend {
     /// Returns a [`BackendError`] when the fingerprint cannot be read.
     fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError>;
 
+    /// Opens the optional out-of-band debugger gdbstub channel for `node`.
+    ///
+    /// This capability is intentionally optional. Backends without a real
+    /// mediated gdbstub must return [`BackendError::Unsupported`] rather than
+    /// faking a debugger endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when the backend does not support gdbstub
+    /// attachment, the requested listener cannot be honored, or the attach
+    /// channel cannot be opened.
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, BackendError> {
+        let _ = node;
+        let _ = listen;
+        Err(BackendError::Unsupported {
+            capability: "open_gdbstub",
+        })
+    }
+
     /// Shuts all backend nodes down.
     ///
     /// # Errors
@@ -221,6 +244,86 @@ pub struct FingerprintSample {
     pub fingerprint: ExecutionFingerprint,
 }
 
+/// Operator-facing gdb-protocol listen endpoint requested by a debug attach.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GdbListen {
+    endpoint: String,
+}
+
+impl GdbListen {
+    /// Builds a stable debugger listen endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::Rejected`] when `endpoint` is empty or contains
+    /// newline or NUL bytes.
+    pub fn new(endpoint: impl Into<String>) -> Result<Self, BackendError> {
+        let endpoint = endpoint.into();
+        validate_gdb_endpoint("gdb_listen", &endpoint)?;
+        Ok(Self { endpoint })
+    }
+
+    /// Returns the endpoint text supplied to the backend.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+/// Report returned after a backend exposes a mediated gdbstub channel.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GdbAttachInfo {
+    /// Node whose gdbstub is exposed.
+    pub node: NodeId,
+    /// Backend-owned raw gdbstub endpoint.
+    pub qemu_endpoint: String,
+    /// Operator-facing listener served by Crucible.
+    pub operator_listen: GdbListen,
+    /// Whether Crucible mediates the raw backend gdbstub.
+    pub mediated_by_crucible: bool,
+    /// Whether the gdbstub channel is outside scheduler delivery order.
+    pub out_of_band: bool,
+    /// Whether debugger traffic carries per-quantum timing data.
+    pub carries_per_quantum_timing: bool,
+    /// Whether debugger traffic carries guest frame data.
+    pub carries_frame_data: bool,
+}
+
+impl GdbAttachInfo {
+    /// Builds a report for a mediated out-of-band gdbstub attach.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::Rejected`] when `qemu_endpoint` is not stable
+    /// endpoint text.
+    pub fn new(
+        node: NodeId,
+        qemu_endpoint: impl Into<String>,
+        operator_listen: GdbListen,
+    ) -> Result<Self, BackendError> {
+        let qemu_endpoint = qemu_endpoint.into();
+        validate_gdb_endpoint("qemu_gdbstub", &qemu_endpoint)?;
+        Ok(Self {
+            node,
+            qemu_endpoint,
+            operator_listen,
+            mediated_by_crucible: true,
+            out_of_band: true,
+            carries_per_quantum_timing: false,
+            carries_frame_data: false,
+        })
+    }
+
+    /// Returns whether the channel is a read-only out-of-band debug proxy.
+    #[must_use]
+    pub const fn is_out_of_band_debug_proxy(&self) -> bool {
+        self.mediated_by_crucible
+            && self.out_of_band
+            && !self.carries_per_quantum_timing
+            && !self.carries_frame_data
+    }
+}
+
 /// Deterministic input delivered to a backend.
 ///
 /// This payload represents backend delivery for model-controlled inputs, not a
@@ -242,6 +345,11 @@ pub enum BackendError {
         /// The operation whose implementation is deferred.
         operation: &'static str,
     },
+    /// The backend does not support an optional capability.
+    Unsupported {
+        /// Optional capability rejected by this backend.
+        capability: &'static str,
+    },
     /// The backend rejected a request.
     Rejected {
         /// A deterministic diagnostic message.
@@ -255,12 +363,24 @@ impl fmt::Display for BackendError {
             Self::NotImplemented { operation } => {
                 write!(f, "backend operation {operation} is not implemented yet")
             }
+            Self::Unsupported { capability } => {
+                write!(f, "backend capability {capability} is unsupported")
+            }
             Self::Rejected { message } => f.write_str(message),
         }
     }
 }
 
 impl Error for BackendError {}
+
+fn validate_gdb_endpoint(field: &'static str, value: &str) -> Result<(), BackendError> {
+    if value.is_empty() || value.chars().any(|ch| matches!(ch, '\n' | '\0')) {
+        return Err(BackendError::Rejected {
+            message: format!("{field} endpoint is invalid"),
+        });
+    }
+    Ok(())
+}
 
 /// In-memory backend used for state-machine tests of [`SimulationBackend`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -398,6 +518,18 @@ impl SimulationBackend for MockSimulationBackend {
         })
     }
 
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, BackendError> {
+        let _ = node;
+        let _ = listen;
+        Err(BackendError::Unsupported {
+            capability: "open_gdbstub",
+        })
+    }
+
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.state.shutdown = true;
         Ok(())
@@ -479,5 +611,29 @@ mod tests {
 
         assert!(error.to_string().contains("cannot advance backwards"));
         assert_eq!(backend.now(), VirtualTime { ticks: 7 });
+    }
+
+    #[test]
+    fn mock_simulation_backend_rejects_gdbstub_capability_with_typed_error() {
+        let mut backend = MockSimulationBackend::new();
+        let listen = match GdbListen::new("127.0.0.1:9000") {
+            Ok(listen) => listen,
+            Err(error) => panic!("test listen endpoint should be valid: {error}"),
+        };
+        let error = backend
+            .open_gdbstub(
+                NodeId {
+                    name: String::from("node-a"),
+                },
+                listen,
+            )
+            .expect_err("mock backend must not fake a gdbstub");
+
+        assert_eq!(
+            error,
+            BackendError::Unsupported {
+                capability: "open_gdbstub",
+            }
+        );
     }
 }
