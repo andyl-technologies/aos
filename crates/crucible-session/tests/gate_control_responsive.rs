@@ -6,19 +6,39 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ControlFaultAction, ControlFaultDecision,
-    ControlOperation, ControlOperationKind, Decision, DeliveryOrderDecision, EventClass,
-    EventDiagnosticPayload, EventKey, EventLevel, EventSource, Fault,
+    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration, ControlFaultAction,
+    ControlFaultDecision, ControlOperation, ControlOperationKind, Decision, DeliveryOrderDecision,
+    EventClass, EventDiagnosticPayload, EventKey, EventLevel, EventSource, Fault,
     FaultSlowdownFactorBasisPoints, FaultTag, GenesisCheckpoint, NodeFault, NodeId, QuantumLoop,
     QuantumOutcome, QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
-    TemporalGraph, VirtualTime, compare_event_log_determinism, step,
+    SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
+    compare_event_log_determinism, step,
 };
+use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::{
     Engine, EngineState, EventLogCursor, LiveQueryKind, LiveQueryResult, LiveStateKind, Outcome,
     PauseReason, SessionActor, SessionCommand,
 };
 use tokio::sync::mpsc;
+
+const CONTROL_RESPONSIVE_BACKEND: &str = "crucible::SimDouble quantum-loop adapter";
+const CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU: bool = false;
+const FIDELITY_PROPERTIES_REQUIRING_QEMU: [&str; 3] =
+    ["contract-a", "guest-non-mutation", "patch-inertness"];
+
+#[test]
+fn gate_control_responsive_declares_in_process_sim_double_backend() {
+    assert_eq!(
+        CONTROL_RESPONSIVE_BACKEND,
+        "crucible::SimDouble quantum-loop adapter"
+    );
+    assert!(!CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU);
+    assert_eq!(
+        FIDELITY_PROPERTIES_REQUIRING_QEMU,
+        ["contract-a", "guest-non-mutation", "patch-inertness"]
+    );
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip() {
@@ -526,8 +546,8 @@ async fn receive_state_transition(
     }
 }
 
-#[derive(Default)]
 struct SimDoubleQuantumLoop {
+    backend: SimDouble,
     quanta: u64,
     event_log_events: u64,
     observed_control: Arc<Mutex<Vec<ControlOperationKind>>>,
@@ -536,6 +556,7 @@ struct SimDoubleQuantumLoop {
 impl SimDoubleQuantumLoop {
     fn new(observed_control: Arc<Mutex<Vec<ControlOperationKind>>>) -> Self {
         Self {
+            backend: ready_sim_double(),
             quanta: 0,
             event_log_events: 0,
             observed_control,
@@ -546,6 +567,10 @@ impl SimDoubleQuantumLoop {
 impl QuantumLoop for SimDoubleQuantumLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.quanta = self.quanta.saturating_add(1);
+        self.apply_backend_control(&request.control)?;
+        let observation =
+            SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
+        assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
         let decision = generated_decision(self.quanta);
         let configuration = step(&request.configuration, decision.clone());
         let control = request.control;
@@ -579,12 +604,52 @@ impl QuantumLoop for SimDoubleQuantumLoop {
         &mut self,
         control: Vec<ControlOperation>,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.apply_backend_control(&control)?;
         record_control_operations(&self.observed_control, &control);
         Ok(self.event_log_entries(&control))
     }
 }
 
 impl SimDoubleQuantumLoop {
+    fn apply_backend_control(
+        &mut self,
+        control: &[ControlOperation],
+    ) -> Result<(), SchedulerError> {
+        for operation in control {
+            match &operation.kind {
+                ControlOperationKind::Snapshot => {
+                    let _snapshot = SimulationBackend::snapshot(&mut self.backend)?;
+                }
+                ControlOperationKind::Query => {
+                    let _fingerprint =
+                        SimulationBackend::fingerprint(&mut self.backend, control_node().node)?;
+                }
+                ControlOperationKind::Inject => {
+                    let input = BackendInput {
+                        node: control_node().node,
+                        payload: b"session-control-inject".to_vec(),
+                    };
+                    let now = SimulationBackend::now(&self.backend);
+                    SimulationBackend::apply(
+                        &mut self.backend,
+                        &BackendEffect::DeliverInput(input),
+                        now,
+                    )?;
+                }
+                ControlOperationKind::Pause
+                | ControlOperationKind::Resume
+                | ControlOperationKind::Step
+                | ControlOperationKind::Fork
+                | ControlOperationKind::InjectFault { .. }
+                | ControlOperationKind::HealFault { .. } => {
+                    let now = SimulationBackend::now(&self.backend);
+                    SimulationBackend::apply(&mut self.backend, &BackendEffect::Noop, now)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn event_log_entries(&mut self, control: &[ControlOperation]) -> Vec<SchedulerEventLogEntry> {
         let base = self.event_log_events;
         let mut entries = Vec::new();
@@ -613,6 +678,34 @@ impl SimDoubleQuantumLoop {
             .event_log_events
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
         entries
+    }
+}
+
+fn ready_sim_double() -> SimDouble {
+    let mut backend = SimDouble::new(SimDoubleConfig::default())
+        .unwrap_or_else(|error| panic!("SimDouble test backend should build: {error}"));
+    complete_sim_double_setup(&mut backend);
+    backend
+}
+
+fn complete_sim_double_setup(backend: &mut SimDouble) {
+    let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: backend.shmem_header_snapshot().abi_version,
+        slot_index: 0,
+        node_count: backend.shmem_layout().node_count,
+    });
+    if let Err(error) = backend.accept_host_control_frame(&hello_ack) {
+        panic!("SimDouble hello acknowledgement should succeed: {error}");
+    }
+
+    let setup = control_encode_host_msg(&HostMsg::Setup {
+        region_len: backend.shmem_layout().region_size,
+    });
+    match backend.accept_host_control_frame(&setup) {
+        Ok(Some(_setup_ack)) => {}
+        Ok(None) => panic!("SimDouble setup should return a setup acknowledgement"),
+        Err(error) => panic!("SimDouble setup should succeed: {error}"),
     }
 }
 

@@ -1222,10 +1222,19 @@ pub enum SessionError {
     rejection of trait-level SimDouble outbound sends without scheduler
     authorization, and QEMU channel routing plus restore-time mirror updates
     without introducing a backend-owned timing source.
-- [ ] **T-SESS-12** Run the full session/lifecycle/command suite and
+- [x] **T-SESS-12** Run the full session/lifecycle/command suite and
   `gate:control-responsive` / `gate:scheduler-liveness` against the in-process
   `SimDouble` (no real QEMU), asserting only fidelity properties require the QEMU
   backend. — satisfies [SESS-28]; spec §10; cross-ref 24 §2, §3.
+  - Completed by `checks.crucible.phase5.sessionSimDoubleSuite`: the aggregate
+    runs the full `crucible-session` suite, the API and daemon
+    `gate_control_responsive` targets, and `gate:scheduler-liveness` under the
+    `test-double` feature with an initialized and stepped `crucible::SimDouble`
+    smoke path before the pure scheduler-liveness reduction. Source checks assert
+    the session/API/daemon control-responsive paths drive `crucible::SimDouble`
+    through quantum-loop adapters, avoid QEMU backend construction or process
+    launch, and reserve real QEMU for Contract A, guest non-mutation, and patch
+    inertness fidelity properties only.
 - [ ] **T-SESS-13** Implement the read-only debugging / time-travel command set
   (attach_gdb/goto/reverse_step/reverse_continue) as repositioning over
   checkpoint-restore + deterministic replay, excluded from the schedule like
