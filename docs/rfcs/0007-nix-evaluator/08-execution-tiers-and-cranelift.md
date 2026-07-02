@@ -1142,9 +1142,26 @@ harness, never cut for scope.
       roots, threshold and multi-use promotion, installed-slot no-repeat
       compilation, deferred lowering errors, slot counter preservation on success
       and promoted errors, pointer equality, and module ownership. This is still
+      unregistered safe preflight assembly only: no evaluator heap thunk is
+      mutated, no atomic thunk-state CAS runs, no native code pointer is cast or
+      called, and runtime-call lowering remains rejected by this path.
+- [x] Current registered-symbol promotion-gated tier-1 compile/install preflight:
+      `ratchet-jit::cranelift::jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates()`
+      records one invocation on an existing `JitTieredCodeSlot`, applies
+      `TierUpPolicy`, and only when policy requests tier-1 promotion lowers a
+      currently-supported literal or local env-slot IR root, finalizes it through
+      the registered-symbol path, installs the opaque pointer metadata into the
+      updated slot, and keeps the `JITModule` owner in the promoted result. Tests
+      pin cold no-compile behavior for unsupported roots, env-slot threshold
+      promotion with a synthetic relocation target for `aos_env_get`, wrapped
+      env-slot and wrapped literal roots, literal multi-use promotion without
+      runtime candidates, promoted missing-candidate failure with slot counter
+      preservation, deferred lowering errors, pointer equality,
+      registered/imported symbol metadata, and module ownership. This is still
       safe preflight assembly only: no evaluator heap thunk is mutated, no atomic
-      thunk-state CAS runs, no native code pointer is cast or called, and
-      generic/runtime-call lowering remains open.
+      thunk-state CAS runs, registered addresses are not directly dereferenced or
+      called, no native code pointer is cast or called, and generic runtime-call
+      lowering beyond the env-slot precursor remains open.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability
