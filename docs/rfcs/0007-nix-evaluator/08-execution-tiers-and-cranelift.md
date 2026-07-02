@@ -395,7 +395,7 @@ generous with tier 1.
 
 Lowering IR to Cranelift CLIF is a tree-directed translation: each IR node kind
 emits a small CLIF sequence. Most nodes emit a **call to a runtime symbol** rather
-than open-coded logic — `aos_force`, `aos_alloc_thunk`, `aos_select_ic`,
+than open-coded logic — `aos_force`, `aos_alloc_thunk`, `aos_has_attr`, `aos_select_ic`,
 `aos_apply`, `nix.builtin.<name>` — so that the *engine* stays thin and the *semantics*
 live in Rust. This is the single most important structural decision in the JIT and
 is detailed in [§7](#7-the-runtime-abi). Tier 2 differs from tier 1 only in that it
@@ -685,6 +685,7 @@ The core set:
 | `aos_apply` | `(rt, Value fn, Value arg) -> Value` | Apply a (forced) lambda or partial application to one argument. |
 | `aos_alloc_thunk` | `(rt, code_ptr, env) -> Value` | Allocate a suspended thunk. Routes through the active GC strategy (arena or generational). |
 | `aos_alloc_attrs` | `(rt, shape, *fields) -> Value` | Allocate an attrset of a given [hidden class](09-attribute-sets-hidden-classes-and-inline-caches.md). |
+| `aos_has_attr` | `(rt, Value attrs, sym, ic_site) -> Value` | Static-key attr presence check returning a Nix boolean through the attrset-access helper boundary. |
 | `aos_select_ic` | `(rt, Value attrs, sym, ic_site) -> Value` | Attribute select through a per-site [inline cache](09-attribute-sets-hidden-classes-and-inline-caches.md). |
 | `aos_env_get` | `(env, slot) -> Value` | Read a de Bruijn env slot. |
 | `nix.builtin.<name>` | `(rt, args...) -> Value` | One symbol per [builtin](10-primops-and-runtime-abi.md) (~120). Dispatched by perfect hashing where indirect. |
@@ -838,7 +839,7 @@ package set, not by assertion:
   analysis, guarded by **deoptimization** back to the oracle and (as a follow-up)
   **OSR** into running activations.
 - A **uniform `extern "C"` ABI** (`ThunkFn`/`LambdaFn`) plus a fixed **runtime
-  symbol table** (`aos_force`, `aos_alloc_*`, `aos_select_ic`, `nix.builtin.*`,
+  symbol table** (`aos_force`, `aos_alloc_*`, `aos_has_attr`, `aos_select_ic`, `nix.builtin.*`,
   `aos_deopt`) makes the engine GC-strategy-agnostic and tier-agnostic: semantics
   are written once in Rust, and a tier swap is a `code_ptr` swap.
 - **Cranelift** is chosen for fast warmup, pure-Rust hermeticity, a first-class JIT
@@ -902,7 +903,7 @@ harness, never cut for scope.
 - [x] Current uniform runtime-call ABI metadata precursor:
       `ratchet-core::runtime_abi` publishes safe `RuntimeCallSignature`
       descriptors for compiled thunk bodies, compiled lambda bodies,
-      builtin-primop wrappers, and the core-owned allocation, attrset select-IC,
+      builtin-primop wrappers, and the core-owned allocation, attrset has-attr/select-IC,
       call-control apply, deoptimization, environment-access, error-control
       throw, force/deep-force, and write-barrier helper shapes. The descriptors
       pin `extern "C"`, the shared `rt` prefix, thunk/lambda/primop `env` and
@@ -926,7 +927,7 @@ harness, never cut for scope.
       lowering or symbol registration: no builtin wrapper addresses, exported C
       ABI functions, raw-pointer calls, or `JITBuilder::symbol` entries exist
       here.
-- [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `nix.builtin.<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
+- [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_has_attr`, `aos_select_ic`, `aos_env_get`, `nix.builtin.<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
 - [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
       heap object creation through `BumpArena::aos_alloc_*`
       entry-point-shaped Rust helpers for strings and paths, contiguous lists,
@@ -964,13 +965,13 @@ harness, never cut for scope.
       classifying each symbol as a currently bound allocation, call-control,
       environment-access, forcing, or write-barrier helper, an unbound future
       helper role, or a builtin. Tests cross-check core-manifest order, exact
-      safe-helper binding coverage including `aos_apply`, `aos_env_get`, and
-      both forcing helpers. Representative unbound helpers include
-      `aos_blackhole_check`, plus remaining attr/error helpers, and a representative
+      safe-helper binding coverage including `aos_apply`, `aos_has_attr`,
+      `aos_select_ic`, `aos_env_get`, and both forcing helpers. Representative
+      unbound helpers include `aos_blackhole_check`, `aos_update`, error helpers, and a representative
       builtin symbol.
       This is binding-status metadata only; it attaches no function pointers,
       exports no wrappers, registers no Cranelift symbols, and leaves
-      builtin/blackhole-check/remaining-attr/error helper addresses unbound.
+      builtin/blackhole-check/update/error helper addresses unbound.
 - [x] Current runtime symbol registration-preflight precursor:
       `ratchet-oracle::runtime::helpers::runtime_symbol_registration_preflight()`
       turns the binding manifest into a deterministic readiness report for
@@ -1010,12 +1011,12 @@ harness, never cut for scope.
       composes a verified CLIF artifact with the address-free JIT runtime-symbol
       declaration preflight. The checked
       `jit_module_readiness_plan_for_artifact()` gate preserves callable builtin
-      declarations plus core-owned allocation, attrset select-IC,
+      declarations plus core-owned allocation, attrset has-attr/select-IC,
       call-control apply, deoptimization, environment-access,
       error-control throw, write-barrier, and force/deep-force helper
       declarations, but currently rejects complete setup while unshaped helpers
-      (`aos_blackhole_check`, `aos_has_attr`, `aos_try_begin`, `aos_try_end`,
-      and `aos_update`) and value-only builtin declaration gaps
+      (`aos_blackhole_check`, `aos_try_begin`, `aos_try_end`, and `aos_update`)
+      and value-only builtin declaration gaps
       remain. Tests pin artifact metadata, callable builtin declaration
       visibility, representative helper gaps, the
       incomplete-plan error, and a synthetic complete conversion. This readiness
@@ -1040,14 +1041,14 @@ harness, never cut for scope.
       `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
       and declares every currently shape-known callable builtin plus
-      core-owned allocation, attrset select-IC, call-control apply,
+      core-owned allocation, attrset has-attr/select-IC, call-control apply,
       deoptimization, environment-access, error-control throw, write-barrier,
       and force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error
-      while unshaped helpers (`aos_blackhole_check`, `aos_has_attr`,
-      `aos_try_begin`, `aos_try_end`, and `aos_update`) and value-only builtin
+      while unshaped helpers (`aos_blackhole_check`, `aos_try_begin`,
+      `aos_try_end`, and `aos_update`) and value-only builtin
       gaps remain. Tests pin the expanded Cranelift crate-version set, imported
       callable builtin/helper declarations, representative helper gaps, and the
       strict setup rejection.
@@ -1257,7 +1258,7 @@ harness, never cut for scope.
       `u32`-sized fields; two `i64` CLIF ABI slots for every by-value `Value`
       argument or return; and no return slots for unit helpers. Tests pin thunk
       and lambda shapes, primop arities 0-3, representative allocation, attrset
-      select-IC, call-control apply, deoptimization, environment-access,
+      has-attr/select-IC, call-control apply, deoptimization, environment-access,
       error-control throw, force, and write-barrier helper shapes, including
       divergent helpers with no CLIF return slots, and the
       16-byte/two-8-byte-word `Value` layout guard. This is
@@ -1276,7 +1277,7 @@ harness, never cut for scope.
 - [x] Current JIT symbol-declaration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` combines
       the stable runtime symbol manifest with callable builtin ABI metadata and
-      core-owned allocation, attrset select-IC, call-control apply,
+      core-owned allocation, attrset has-attr/select-IC, call-control apply,
       deoptimization, environment-access, error-control throw, write-barrier,
       and force/deep-force helper ABI metadata, then lowers those signatures to
       CLIF `Signature` declarations.
@@ -1284,12 +1285,13 @@ harness, never cut for scope.
       and lowers to a host-pointer environment parameter, an `i32` slot
       parameter, and two `i64` return slots; `aos_force`/`aos_force_deep` are
       frozen as `(rt, Value) -> Value`; `aos_apply` is frozen as
-      `(rt, Value function, Value arg) -> Value`; `aos_select_ic` is frozen as
+      `(rt, Value function, Value arg) -> Value`;
+      `aos_has_attr`/`aos_select_ic` are frozen as
       `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`; `aos_deopt`
       is frozen as `(rt, DeoptRecordPointer) -> Value`; `aos_throw` is frozen
       as `(rt, ErrorPointer) -> !`. Unshaped helpers
-      (`aos_blackhole_check`, `aos_has_attr`, `aos_try_begin`, `aos_try_end`,
-      and `aos_update`) and value-only builtins remain explicit gaps. Tests
+      (`aos_blackhole_check`, `aos_try_begin`, `aos_try_end`, and `aos_update`)
+      and value-only builtins remain explicit gaps. Tests
       pin a representative callable builtin declaration, allocation,
       attrset-access, call-control, deoptimization, environment-access,
       error-control, write-barrier, and
@@ -1548,9 +1550,10 @@ harness, never cut for scope.
       allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helper as
       `TrapToEvaluator`, so the native ABI has no null-pointer or sentinel
       failure result: helpers return only on success, while allocation,
-      environment-access, forcing, or barrier failures must transfer to evaluator
-      trap/error machinery. Tests pin the convention for each `aos_alloc_*`,
-      `aos_env_get`, `aos_force`, and `aos_gc_write_barrier` symbol. This remains metadata
+      call-control, attrset-access, environment-access, forcing, or barrier failures
+      must transfer to evaluator trap/error machinery. Tests pin the convention for
+      each `aos_alloc_*`, `aos_apply`, `aos_has_attr`/`aos_select_ic`,
+      `aos_env_get`, `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.

@@ -3075,6 +3075,7 @@ mod tests {
         assert!(preflight.imported_symbol_for("aos_deopt").is_some());
         assert!(preflight.imported_symbol_for("aos_env_get").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert!(preflight.imported_symbol_for("aos_has_attr").is_some());
         assert!(preflight.imported_symbol_for("aos_select_ic").is_some());
         assert!(preflight.imported_symbol_for("aos_throw").is_some());
         assert!(matches!(
@@ -3110,6 +3111,7 @@ mod tests {
         assert!(preflight.imported_symbol_for("aos_apply").is_some());
         assert!(preflight.imported_symbol_for("aos_deopt").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert!(preflight.imported_symbol_for("aos_has_attr").is_some());
         assert!(preflight.imported_symbol_for("aos_select_ic").is_some());
         assert!(preflight.imported_symbol_for("aos_throw").is_some());
         assert!(matches!(
@@ -3233,6 +3235,7 @@ mod tests {
         assert!(preflight.imported_symbol_for("aos_apply").is_some());
         assert!(preflight.imported_symbol_for("aos_deopt").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert!(preflight.imported_symbol_for("aos_has_attr").is_some());
         assert!(preflight.imported_symbol_for("aos_select_ic").is_some());
         assert!(preflight.imported_symbol_for("aos_throw").is_some());
         assert!(matches!(

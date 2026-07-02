@@ -283,6 +283,12 @@ const THROW_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("err", RuntimeAbiParameterKind::ErrorPointer),
 ];
+const HAS_ATTR_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
+    RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
+    RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+];
 const SELECT_IC_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
@@ -402,6 +408,14 @@ const RUNTIME_THROW_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature:
     THROW_PARAMETERS,
     RuntimeAbiReturnKind::Diverges,
 );
+const RUNTIME_HAS_ATTR_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    HAS_ATTR_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 const RUNTIME_SELECT_IC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
@@ -426,6 +440,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_FORCE_CALL_SIGNATURE,
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
+    RUNTIME_HAS_ATTR_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
 ];
@@ -471,6 +486,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_force" => Some(RUNTIME_FORCE_CALL_SIGNATURE),
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
+        "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
         "aos_throw" => Some(RUNTIME_THROW_CALL_SIGNATURE),
         _ => None,
@@ -1338,13 +1354,13 @@ mod tests {
                 "aos_force",
                 "aos_force_deep",
                 "aos_gc_write_barrier",
+                "aos_has_attr",
                 "aos_select_ic",
                 "aos_throw",
             ])
         );
         for symbol_name in [
             "aos_blackhole_check",
-            "aos_has_attr",
             "aos_try_begin",
             "aos_try_end",
             "aos_update",
@@ -1500,26 +1516,30 @@ mod tests {
     }
 
     #[test]
-    fn attrset_helper_call_signature_pins_select_ic_value_boundary() {
+    fn attrset_helper_call_signatures_pin_static_key_value_boundaries() {
+        let has_attr = runtime_helper_call_signature("aos_has_attr")
+            .expect("has-attr signature is core-owned");
         let select_ic = runtime_helper_call_signature("aos_select_ic")
             .expect("select-IC signature is core-owned");
 
-        assert_eq!(
-            select_ic.callable(),
-            RuntimeCallableKind::Helper {
-                symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
-            }
-        );
-        assert_eq!(
-            select_ic.parameters(),
-            &[
-                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
-                RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
-                RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
-                RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
-            ]
-        );
-        assert_eq!(select_ic.return_kind(), RuntimeAbiReturnKind::Value);
+        for (symbol_name, signature) in [("aos_has_attr", has_attr), ("aos_select_ic", select_ic)] {
+            assert_eq!(
+                signature.callable(),
+                RuntimeCallableKind::Helper {
+                    symbol: RuntimeHelperSymbol::new(symbol_name, RuntimeHelperRole::AttrsetAccess,),
+                }
+            );
+            assert_eq!(
+                signature.parameters(),
+                &[
+                    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
+                    RuntimeAbiParameter::new("symbol", RuntimeAbiParameterKind::SymbolId),
+                    RuntimeAbiParameter::new("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+                ]
+            );
+            assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
+        }
     }
 
     #[test]

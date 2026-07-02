@@ -1050,6 +1050,9 @@ mod tests {
         let force_deep_declaration = preflight
             .declaration_for_symbol("aos_force_deep")
             .expect("core-owned deep-force helper has a CLIF declaration");
+        let has_attr_declaration = preflight
+            .declaration_for_symbol("aos_has_attr")
+            .expect("core-owned has-attr helper has a CLIF declaration");
         let select_ic_declaration = preflight
             .declaration_for_symbol("aos_select_ic")
             .expect("core-owned select-IC helper has a CLIF declaration");
@@ -1091,6 +1094,11 @@ mod tests {
                 .expect("deep-force helper signature is core-owned"),
         )
         .expect("deep-force helper signature lowers");
+        let expected_has_attr = clif_signature_for_runtime_call(
+            runtime_helper_call_signature("aos_has_attr")
+                .expect("has-attr helper signature is core-owned"),
+        )
+        .expect("has-attr helper signature lowers");
         let expected_select_ic = clif_signature_for_runtime_call(
             runtime_helper_call_signature("aos_select_ic")
                 .expect("select-IC helper signature is core-owned"),
@@ -1141,6 +1149,11 @@ mod tests {
         );
         assert_eq!(force_deep_declaration.signature(), &expected_force_deep);
         assert_eq!(
+            has_attr_declaration.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess)
+        );
+        assert_eq!(has_attr_declaration.signature(), &expected_has_attr);
+        assert_eq!(
             select_ic_declaration.kind(),
             RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess)
         );
@@ -1157,6 +1170,7 @@ mod tests {
         assert!(preflight.gap_for_symbol("aos_gc_write_barrier").is_none());
         assert!(preflight.gap_for_symbol("aos_force").is_none());
         assert!(preflight.gap_for_symbol("aos_force_deep").is_none());
+        assert!(preflight.gap_for_symbol("aos_has_attr").is_none());
         assert!(preflight.gap_for_symbol("aos_select_ic").is_none());
         assert!(preflight.gap_for_symbol("aos_throw").is_none());
     }
@@ -1168,7 +1182,6 @@ mod tests {
 
         for (symbol_name, role) in [
             ("aos_blackhole_check", RuntimeHelperRole::ForcingControl),
-            ("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
             ("aos_try_begin", RuntimeHelperRole::ErrorControl),
             ("aos_try_end", RuntimeHelperRole::ErrorControl),
             ("aos_update", RuntimeHelperRole::AttrsetAccess),
@@ -1290,6 +1303,13 @@ mod tests {
             preflight.gap_for_symbol("aos_force"),
             Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
                 kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                ..
+            })
+        ));
+        assert!(matches!(
+            preflight.gap_for_symbol("aos_has_attr"),
+            Some(JitRuntimeSymbolRegistrationGap::MissingNativeAddress {
+                kind: RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 ..
             })
         ));
@@ -1428,7 +1448,6 @@ mod tests {
 
         for (symbol_name, role) in [
             ("aos_blackhole_check", RuntimeHelperRole::ForcingControl),
-            ("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
             ("aos_try_begin", RuntimeHelperRole::ErrorControl),
             ("aos_try_end", RuntimeHelperRole::ErrorControl),
             ("aos_update", RuntimeHelperRole::AttrsetAccess),
@@ -1444,6 +1463,8 @@ mod tests {
                 )) if *gap_role == role
             ));
         }
+        assert!(preflight.binding_for_symbol("aos_has_attr").is_some());
+        assert!(preflight.gap_for_symbol("aos_has_attr").is_none());
     }
 
     #[test]

@@ -60,6 +60,7 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
     RuntimeHelperBinding::WriteBarrier(
         RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.abi_signature(),
     ),
+    RuntimeHelperBinding::AttrsetAccess(RuntimeAttrAccessEntryPoint::AosHasAttr.abi_signature()),
     RuntimeHelperBinding::AttrsetAccess(RuntimeAttrAccessEntryPoint::AosSelectIc.abi_signature()),
 ];
 
@@ -1491,7 +1492,7 @@ pub enum RuntimeSymbolNativeExportMissingBinding {
         allocation_blockers: &'static [RuntimeAllocationNativeExportBlocker],
         /// Call-control-specific blockers when this wrapper serves `aos_apply`.
         call_control_blockers: &'static [RuntimeApplyNativeExportBlocker],
-        /// Attrset-access-specific blockers when this wrapper serves `aos_select_ic`.
+        /// Attrset-access-specific blockers when this wrapper serves an attr helper.
         attrset_access_blockers: &'static [RuntimeAttrAccessNativeExportBlocker],
         /// Environment-access-specific blockers when this wrapper serves `aos_env_get`.
         env_access_blockers: &'static [RuntimeEnvAccessNativeExportBlocker],
@@ -1595,7 +1596,7 @@ impl RuntimeSymbolNativeExportMissingBinding {
         }
     }
 
-    /// Returns attrset-access-specific blockers for a missing `aos_select_ic` wrapper.
+    /// Returns attrset-access-specific blockers for a missing attr helper wrapper.
     pub fn missing_exported_attrset_access_blockers(
         &self,
     ) -> Option<&'static [RuntimeAttrAccessNativeExportBlocker]> {
@@ -2141,7 +2142,7 @@ mod tests {
                         | RuntimeHelperRole::WriteBarrier
                 ) || matches!(
                     symbol.name(),
-                    "aos_force" | "aos_force_deep" | "aos_select_ic"
+                    "aos_force" | "aos_force_deep" | "aos_has_attr" | "aos_select_ic"
                 )
             })
             .map(|symbol| (symbol.name(), symbol.role()))
@@ -2311,6 +2312,10 @@ mod tests {
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
                 (
+                    "aos_has_attr",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
                     "aos_select_ic",
                     RuntimeHelperFailureConvention::TrapToEvaluator,
                 ),
@@ -2455,7 +2460,7 @@ mod tests {
                     | RuntimeHelperRole::WriteBarrier
             ) && !matches!(
                 symbol.name(),
-                "aos_force" | "aos_force_deep" | "aos_select_ic"
+                "aos_force" | "aos_force_deep" | "aos_has_attr" | "aos_select_ic"
             )
         }) {
             assert_eq!(
@@ -2907,7 +2912,10 @@ mod tests {
                     assert_eq!(target.symbol_name(), "aos_apply")
                 }
                 RuntimeHelperRole::AttrsetAccess => {
-                    assert_eq!(target.symbol_name(), "aos_select_ic")
+                    assert!(matches!(
+                        target.symbol_name(),
+                        "aos_has_attr" | "aos_select_ic"
+                    ))
                 }
                 RuntimeHelperRole::EnvironmentAccess => {
                     assert_eq!(target.symbol_name(), "aos_env_get")
@@ -3222,13 +3230,15 @@ mod tests {
                 && missing.missing_exported_c_abi_failure_convention()
                     == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
         }));
-        assert!(exported_wrapper_gaps.iter().any(|missing| {
-            missing.symbol_name() == "aos_select_ic"
-                && missing.missing_exported_c_abi_wrapper_role()
-                    == Some(RuntimeHelperRole::AttrsetAccess)
-                && missing.missing_exported_c_abi_failure_convention()
-                    == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
-        }));
+        for symbol_name in ["aos_has_attr", "aos_select_ic"] {
+            assert!(exported_wrapper_gaps.iter().any(|missing| {
+                missing.symbol_name() == symbol_name
+                    && missing.missing_exported_c_abi_wrapper_role()
+                        == Some(RuntimeHelperRole::AttrsetAccess)
+                    && missing.missing_exported_c_abi_failure_convention()
+                        == Some(RuntimeHelperFailureConvention::TrapToEvaluator)
+            }));
+        }
         assert!(exported_wrapper_gaps.iter().any(|missing| {
             missing.symbol_name() == "aos_force"
                 && missing.missing_exported_c_abi_wrapper_role()
@@ -3263,6 +3273,10 @@ mod tests {
             .expect("apply export readiness exists")
             .blockers();
         let attr_access_preflight = runtime_attr_access_native_export_preflight();
+        let has_attr_blockers = attr_access_preflight
+            .readiness_for_symbol("aos_has_attr")
+            .expect("has-attr export readiness exists")
+            .blockers();
         let select_ic_blockers = attr_access_preflight
             .readiness_for_symbol("aos_select_ic")
             .expect("select-ic export readiness exists")
@@ -3297,6 +3311,10 @@ mod tests {
             .iter()
             .find(|missing| missing.symbol_name() == "aos_apply")
             .expect("apply export gap exists");
+        let has_attr_export_gap = exported_wrapper_gaps
+            .iter()
+            .find(|missing| missing.symbol_name() == "aos_has_attr")
+            .expect("has-attr export gap exists");
         let select_ic_export_gap = exported_wrapper_gaps
             .iter()
             .find(|missing| missing.symbol_name() == "aos_select_ic")
@@ -3415,48 +3433,50 @@ mod tests {
             apply_export_gap.missing_exported_write_barrier_blockers(),
             None
         );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_attrset_access_blockers(),
-            Some(select_ic_blockers)
-        );
-        assert!(
-            select_ic_export_gap
-                .missing_exported_attrset_access_blockers()
-                .expect("select-ic blockers exist")
-                .contains(&RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented)
-        );
-        assert!(
-            select_ic_export_gap
-                .missing_exported_attrset_access_blockers()
-                .expect("select-ic blockers exist")
-                .contains(&RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented)
-        );
-        assert!(
-            select_ic_export_gap
-                .missing_exported_attrset_access_blockers()
-                .expect("select-ic blockers exist")
-                .contains(&RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented)
-        );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_allocation_blockers(),
-            None
-        );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_call_control_blockers(),
-            None
-        );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_env_access_blockers(),
-            None
-        );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_forcing_blockers(),
-            None
-        );
-        assert_eq!(
-            select_ic_export_gap.missing_exported_write_barrier_blockers(),
-            None
-        );
+        for (attr_export_gap, attr_blockers, label) in [
+            (has_attr_export_gap, has_attr_blockers, "has-attr"),
+            (select_ic_export_gap, select_ic_blockers, "select-ic"),
+        ] {
+            assert_eq!(
+                attr_export_gap.missing_exported_attrset_access_blockers(),
+                Some(attr_blockers)
+            );
+            assert!(
+                attr_export_gap
+                    .missing_exported_attrset_access_blockers()
+                    .expect(label)
+                    .contains(
+                        &RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented
+                    )
+            );
+            assert!(
+                attr_export_gap
+                    .missing_exported_attrset_access_blockers()
+                    .expect(label)
+                    .contains(
+                        &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
+                    )
+            );
+            assert!(
+                attr_export_gap
+                    .missing_exported_attrset_access_blockers()
+                    .expect(label)
+                    .contains(
+                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented
+                    )
+            );
+            assert_eq!(attr_export_gap.missing_exported_allocation_blockers(), None);
+            assert_eq!(
+                attr_export_gap.missing_exported_call_control_blockers(),
+                None
+            );
+            assert_eq!(attr_export_gap.missing_exported_env_access_blockers(), None);
+            assert_eq!(attr_export_gap.missing_exported_forcing_blockers(), None);
+            assert_eq!(
+                attr_export_gap.missing_exported_write_barrier_blockers(),
+                None
+            );
+        }
         assert_eq!(
             force_export_gap.missing_exported_forcing_blockers(),
             Some(forcing_blockers)
@@ -3611,11 +3631,13 @@ mod tests {
                 && missing.missing_exported_c_abi_wrapper_role()
                     == Some(RuntimeHelperRole::CallControl)
         }));
-        assert!(export_preflight.missing_bindings().iter().any(|missing| {
-            missing.symbol_name() == "aos_select_ic"
-                && missing.missing_exported_c_abi_wrapper_role()
-                    == Some(RuntimeHelperRole::AttrsetAccess)
-        }));
+        for symbol_name in ["aos_has_attr", "aos_select_ic"] {
+            assert!(export_preflight.missing_bindings().iter().any(|missing| {
+                missing.symbol_name() == symbol_name
+                    && missing.missing_exported_c_abi_wrapper_role()
+                        == Some(RuntimeHelperRole::AttrsetAccess)
+            }));
+        }
         assert!(export_preflight.missing_bindings().iter().any(|missing| {
             missing.symbol_name() == "aos_force"
                 && missing.missing_exported_c_abi_wrapper_role()

@@ -197,4 +197,34 @@ impl TreeWalk {
             TreeWalkError::new(TreeWalkErrorKind::MissingAttribute { id, symbol }, span)
         })
     }
+
+    /// Returns whether an already-forced attrset value contains one static attr.
+    ///
+    /// Callers own WHNF forcing and lazy-foldl normalization before entering this
+    /// helper boundary; this routine only checks the receiver shape and probes key
+    /// presence.
+    pub(crate) fn has_attr_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        _site: IrInlineCacheSiteId,
+    ) -> Result<Value, TreeWalkError> {
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                span,
+            ));
+        }
+        let attrs = self
+            .heap
+            .get_attrs(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(Value::bool(attrs.contains_key(symbol)))
+    }
 }

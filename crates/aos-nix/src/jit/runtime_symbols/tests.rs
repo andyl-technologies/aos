@@ -17,7 +17,7 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
-const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_select_ic"];
+const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic"];
 const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_force", "aos_force_deep"];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
@@ -45,15 +45,17 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_address
     );
     assert_ne!(apply.address().as_nonzero_usize().get(), 0);
     assert!(preflight.missing_binding_for("aos_apply").is_none());
-    let select_ic = preflight
-        .address_candidate_for("aos_select_ic")
-        .expect("select-ic helper has a Rust-callable address candidate");
-    assert_eq!(
-        select_ic.kind(),
-        RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess)
-    );
-    assert_ne!(select_ic.address().as_nonzero_usize().get(), 0);
-    assert!(preflight.missing_binding_for("aos_select_ic").is_none());
+    for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
+        let attr_access = preflight
+            .address_candidate_for(symbol_name)
+            .expect("attrset-access helper has a Rust-callable address candidate");
+        assert_eq!(
+            attr_access.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess)
+        );
+        assert_ne!(attr_access.address().as_nonzero_usize().get(), 0);
+        assert!(preflight.missing_binding_for(symbol_name).is_none());
+    }
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         let force = preflight
             .address_candidate_for(symbol_name)
