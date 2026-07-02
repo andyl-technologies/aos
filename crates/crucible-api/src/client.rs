@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crucible::Seed;
-use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand};
+use crucible_session::{LiveSnapshot, LiveStateKind, SessionCommand, SessionCommandKind};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -24,12 +24,24 @@ use crate::rpc_abi::{
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError,
     encode_rpc_hello_request, encode_rpc_hello_response, negotiate_rpc_protocol,
 };
+use crate::session_mapping::{
+    API_COMMAND_MAPPINGS, api_command_for_session_command, session_command_for_api_command,
+};
+use crate::streaming::{
+    AttachRequest, Attached, CommandRejectionKind, CommandResult, CommandResultStatus, SendRequest,
+    SendResponse, StateUpdate, StreamingApiError, StreamingCapabilitySet,
+    StreamingCommandCapability,
+};
 
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
 const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
 const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
 const LIST_SESSIONS_RPC_PATH: &str = "/crucible.rpc/list-sessions";
 const DESTROY_SESSION_RPC_PATH: &str = "/crucible.rpc/destroy-session";
+const CONTROL_ATTACH_RPC_PATH: &str = "/crucible.rpc/control/attach";
+const CONTROL_SEND_RPC_PATH: &str = "/crucible.rpc/control/send";
+const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
+const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
@@ -149,6 +161,13 @@ pub enum ControlClientError {
         /// Underlying lifecycle API error.
         #[from]
         source: LifecycleApiError,
+    },
+    /// Streaming API operation failed.
+    #[error("control client streaming operation failed: {source}")]
+    Streaming {
+        /// Underlying streaming API error.
+        #[from]
+        source: StreamingApiError,
     },
     /// This client handle does not implement a lifecycle unary method.
     #[error("control client does not support lifecycle method {method}")]
@@ -270,6 +289,56 @@ pub trait ControlClient {
                 method: "DestroySession",
             })
         })
+    }
+
+    /// Attaches the bidirectional `Control` stream and returns initial metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement streaming attach.
+    fn control_attach(&self, _request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod { method: "Control" })
+        })
+    }
+
+    /// Dispatches one command envelope over the bidirectional `Control` stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement streaming command dispatch.
+    fn control_send(&self, _request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "Control.Send",
+            })
+        })
+    }
+
+    /// Attaches the read-only `Watch` stream and returns initial metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement watch attach.
+    fn watch_attach(&self, _request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(
+            async move { Err(ControlClientError::UnsupportedLifecycleMethod { method: "Watch" }) },
+        )
+    }
+
+    /// Dispatches one unary `Send` command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request or
+    /// when this client handle does not implement unary command dispatch.
+    fn send_command(&self, _request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(
+            async move { Err(ControlClientError::UnsupportedLifecycleMethod { method: "Send" }) },
+        )
     }
 }
 
@@ -578,6 +647,42 @@ impl ControlClient for RpcControlClient {
             decode_destroy_session_response(&body)
         })
     }
+
+    fn control_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
+                .await?;
+            decode_attached_response(&body)
+        })
+    }
+
+    fn control_send(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(CONTROL_SEND_RPC_PATH, encode_send_request(&request))
+                .await?;
+            decode_send_response(&body)
+        })
+    }
+
+    fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, Attached> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
+                .await?;
+            decode_attached_response(&body)
+        })
+    }
+
+    fn send_command(&self, request: SendRequest) -> ControlClientFuture<'_, SendResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(SEND_COMMAND_RPC_PATH, encode_send_request(&request))
+                .await?;
+            decode_send_response(&body)
+        })
+    }
 }
 
 fn decode_hello_response(
@@ -655,6 +760,40 @@ fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
     let mut output = String::new();
     output.push_str("crucible.rpc/destroy-session-request\n");
     push_session_ref(&mut output, request.session);
+    output.into_bytes()
+}
+
+fn encode_attach_request(request: &AttachRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/attach-request\n");
+    push_session_ref(&mut output, request.session);
+    match request.expected_epoch {
+        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
+        None => push_line(&mut output, "expected-epoch", "none"),
+    }
+    push_line(
+        &mut output,
+        "from-seq",
+        &request.from.next_sequence.to_string(),
+    );
+    push_line(&mut output, "client-name", &request.client_name);
+    output.into_bytes()
+}
+
+fn encode_send_request(request: &SendRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/send-request\n");
+    push_session_ref(&mut output, request.session);
+    match request.expected_epoch {
+        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
+        None => push_line(&mut output, "expected-epoch", "none"),
+    }
+    push_line(&mut output, "command-id", &request.command_id.to_string());
+    let command_kind = SessionCommandKind::from(&request.command);
+    let command_name = api_command_for_session_command(command_kind)
+        .map(|mapping| mapping.command_name)
+        .unwrap_or(command_kind_name(command_kind));
+    push_line(&mut output, "command", command_name);
     output.into_bytes()
 }
 
@@ -740,6 +879,44 @@ fn decode_destroy_session_response(
     })
 }
 
+fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/attached-response")?;
+    let session = parse_session_ref(&mut lines)?;
+    let event_log_len = parse_u64_line(lines.next(), "event-log-len=")?;
+    let state = parse_state_line(lines.next())?;
+    let version = parse_current_version_line(lines.next())?;
+    let capabilities = parse_capabilities_line(lines.next())?;
+    reject_trailing(lines.next())?;
+    Ok(Attached {
+        session,
+        event_log_len,
+        state,
+        version,
+        capabilities,
+    })
+}
+
+fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/send-response")?;
+    let command_id = parse_u64_line(lines.next(), "command-id=")?;
+    let command_kind = parse_command_kind_line(lines.next(), "command=")?;
+    let status = parse_command_status_line(lines.next())?;
+    let state_update = parse_state_update_line(lines.next())?;
+    reject_trailing(lines.next())?;
+    Ok(SendResponse {
+        result: CommandResult {
+            command_id,
+            command_kind,
+            status,
+        },
+        state_update,
+    })
+}
+
 fn response_text(body: &[u8]) -> Result<&str, ControlClientError> {
     std::str::from_utf8(body).map_err(|error| ControlClientError::RpcDecode {
         message: error.to_string(),
@@ -821,6 +998,68 @@ fn parse_state_field(
     }
 }
 
+fn parse_capabilities_line(
+    line: Option<&str>,
+) -> Result<StreamingCapabilitySet, ControlClientError> {
+    let value = parse_prefixed_line(line, "commands=")?;
+    if value.is_empty() {
+        return Ok(StreamingCapabilitySet {
+            commands: Vec::new(),
+        });
+    }
+
+    let mut commands = Vec::new();
+    for command_name in value.split(',') {
+        let command_kind = session_command_for_api_command(command_name)
+            .ok_or_else(|| rpc_decode(format!("unknown command capability `{command_name}`")))?;
+        commands.push(StreamingCommandCapability {
+            command_name: command_name_from_static(command_name)?,
+            command_kind,
+        });
+    }
+    Ok(StreamingCapabilitySet { commands })
+}
+
+fn parse_command_kind_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<SessionCommandKind, ControlClientError> {
+    let command_name = parse_prefixed_line(line, prefix)?;
+    session_command_for_api_command(command_name)
+        .ok_or_else(|| rpc_decode(format!("unknown command `{command_name}`")))
+}
+
+fn parse_command_status_line(
+    line: Option<&str>,
+) -> Result<CommandResultStatus, ControlClientError> {
+    match parse_prefixed_line(line, "status=")? {
+        "accepted" => Ok(CommandResultStatus::Accepted),
+        "rejected:invalid-state" => Ok(CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::InvalidState,
+        }),
+        value => Err(rpc_decode(format!("unknown command status `{value}`"))),
+    }
+}
+
+fn parse_state_update_line(line: Option<&str>) -> Result<Option<StateUpdate>, ControlClientError> {
+    let value = parse_prefixed_line(line, "state-update=")?;
+    if value == "none" {
+        return Ok(None);
+    }
+    let mut fields = value.split('|');
+    let id = parse_u64_field(fields.next(), "state update session id")?;
+    let epoch = parse_u64_field(fields.next(), "state update session epoch")?;
+    let seed = parse_seed_field(fields.next(), "state update session seed")?;
+    let state = parse_state_field(fields.next(), "state update state")?;
+    if fields.next().is_some() {
+        return Err(rpc_decode("unexpected extra state update fields"));
+    }
+    Ok(Some(StateUpdate {
+        session: SessionRef::new(SessionId::new(id), epoch, seed),
+        state,
+    }))
+}
+
 fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, ControlClientError> {
     match parse_prefixed_line(line, prefix)? {
         "true" => Ok(true),
@@ -853,6 +1092,20 @@ fn rpc_decode(message: impl Into<String>) -> ControlClientError {
     ControlClientError::RpcDecode {
         message: message.into(),
     }
+}
+
+fn command_kind_name(command: SessionCommandKind) -> &'static str {
+    api_command_for_session_command(command)
+        .map(|mapping| mapping.command_name)
+        .unwrap_or("unknown")
+}
+
+fn command_name_from_static(value: &str) -> Result<&'static str, ControlClientError> {
+    API_COMMAND_MAPPINGS
+        .iter()
+        .find(|mapping| mapping.command_name == value)
+        .map(|mapping| mapping.command_name)
+        .ok_or_else(|| rpc_decode(format!("unknown command name `{value}`")))
 }
 
 fn parse_current_version_line(line: Option<&str>) -> Result<ProtocolVersion, ControlClientError> {

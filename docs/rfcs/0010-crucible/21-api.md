@@ -637,10 +637,20 @@ ran in-process against the double or over the wire against QEMU.
   request seed; inline RPC carries the scenario seed separately from the request
   seed so mismatches are rejected. Streaming `Control`, `Watch`, and `Send`
   remain T-API-4.
-- [ ] **T-API-4** Implement the bidirectional `Control` stream and the
+- [x] **T-API-4** Implement the bidirectional `Control` stream and the
   `Watch`+`Send` pair, asserting Watch+Send is capability-equivalent to bidi
   (full lifecycle drivable from either), with `Send` returning CommandResult +
   optional StateUpdate. — satisfies [API-9], [API-10]; spec §21.2.
+  Completed by `checks.crucible.phase5.apiStreamingEquivalence`:
+  `crucible-api::streaming` defines shared attach metadata, `ControlStream`,
+  `WatchStream`, unary `SendRequest`/`SendResponse`, typed `CommandResult`, and
+  optional `StateUpdate`. `ControlClient`/`RpcControlClient` expose transport
+  paths for `Control` attach/send, `Watch` attach, and unary `Send`; all command
+  paths advertise the same command capability set from the thin API mapping
+  table, dispatch accepted commands through the same session actor mailbox
+  helper, and use the session lifecycle transition model for invalid-state
+  command results. Cursor replay, event payload open-set encoding, and monotonic
+  live `StateUpdate` streaming remain T-API-5 through T-API-7.
 - [ ] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log
   catalog (19 §19.7); opaque-unknown-kind handling on receive, typed
