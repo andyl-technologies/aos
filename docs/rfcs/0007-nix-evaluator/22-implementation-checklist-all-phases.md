@@ -5368,7 +5368,7 @@ and helps the oracle directly.
       candidates still have Rust-callable rather than exported-wrapper address
       provenance. Tests prove allocation-helper, `aos_env_get`, and
       `aos_gc_write_barrier` binding/address parity, preserve the current
-      `aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` missing-native-address registration gaps, and
+      `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` missing-native-address registration gaps, and
       prove registered helper addresses still retain missing exported-wrapper blockers plus
       Rust-callable provenance gaps. This is safe integration preflight
       metadata only: it does not call
@@ -5381,7 +5381,7 @@ and helps the oracle directly.
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a complete
       plan. The current implementation returns a typed incomplete error carrying
-      the owned Nix preflight while the `aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` address gaps,
+      the owned Nix preflight while the `aos_throw`/`aos_deopt`/`aos_select_ic`/`aos_apply`/`aos_force` address gaps,
       helper/builtin gaps, exported-wrapper blockers, and Rust-callable
       address-provenance gaps remain. This is strict metadata gating only: it
       does not call
@@ -6887,12 +6887,13 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-core::runtime_abi` now owns safe `RuntimeCallSignature`
       descriptors for compiled thunk bodies, compiled lambda bodies, builtin
       primop wrappers, and the core-owned allocation, attrset select-IC,
-      call-control apply, deoptimization, environment-access, force/deep-force,
-      and write-barrier helper shapes. The
+      call-control apply, deoptimization, environment-access, error-control
+      throw, force/deep-force, and write-barrier helper shapes. The
       descriptors pin the shared `extern "C"` convention,
       runtime/environment parameter prefix, positional `Value` arguments, helper
       pointer/scalar parameters including symbol and inline-cache site ids,
-      deopt-record pointers, pointer, `Value`, or unit helper returns, and
+      deopt-record pointers, error pointers, pointer, `Value`, unit, or
+      divergent helper returns, and
       the 16-byte/two-register `Value` layout. Tests cover
       thunk/lambda shapes, primop arity descriptors, unsupported-arity rejection,
       parity with the builtin declaration inventory, and representative helper
@@ -6947,7 +6948,7 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       ABI slots, and emits no return slots for unit helpers. Tests cover thunk
       and lambda signatures, primop arities 0-3, representative allocation,
       attrset select-IC, call-control apply, deoptimization, environment-access,
-      force, and write-barrier helper
+      error-control throw, force, and write-barrier helper
       signatures, and the layout guard. This signature adapter remains metadata
       only: it does not construct a `JITModule`, register symbols, lower a CLIF
       body, allocate an executable buffer, cross a
@@ -6978,8 +6979,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
 - [x] Current JIT symbol-declaration preflight precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_declaration_preflight()` joins
       the stable runtime symbol manifest with callable builtin ABI metadata and
-      core-owned allocation, attrset select-IC, call-control apply, deoptimization, environment-access,
-      write-barrier, and force/deep-force helper ABI metadata, then lowers those
+      core-owned allocation, attrset select-IC, call-control apply,
+      deoptimization, environment-access, error-control throw, write-barrier,
+      and force/deep-force helper ABI metadata, then lowers those
       runtime signatures to CLIF `Signature` declarations. `aos_env_get` is frozen as
       `(env, slot) -> Value` and lowers to a host-pointer environment parameter,
       an `i32` slot parameter, and two `i64` return slots;
@@ -6987,11 +6989,12 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `aos_apply` is frozen as `(rt, Value function, Value arg) -> Value`;
       `aos_select_ic` is frozen as
       `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`; `aos_deopt`
-      is frozen as `(rt, DeoptRecordPointer) -> Value`.
+      is frozen as `(rt, DeoptRecordPointer) -> Value`; `aos_throw` is frozen
+      as `(rt, ErrorPointer) -> !`.
       Unshaped helpers such as `aos_blackhole_check` and value-only builtins
       remain explicit declaration gaps. Tests pin a representative callable
       builtin declaration, allocation, attrset-access, call-control,
-      deoptimization, environment-access,
+      deoptimization, environment-access, error-control,
       write-barrier, and forcing-helper declarations, an unshaped forcing-helper
       gap, value-only builtin gaps, and exact declaration parity with callable
       builtins plus core-owned helpers.
@@ -7031,7 +7034,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       composes a verified CLIF artifact with the address-free JIT runtime-symbol
       declaration preflight and exposes the artifact metadata, callable builtin
       declarations, core-owned allocation, attrset select-IC, deoptimization,
-      environment-access, write-barrier, call-control apply, and force/deep-force helper declarations, and stable
+      environment-access, error-control throw, write-barrier, call-control
+      apply, and force/deep-force helper declarations, and stable
       runtime-symbol gaps as one future module-setup handoff. The checked
       `jit_module_readiness_plan_for_artifact()` gate currently returns an
       incomplete-symbol error while unshaped helpers such as
@@ -7047,7 +7051,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
       and declares every currently shape-known callable builtin plus
       core-owned allocation, attrset select-IC, call-control apply,
-      deoptimization, environment-access, write-barrier, and force/deep-force helper runtime symbol as a
+      deoptimization, environment-access, error-control throw, write-barrier,
+      and force/deep-force helper runtime symbol as a
       `Linkage::Import` function. The stricter
       `jit_cranelift_module_setup_for_artifact()` remains gated by the
       module-readiness plan and currently returns an incomplete-symbol error

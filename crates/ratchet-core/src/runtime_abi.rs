@@ -279,6 +279,10 @@ const DEOPT_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("deopt_record", RuntimeAbiParameterKind::DeoptRecordPointer),
 ];
+const THROW_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("err", RuntimeAbiParameterKind::ErrorPointer),
+];
 const SELECT_IC_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("attrs", RuntimeAbiParameterKind::Value),
@@ -390,6 +394,14 @@ const RUNTIME_DEOPT_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature:
     DEOPT_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_THROW_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    THROW_PARAMETERS,
+    RuntimeAbiReturnKind::Diverges,
+);
 const RUNTIME_SELECT_IC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
@@ -415,6 +427,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
+    RUNTIME_THROW_CALL_SIGNATURE,
 ];
 
 /// Returns the by-value runtime value layout assumed by native call metadata.
@@ -459,6 +472,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
+        "aos_throw" => Some(RUNTIME_THROW_CALL_SIGNATURE),
         _ => None,
     }
 }
@@ -575,6 +589,8 @@ pub enum RuntimeAbiParameterKind {
     EnvPointer,
     /// A pointer to tier deoptimization state reconstruction metadata.
     DeoptRecordPointer,
+    /// A pointer to runtime-owned error payload metadata.
+    ErrorPointer,
     /// A pointer to native code for a thunk or lambda body.
     CodePointer,
     /// A pointer to a runtime thunk object.
@@ -612,6 +628,8 @@ pub enum RuntimeAbiReturnKind {
     Value,
     /// No machine-level result.
     Unit,
+    /// Control does not return to the native caller.
+    Diverges,
     /// A pointer to a runtime thunk object.
     ThunkPointer,
     /// A pointer to a runtime lambda closure object.
@@ -1321,6 +1339,7 @@ mod tests {
                 "aos_force_deep",
                 "aos_gc_write_barrier",
                 "aos_select_ic",
+                "aos_throw",
             ])
         );
         assert_eq!(
@@ -1421,6 +1440,27 @@ mod tests {
             ]
         );
         assert_eq!(deopt.return_kind(), RuntimeAbiReturnKind::Value);
+    }
+
+    #[test]
+    fn error_helper_call_signature_pins_throw_divergence() {
+        let throw =
+            runtime_helper_call_signature("aos_throw").expect("throw signature is core-owned");
+
+        assert_eq!(
+            throw.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
+            }
+        );
+        assert_eq!(
+            throw.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("err", RuntimeAbiParameterKind::ErrorPointer),
+            ]
+        );
+        assert_eq!(throw.return_kind(), RuntimeAbiReturnKind::Diverges);
     }
 
     #[test]

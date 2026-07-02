@@ -208,6 +208,7 @@ fn append_parameter(
         RuntimeAbiParameterKind::RuntimeContext
         | RuntimeAbiParameterKind::EnvPointer
         | RuntimeAbiParameterKind::DeoptRecordPointer
+        | RuntimeAbiParameterKind::ErrorPointer
         | RuntimeAbiParameterKind::CodePointer
         | RuntimeAbiParameterKind::ThunkPointer
         | RuntimeAbiParameterKind::LambdaPointer
@@ -234,7 +235,7 @@ fn append_return_kind(
 ) {
     match return_kind {
         RuntimeAbiReturnKind::Value => append_value_words(returns),
-        RuntimeAbiReturnKind::Unit => {}
+        RuntimeAbiReturnKind::Unit | RuntimeAbiReturnKind::Diverges => {}
         RuntimeAbiReturnKind::ThunkPointer
         | RuntimeAbiReturnKind::LambdaPointer
         | RuntimeAbiReturnKind::AttrsPointer
@@ -520,6 +521,22 @@ mod tests {
             vec![pointer_type, types::I64, types::I64, types::I32, types::I32]
         );
         assert_eq!(return_types(&signature), vec![types::I64, types::I64]);
+    }
+
+    #[test]
+    fn throw_helper_clif_signature_lowers_error_pointer_and_no_return_slots() {
+        let runtime_signature =
+            runtime_helper_call_signature("aos_throw").expect("throw signature is core-owned");
+        let signature =
+            clif_signature_for_runtime_call(runtime_signature).expect("throw signature lowers");
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+
+        assert_eq!(
+            runtime_signature.return_kind(),
+            RuntimeAbiReturnKind::Diverges
+        );
+        assert_eq!(param_types(&signature), vec![pointer_type, pointer_type]);
+        assert!(return_types(&signature).is_empty());
     }
 
     #[test]
