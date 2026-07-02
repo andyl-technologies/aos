@@ -1308,8 +1308,23 @@ harness, never cut for scope.
       literal body through the constant path. Tests cover a raw direct literal
       thunk allocation, missing thunk bodies, unsupported thunk body kinds, and
       malformed thunk payloads. This is the first bounded child traversal only:
-      nested/generic traversal, forcing, runtime-symbol calls, branches,
-      applications, executable buffers, and native calls remain unimplemented.
+      the literal path emits no helper calls, and nested/generic traversal,
+      forcing, executable/native runtime-symbol calls, branches, applications,
+      executable buffers, and native calls remain unimplemented.
+- [x] Current local env-slot CLIF precursor:
+      `ratchet-jit::lower::lower_env_get_ir_thunk_body()` lowers a direct
+      `IrKind::LocalVar` root, plus one direct `ThunkAlloc` wrapper around a
+      local variable, into verified non-executable CLIF. The generated body
+      imports `aos_env_get` through deterministic user-external CLIF metadata,
+      passes the compiled thunk `env` parameter and an `i32` slot constant, and
+      returns the helper's two runtime `Value` words. Tests pin the helper
+      external-name namespace/index, imported signature parity with
+      `ratchet-core`, call operands/results, artifact metadata, and malformed or
+      unsupported IR rejection paths. This is the first runtime-helper call
+      emitted by the lowerer, but still no `JITModule`, real symbol relocation,
+      native helper address, executable buffer, raw pointer call, upvalue frame
+      traversal, force/select/app lowering, or generic IR traversal is
+      implemented.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` assigns verified CLIF
       functions lowered from Core IR roots to a reserved Cranelift user-function

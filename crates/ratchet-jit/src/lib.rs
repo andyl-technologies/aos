@@ -7,7 +7,8 @@
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
 //! `JITModule` declaration, artifact-definition, artifact-finalization, owned
 //! tier-slot, and promotion-gated preflights, [`lower`] builds verified CLIF
-//! bodies for the first literal Core-IR and constant-thunk smoke tests,
+//! bodies for the first literal Core-IR, local environment-slot, and
+//! constant-thunk smoke tests,
 //! [`module`] composes artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
@@ -68,10 +69,14 @@ pub use cranelift::{
     jit_cranelift_tier1_slot_preflight_for_artifact,
 };
 pub use lower::{
-    AOS_IR_ROOT_FUNCTION_NAMESPACE, JitLowerError, clif_name_for_ir_root,
-    lower_constant_ir_root_thunk_body, lower_constant_ir_root_thunk_body_artifact,
-    lower_constant_ir_thunk_body, lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,
-    lower_constant_thunk_body_artifact,
+    AOS_ENV_GET_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
+    AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, JitLowerError, clif_external_name_for_aos_env_get,
+    clif_name_for_ir_root, lower_constant_ir_root_thunk_body,
+    lower_constant_ir_root_thunk_body_artifact, lower_constant_ir_thunk_body,
+    lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,
+    lower_constant_thunk_body_artifact, lower_env_get_ir_root_thunk_body,
+    lower_env_get_ir_root_thunk_body_artifact, lower_env_get_ir_thunk_body,
+    lower_env_get_ir_thunk_body_artifact,
 };
 pub use module::{
     JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
