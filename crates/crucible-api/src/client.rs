@@ -855,9 +855,18 @@ impl RpcControlClient {
                 message: error.to_string(),
             })?;
         if !response.status().is_success() {
-            return Err(ControlClientError::HttpStatus {
-                status: response.status().as_u16(),
-            });
+            let status = response.status().as_u16();
+            let body = response
+                .bytes()
+                .await
+                .map(|body| body.to_vec())
+                .map_err(|error| ControlClientError::HttpRequest {
+                    message: error.to_string(),
+                })?;
+            if let Ok(error) = decode_error_response(&body) {
+                return Err(error);
+            }
+            return Err(ControlClientError::HttpStatus { status });
         }
         response
             .bytes()
@@ -884,9 +893,18 @@ impl RpcControlClient {
                 message: error.to_string(),
             })?;
         if !response.status().is_success() {
-            return Err(ControlClientError::HttpStatus {
-                status: response.status().as_u16(),
-            });
+            let status = response.status().as_u16();
+            let body = response
+                .bytes()
+                .await
+                .map(|body| body.to_vec())
+                .map_err(|error| ControlClientError::HttpRequest {
+                    message: error.to_string(),
+                })?;
+            if let Ok(error) = decode_error_response(&body) {
+                return Err(error);
+            }
+            return Err(ControlClientError::HttpStatus { status });
         }
         Ok(response)
     }
@@ -1174,6 +1192,10 @@ fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
     let mut output = String::new();
     output.push_str("crucible.rpc/destroy-session-request\n");
     push_session_ref(&mut output, request.session);
+    match request.expected_epoch {
+        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
+        None => push_line(&mut output, "expected-epoch", "none"),
+    }
     output.into_bytes()
 }
 
@@ -1289,6 +1311,54 @@ fn decode_destroy_session_response(
         session,
         already_absent,
         stopped,
+    })
+}
+
+fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/error")?;
+    match parse_prefixed_line(lines.next(), "code=")? {
+        "failed-precondition" => decode_failed_precondition(lines),
+        "session-closed:epoch-mismatch" => decode_session_closed_epoch_mismatch(lines),
+        value => Err(rpc_decode(format!("unknown RPC error code `{value}`"))),
+    }
+}
+
+fn decode_failed_precondition<'a, I>(mut lines: I) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let reason = parse_prefixed_line(lines.next(), "reason=")?;
+    if reason != "epoch-mismatch" {
+        return Err(rpc_decode(format!(
+            "unknown failed-precondition reason `{reason}`"
+        )));
+    }
+    let session_id = SessionId::new(parse_u64_line(lines.next(), "session-id=")?);
+    let expected = parse_u64_line(lines.next(), "expected=")?;
+    let actual = parse_u64_line(lines.next(), "actual=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::EpochMismatch {
+            session_id,
+            expected,
+            actual,
+        },
+    })
+}
+
+fn decode_session_closed_epoch_mismatch<'a, I>(
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let expected = parse_u64_line(lines.next(), "expected=")?;
+    let actual = parse_u64_line(lines.next(), "actual=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Streaming {
+        source: StreamingApiError::EpochMismatch { expected, actual },
     })
 }
 

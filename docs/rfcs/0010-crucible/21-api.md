@@ -694,11 +694,21 @@ ran in-process against the double or over the wire against QEMU.
   Running -> Paused -> Stopped from `SendResponse` plus `StateUpdate` frames,
   verifies monotone state-update sequence numbers, and asserts those updates do
   not appear as event-log frames.
-- [ ] **T-API-8** Implement epoch guards: server-monotonic `session_epoch` on
+- [x] **T-API-8** Implement epoch guards: server-monotonic `session_epoch` on
   `SessionRef`, `expected_epoch` on attach/lifecycle/command RPCs, fast-fail with
   FailedPrecondition / SessionClosed(EPOCH_MISMATCH) on a recycled id; prove the
   epoch never enters State or the causal subsequence. — satisfies [API-20],
   [API-21]; spec §21.5, §21.5.1.
+  Completed by `checks.crucible.phase5.apiEpochGuards`:
+  `SessionRef` remains the closed `(id, epoch, seed)` protocol identity, the
+  lifecycle control plane allocates a server-monotonic epoch on every
+  `CreateSession`, and `DestroySession`, `Control`/`Watch` attach, and `Send`
+  all accept an optional `expected_epoch` guard. Stale session references and
+  mismatched expected epochs return typed epoch-mismatch errors before actor
+  dispatch, state mutation, or event-log append. The epoch guard gate proves
+  matching epochs allow cleanup, stale epochs leave live state and event-log
+  cursor unchanged, and session epochs advance across successive creates while
+  remaining outside the causal event-log subsequence.
 - [ ] **T-API-9** Implement the reproduction context: expose the recorded command
   stream (keyed by virtual-time boundary, with at-seq, result, observational
   wall-clock aid) via per-attach snapshot and `GetReproduction`; prove

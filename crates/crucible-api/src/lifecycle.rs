@@ -269,13 +269,25 @@ pub struct ListSessionsResponse {
 pub struct DestroySessionRequest {
     /// Session reference to stop and drop.
     pub session: SessionRef,
+    /// Optional epoch guard supplied by the client.
+    pub expected_epoch: Option<u64>,
 }
 
 impl DestroySessionRequest {
     /// Builds a destroy request for `session`.
     #[must_use]
     pub const fn new(session: SessionRef) -> Self {
-        Self { session }
+        Self {
+            session,
+            expected_epoch: None,
+        }
+    }
+
+    /// Sets the optional expected epoch guard.
+    #[must_use]
+    pub const fn with_expected_epoch(mut self, expected_epoch: u64) -> Self {
+        self.expected_epoch = Some(expected_epoch);
+        self
     }
 }
 
@@ -542,6 +554,15 @@ where
                 expected: runtime.session.epoch,
                 actual: request.session.epoch,
             });
+        }
+        if let Some(expected_epoch) = request.expected_epoch {
+            if runtime.session.epoch != expected_epoch {
+                return Err(LifecycleApiError::EpochMismatch {
+                    session_id: request.session.id,
+                    expected: runtime.session.epoch,
+                    actual: expected_epoch,
+                });
+            }
         }
 
         let runtime = self.sessions.remove(&request.session.id).ok_or(
