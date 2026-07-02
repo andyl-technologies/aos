@@ -1469,11 +1469,11 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     ///
     /// The allocation-poll layer first checks that the caller supplied the same
     /// reference values captured with the copied poll reference labels. It then
-    /// delegates byte-copy buffers, forwarding slots, reference values, and
-    /// remembered-set state to the lower-level validated commit plan. This
-    /// remains a caller-buffer bridge and does not bind those buffers to live
-    /// evaluator roots, heap-object fields, object headers, or semispace
-    /// storage.
+    /// delegates byte-copy buffers, forwarding slots, reference values,
+    /// remembered-set state, and any optional card-table buffer to the
+    /// lower-level validated commit plan. This remains a caller-buffer bridge
+    /// and does not bind those buffers to live evaluator roots, heap-object
+    /// fields, object headers, live card-table storage, or semispace storage.
     ///
     /// # Errors
     ///
@@ -1494,7 +1494,7 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     /// [`MinorGcCommitReport`] after all caller-owned buffers have been
     /// mutated. The report describes the validated buffer commit only; this
     /// method still does not mutate live evaluator roots, heap fields, object
-    /// headers, or semispace storage.
+    /// headers, live card-table storage, or semispace storage.
     ///
     /// # Errors
     ///
@@ -1505,18 +1505,26 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
         self,
         buffers: AllocationCollectorPollMinorGcCommitBuffers<'_, '_>,
     ) -> Result<MinorGcCommitReport, EvalHeapError> {
-        if buffers.references.len() != self.reference_slots.len() {
+        let AllocationCollectorPollMinorGcCommitBuffers {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table,
+        } = buffers;
+
+        if references.len() != self.reference_slots.len() {
             return Err(
                 EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
                     expected: self.reference_slots.len(),
-                    actual: buffers.references.len(),
+                    actual: references.len(),
                 },
             );
         }
         for (index, (slot, actual)) in self
             .reference_slots
             .iter()
-            .zip(buffers.references.iter().copied())
+            .zip(references.iter().copied())
             .enumerate()
         {
             let expected = slot.value();
@@ -1529,13 +1537,23 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
             }
         }
 
+        let lower_buffers = match card_table {
+            Some(card_table) => MinorGcCommitBuffers::with_card_table(
+                object_byte_copies,
+                forwarding_slots,
+                references,
+                remembered_set,
+                card_table,
+            ),
+            None => MinorGcCommitBuffers::new(
+                object_byte_copies,
+                forwarding_slots,
+                references,
+                remembered_set,
+            ),
+        };
         self.commit_plan
-            .apply_to_buffers_with_report(MinorGcCommitBuffers::new(
-                buffers.object_byte_copies,
-                buffers.forwarding_slots,
-                buffers.references,
-                buffers.remembered_set,
-            ))
+            .apply_to_buffers_with_report(lower_buffers)
             .map_err(EvalHeapError::from)
     }
 
@@ -2261,6 +2279,7 @@ pub struct AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
     forwarding_slots: &'a mut [MinorGcForwardingSlot],
     references: &'a mut [ResolvedValueGeneration],
     remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
 }
 
 impl<'a, 'bytes> AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
@@ -2276,6 +2295,24 @@ impl<'a, 'bytes> AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
             forwarding_slots,
             references,
             remembered_set,
+            card_table: None,
+        }
+    }
+
+    /// Creates caller-owned buffers plus a card table to clear after commit.
+    pub fn with_card_table(
+        object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+        card_table: &'a mut GcCardTable,
+    ) -> Self {
+        Self {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table: Some(card_table),
         }
     }
 }

@@ -5158,13 +5158,15 @@ and helps the oracle directly.
       reference slots, and remembered-set state. The helper validates every
       supplied buffer before mutation, then performs the ordered commit steps:
       copy object bytes, install forwarding values, rewrite references, and
-      publish the next remembered set. Unit tests cover successful cross-buffer
-      application and a late remembered-set mismatch that leaves byte
-      destinations, forwarding slots, references, and remembered-set state
-      unchanged. This remains a caller-buffer application surface only;
-      destination object allocation, binding buffers to real heap storage or
-      object headers, card-table ownership, old-field rescanning, and semispace
-      management remain open.
+      publish the next remembered set, and clear an optional caller-owned
+      card-table buffer after publication succeeds. The report-returning variant
+      includes the dirty-card clearing count. Unit tests cover successful
+      cross-buffer application, dirty-card clearing, and a late remembered-set
+      mismatch that leaves byte destinations, forwarding slots, references,
+      remembered-set state, and dirty cards unchanged. This remains a
+      caller-buffer application surface only; destination object allocation,
+      binding buffers to real heap storage or object headers, live card-table
+      ownership, old-field rescanning, and semispace management remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
@@ -5347,8 +5349,24 @@ and helps the oracle directly.
       coverage, direct and boundary-level missing dirty-card rejection,
       dirty-card success, and the existing boundary remembered-edge dry-run.
       This remains validation metadata only; dirty-card rescanning, card-table
-      clearing after remembered-set publication, object-generation mutation, and
+      clearing against the live daemon table, object-generation mutation, and
       Tier-B collector installation remain open.
+- [x] Current allocation-poll card-table commit-buffer precursor:
+      boundary commit preflights now carry an owned fallible clone of the
+      daemon-wide card-table snapshot, and
+      `AllocationCollectorPollMinorGcCommitBuffers::with_card_table` threads that
+      buffer through to the lower-level commit application. The owned dry-run
+      clears dirty cards only after object-byte copies, forwarding slots,
+      reference rewrites, and remembered-set publication validate and apply.
+      Worker and permanent-shared boundary applications each receive their own
+      daemon-wide clone, so their dirty-card clearing counts are per-owned
+      application and are intentionally not aggregated in the dry-run summary.
+      Tests cover low-level dirty-card clearing, no-partial-clear on stale commit
+      buffers, boundary remembered-edge dry-run clearing of the owned card
+      table, and sibling boundary preflights clearing independent daemon-wide
+      copies. This is still an owned-buffer dry-run only; mutating the live
+      evaluator/daemon card table, rescanning dirty old cards, and installing
+      the Tier-B collector remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from

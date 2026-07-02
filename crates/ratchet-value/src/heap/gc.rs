@@ -229,6 +229,23 @@ pub enum GcCardTableUpdate {
     },
 }
 
+/// A report for clearing dirty cards after a minor-GC commit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct GcCardTableClearReport {
+    dirty_cards: usize,
+}
+
+impl GcCardTableClearReport {
+    const fn new(dirty_cards: usize) -> Self {
+        Self { dirty_cards }
+    }
+
+    /// Returns the number of dirty-card markers removed.
+    pub const fn dirty_cards(self) -> usize {
+        self.dirty_cards
+    }
+}
+
 /// Default card size used by the safe daemon write-barrier model.
 pub const DEFAULT_GC_CARD_SIZE_BYTES: usize = 512;
 
@@ -317,6 +334,26 @@ impl GcCardTable {
         GcCardTableSnapshot::new(self.card_size_bytes, &self.dirty_cards)
     }
 
+    /// Clones this card table while reporting allocation failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::GcCardTableAllocationFailed`] if cloned
+    /// dirty-card storage cannot be reserved.
+    pub fn try_clone(&self) -> Result<Self, GenerationalGcError> {
+        let mut dirty_cards = Vec::new();
+        dirty_cards
+            .try_reserve_exact(self.dirty_cards.len())
+            .map_err(|_| GenerationalGcError::GcCardTableAllocationFailed {
+                cards: self.dirty_cards.len(),
+            })?;
+        dirty_cards.extend(self.dirty_cards.iter().copied());
+        Ok(Self {
+            card_size_bytes: self.card_size_bytes,
+            dirty_cards,
+        })
+    }
+
     /// Returns the number of dirty cards.
     pub fn len(&self) -> usize {
         self.dirty_cards.len()
@@ -364,6 +401,13 @@ impl GcCardTable {
             .map_err(|_| GenerationalGcError::GcCardTableAllocationFailed { cards })?;
         self.dirty_cards.push(card);
         Ok(GcCardTableUpdate::MarkedDirty { card })
+    }
+
+    /// Clears every dirty-card marker.
+    pub fn clear_dirty_cards(&mut self) -> GcCardTableClearReport {
+        let dirty_cards = self.dirty_cards.len();
+        self.dirty_cards.clear();
+        GcCardTableClearReport::new(dirty_cards)
     }
 }
 
@@ -1881,6 +1925,7 @@ pub struct MinorGcCommitBuffers<'a, 'bytes> {
     forwarding_slots: &'a mut [MinorGcForwardingSlot],
     references: &'a mut [ResolvedValueGeneration],
     remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
 }
 
 impl<'a, 'bytes> MinorGcCommitBuffers<'a, 'bytes> {
@@ -1896,6 +1941,24 @@ impl<'a, 'bytes> MinorGcCommitBuffers<'a, 'bytes> {
             forwarding_slots,
             references,
             remembered_set,
+            card_table: None,
+        }
+    }
+
+    /// Creates caller-owned buffers plus a card table to clear after commit.
+    pub fn with_card_table(
+        object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+        card_table: &'a mut GcCardTable,
+    ) -> Self {
+        Self {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table: Some(card_table),
         }
     }
 }
@@ -1912,6 +1975,7 @@ pub struct MinorGcCommitReport {
     remembered_set_next_epoch: RememberedSetEpoch,
     remembered_set_source_edges: usize,
     remembered_set_published_edges: usize,
+    card_table_dirty_cards_cleared: usize,
 }
 
 impl MinorGcCommitReport {
@@ -1941,6 +2005,7 @@ impl MinorGcCommitReport {
             remembered_set_next_epoch: next_remembered_set.epoch(),
             remembered_set_source_edges: remembered_set_refresh.len(),
             remembered_set_published_edges: next_remembered_set.len(),
+            card_table_dirty_cards_cleared: 0,
         }
     }
 
@@ -1987,6 +2052,11 @@ impl MinorGcCommitReport {
     /// Returns the number of remembered edges published for the next epoch.
     pub const fn remembered_set_published_edges(self) -> usize {
         self.remembered_set_published_edges
+    }
+
+    /// Returns the number of dirty-card markers cleared after commit.
+    pub const fn card_table_dirty_cards_cleared(self) -> usize {
+        self.card_table_dirty_cards_cleared
     }
 }
 
@@ -2060,7 +2130,8 @@ impl MinorGcCommitPlan {
     /// expected young from-space values, and the remembered set must still match
     /// the refresh source snapshot. If validation succeeds, mutations are
     /// applied in commit order: copy object bytes, install forwarding values,
-    /// rewrite references, then publish the next remembered set.
+    /// rewrite references, publish the next remembered set, then clear the card
+    /// table when one is supplied.
     ///
     /// # Errors
     ///
@@ -2077,8 +2148,8 @@ impl MinorGcCommitPlan {
     ///
     /// This has the same validation and mutation order as
     /// [`Self::apply_to_buffers`], but returns a summary after the byte-copy,
-    /// forwarding-pointer, reference-rewrite, and remembered-set publication
-    /// steps have all succeeded.
+    /// forwarding-pointer, reference-rewrite, remembered-set publication, and
+    /// optional card-table clearing steps have all succeeded.
     ///
     /// # Errors
     ///
@@ -2100,9 +2171,10 @@ impl MinorGcCommitPlan {
             forwarding_slots,
             references,
             remembered_set,
+            card_table,
         } = buffers;
 
-        let report = MinorGcCommitReport::from_commit_parts(
+        let mut report = MinorGcCommitReport::from_commit_parts(
             &object_copies,
             &forwarding_pointers,
             &reference_rewrites,
@@ -2119,16 +2191,19 @@ impl MinorGcCommitPlan {
         install_forwarding_slots(&forwarding_pointers, forwarding_slots);
         apply_reference_rewrites(&reference_rewrites, references);
         *remembered_set = next_remembered_set;
+        if let Some(card_table) = card_table {
+            report.card_table_dirty_cards_cleared = card_table.clear_dirty_cards().dirty_cards();
+        }
         Ok(report)
     }
 
     /// Publishes the rebuilt remembered set into caller-owned collector state.
     ///
     /// This consumes the commit plan because remembered-set publication is the
-    /// final ordered metadata mutation represented by the plan. The method
-    /// validates that `remembered_set` still matches the source epoch and edge
-    /// sequence consumed by the refresh plan before replacing it with the
-    /// precomputed next-epoch set.
+    /// final plan-owned metadata mutation represented by this helper. The
+    /// method validates that `remembered_set` still matches the source epoch
+    /// and edge sequence consumed by the refresh plan before replacing it with
+    /// the precomputed next-epoch set.
     ///
     /// # Errors
     ///
@@ -3805,6 +3880,11 @@ mod tests {
         );
         assert_eq!(table.len(), 2);
         assert!(!table.is_empty());
+        assert_eq!(table.try_clone().expect("card table clones"), table);
+
+        let clear_report = table.clear_dirty_cards();
+        assert_eq!(clear_report.dirty_cards(), 2);
+        assert!(table.is_empty());
     }
 
     #[test]
@@ -6198,13 +6278,21 @@ mod tests {
             MinorGcForwardingSlot::new(copy),
             MinorGcForwardingSlot::new(promote),
         ];
+        let mut card_table = GcCardTable::new(0x1000).expect("card table builds");
+        card_table
+            .mark_source(remembered_source)
+            .expect("remembered source card marks");
+        card_table
+            .mark_source(promoted_source)
+            .expect("promoted source card marks");
 
         let report = commit_plan
-            .apply_to_buffers_with_report(MinorGcCommitBuffers::new(
+            .apply_to_buffers_with_report(MinorGcCommitBuffers::with_card_table(
                 &mut object_byte_copies,
                 &mut forwarding_slots,
                 &mut references,
                 &mut remembered_set,
+                &mut card_table,
             ))
             .expect("commit applies");
 
@@ -6223,6 +6311,7 @@ mod tests {
         );
         assert_eq!(report.remembered_set_source_edges(), 2);
         assert_eq!(report.remembered_set_published_edges(), 1);
+        assert_eq!(report.card_table_dirty_cards_cleared(), 2);
         assert_eq!(object_byte_copies[0].destination_bytes(), copy_source);
         assert_eq!(object_byte_copies[1].destination_bytes(), promote_source);
         assert_eq!(
@@ -6246,6 +6335,7 @@ mod tests {
             remembered_set.edges(),
             &[RememberedEdge::new(remembered_source, copy_destination)]
         );
+        assert!(card_table.is_empty());
     }
 
     #[test]
@@ -6346,13 +6436,19 @@ mod tests {
             .record(RememberedEdge::new(promoted_source, promote))
             .expect("stale remembered promote edge records");
         let unchanged_stale_remembered_set = stale_remembered_set.clone();
+        let mut card_table = GcCardTable::new(0x1000).expect("card table builds");
+        card_table
+            .mark_source(remembered_source)
+            .expect("remembered source card marks");
+        let unchanged_card_table = card_table.clone();
 
         assert_eq!(
-            commit_plan.apply_to_buffers(MinorGcCommitBuffers::new(
+            commit_plan.apply_to_buffers(MinorGcCommitBuffers::with_card_table(
                 &mut object_byte_copies,
                 &mut forwarding_slots,
                 &mut references,
                 &mut stale_remembered_set,
+                &mut card_table,
             )),
             Err(
                 GenerationalGcError::MinorGcCommitRememberedSetPublicationEpochMismatch {
@@ -6367,6 +6463,7 @@ mod tests {
         assert!(forwarding_slots[1].is_empty());
         assert_eq!(references, original_references);
         assert_eq!(stale_remembered_set, unchanged_stale_remembered_set);
+        assert_eq!(card_table, unchanged_card_table);
     }
 
     #[test]

@@ -996,8 +996,25 @@ GC must be observationally invisible (§8): every item is gated by the different
       low-level snapshot coverage, direct and boundary-level missing dirty-card
       rejection, dirty-card success, and the existing boundary remembered-edge
       dry-run. This remains validation metadata only: it does not rescan dirty
-      cards, clear card-table storage after remembered-set publication, mutate
-      object generations, or install the Tier-B collector body.
+      cards, clear the live daemon card-table storage after remembered-set
+      publication, mutate object generations, or install the Tier-B collector
+      body.
+- [x] Current allocation-poll card-table commit-buffer precursor:
+      boundary commit preflights now carry an owned fallible clone of the
+      daemon-wide card-table snapshot, and
+      `AllocationCollectorPollMinorGcCommitBuffers::with_card_table` threads that
+      buffer through to the lower-level commit application. The owned dry-run
+      clears dirty cards only after object-byte copies, forwarding slots,
+      reference rewrites, and remembered-set publication validate and apply.
+      Worker and permanent-shared boundary applications each receive their own
+      daemon-wide clone, so their dirty-card clearing counts are per-owned
+      application and are intentionally not aggregated in the dry-run summary.
+      Tests cover low-level dirty-card clearing, no-partial-clear on stale commit
+      buffers, boundary remembered-edge dry-run clearing of the owned card
+      table, and sibling boundary preflights clearing independent daemon-wide
+      copies. This is still an owned-buffer dry-run only: mutating the live
+      evaluator/daemon card table, rescanning dirty old cards, and installing
+      the Tier-B collector remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -1582,20 +1599,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       commit plan to caller-owned byte-copy buffers, forwarding slots, reference
       slots, and remembered-set state. The helper validates every supplied buffer
       first, then performs the ordered commit steps: copy object bytes, install
-      forwarding values, rewrite references, and publish the next remembered set.
-      The report-returning variant summarizes committed copy, promotion,
-      forwarding, reference-rewrite, and remembered-set publication counts after
-      a successful commit. The allocation-poll bridge exposes copy-to-nursery
-      and promote-to-old object byte-copy request views plus per-generation
-      object-payload byte totals; destination-space sizing still uses the
-      placement plan's reserved-byte totals because alignment padding belongs
-      there. Tests cover successful cross-buffer application, commit-report
-      counts, action-partitioned allocation-poll byte-copy requests, and a late
-      remembered-set mismatch that leaves byte destinations, forwarding slots,
-      references, and remembered-set state unchanged. This is still a
+      forwarding values, rewrite references, publish the next remembered set,
+      and clear an optional caller-owned card-table buffer after publication
+      succeeds. The report-returning variant summarizes committed copy,
+      promotion, forwarding, reference-rewrite, remembered-set publication, and
+      dirty-card clearing counts after a successful commit. The allocation-poll
+      bridge exposes copy-to-nursery and promote-to-old object byte-copy request
+      views plus per-generation object-payload byte totals; destination-space
+      sizing still uses the placement plan's reserved-byte totals because
+      alignment padding belongs there. Tests cover successful cross-buffer
+      application, commit-report counts, action-partitioned allocation-poll
+      byte-copy requests, dirty-card clearing, and a late remembered-set mismatch
+      that leaves byte destinations, forwarding slots, references,
+      remembered-set state, and dirty cards unchanged. This is still a
       caller-buffer application surface only: it does not allocate destination
-      objects, bind buffers to real heap storage or object headers, own the card
-      table, scan/rescan old fields, or manage semispaces.
+      objects, bind buffers to real heap storage or object headers, own the live
+      card table, scan/rescan old fields, or manage semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

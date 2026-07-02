@@ -1059,6 +1059,8 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
         .expect("remembered boundary scan builds commit preflight metadata");
+    let worker_preflight = preflights.worker().expect("worker preflight records");
+    assert_eq!(worker_preflight.card_table().len(), 1);
     let application = preflights
         .worker()
         .expect("worker preflight records")
@@ -1067,7 +1069,9 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
 
     assert_eq!(application.report().remembered_set_source_edges(), 1);
     assert_eq!(application.report().remembered_set_published_edges(), 1);
+    assert_eq!(application.report().card_table_dirty_cards_cleared(), 1);
     assert_eq!(application.remembered_set().len(), 1);
+    assert!(application.card_table().is_empty());
     assert_eq!(
         application.remembered_set().edges()[0].source(),
         gc_address(thunk_value)
@@ -1097,8 +1101,15 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         .preflights()
         .permanent_shared()
         .expect("permanent empty dry-run preflight records");
+    assert_eq!(worker_preflight.card_table().len(), 1);
+    assert_eq!(permanent_preflight.card_table().len(), 1);
+
     let worker_report = worker_commit.report();
     let permanent_report = permanent_commit.report();
+    assert_eq!(worker_report.card_table_dirty_cards_cleared(), 1);
+    assert_eq!(permanent_report.card_table_dirty_cards_cleared(), 1);
+    assert!(worker_commit.card_table().is_empty());
+    assert!(permanent_commit.card_table().is_empty());
 
     assert_eq!(summary.tiers(), dry_run.len());
     assert_eq!(

@@ -270,6 +270,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitPreflight {
     reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
     root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
     heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
+    card_table: GcCardTable,
 }
 
 impl EvalGcStressBoundaryMinorGcCommitPreflight {
@@ -282,6 +283,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
         root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
         heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
+        card_table: GcCardTable,
     ) -> Self {
         Self {
             relocation_plan,
@@ -291,6 +293,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
             reference_writeback_plan,
             root_writeback_slots,
             heap_field_writeback_slots,
+            card_table,
         }
     }
 
@@ -354,6 +357,15 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         &self.heap_field_writeback_slots
     }
 
+    /// Returns the owned daemon card-table snapshot copy used by commit dry-runs.
+    ///
+    /// This table is not partitioned by boundary allocator tier; worker and
+    /// permanent-shared preflights each receive an independent clone of the
+    /// daemon-wide table recorded on the outcome.
+    pub const fn card_table(&self) -> &GcCardTable {
+        &self.card_table
+    }
+
     /// Applies reference writebacks to this preflight's owned slot buffers.
     ///
     /// The method clones the root and heap-field writeback slots captured by
@@ -391,12 +403,13 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     /// Applies the commit plan to boundary-owned synthetic commit buffers.
     ///
     /// The method clones this preflight's forwarding slots and reference buffer,
-    /// clones the remembered set captured by the minor-GC plan, builds
-    /// synthetic source and destination byte buffers from the object byte-copy
-    /// requests, and applies the full lower-level commit plan to those owned
-    /// buffers. The synthetic byte buffers prove commit ordering and validation
-    /// without claiming to bind to live semispace storage or real heap object
-    /// bytes. Live tree-walk roots, heap fields, object headers, remembered-set
+    /// clones the remembered set captured by the minor-GC plan, clones this
+    /// preflight's daemon-wide card-table snapshot, builds synthetic source and
+    /// destination byte buffers from the object byte-copy requests, and applies
+    /// the full lower-level commit plan to those owned buffers. The synthetic
+    /// byte buffers prove commit ordering and validation without claiming to
+    /// bind to live semispace storage or real heap object bytes. Live tree-walk
+    /// roots, heap fields, object headers, remembered-set storage, card-table
     /// storage, and semispace pages remain untouched.
     ///
     /// # Errors
@@ -413,17 +426,19 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         let mut references = clone_boundary_reference_buffer(&self.reference_buffer)?;
         let mut remembered_set =
             clone_boundary_remembered_set(self.relocation_plan.minor_gc_plan().remembered_set())?;
+        let mut card_table = self.card_table.try_clone()?;
 
         let report = {
             let commit_plan = self.relocation_plan.commit_plan()?;
             let mut object_byte_copy_buffers =
                 boundary_minor_gc_object_byte_copy_buffers(&mut object_byte_copies)?;
             commit_plan.apply_to_buffers_with_report(
-                AllocationCollectorPollMinorGcCommitBuffers::new(
+                AllocationCollectorPollMinorGcCommitBuffers::with_card_table(
                     &mut object_byte_copy_buffers,
                     &mut forwarding_slots,
                     &mut references,
                     &mut remembered_set,
+                    &mut card_table,
                 ),
             )?
         };
@@ -434,6 +449,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
             forwarding_slots,
             references,
             remembered_set,
+            card_table,
         ))
     }
 }
@@ -520,6 +536,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitApplication {
     forwarding_slots: Vec<MinorGcForwardingSlot>,
     references: Vec<ResolvedValueGeneration>,
     remembered_set: RememberedSet,
+    card_table: GcCardTable,
 }
 
 impl EvalGcStressBoundaryMinorGcCommitApplication {
@@ -529,6 +546,7 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
         forwarding_slots: Vec<MinorGcForwardingSlot>,
         references: Vec<ResolvedValueGeneration>,
         remembered_set: RememberedSet,
+        card_table: GcCardTable,
     ) -> Self {
         Self {
             report,
@@ -536,6 +554,7 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
             forwarding_slots,
             references,
             remembered_set,
+            card_table,
         }
     }
 
@@ -562,6 +581,14 @@ impl EvalGcStressBoundaryMinorGcCommitApplication {
     /// Returns the remembered set after commit publication into the owned buffer.
     pub const fn remembered_set(&self) -> &RememberedSet {
         &self.remembered_set
+    }
+
+    /// Returns the owned daemon card-table copy after commit application.
+    ///
+    /// The table is a dry-run clone of the outcome's daemon-wide card table,
+    /// not tier-partitioned live card-table state.
+    pub const fn card_table(&self) -> &GcCardTable {
+        &self.card_table
     }
 }
 
@@ -908,7 +935,10 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
 /// not imply that live roots, heap fields, object bytes, forwarding headers,
-/// remembered sets, or semispace storage were mutated.
+/// remembered sets, card-table storage, or semispace storage were mutated. It
+/// intentionally omits card-table clearing totals because each tier-owned
+/// dry-run clears an independent clone of the daemon-wide card table, so those
+/// counts are not additive across worker and permanent-shared tiers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     tiers: usize,
@@ -1535,18 +1565,20 @@ impl EvalOutcome {
     ///
     /// This derives paired boundary relocation plans, builds the borrowed commit
     /// metadata long enough to validate and extract owned object byte-copy
-    /// requests, empty forwarding slots, copied reference buffers, and reference
-    /// writeback metadata plus caller-owned writeback slot buffers, then returns
-    /// those artifacts beside the paired relocation plan. It still does not bind
-    /// object byte buffers, mutate forwarding slots, rewrite live roots or heap
-    /// fields, publish remembered sets, reserve semispace storage, or invoke a
-    /// collector.
+    /// requests, empty forwarding slots, copied reference buffers, daemon-wide
+    /// card-table snapshot clones, and reference writeback metadata plus
+    /// caller-owned writeback slot buffers, then returns those artifacts beside
+    /// the paired relocation plan. It still does not bind object byte buffers,
+    /// mutate forwarding slots, rewrite live roots or heap fields, publish
+    /// remembered sets, clear the live daemon card table, reserve semispace
+    /// storage, or invoke a collector.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if boundary relocation planning fails, if commit
-    /// metadata cannot be built, if heap-backed byte-copy or writeback validation
-    /// fails, or if forwarding-slot storage cannot be reserved.
+    /// metadata cannot be built, if heap-backed byte-copy or writeback
+    /// validation fails, or if forwarding-slot or card-table snapshot storage
+    /// cannot be reserved.
     pub fn gc_stress_boundary_minor_gc_commit_preflights(
         &self,
         promotion_policy: MinorGcPromotionPolicy,
@@ -1578,7 +1610,7 @@ impl EvalOutcome {
     /// and remembered-set buffers. The returned report carries all three
     /// artifacts for the exact same worker/permanent-shared partition. It still
     /// does not mutate live evaluator roots, live heap fields, object headers,
-    /// remembered-set storage, or semispace pages.
+    /// remembered-set storage, card-table storage, or semispace pages.
     ///
     /// # Errors
     ///
@@ -1642,6 +1674,7 @@ impl EvalOutcome {
             reference_writeback_plan,
             root_writeback_slots,
             heap_field_writeback_slots,
+            self.thunk_resolve_card_table.try_clone()?,
         ))
     }
 
