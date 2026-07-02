@@ -261,3 +261,6 @@ fn helper_callable_address(binding: RuntimeHelperRustCallableBinding) -> *const 
         RuntimeHelperRustCallableBinding::WriteBarrier(binding) => binding.address().as_ptr(),
     }
 }
+
+#[cfg(test)]
+mod tests;
