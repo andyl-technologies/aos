@@ -1204,6 +1204,11 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
                 1,
             ),
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
         ];
         let preflight = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
             .expect("JIT symbol registration preflight builds");
@@ -1215,7 +1220,11 @@ mod tests {
 
         assert_eq!(
             binding_symbols,
-            vec!["aos_alloc_attrs", "nix.builtin.derivationStrict"]
+            vec![
+                "aos_alloc_attrs",
+                "aos_env_get",
+                "nix.builtin.derivationStrict"
+            ]
         );
         assert_eq!(
             preflight
@@ -1227,6 +1236,16 @@ mod tests {
             1
         );
         assert!(preflight.gap_for_symbol("aos_alloc_attrs").is_none());
+        assert_eq!(
+            preflight
+                .binding_for_symbol("aos_env_get")
+                .expect("environment helper candidate binds")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert!(preflight.gap_for_symbol("aos_env_get").is_none());
         assert!(
             preflight
                 .gap_for_symbol("aos_force")

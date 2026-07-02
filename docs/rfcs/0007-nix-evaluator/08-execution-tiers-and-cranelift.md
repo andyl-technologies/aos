@@ -1167,11 +1167,12 @@ harness, never cut for scope.
       address while declaration gaps remain preserved in stable runtime-symbol
       order. Tests pin missing-address gaps for callable builtins and
       core-owned helpers, declaration-gap preservation, synthetic candidate
-      binding order, kind-mismatch handling, duplicate-candidate rejection, and
+      binding order for allocation and environment-access helpers plus callable
+      builtins, kind-mismatch handling, duplicate-candidate rejection, and
       unknown-candidate rejection, plus the incomplete-plan gate. This is
-      registration-readiness metadata only: it does not call
-      `JITBuilder::symbol`, expose raw function pointers, dereference native
-      addresses, export wrappers, finalize code, or call native code.
+      registration-readiness metadata only: it does not call `JITBuilder::symbol`,
+      expose raw function pointers, dereference native addresses, export
+      wrappers, finalize code, or call native code.
 - [x] Current Cranelift `JITBuilder::symbol` registration precursor:
       `ratchet-jit::cranelift::jit_cranelift_symbol_registration_preflight_with_candidates()`
       consumes explicit native-address candidates, calls `JITBuilder::symbol`
@@ -1179,11 +1180,12 @@ harness, never cut for scope.
       metadata, and seals the configured builder inside an encapsulated
       `JITModule`. Missing declarations, missing addresses, kind mismatches,
       duplicates, and unknown candidates stay as registration gaps or errors.
-      Tests pin the default no-address state, synthetic registered-symbol order,
+      Tests pin the default no-address state, synthetic registered-symbol order
+      for allocation and environment-access helpers plus callable builtins,
       representative declaration gaps, unknown-candidate error propagation, and
-      encapsulated-module ownership. This does not install real exported
-      wrappers, dereference or call registered addresses, declare imports,
-      define CLIF functions, finalize executable memory, or expose code
+      encapsulated-module ownership. This does not install real exported wrappers,
+      dereference or call registered addresses, declare imports, define CLIF
+      functions, finalize executable memory, or expose code
       pointers.
 - [x] Current `ratchet-jit` tier-up policy precursor:
       `ratchet-jit::tier::TierUpPolicy` names the tier-0 to tier-1 hotness
