@@ -141,6 +141,8 @@ fn eval_whnf_owned_with_evaluator(
         cheap_memory_budget_plan,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     })
@@ -260,6 +262,8 @@ fn eval_instantiation_attr_path_with_evaluator(
         cheap_memory_budget_plan,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     })

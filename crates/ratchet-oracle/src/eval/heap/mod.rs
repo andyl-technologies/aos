@@ -699,6 +699,14 @@ pub enum EvalHeapError {
         /// The number of previously installed destination object snapshots.
         existing: usize,
     },
+    /// Boundary live reference-writeback metadata has already been installed.
+    #[error(
+        "boundary minor-GC live reference writebacks already contain {existing} rewritten slots"
+    )]
+    BoundaryMinorGcLiveReferenceWritebacksAlreadyInstalled {
+        /// The number of previously installed reference-writeback slots.
+        existing: usize,
+    },
     /// Boundary sibling dry-runs disagreed about one destination byte snapshot.
     #[error(
         "boundary minor-GC live destination storage object mismatch for source 0x{source_address:x}: expected {expected:?}, found {actual:?}",

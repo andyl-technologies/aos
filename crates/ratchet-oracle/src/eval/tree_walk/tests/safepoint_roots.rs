@@ -88,6 +88,8 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
             cheap_memory_budget_plan: None,
             cheap_memory_advice_report: None,
             gc_stress_boundary_scans,
+            gc_stress_boundary_minor_gc_reference_writebacks:
+                EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
             gc_stress_boundary_minor_gc_destination_storage:
                 EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         },
@@ -857,6 +859,68 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
             address: nursery_base,
             generation: HeapGeneration::Young,
         }]
+    );
+
+    let mut writeback_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live reference writebacks");
+    assert!(
+        writeback_outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    let live_writeback_dry_run = writeback_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live reference writebacks");
+    assert_eq!(live_writeback_dry_run.reference_writebacks_installed(), 1);
+    assert_eq!(
+        live_writeback_dry_run
+            .reference_writeback_install_report()
+            .root_writebacks(),
+        1
+    );
+    assert_eq!(
+        live_writeback_dry_run
+            .reference_writeback_install_report()
+            .heap_field_writebacks(),
+        0
+    );
+    let live_writebacks = writeback_outcome.gc_stress_boundary_minor_gc_reference_writebacks();
+    let live_worker_writebacks = live_writebacks.worker().expect("worker writebacks install");
+    let dry_worker_writebacks = live_writeback_dry_run
+        .dry_run()
+        .reference_writebacks()
+        .worker()
+        .expect("dry worker writebacks record");
+    assert_eq!(live_writebacks.len(), 1);
+    assert_eq!(live_writebacks.install_report().writebacks(), 1);
+    assert_eq!(live_worker_writebacks, dry_worker_writebacks);
+    assert_eq!(
+        live_worker_writebacks.root_writeback_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    let writebacks_before_repeat = live_writebacks.clone();
+    let repeat_error = writeback_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live reference writebacks reject repeat install");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveReferenceWritebacksAlreadyInstalled { existing: 1 }
+    );
+    assert_eq!(
+        writeback_outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
+        &writebacks_before_repeat
     );
 
     let mut destination_outcome = eval_whnf_owned_with_options(
@@ -1780,6 +1844,8 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
@@ -1919,6 +1985,44 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     assert_eq!(dry_worker_report.remembered_set_source_edges(), 0);
     assert_eq!(dry_worker_report.remembered_set_published_edges(), 1);
 
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    let live_writeback_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("dirty old-field boundary installs live writeback metadata");
+    assert_eq!(
+        live_writeback_dry_run.reference_writebacks_installed(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_writeback_dry_run
+            .reference_writeback_install_report()
+            .heap_field_writebacks(),
+        summary.heap_field_writebacks()
+    );
+    let live_writebacks = outcome.gc_stress_boundary_minor_gc_reference_writebacks();
+    let live_worker_writebacks = live_writebacks
+        .worker()
+        .expect("dirty old-field worker writebacks install");
+    assert_eq!(live_writebacks.len(), dry_run.reference_writebacks().len());
+    assert_eq!(
+        live_writebacks.install_report().writebacks(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_worker_writebacks.heap_field_writeback_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let live_card_table_dry_run = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table(
@@ -1985,6 +2089,8 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
@@ -2059,6 +2165,8 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
@@ -2094,7 +2202,7 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
 #[test]
 fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     let ir = lower("\"stress\"");
-    let outcome = eval_whnf_owned_with_options(
+    let mut outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
@@ -2183,6 +2291,59 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     assert_eq!(
         commit_applications.permanent_shared(),
         Some(&commit_application)
+    );
+
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    let live_writeback_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("no-writeback boundary dry-run is a live side-table no-op");
+    assert_eq!(live_writeback_dry_run.dry_run().len(), 1);
+    assert_eq!(
+        live_writeback_dry_run
+            .dry_run()
+            .reference_writebacks()
+            .permanent_shared()
+            .expect("permanent no-writeback application records")
+            .report()
+            .writebacks(),
+        0
+    );
+    assert_eq!(live_writeback_dry_run.reference_writebacks_installed(), 0);
+    assert_eq!(
+        live_writeback_dry_run
+            .reference_writeback_install_report()
+            .tiers(),
+        0
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    let repeat_noop = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("repeated no-writeback live side-table run stays a no-op");
+    assert_eq!(repeat_noop.reference_writebacks_installed(), 0);
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
     );
 }
 

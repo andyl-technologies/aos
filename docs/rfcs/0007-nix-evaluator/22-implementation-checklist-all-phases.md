@@ -5728,6 +5728,21 @@ and helps the oracle directly.
       heap-object bodies or semispace pages, and live root/field mutation, real
       ABI object-header forwarding writes, object-generation mutation,
       remembered-source field mutation, and Tier-B dispatch remain open.
+- [x] Current boundary live reference-writeback side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
+      derives the same owned boundary commit dry run, validates sibling survivor
+      relocations through the shared raw relocation-map coherence checks, clones
+      the already validated root and heap-field writeback buffers, and installs
+      those rewritten slot snapshots into outcome-owned metadata only after
+      dry-run validation succeeds. Empty/no-writeback boundaries leave the side
+      table unchanged, and repeat installs reject without partial mutation. Unit
+      tests cover root writebacks, dirty old-field heap writebacks,
+      no-writeback no-ops, partition preservation, repeat-install rejection, and
+      unchanged live card-table state. This is still not a full live collector commit: the slots are not
+      bound to live evaluator roots or heap object fields, and live root/field
+      mutation, real ABI object-header forwarding writes, object-generation
+      mutation, remembered-source field mutation, and Tier-B dispatch remain
+      open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from

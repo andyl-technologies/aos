@@ -56,6 +56,8 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans: EvalGcStressBoundaryScans::default(),
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     }

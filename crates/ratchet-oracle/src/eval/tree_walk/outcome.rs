@@ -32,6 +32,10 @@ const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC refere
 const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE: &str = "boundary minor-GC root writeback slots";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC heap-field writeback slots";
+const BOUNDARY_MINOR_GC_LIVE_ROOT_WRITEBACK_SLOTS_TABLE: &str =
+    "boundary minor-GC live root writeback slots";
+const BOUNDARY_MINOR_GC_LIVE_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
+    "boundary minor-GC live heap-field writeback slots";
 
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -505,6 +509,114 @@ impl EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
     /// Returns caller-owned heap-field writeback slots after application.
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         &self.heap_field_writeback_slots
+    }
+}
+
+/// Counts for outcome-owned reference-writeback metadata installation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+    tiers: usize,
+    root_writebacks: usize,
+    heap_field_writebacks: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+    fn record(&mut self, application: &EvalGcStressBoundaryMinorGcReferenceWritebackApplication) {
+        self.tiers = self.tiers.saturating_add(1);
+        let report = application.report();
+        self.root_writebacks = self
+            .root_writebacks
+            .saturating_add(report.root_writebacks());
+        self.heap_field_writebacks = self
+            .heap_field_writebacks
+            .saturating_add(report.heap_field_writebacks());
+    }
+
+    /// Returns how many allocator tiers installed writeback metadata.
+    pub const fn tiers(self) -> usize {
+        self.tiers
+    }
+
+    /// Returns how many copied root slots were installed.
+    pub const fn root_writebacks(self) -> usize {
+        self.root_writebacks
+    }
+
+    /// Returns how many copied heap-field slots were installed.
+    pub const fn heap_field_writebacks(self) -> usize {
+        self.heap_field_writebacks
+    }
+
+    /// Returns the total number of copied writeback slots installed.
+    pub const fn writebacks(self) -> usize {
+        self.root_writebacks
+            .saturating_add(self.heap_field_writebacks)
+    }
+}
+
+/// Outcome-owned reference-writeback metadata installed by live dry runs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+    install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    applications: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+    fn install(
+        &mut self,
+        applications: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport, EvalHeapError> {
+        let install_report = live_reference_writeback_install_report(&applications);
+        if install_report.writebacks() == 0 {
+            return Ok(EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport::default());
+        }
+        if !self.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveReferenceWritebacksAlreadyInstalled {
+                    existing: self.install_report.writebacks(),
+                },
+            );
+        }
+
+        self.install_report = install_report;
+        self.applications = applications;
+        Ok(install_report)
+    }
+
+    /// Returns whether no writeback metadata has been installed.
+    pub const fn is_empty(&self) -> bool {
+        self.applications.is_empty()
+    }
+
+    /// Returns how many allocator tiers installed writeback metadata.
+    pub const fn len(&self) -> usize {
+        self.applications.len()
+    }
+
+    /// Returns the install report for the outcome-owned writeback metadata.
+    pub const fn install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+        self.install_report
+    }
+
+    /// Returns the installed worker writeback metadata, if present.
+    pub const fn worker(
+        &self,
+    ) -> Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication> {
+        self.applications.worker()
+    }
+
+    /// Returns the installed permanent-shared writeback metadata, if present.
+    pub const fn permanent_shared(
+        &self,
+    ) -> Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication> {
+        self.applications.permanent_shared()
+    }
+
+    /// Returns the installed per-tier writeback metadata.
+    pub const fn applications(&self) -> &EvalGcStressBoundaryMinorGcReferenceWritebackApplications {
+        &self.applications
     }
 }
 
@@ -1015,6 +1127,19 @@ fn live_destination_storage_install_report(
     report
 }
 
+fn live_reference_writeback_install_report(
+    applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+    let mut report = EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport::default();
+    if let Some(application) = applications.worker() {
+        report.record(application);
+    }
+    if let Some(application) = applications.permanent_shared() {
+        report.record(application);
+    }
+    report
+}
+
 fn clone_boundary_forwarding_slots(
     slots: &[MinorGcForwardingSlot],
 ) -> Result<Vec<MinorGcForwardingSlot>, EvalHeapError> {
@@ -1040,6 +1165,62 @@ fn clone_boundary_reference_buffer(
         }
     })?;
     cloned.extend(references.iter().copied());
+    Ok(cloned)
+}
+
+fn clone_boundary_reference_writeback_applications(
+    applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+) -> Result<EvalGcStressBoundaryMinorGcReferenceWritebackApplications, EvalHeapError> {
+    let worker = applications
+        .worker()
+        .map(clone_boundary_reference_writeback_application)
+        .transpose()?;
+    let permanent_shared = applications
+        .permanent_shared()
+        .map(clone_boundary_reference_writeback_application)
+        .transpose()?;
+    Ok(EvalGcStressBoundaryMinorGcReferenceWritebackApplications::new(worker, permanent_shared))
+}
+
+fn clone_boundary_reference_writeback_application(
+    application: &EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
+) -> Result<EvalGcStressBoundaryMinorGcReferenceWritebackApplication, EvalHeapError> {
+    Ok(
+        EvalGcStressBoundaryMinorGcReferenceWritebackApplication::new(
+            application.report(),
+            clone_boundary_live_root_writeback_slots(application.root_writeback_slots())?,
+            clone_boundary_live_heap_field_writeback_slots(
+                application.heap_field_writeback_slots(),
+            )?,
+        ),
+    )
+}
+
+fn clone_boundary_live_root_writeback_slots(
+    slots: &[AllocationCollectorPollRootWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollRootWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_LIVE_ROOT_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
+    Ok(cloned)
+}
+
+fn clone_boundary_live_heap_field_writeback_slots(
+    slots: &[AllocationCollectorPollHeapFieldWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollHeapFieldWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_LIVE_HEAP_FIELD_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
     Ok(cloned)
 }
 
@@ -1820,6 +2001,49 @@ impl EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus outcome-owned reference-writeback installation.
+///
+/// This report preserves the owned dry-run artifacts and records the copied root
+/// and heap-field writeback slots installed into [`EvalOutcome`]'s metadata
+/// after all dry-run validation succeeds. It still does not mutate live roots,
+/// heap fields, object bytes, forwarding headers, remembered-set storage,
+/// object generations, card-table storage, or semispace pages.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    reference_writeback_install_report:
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        reference_writeback_install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            reference_writeback_install_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated writeback metadata install.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live reference-writeback installation report.
+    pub const fn reference_writeback_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+        self.reference_writeback_install_report
+    }
+
+    /// Returns how many copied reference writeback slots were installed.
+    pub const fn reference_writebacks_installed(&self) -> usize {
+        self.reference_writeback_install_report.writebacks()
+    }
+}
+
 /// Boundary commit dry run plus live remembered-set publication.
 ///
 /// This report preserves the owned dry-run artifacts and records the live
@@ -2260,6 +2484,8 @@ pub struct EvalOutcome {
     pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
+    pub(crate) gc_stress_boundary_minor_gc_reference_writebacks:
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
     pub(crate) gc_stress_boundary_minor_gc_destination_storage:
         EvalGcStressBoundaryMinorGcLiveDestinationStorage,
 }
@@ -2292,6 +2518,10 @@ impl std::fmt::Debug for EvalOutcome {
                 &self.cheap_memory_advice_report,
             )
             .field("gc_stress_boundary_scans", &self.gc_stress_boundary_scans)
+            .field(
+                "gc_stress_boundary_minor_gc_reference_writebacks",
+                &self.gc_stress_boundary_minor_gc_reference_writebacks,
+            )
             .field(
                 "gc_stress_boundary_minor_gc_destination_storage",
                 &self.gc_stress_boundary_minor_gc_destination_storage,
@@ -2386,6 +2616,17 @@ impl EvalOutcome {
     /// Returns GC-stress scans recorded at the successful evaluation boundary.
     pub const fn gc_stress_boundary_scans(&self) -> &EvalGcStressBoundaryScans {
         &self.gc_stress_boundary_scans
+    }
+
+    /// Returns outcome-owned reference-writeback metadata installed by live dry runs.
+    ///
+    /// The installed slots are GC-stress bridge metadata. They are not live
+    /// evaluator root storage or heap object fields and are not read by ordinary
+    /// evaluation.
+    pub const fn gc_stress_boundary_minor_gc_reference_writebacks(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+        &self.gc_stress_boundary_minor_gc_reference_writebacks
     }
 
     /// Returns outcome-owned destination byte snapshots installed by live dry runs.
@@ -2673,6 +2914,49 @@ impl EvalOutcome {
             EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun::new(
                 dry_run,
                 destination_storage_install_report,
+            ),
+        )
+    }
+
+    /// Runs a boundary dry run and installs outcome-owned writeback metadata.
+    ///
+    /// The method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`], validates sibling
+    /// survivor relocations with the same raw relocation-map coherence checks
+    /// used by the other live side-table bridges, clones the applied root and
+    /// heap-field writeback slot buffers, and installs those copies into this
+    /// outcome's metadata. Empty boundaries, or non-empty boundaries with no
+    /// reference writebacks, leave the side table unchanged.
+    ///
+    /// This is a live metadata bridge for GC-stress experiments, not a full
+    /// collector commit. It does not mutate live root variables, heap fields,
+    /// object bytes, forwarding headers, remembered sets, card-table storage,
+    /// object generations, reserve semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling survivor relocations do not form one
+    /// coherent map, if writeback metadata cannot be cloned, or if writeback
+    /// metadata has already been installed for this outcome. When an error is
+    /// returned, the reference-writeback side table is left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let writebacks =
+            clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;
+        let reference_writeback_install_report = self
+            .gc_stress_boundary_minor_gc_reference_writebacks
+            .install(writebacks)?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun::new(
+                dry_run,
+                reference_writeback_install_report,
             ),
         )
     }
