@@ -1037,20 +1037,29 @@ pub enum SessionError {
 > sync with the master plan's order/digest by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-SESS-1** Implement the session actor: a single owning task holding the
+- [x] **T-SESS-1** Implement the session actor: a single owning task holding the
   `Engine` (05 §10), scheduler (08), temporal-graph handle (07), breakpoint set,
   and event-log writer, mutated only on the task, reached only by message; assert
   (lint + test) no long-held lock guards the engine across a run. — satisfies
   [SESS-1], [SESS-7]; spec §1, §3.
+  - Completed by `checks.crucible.phase5.sessionActor`: `SessionActor` owns
+    `Engine<L>` by value, receives all control through an
+    `mpsc::Receiver<SessionCommand>`, owns the `SessionEventLog` writer, and the
+    `Engine` owns the runtime cache, `TemporalGraph`, `BreakpointSet`, and
+    scheduler `QuantumLoop`. The source gate and focused Rust test assert the
+    actor has no public mutable engine accessor, no public direct command hook,
+    and no locked/shared actor engine field while allowing the lower-level
+    `Engine` state-machine APIs used by foundation tests and the separate
+    event-log retention mutex.
 - [x] **T-SESS-2** Implement the bounded-quantum actor loop (poll mailbox →
   apply one command or step one quantum → publish mirror → yield), with
   inter-quantum mailbox polls and a quanta-measured acknowledgement bound; wire
-  `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-8], [SESS-9];
+  `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-9];
   spec §3.
   - Completed by `crates/crucible-session/src/lib.rs`: `SessionActor::run`
-    delegates to a bounded `run_once` loop that polls deferred commands and
+    delegates to a bounded `run_once` loop that polls
     `mpsc::Receiver::try_recv` before each running quantum, applies at most one
-    boundary command or calls `Engine::step_quantum` once, publishes the
+    mailbox command or calls `Engine::step_quantum` once, publishes the
     `LiveSnapshot` mirror after command transitions and quanta, and yields with
     `tokio::task::yield_now` after every applied command or scheduler quantum.
     Focused tests cover
@@ -1077,7 +1086,8 @@ pub enum SessionError {
 - [ ] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean
-  scheduler/backend shutdown. — satisfies [SESS-13], [SESS-14]; spec §5.
+  scheduler/backend shutdown. — satisfies [SESS-8], [SESS-13], [SESS-14];
+  spec §5, §3.
 - [ ] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
   vocabulary (§17a.2, including `NodeState` and `AssertionState` leaves and
   `AllOf`/`AnyOf`/`Once`/`Not`) evaluated at the same deterministic evaluation

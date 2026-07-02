@@ -1136,6 +1136,11 @@ in rec {
     };
   };
   phase5 = {
+    sessionActor = import ./phase5-session-actor.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.sessionActor";
+      taskIds = ["T-SESS-1"];
+    };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSkeleton";
