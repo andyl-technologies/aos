@@ -825,6 +825,21 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       shortcut, does not skip the thunk cell for already forced thunk values,
       does not integrate with the parallel scheduler/CAS wait path, and does
       not satisfy the loom/Miri/TSan gate (§3.6).
+- [x] Current frame-local single-entry thunk downgrade preflight:
+      `ratchet-core::analysis::thunk_sharing` exposes
+      `frame_local_single_entry_thunk_downgrade` as the named `C-8` safety
+      boundary for blackhole/update elision. It accepts only `ThunkAlloc` nodes,
+      returns `SingleEntry` only when `ExprFacts::thunk_sharing` has both a
+      `Once` cardinality proof and a `NoEscape` frame-locality proof, returns
+      `Omit` for non-contradicted absent lazy bindings, and otherwise reports
+      why full update/blackhole state must remain. Unit tests pin escaping
+      once-used thunks, frame-local many-entry thunks, absent thunks, strict
+      absent conflicts, non-thunk nodes, malformed thunk payloads, and dangling
+      thunk body ids. This is a proof/preflight API only: it does not change the
+      tree-walk thunk representation, skip blackholes in the runtime, implement
+      call-by-name lowering, improve cardinality/escape precision, or satisfy
+      the loom/Miri/TSan gate (§3.6, §5.4;
+      [07](07-laziness-and-whole-program-analyses.md) §5.1/§10).
 
 ### L1 — coarse top-level parallelism (§4)
 

@@ -6635,6 +6635,20 @@ nurseries build on the bump arena.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.
+- [x] Current frame-local single-entry thunk downgrade preflight:
+      `ratchet-core::analysis::thunk_sharing` exposes
+      `frame_local_single_entry_thunk_downgrade`, which validates that a target
+      node is a well-formed `ThunkAlloc` and returns `SingleEntry` only for
+      `ExprFacts` with `Once` cardinality plus `NoEscape` frame-locality. Missing
+      proofs keep ordinary update/blackhole state with an explicit reason, while
+      non-contradicted `Absent` thunks return `Omit` rather than a blackhole-skip
+      downgrade. Tests cover the admitted proof, escaping once-used thunks,
+      frame-local many-entry thunks, absent thunks, strict absent conflicts,
+      non-thunk rejection, malformed thunk payload rejection, and dangling thunk
+      body rejection. This is the named safety predicate only: it does not
+      change tree-walk allocation, install a single-entry representation,
+      implement call-by-name lowering, improve cardinality/escape precision, or
+      close the loom/Miri/TSan audit.
 
 **Conformance (hold parity).**
 

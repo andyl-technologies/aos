@@ -877,6 +877,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       single-entry thunks, remove absent bindings, or run the whole-program
       usage fixpoint.
 - [ ] Single-entry thunks: drop the `Blackhole`/`Forced` update machinery (or downgrade to call-by-name) for used-at-most-once bindings (§5.1) — **P4**; the blackhole-skip restricted to escape-proven *frame-local* thunks so it is sound under parallel forcing (§10 item 4, `C-8`); ties to [13](13-parallel-evaluation.md) **P3.5**.
+- [x] Current frame-local single-entry preflight:
+      `ratchet-core::analysis::thunk_sharing` names the safety predicate for
+      this reduction. `frame_local_single_entry_thunk_downgrade` accepts only
+      well-formed `ThunkAlloc` nodes and returns `SingleEntry` only when the
+      fact table proves both `Cardinality::Once` and `Escape::NoEscape`; absent
+      thunks produce `Omit`, and every missing proof keeps update/blackhole
+      machinery. This is a proof API only; the single-entry representation,
+      call-by-name lowering, dead-binding elimination, and stronger
+      cardinality/escape analyses remain open.
 - [ ] Absence → dead-binding elimination via the dual of the demand fixpoint (worker takes a dummy, code never emitted) (§5.2) — **P4**, `S-9`; reduction in [26](26-optimization-pass-catalog.md).
 - [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).
 

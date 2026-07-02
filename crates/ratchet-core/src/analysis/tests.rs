@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::ir::{
-    Cardinality, EffectClass, Escape, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
-    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrFacts, IrId, IrKind, IrLowerOptions,
-    IrNode, IrShape, IrWithChain, Strictness, lower, lower_with_options,
+    Cardinality, EffectClass, Escape, ExprFacts, Ir, IrArena, IrAttrPathId, IrAttrPathSegment,
+    IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrFacts, IrId, IrKind,
+    IrLowerOptions, IrNode, IrShape, IrWithChain, Strictness, lower, lower_with_options,
 };
 use crate::resolve;
 use crate::scope::{FrameId, FrameInfo};
@@ -832,3 +832,4 @@ fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
 }
 
 mod strictness;
+mod thunk_sharing;

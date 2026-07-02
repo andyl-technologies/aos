@@ -8,6 +8,7 @@ pub mod cardinality;
 pub mod escape;
 pub mod full_laziness;
 pub mod strictness;
+pub mod thunk_sharing;
 
 pub use cardinality::{CardinalityAnalysisError, CardinalityAnalysisReport, annotate_cardinality};
 pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
@@ -16,6 +17,10 @@ pub use full_laziness::{
     analyze_full_laziness,
 };
 pub use strictness::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
+pub use thunk_sharing::{
+    FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
+    FrameLocalThunkUpdateReason, frame_local_single_entry_thunk_downgrade,
+};
 
 #[cfg(test)]
 mod tests;
