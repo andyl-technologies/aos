@@ -2228,6 +2228,62 @@ impl Default for SessionEventLog {
     }
 }
 
+/// Cloneable snapshot of the deterministic command stream recorded for replay.
+#[derive(Clone, Debug)]
+pub struct SessionReproductionLog {
+    inner: Arc<Mutex<Vec<SessionControlLogEntry>>>,
+}
+
+impl SessionReproductionLog {
+    /// Builds an empty reproduction-log snapshot handle.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Returns a point-in-time copy of the recorded command stream.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<SessionControlLogEntry> {
+        self.lock_entries().clone()
+    }
+
+    /// Returns the number of recorded boundary controls.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock_entries().len()
+    }
+
+    /// Returns whether no boundary controls have been recorded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock_entries().is_empty()
+    }
+
+    fn sync_from_boundary_log(&self, entries: &[SessionControlLogEntry]) {
+        let mut current = self.lock_entries();
+        if current.as_slice() == entries {
+            return;
+        }
+        current.clear();
+        current.extend_from_slice(entries);
+    }
+
+    fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SessionControlLogEntry>> {
+        match self.inner.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl Default for SessionReproductionLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod test_support {
@@ -2997,20 +3053,29 @@ impl<L> Engine<L> {
         command: &SessionCommand,
         scheduler_control: Option<ControlOperationKind>,
     ) {
-        self.record_boundary_control_kind(SessionCommandKind::from(command), scheduler_control);
+        let event_log_sequence_before = usize_to_u64(self.event_log_len());
+        self.record_boundary_control_at(command, scheduler_control, event_log_sequence_before);
     }
 
-    fn record_boundary_control_kind(
+    fn record_boundary_control_at(
         &mut self,
-        command: SessionCommandKind,
+        command: &SessionCommand,
         scheduler_control: Option<ControlOperationKind>,
+        event_log_sequence_before: u64,
     ) {
+        let payload = SessionControlPayload::from(command);
         let scheduler_batch = if scheduler_control.is_some() {
             self.next_boundary_control_batch()
         } else {
             0
         };
-        self.record_boundary_control_kind_in_batch(command, scheduler_control, scheduler_batch);
+        self.record_boundary_control_kind_payload_in_batch(
+            SessionCommandKind::from(command),
+            payload,
+            scheduler_control,
+            scheduler_batch,
+            event_log_sequence_before,
+        );
     }
 
     fn record_boundary_control_kind_in_batch(
@@ -3018,13 +3083,36 @@ impl<L> Engine<L> {
         command: SessionCommandKind,
         scheduler_control: Option<ControlOperationKind>,
         scheduler_batch: u64,
+        event_log_sequence_before: u64,
+    ) {
+        let payload =
+            SessionControlPayload::from_control_or_kind(command, scheduler_control.as_ref());
+        self.record_boundary_control_kind_payload_in_batch(
+            command,
+            payload,
+            scheduler_control,
+            scheduler_batch,
+            event_log_sequence_before,
+        );
+    }
+
+    fn record_boundary_control_kind_payload_in_batch(
+        &mut self,
+        command: SessionCommandKind,
+        payload: SessionControlPayload,
+        scheduler_control: Option<ControlOperationKind>,
+        scheduler_batch: u64,
+        event_log_sequence_before: u64,
     ) {
         self.next_boundary_control_sequence = self.next_boundary_control_sequence.saturating_add(1);
         self.boundary_control_log.push(SessionControlLogEntry {
             sequence: self.next_boundary_control_sequence,
             command,
+            payload,
             frontier: self.frontier,
             quanta: self.quanta,
+            event_log_sequence_before,
+            result: SessionControlResult::Accepted,
             scheduler_batch,
             scheduler_control,
         });
@@ -3164,6 +3252,7 @@ impl<L> Engine<L> {
         L: QuantumLoop,
     {
         let planned_controls = Self::plan_breakpoint_action(action)?;
+        let event_log_sequence_before = usize_to_u64(self.event_log_len());
         self.apply_control_operations_at_boundary(planned_controls.clone())?;
         let scheduler_batch = if planned_controls.is_empty() {
             0
@@ -3176,6 +3265,7 @@ impl<L> Engine<L> {
                     command,
                     Some(control.clone()),
                     scheduler_batch,
+                    event_log_sequence_before,
                 );
             }
         }
@@ -3568,8 +3658,13 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     self.reject_debug_forward_without_branch(&command)?;
                     let control = ControlOperationKind::Inject;
+                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
                     self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control(&command, Some(control));
+                    self.record_boundary_control_at(
+                        &command,
+                        Some(control),
+                        event_log_sequence_before,
+                    );
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -3583,8 +3678,13 @@ impl<L: QuantumLoop> Engine<L> {
                         tag: spec.tag.clone(),
                         fault: spec.fault.clone(),
                     };
+                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
                     self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control(&command, Some(control));
+                    self.record_boundary_control_at(
+                        &command,
+                        Some(control),
+                        event_log_sequence_before,
+                    );
                     reply.complete(Ok(spec.tag.clone()));
                     Ok(self.snapshot())
                 }
@@ -3596,8 +3696,13 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     self.reject_debug_forward_without_branch(&command)?;
                     let control = ControlOperationKind::HealFault { tag: tag.clone() };
+                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
                     self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control(&command, Some(control));
+                    self.record_boundary_control_at(
+                        &command,
+                        Some(control),
+                        event_log_sequence_before,
+                    );
                     reply.complete(Ok(()));
                     Ok(self.snapshot())
                 }
@@ -3995,14 +4100,100 @@ pub struct SessionControlLogEntry {
     pub sequence: u64,
     /// Payload-free command kind applied at the boundary.
     pub command: SessionCommandKind,
+    /// Command payload admitted at the boundary, excluding reply routes.
+    pub payload: SessionControlPayload,
     /// Virtual-time frontier where the command was applied.
     pub frontier: VirtualTime,
     /// Number of scheduler quanta completed before the command was applied.
     pub quanta: u64,
+    /// Event-log sequence immediately after the causal prefix visible to the command.
+    pub event_log_sequence_before: u64,
+    /// Terminal result recorded for the boundary-control entry.
+    pub result: SessionControlResult,
     /// Scheduler-control batch identifier, or zero when no scheduler payload was applied.
     pub scheduler_batch: u64,
     /// Scheduler control payload admitted by this command, when any.
     pub scheduler_control: Option<ControlOperationKind>,
+}
+
+/// Result recorded for a deterministic boundary-control log entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SessionControlResult {
+    /// The command was accepted and included in the deterministic reproduction stream.
+    Accepted,
+}
+
+/// Reply-free command payload recorded in the deterministic control log.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SessionControlPayload {
+    /// A command kind without additional stable payload.
+    CommandKind {
+        /// Recorded command kind.
+        command: SessionCommandKind,
+    },
+    /// Fork payload naming the source checkpoint selection.
+    Fork {
+        /// Fork source checkpoint.
+        from: CheckpointRef,
+    },
+    /// Full fault injection payload.
+    InjectFault {
+        /// Fault activation payload.
+        spec: FaultSpec,
+    },
+    /// Fault heal payload.
+    HealFault {
+        /// Stable fault handle to heal.
+        tag: FaultTag,
+    },
+    /// Breakpoint registration payload.
+    SetBreakpoint {
+        /// Breakpoint specification.
+        spec: BreakpointSpec,
+    },
+    /// Breakpoint removal payload.
+    RemoveBreakpoint {
+        /// Breakpoint id to remove.
+        id: BreakpointId,
+    },
+    /// Savepoint creation payload.
+    CreateSavepoint {
+        /// Stable operator label.
+        label: String,
+    },
+}
+
+impl SessionControlPayload {
+    fn from(command: &SessionCommand) -> Self {
+        match command {
+            SessionCommand::Fork { from, .. } => Self::Fork { from: *from },
+            SessionCommand::InjectFault { spec, .. } => Self::InjectFault { spec: spec.clone() },
+            SessionCommand::HealFault { tag, .. } => Self::HealFault { tag: tag.clone() },
+            SessionCommand::SetBreakpoint { spec, .. } => {
+                Self::SetBreakpoint { spec: spec.clone() }
+            }
+            SessionCommand::RemoveBreakpoint { id, .. } => Self::RemoveBreakpoint { id: *id },
+            SessionCommand::CreateSavepoint { label, .. } => Self::CreateSavepoint {
+                label: label.clone(),
+            },
+            command => Self::CommandKind {
+                command: SessionCommandKind::from(command),
+            },
+        }
+    }
+
+    fn from_control_or_kind(
+        command: SessionCommandKind,
+        control: Option<&ControlOperationKind>,
+    ) -> Self {
+        match control {
+            Some(ControlOperationKind::InjectFault { tag, fault }) => Self::InjectFault {
+                spec: FaultSpec::new(tag.clone(), fault.clone()),
+            },
+            Some(ControlOperationKind::HealFault { tag }) => Self::HealFault { tag: tag.clone() },
+            _ => Self::CommandKind { command },
+        }
+    }
 }
 
 /// Deterministic record of one breakpoint firing.
@@ -4034,6 +4225,7 @@ pub struct SessionActor<L> {
     mailbox: mpsc::Receiver<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: SessionEventLog,
+    reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
     last_published_state: EngineState,
     fork_loop_factory: Option<SessionForkLoopFactory<L>>,
@@ -4080,6 +4272,7 @@ impl<L> SessionActor<L> {
             mailbox,
             live,
             event_log: SessionEventLog::new(),
+            reproduction_log: SessionReproductionLog::new(),
             state_transitions: SessionStateTransitionBus::new(),
             last_published_state,
             fork_loop_factory,
@@ -4113,6 +4306,12 @@ impl<L> SessionActor<L> {
     #[must_use]
     pub fn event_log(&self) -> SessionEventLog {
         self.event_log.clone()
+    }
+
+    /// Returns a cloneable snapshot handle for the deterministic command stream.
+    #[must_use]
+    pub fn reproduction_log(&self) -> SessionReproductionLog {
+        self.reproduction_log.clone()
     }
 
     /// Subscribes to session event-log entries from `cursor` onward.
@@ -4195,6 +4394,11 @@ impl<L> SessionActor<L> {
             .cloned()
             .collect()
     }
+
+    fn sync_reproduction_log(&self) {
+        self.reproduction_log
+            .sync_from_boundary_log(self.engine.boundary_control_log());
+    }
 }
 
 impl<L> SessionActor<L>
@@ -4244,6 +4448,7 @@ where
                 self.append_event_log_entries(&entries);
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries);
                 self.control_acknowledgements = self
@@ -4284,6 +4489,7 @@ where
                 self.append_event_log_entries(&entries);
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries);
                 self.control_acknowledgements = self
@@ -4345,6 +4551,7 @@ where
         }
         let entries = self.engine.drain_event_log_entries();
         self.append_event_log_entries(&entries);
+        self.sync_reproduction_log();
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {
             self.control_acknowledgements = self
@@ -4432,6 +4639,7 @@ where
             live: child_live,
         });
         reply.complete(Ok(handle));
+        self.sync_reproduction_log();
         self.publish_live_snapshot();
         self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
         self.commands_applied = self.commands_applied.saturating_add(1);
@@ -5796,6 +6004,33 @@ mod tests {
                 reason: PauseReason::Instantiated
             }
         ));
+    }
+
+    #[test]
+    fn boundary_control_at_sequence_is_before_scheduler_control_events() {
+        let scenario = generated_scenario(431);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ControlEventLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+
+        if let Err(error) = engine.apply_command(SessionCommand::Inject) {
+            panic!("paused inject should apply at the current boundary: {error}");
+        }
+
+        assert_eq!(engine.event_log_len(), 1);
+        let log = engine.boundary_control_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].event_log_sequence_before, 0);
+        assert_eq!(log[0].command, SessionCommandKind::Inject);
+        assert_eq!(
+            log[0].payload,
+            SessionControlPayload::CommandKind {
+                command: SessionCommandKind::Inject,
+            },
+        );
     }
 
     #[test]
@@ -8239,6 +8474,36 @@ mod tests {
                 shutdowns.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
+        }
+    }
+
+    struct ControlEventLoop;
+
+    impl QuantumLoop for ControlEventLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime::default(),
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn apply_control_at_boundary(
+            &mut self,
+            _control: Vec<ControlOperation>,
+        ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+            Ok(vec![test_event_log_entry(0)])
         }
     }
 

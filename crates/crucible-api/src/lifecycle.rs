@@ -10,12 +10,15 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, EngineError, GenesisCheckpoint, QuantumLoop,
+    Action, Checkpoint, CheckpointKind, Configuration, ControlOperationKind, EngineError,
+    GenesisCheckpoint, LogLevel, MembershipFault, PartitionDirection, QuantumLoop, RestartPolicy,
     ScenarioDef, Seed, TemporalGraph, VirtualTime,
 };
 use crucible_session::{
-    Engine, LiveSnapshot, LiveStateKind, SessionActor, SessionCommand, SessionCommandKind,
-    SessionError, SessionRunReport, SessionStateTransitionBus,
+    BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
+    SessionActor, SessionCommand, SessionCommandKind, SessionControlLogEntry,
+    SessionControlPayload, SessionControlResult, SessionError, SessionReproductionLog,
+    SessionRunReport, SessionStateTransitionBus,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -302,6 +305,325 @@ pub struct DestroySessionResponse {
     pub stopped: bool,
 }
 
+/// Request accepted by `GetReproduction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GetReproductionRequest {
+    /// Session whose reproduction context should be read.
+    pub session: SessionRef,
+    /// Optional epoch guard supplied by the client.
+    pub expected_epoch: Option<u64>,
+}
+
+impl GetReproductionRequest {
+    /// Builds a reproduction request for `session`.
+    #[must_use]
+    pub const fn new(session: SessionRef) -> Self {
+        Self {
+            session,
+            expected_epoch: None,
+        }
+    }
+
+    /// Sets the optional expected epoch guard.
+    #[must_use]
+    pub const fn with_expected_epoch(mut self, expected_epoch: u64) -> Self {
+        self.expected_epoch = Some(expected_epoch);
+        self
+    }
+}
+
+/// Response returned by `GetReproduction`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetReproductionResponse {
+    /// Epoch-guarded session reference whose context was read.
+    pub session: SessionRef,
+    /// Recorded operator command stream in deterministic replay order.
+    pub commands: Vec<ReproductionCommandRecord>,
+}
+
+/// Payload recorded for one command in the reproduction context.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionCommandPayload {
+    /// Payload-free command kind admitted at the boundary.
+    pub command: SessionCommandKind,
+    /// Stable reply-free command payload material admitted at the boundary.
+    pub command_payload: String,
+    /// Scheduler-control batch identifier, or zero when no scheduler payload was applied.
+    pub scheduler_batch: u64,
+    /// Stable scheduler-owned control payload material admitted by this command, when any.
+    pub scheduler_control: Option<String>,
+}
+
+/// Result recorded for one command in the reproduction context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReproductionCommandResult {
+    /// The command was accepted and is part of the deterministic replay stream.
+    Accepted,
+}
+
+impl From<SessionControlResult> for ReproductionCommandResult {
+    fn from(value: SessionControlResult) -> Self {
+        match value {
+            SessionControlResult::Accepted => Self::Accepted,
+        }
+    }
+}
+
+/// One recorded command in the API reproduction context.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionCommandRecord {
+    /// Monotone session-local reproduction sequence.
+    pub sequence: u64,
+    /// Command payload admitted at the boundary.
+    pub payload: ReproductionCommandPayload,
+    /// Virtual-time boundary where the command took effect.
+    pub virtual_time: VirtualTime,
+    /// Number of scheduler quanta completed before the command took effect.
+    pub quanta: u64,
+    /// Event-log sequence immediately before the command took effect.
+    pub at_sequence: u64,
+    /// Terminal result returned for this recorded command.
+    pub result: ReproductionCommandResult,
+    /// Observational ordering aid for same-boundary commands; not a replay input.
+    pub observational_order: u64,
+}
+
+impl From<SessionControlLogEntry> for ReproductionCommandRecord {
+    fn from(value: SessionControlLogEntry) -> Self {
+        Self {
+            sequence: value.sequence,
+            payload: ReproductionCommandPayload {
+                command: value.command,
+                command_payload: session_control_payload_material(&value.payload),
+                scheduler_batch: value.scheduler_batch,
+                scheduler_control: value
+                    .scheduler_control
+                    .as_ref()
+                    .map(control_operation_material),
+            },
+            virtual_time: value.frontier,
+            quanta: value.quanta,
+            at_sequence: value.event_log_sequence_before,
+            result: value.result.into(),
+            observational_order: value.sequence,
+        }
+    }
+}
+
+fn session_control_payload_material(payload: &SessionControlPayload) -> String {
+    match payload {
+        SessionControlPayload::CommandKind { command } => {
+            format!("payload=command-kind\ncommand={command:?}\n")
+        }
+        SessionControlPayload::Fork { from } => {
+            format!("payload=fork\nfrom={}\n", checkpoint_ref_material(*from))
+        }
+        SessionControlPayload::InjectFault { spec } => {
+            fault_spec_material("payload=inject-fault", &spec.tag.name, &spec.fault)
+        }
+        SessionControlPayload::HealFault { tag } => {
+            format!("payload=heal-fault\ntag={}\n", hex_string(&tag.name))
+        }
+        SessionControlPayload::SetBreakpoint { spec } => format!(
+            "payload=set-breakpoint\npredicate={}\ndisposition={}\npolicy={}\n",
+            hex_string(&spec.predicate.canonical_summary()),
+            breakpoint_disposition_material(&spec.disposition),
+            breakpoint_policy_material(spec.policy),
+        ),
+        SessionControlPayload::RemoveBreakpoint { id } => {
+            format!("payload=remove-breakpoint\nid={id}\n")
+        }
+        SessionControlPayload::CreateSavepoint { label } => {
+            format!("payload=create-savepoint\nlabel={}\n", hex_string(label))
+        }
+    }
+}
+
+fn control_operation_material(control: &ControlOperationKind) -> String {
+    match control {
+        ControlOperationKind::Pause => String::from("control=pause\n"),
+        ControlOperationKind::Resume => String::from("control=resume\n"),
+        ControlOperationKind::Step => String::from("control=step\n"),
+        ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
+        ControlOperationKind::Fork => String::from("control=fork\n"),
+        ControlOperationKind::Inject => String::from("control=inject\n"),
+        ControlOperationKind::InjectFault { tag, fault } => {
+            fault_spec_material("control=inject-fault", &tag.name, fault)
+        }
+        ControlOperationKind::HealFault { tag } => {
+            format!("control=heal-fault\ntag={}\n", hex_string(&tag.name))
+        }
+        ControlOperationKind::Query => String::from("control=query\n"),
+    }
+}
+
+fn fault_spec_material(prefix: &str, tag: &str, fault: &crucible::Fault) -> String {
+    format!(
+        "{prefix}\ntag={}\n{}",
+        hex_string(tag),
+        fault_taxonomy_material(fault),
+    )
+}
+
+fn fault_taxonomy_material(fault: &crucible::Fault) -> String {
+    format!(
+        "fault-kind={}\nfault-hash={}\nfault-material={}\n",
+        fault.kind_key(),
+        fault.content_hash().to_hex(),
+        hex_string(&fault.canonical_material()),
+    )
+}
+
+fn checkpoint_ref_material(from: CheckpointRef) -> String {
+    match from {
+        CheckpointRef::Current => String::from("current"),
+        CheckpointRef::Checkpoint(hash) => format!("checkpoint:{}", hash.to_hex()),
+    }
+}
+
+fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> String {
+    match disposition {
+        BreakpointDisposition::Suspend => String::from("suspend"),
+        BreakpointDisposition::Trace => String::from("trace"),
+        BreakpointDisposition::Action(action) => {
+            format!("action:{}", hex_string(&action_material(action)))
+        }
+    }
+}
+
+fn action_material(action: &Action) -> String {
+    match action {
+        Action::InjectFault { tag, fault } => format!(
+            "action=inject-fault\ntag={}\n{}",
+            hex_string(&tag.name),
+            membership_fault_material(fault),
+        ),
+        Action::HealFault { tag } => format!("action=heal-fault\ntag={}\n", hex_string(&tag.name)),
+        Action::ArmTimer { name, after } => format!(
+            "action=arm-timer\nname={}\nafter-nanos={}\n",
+            hex_string(&name.name),
+            after.nanos,
+        ),
+        Action::CancelTimer { name } => {
+            format!("action=cancel-timer\nname={}\n", hex_string(&name.name))
+        }
+        Action::StartNode { node } => {
+            format!("action=start-node\nnode={}\n", hex_string(&node.name))
+        }
+        Action::StopNode { node } => {
+            format!("action=stop-node\nnode={}\n", hex_string(&node.name))
+        }
+        Action::CreateSavepoint { label } => format!(
+            "action=create-savepoint\nlabel={}\n",
+            optional_hex_string(label.as_deref()),
+        ),
+        Action::Fork { label } => format!(
+            "action=fork\nlabel={}\n",
+            optional_hex_string(label.as_deref()),
+        ),
+        Action::Pass => String::from("action=pass\n"),
+        Action::Fail { reason } => format!("action=fail\nreason={}\n", hex_string(reason)),
+        Action::Log { level, message } => format!(
+            "action=log\nlevel={}\nmessage={}\n",
+            log_level_material(*level),
+            hex_string(message),
+        ),
+        Action::Group(actions) => {
+            let mut output = format!("action=group\ncount={}\n", actions.len());
+            for (index, action) in actions.iter().enumerate() {
+                output.push_str(&format!(
+                    "member.{index}={}\n",
+                    hex_string(&action_material(action)),
+                ));
+            }
+            output
+        }
+    }
+}
+
+fn membership_fault_material(fault: &MembershipFault) -> String {
+    match fault {
+        MembershipFault::Crash { node, restart } => format!(
+            "membership-fault=crash\nnode={}\nrestart={}\n",
+            hex_string(&node.name),
+            restart_policy_material(*restart),
+        ),
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => format!(
+            "membership-fault=partition\nendpoint-a={}\nendpoint-b={}\ndirection={}\n",
+            hex_string(&endpoint_a.name),
+            hex_string(&endpoint_b.name),
+            partition_direction_material(*direction),
+        ),
+        MembershipFault::Isolate { node } => {
+            format!(
+                "membership-fault=isolate\nnode={}\n",
+                hex_string(&node.name)
+            )
+        }
+        MembershipFault::NotYetJoined { node } => format!(
+            "membership-fault=not-yet-joined\nnode={}\n",
+            hex_string(&node.name),
+        ),
+        MembershipFault::Taxonomy { fault } => {
+            format!(
+                "membership-fault=taxonomy\n{}",
+                fault_taxonomy_material(fault)
+            )
+        }
+    }
+}
+
+fn optional_hex_string(value: Option<&str>) -> String {
+    value.map_or_else(|| String::from("none"), hex_string)
+}
+
+fn log_level_material(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    }
+}
+
+fn restart_policy_material(policy: RestartPolicy) -> &'static str {
+    match policy {
+        RestartPolicy::FromReadyPoint => "from-ready-point",
+        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
+        RestartPolicy::StayDown => "stay-down",
+    }
+}
+
+fn partition_direction_material(direction: PartitionDirection) -> &'static str {
+    match direction {
+        PartitionDirection::Bidirectional => "bidirectional",
+        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
+        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
+}
+
+fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
+    match policy {
+        BreakpointPolicy::OneShot => "one-shot",
+        BreakpointPolicy::Repeatable => "repeatable",
+    }
+}
+
+fn hex_string(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
 /// Error returned by lifecycle unary API methods.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LifecycleApiError {
@@ -337,6 +659,12 @@ pub enum LifecycleApiError {
     CommandChannelClosed {
         /// Session whose actor mailbox closed.
         session_id: SessionId,
+    },
+    /// The requested session is not present in the lifecycle registry.
+    #[error("session {session:?} was not found")]
+    SessionNotFound {
+        /// Requested session reference.
+        session: SessionRef,
     },
     /// The session did not reach the expected state in the bounded yield budget.
     #[error("session {session_id:?} did not reach state {expected:?}")]
@@ -483,6 +811,7 @@ where
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
+        let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
         let actor_task = tokio::spawn(async move { actor.run().await });
 
@@ -492,6 +821,7 @@ where
             sender,
             live,
             event_log,
+            reproduction_log,
             state_transitions,
             actor_task,
         };
@@ -584,6 +914,29 @@ where
         })
     }
 
+    /// Returns the deterministic reproduction context for a live session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::SessionNotFound`] when the session is absent
+    /// or [`LifecycleApiError::EpochMismatch`] when the supplied session epoch
+    /// or expected epoch is stale.
+    pub fn get_reproduction(
+        &self,
+        request: GetReproductionRequest,
+    ) -> Result<GetReproductionResponse, LifecycleApiError> {
+        let runtime = self.checked_runtime(request.session, request.expected_epoch)?;
+        Ok(GetReproductionResponse {
+            session: runtime.session,
+            commands: runtime
+                .reproduction_log
+                .snapshot()
+                .into_iter()
+                .map(ReproductionCommandRecord::from)
+                .collect(),
+        })
+    }
+
     fn resolve_scenario(
         &self,
         request: &CreateSessionRequest,
@@ -612,6 +965,37 @@ where
         let epoch = self.next_epoch;
         self.next_epoch = self.next_epoch.saturating_add(1);
         SessionRef::new(id, epoch, seed)
+    }
+
+    fn checked_runtime(
+        &self,
+        requested: SessionRef,
+        expected_epoch: Option<u64>,
+    ) -> Result<&SessionRuntime, LifecycleApiError> {
+        let runtime = self
+            .sessions
+            .get(&requested.id)
+            .ok_or(LifecycleApiError::SessionNotFound { session: requested })?;
+        if runtime.session.epoch != requested.epoch {
+            return Err(LifecycleApiError::EpochMismatch {
+                session_id: requested.id,
+                expected: runtime.session.epoch,
+                actual: requested.epoch,
+            });
+        }
+        if runtime.session != requested {
+            return Err(LifecycleApiError::SessionNotFound { session: requested });
+        }
+        if let Some(expected_epoch) = expected_epoch {
+            if runtime.session.epoch != expected_epoch {
+                return Err(LifecycleApiError::EpochMismatch {
+                    session_id: requested.id,
+                    expected: runtime.session.epoch,
+                    actual: expected_epoch,
+                });
+            }
+        }
+        Ok(runtime)
     }
 
     /// Builds an in-process streaming handle for a live session.
@@ -646,6 +1030,7 @@ where
             runtime.sender.clone(),
             Arc::clone(&runtime.live),
             runtime.event_log.clone(),
+            runtime.reproduction_log.clone(),
             runtime.state_transitions.clone(),
         ))
     }
@@ -764,6 +1149,19 @@ where
         })
     }
 
+    fn get_reproduction(
+        &self,
+        request: GetReproductionRequest,
+    ) -> ControlClientFuture<'_, GetReproductionResponse> {
+        Box::pin(async move {
+            self.control_plane
+                .lock()
+                .await
+                .get_reproduction(request)
+                .map_err(ControlClientError::from)
+        })
+    }
+
     fn control_attach(
         &self,
         request: AttachRequest,
@@ -819,6 +1217,7 @@ struct SessionRuntime {
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
+    reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
 }

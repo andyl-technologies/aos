@@ -58,8 +58,8 @@
         needle = "Completed by `checks.crucible.phase5.apiEpochGuards`";
       }
       {
-        label = "T-API-9 remains next";
-        needle = "- [ ] **T-API-9**";
+        label = "T-API-9 completion note";
+        needle = "Completed by `checks.crucible.phase5.apiReproductionContext`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [

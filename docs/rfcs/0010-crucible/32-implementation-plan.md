@@ -321,6 +321,13 @@ long-held locks.
   rejects stale session refs and expected epochs before actor dispatch, proves
   failed guards leave live state and event-log cursors unchanged, and checks
   server-monotonic epochs across creates.
+  `T-API-9` is green through `checks.crucible.phase5.apiReproductionContext`,
+  which publishes the session boundary-control log as a read-only reproduction
+  context, exposes it through both `AttachSnapshot` and `GetReproduction`,
+  includes virtual-time boundary, at-sequence, accepted result, command payload,
+  and observational ordering metadata, and proves read-only retrieval, epoch
+  fast-fail, attach/unary agreement, and equivalent interactive-vs-scripted
+  schedules.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

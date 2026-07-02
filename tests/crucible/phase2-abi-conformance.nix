@@ -237,7 +237,7 @@
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
       }
       {
         label = "explicit patch version";
@@ -290,6 +290,18 @@
       {
         label = "Attached vector";
         needle = "name: \"attached\"";
+      }
+      {
+        label = "reproduction attach vector";
+        needle = "name: \"attached-with-reproduction\"";
+      }
+      {
+        label = "GetReproduction request vector";
+        needle = "name: \"get-reproduction-request\"";
+      }
+      {
+        label = "GetReproduction response vector";
+        needle = "name: \"get-reproduction-response\"";
       }
       {
         label = "command request vector";

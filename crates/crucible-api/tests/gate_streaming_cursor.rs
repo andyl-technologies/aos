@@ -134,6 +134,7 @@ impl CursorFixture {
         let live = actor.live_snapshot();
         let event_log_hub = actor.event_log();
         let event_log = ControlPlaneEventLog::new(event_log_hub.clone());
+        let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
         let actor_task = tokio::spawn(async move { actor.run().await });
         let session = SessionRef::new(SessionId::new(seed), seed, scenario.seed());
@@ -142,6 +143,7 @@ impl CursorFixture {
             sender,
             live.clone(),
             event_log,
+            reproduction_log,
             state_transitions,
         );
         Self {
