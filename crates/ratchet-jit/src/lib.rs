@@ -79,9 +79,9 @@ pub use lower::{
     lower_env_get_ir_thunk_body_artifact,
 };
 pub use module::{
-    JitModuleArtifactMetadata, JitModuleReadinessError, JitModuleReadinessPlan,
-    JitModuleReadinessPreflight, jit_module_readiness_plan_for_artifact,
-    jit_module_readiness_preflight_for_artifact,
+    JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleArtifactRuntimeImportGap,
+    JitModuleReadinessError, JitModuleReadinessPlan, JitModuleReadinessPreflight,
+    jit_module_readiness_plan_for_artifact, jit_module_readiness_preflight_for_artifact,
 };
 pub use safepoints::{
     JitSafepointPlacement, JitSafepointPolicy, JitSafepointTier, REQUIRED_JIT_SAFEPOINT_PLACEMENTS,

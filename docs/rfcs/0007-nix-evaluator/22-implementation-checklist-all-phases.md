@@ -6555,11 +6555,13 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `ratchet-jit::artifact::JitClifArtifact` carries verified Cranelift
       `Function` values together with tier, thunk-body kind, and source identity
       metadata. The lowerer now exposes artifact-returning variants for
-      standalone constant smoke bodies, literal IR roots, and the whole-IR root
-      entrypoint. Tests pin tier-1/kind/source metadata, default smoke-body
-      naming, direct `ThunkAlloc` root source ids, nonzero whole-artifact roots,
-      and extraction of the contained CLIF function. This is address-free CLIF
-      metadata only: no `JITModule`, executable buffer, function pointer,
+      standalone constant smoke bodies, literal IR roots, local env-slot roots,
+      direct `ThunkAlloc` wrappers, and whole-IR root entrypoints. Tests pin
+      tier-1/kind/source metadata, default smoke-body naming, direct
+      `ThunkAlloc` root source ids, nonzero whole-artifact roots, env-slot
+      artifact source ids, and extraction of the contained CLIF function. This
+      is address-free CLIF metadata only: no `JITModule`, executable buffer,
+      function pointer,
       symbol registration, compiled artifact cache, persistence format, or
       native call is implemented.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
@@ -6629,6 +6631,20 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       a `JITModule`,
       register symbols, lower a CLIF body, allocate an executable buffer, cross a
       raw pointer call boundary, or export a native wrapper.
+- [x] Current artifact runtime-import readiness precursor:
+      `ratchet-jit::module::JitModuleReadinessPreflight` inspects each verified
+      CLIF artifact's imported external functions and resolves known AOS
+      runtime-helper user-external names back to stable runtime symbols.
+      Env-slot artifacts report one required `aos_env_get` import, validate that
+      import's CLIF signature against the runtime-symbol declaration preflight,
+      and surface explicit import gaps for unknown external names, missing
+      declarations, missing import signatures, or signature mismatches. Constant
+      artifacts report no artifact-specific imports. Tests pin empty imports for
+      constants, the resolved env-get import namespace/index, declaration
+      parity, malformed-import gap handling, and synthetic complete-plan
+      preservation. This is address-free dependency metadata only: no
+      `JITBuilder::symbol`, native address binding, relocation, finalization, or
+      call into the helper occurs here.
 - [x] Current `ratchet-jit` runtime-symbol inventory precursor:
       `ratchet-jit::symbols::jit_runtime_symbol_inventory()` mirrors the
       address-free `ratchet-core` runtime symbol manifest inside the JIT crate

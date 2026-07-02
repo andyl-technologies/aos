@@ -1013,6 +1013,20 @@ harness, never cut for scope.
       API remains metadata only: it does not construct a `JITModule`, allocate an
       executable buffer, attach a symbol address, emit a relocation, or call
       `JITBuilder::symbol`.
+- [x] Current artifact runtime-import readiness precursor:
+      `JitModuleReadinessPreflight` now inspects each verified CLIF artifact's
+      imported external functions and resolves known AOS runtime-helper
+      user-external names back to stable runtime symbols. Env-slot artifacts
+      report one required `aos_env_get` import, validate that import's CLIF
+      signature against the runtime-symbol declaration preflight, and surface
+      explicit import gaps for unknown external names, missing declarations,
+      missing import signatures, or signature mismatches. Constant artifacts
+      report no artifact-specific imports. Tests pin empty imports for
+      constants, the resolved env-get import namespace/index, declaration
+      parity, malformed-import gap handling, and synthetic complete-plan
+      preservation. This is address-free dependency metadata only: no
+      `JITBuilder::symbol`, native address binding, relocation, finalization, or
+      call into the helper occurs here.
 - [x] Current safe `JITModule` declaration precursor:
       `ratchet-jit::cranelift::jit_cranelift_module_declaration_preflight_for_artifact()`
       builds a real Cranelift `JITModule` through a fallible native-ISA builder
@@ -1338,10 +1352,12 @@ harness, never cut for scope.
       `ratchet-jit::artifact::JitClifArtifact` wraps verified Cranelift
       `Function` values with tier, thunk-body kind, and source identity
       metadata. The current lowerer exposes artifact-returning variants for the
-      constant smoke path, literal IR roots, and whole-IR root entrypoint. Tests
-      pin tier-1/kind/source metadata, default constant-body names, direct
-      `ThunkAlloc` root source ids, nonzero whole-artifact roots, and extraction
-      of the contained CLIF function. This remains address-free CLIF metadata:
+      constant smoke path, literal IR roots, local env-slot roots, direct
+      `ThunkAlloc` wrappers, and whole-IR root entrypoints. Tests pin
+      tier-1/kind/source metadata, default constant-body names, direct
+      `ThunkAlloc` root source ids, nonzero whole-artifact roots, env-slot
+      artifact source ids, and extraction of the contained CLIF function. This
+      remains address-free CLIF metadata:
       no `JITModule`, executable buffer, function pointer, runtime-symbol
       registration, compiled artifact cache, persistence format, or native call
       is implemented.
