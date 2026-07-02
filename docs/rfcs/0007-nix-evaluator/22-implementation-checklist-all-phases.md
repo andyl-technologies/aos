@@ -5426,6 +5426,20 @@ and helps the oracle directly.
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered addresses, call native code, or complete
       full/native runtime-symbol registration.
+- [x] Current `aos-nix` tier-1 conformance-readiness preflight:
+      `aos_nix::jit::nix_jit_tier1_conformance_readiness_for_ir_root()`
+      aggregates the top-level runtime-symbol registration bridge and one
+      evaluator-thunk install-readiness report into the blocker set for enabling
+      the differential harness with tier 1 active. It reports JIT
+      runtime-symbol registration gaps, native-export gaps, Rust-callable
+      address-provenance gaps, and per-thunk install gaps without running native
+      code. Tests cover a hot env-slot root that reaches opaque tier-1
+      code-pointer metadata but remains blocked by runtime/export/provenance
+      and evaluator publication gaps, plus a cold no-compile root. This remains
+      a harness-facing gate report only: it does not run the harness, mutate
+      evaluator heap thunks, perform atomic thunk-state CAS, cast or call code
+      pointers, dereference registered helper addresses, call native code, or
+      prove tier-1 output parity.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

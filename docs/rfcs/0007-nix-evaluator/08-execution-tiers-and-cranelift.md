@@ -1443,6 +1443,20 @@ harness, never cut for scope.
       thunk is mutated, no atomic thunk-state CAS runs, no code pointer is cast
       or called, and no registered helper address is dereferenced or called;
       full/native runtime-symbol registration remains open.
+- [x] Current `aos-nix` tier-1 conformance-readiness preflight:
+      `aos_nix::jit::nix_jit_tier1_conformance_readiness_for_ir_root()`
+      composes the top-level runtime-symbol registration bridge with the
+      evaluator-thunk install-readiness report for one candidate IR root. It
+      reports JIT runtime-symbol registration gaps, native-export gaps,
+      Rust-callable address-provenance gaps, and per-thunk install gaps as the
+      current blocker set for enabling the differential harness with tier 1
+      active. Tests pin a hot env-slot root that reaches tier-1 code-pointer
+      metadata but remains blocked by runtime/export/provenance and evaluator
+      publication gaps, plus a cold no-compile root. This is a harness-facing
+      gate report only: it does not run the harness, mutate evaluator heap
+      thunks, perform atomic thunk-state CAS, cast or call code pointers,
+      dereference registered helper addresses, call native code, or prove
+      tier-1 output parity.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

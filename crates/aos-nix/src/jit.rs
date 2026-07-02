@@ -16,9 +16,15 @@ use ratchet_jit::{
 };
 use thiserror::Error;
 
+mod conformance;
 mod runtime_symbols;
 mod thunk_install;
 
+pub use conformance::{
+    NixJitTier1ConformanceGap, NixJitTier1ConformanceReadiness,
+    NixJitTier1ConformanceReadinessError, NixJitTier1ConformanceReadinessResult,
+    nix_jit_tier1_conformance_readiness_for_ir_root,
+};
 pub use runtime_symbols::{
     NixJitPreflightResult, NixJitRuntimeSymbolAddressCandidateError,
     NixJitRuntimeSymbolAddressCandidatePreflight, NixJitRuntimeSymbolRegistrationError,
