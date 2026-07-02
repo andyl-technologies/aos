@@ -32,7 +32,8 @@ pub use concurrent_gc::{
     classify_thunk_mutation_barrier,
 };
 pub use gc::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
+    DEFAULT_GC_CARD_SIZE_BYTES, GcCardTable, GcCardTableUpdate, GcDirtyCard, GcHeapAddress,
+    GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
     MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocation,
     MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacement,
     MinorGcDestinationPlacementPlan, MinorGcForwardingPointer, MinorGcForwardingPointerPlan,
@@ -44,7 +45,7 @@ pub use gc::{
     NurseryObjectFields, NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch,
     RememberedSetSnapshot, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
     ThunkResolveWriteBarrier, classify_thunk_resolve_write_barrier,
-    record_thunk_resolve_write_barrier,
+    record_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier_with_card_table,
 };
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,

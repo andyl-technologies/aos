@@ -1,7 +1,9 @@
 //! Heap allocation, value interning, and attrset/path materialization helpers.
 
 use super::*;
-use crate::runtime::barrier::runtime_thunk_resolve_write_barrier;
+use crate::runtime::barrier::{
+    runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
+};
 
 impl TreeWalk {
     pub(super) fn attr_value_by_name(
@@ -962,12 +964,23 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let tier = self.options.thunk_resolve_barrier_tier();
-        let mut barrier = runtime_thunk_resolve_write_barrier(
-            tier,
-            &self.heap,
-            source_thunk,
-            &mut self.thunk_resolve_remembered_set,
-        )
+        let mut barrier = match tier {
+            GenerationalGcTier::OneShotArena => runtime_thunk_resolve_write_barrier(
+                tier,
+                &self.heap,
+                source_thunk,
+                &mut self.thunk_resolve_remembered_set,
+            ),
+            GenerationalGcTier::DaemonGenerational => {
+                runtime_thunk_resolve_write_barrier_with_card_table(
+                    tier,
+                    &self.heap,
+                    source_thunk,
+                    &mut self.thunk_resolve_remembered_set,
+                    &mut self.thunk_resolve_card_table,
+                )
+            }
+        }
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         guard
             .finish_with_barrier(value, &mut barrier)

@@ -359,6 +359,7 @@ impl TreeWalk {
             active_primop_arg_frames: Vec::new(),
             suspended_env_roots: Vec::new(),
             thunk_resolve_remembered_set: RememberedSet::new(),
+            thunk_resolve_card_table: GcCardTable::default(),
             lazy_identity_thunks: BTreeSet::new(),
             lazy_foldl_initial_thunks: BTreeSet::new(),
         }
@@ -413,6 +414,11 @@ impl TreeWalk {
     /// Returns the remembered set populated by thunk-resolution write barriers.
     pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
         &self.thunk_resolve_remembered_set
+    }
+
+    /// Returns the card table populated by thunk-resolution write barriers.
+    pub const fn thunk_resolve_card_table(&self) -> &GcCardTable {
+        &self.thunk_resolve_card_table
     }
 
     /// Returns user-facing trace output emitted so far.

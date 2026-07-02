@@ -19,8 +19,8 @@ use std::ptr::NonNull;
 use super::*;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
-    MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocationPlan,
+    GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocationPlan,
     MinorGcDestinationBases, MinorGcDestinationPlacementPlan, MinorGcForwardingPointerPlan,
     MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan,
     MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
@@ -28,7 +28,7 @@ use crate::heap::{
     MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
     NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
-    record_thunk_resolve_write_barrier,
+    record_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier_with_card_table,
 };
 use crate::runtime::alloc::{AllocationCollectorPoll, AllocationSafepointState};
 use thiserror::Error;
@@ -63,6 +63,7 @@ pub struct EvalHeapThunkResolveBarrier<'a> {
     source: GcHeapAddress,
     source_generation: HeapGeneration,
     remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
     last_action: Option<ThunkResolveWriteBarrier>,
 }
 
@@ -87,9 +88,14 @@ impl EvalHeapThunkResolveBarrier<'_> {
         self.last_action
     }
 
-    /// Returns the remembered set owned by this barrier adapter.
+    /// Returns the caller-owned remembered set borrowed by this barrier adapter.
     pub fn remembered_set(&self) -> &RememberedSet {
         self.remembered_set
+    }
+
+    /// Returns the caller-owned card table borrowed by this barrier adapter, if any.
+    pub fn card_table(&self) -> Option<&GcCardTable> {
+        self.card_table.as_deref()
     }
 
     /// Records the write barrier for publishing `value` into the source thunk.
@@ -98,14 +104,23 @@ impl EvalHeapThunkResolveBarrier<'_> {
     ///
     /// Returns [`EvalHeapError`] if `value` is heap-backed but does not belong to
     /// this heap, if the value's heap tag disagrees with the side table, or if the
-    /// lower-level remembered set cannot record a required old-to-young edge.
+    /// lower-level remembered set or attached card table cannot record a required
+    /// old-to-young edge/card mark.
     pub fn record(&mut self, value: Value) -> Result<ThunkResolveWriteBarrier, EvalHeapError> {
         let value = self
             .heap
             .resolved_generation_for_thunk_resolve_value(value)?;
         let write = ThunkResolveWrite::new(self.source, self.source_generation, value);
-        let action = record_thunk_resolve_write_barrier(self.tier, write, self.remembered_set)
-            .map_err(EvalHeapError::GenerationalGc)?;
+        let action = match self.card_table.as_deref_mut() {
+            Some(card_table) => record_thunk_resolve_write_barrier_with_card_table(
+                self.tier,
+                write,
+                self.remembered_set,
+                card_table,
+            ),
+            None => record_thunk_resolve_write_barrier(self.tier, write, self.remembered_set),
+        }
+        .map_err(EvalHeapError::GenerationalGc)?;
         self.last_action = Some(action);
         Ok(action)
     }
@@ -2287,6 +2302,44 @@ impl EvalHeap {
         source_thunk: Value,
         remembered_set: &'a mut RememberedSet,
     ) -> Result<EvalHeapThunkResolveBarrier<'a>, EvalHeapError> {
+        self.thunk_resolve_write_barrier_with_optional_card_table(
+            tier,
+            source_thunk,
+            remembered_set,
+            None,
+        )
+    }
+
+    /// Creates a card-table-aware thunk-resolution write barrier adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::ThunkResolveBarrierSourceNotThunk`] if
+    /// `source_thunk` is not tagged as a thunk. Returns [`EvalHeapError`] if the
+    /// source thunk does not belong to this heap, or if its runtime tag disagrees
+    /// with the heap side table.
+    pub fn thunk_resolve_write_barrier_with_card_table<'a>(
+        &'a self,
+        tier: GenerationalGcTier,
+        source_thunk: Value,
+        remembered_set: &'a mut RememberedSet,
+        card_table: &'a mut GcCardTable,
+    ) -> Result<EvalHeapThunkResolveBarrier<'a>, EvalHeapError> {
+        self.thunk_resolve_write_barrier_with_optional_card_table(
+            tier,
+            source_thunk,
+            remembered_set,
+            Some(card_table),
+        )
+    }
+
+    fn thunk_resolve_write_barrier_with_optional_card_table<'a>(
+        &'a self,
+        tier: GenerationalGcTier,
+        source_thunk: Value,
+        remembered_set: &'a mut RememberedSet,
+        card_table: Option<&'a mut GcCardTable>,
+    ) -> Result<EvalHeapThunkResolveBarrier<'a>, EvalHeapError> {
         if source_thunk.tag() != ValueTag::Thunk {
             return Err(EvalHeapError::ThunkResolveBarrierSourceNotThunk {
                 actual: source_thunk.tag(),
@@ -2299,6 +2352,7 @@ impl EvalHeap {
             source: gc_address_for_record(source_record)?,
             source_generation: generation_for_record(source_record),
             remembered_set,
+            card_table,
             last_action: None,
         })
     }

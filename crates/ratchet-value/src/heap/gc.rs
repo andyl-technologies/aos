@@ -6,8 +6,8 @@
 //! (`Blackhole -> Forced(value)`) and minor-GC planning metadata for survivor
 //! discovery, relocation, reference rewriting, and remembered-set refresh. The
 //! barrier table is deliberately narrow so later collector code records
-//! old-to-young edges in one place instead of spreading field-store barriers
-//! across immutable value constructors.
+//! old-to-young edges and dirty source cards in one place instead of spreading
+//! field-store barriers across immutable value constructors.
 
 use crate::value::tag::POINTER_TAG_MASK;
 
@@ -187,6 +187,141 @@ impl ThunkResolveWriteBarrier {
     /// Returns whether the write can publish without recording a remembered edge.
     pub const fn permits_unrecorded_publish(self) -> bool {
         matches!(self, Self::Disabled | Self::NotRequired)
+    }
+}
+
+/// A dirty card selected by a write barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GcDirtyCard {
+    index: usize,
+    source: GcHeapAddress,
+}
+
+impl GcDirtyCard {
+    /// Creates a dirty-card marker for a source object.
+    pub const fn new(index: usize, source: GcHeapAddress) -> Self {
+        Self { index, source }
+    }
+
+    /// Returns the card index selected from the source object address.
+    pub const fn index(self) -> usize {
+        self.index
+    }
+
+    /// Returns the source object whose write dirtied this card.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+}
+
+/// A card-table marking result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GcCardTableUpdate {
+    /// The card became dirty.
+    MarkedDirty {
+        /// The dirty-card marker that was inserted.
+        card: GcDirtyCard,
+    },
+    /// The card was already dirty.
+    AlreadyDirty {
+        /// The already-present dirty-card marker.
+        card: GcDirtyCard,
+    },
+}
+
+/// Default card size used by the safe daemon write-barrier model.
+pub const DEFAULT_GC_CARD_SIZE_BYTES: usize = 512;
+
+/// A safe card-table precursor for old/permanent-to-young writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GcCardTable {
+    card_size_bytes: usize,
+    dirty_cards: Vec<GcDirtyCard>,
+}
+
+impl Default for GcCardTable {
+    fn default() -> Self {
+        Self {
+            card_size_bytes: DEFAULT_GC_CARD_SIZE_BYTES,
+            dirty_cards: Vec::new(),
+        }
+    }
+}
+
+impl GcCardTable {
+    /// Creates an empty card table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::InvalidGcCardSize`] if `card_size_bytes`
+    /// is zero or not a power of two.
+    pub fn new(card_size_bytes: usize) -> Result<Self, GenerationalGcError> {
+        if card_size_bytes == 0 || !card_size_bytes.is_power_of_two() {
+            return Err(GenerationalGcError::InvalidGcCardSize { card_size_bytes });
+        }
+        Ok(Self {
+            card_size_bytes,
+            dirty_cards: Vec::new(),
+        })
+    }
+
+    /// Returns the card size in bytes.
+    pub const fn card_size_bytes(&self) -> usize {
+        self.card_size_bytes
+    }
+
+    /// Returns dirty cards in first-mark order.
+    pub fn dirty_cards(&self) -> &[GcDirtyCard] {
+        &self.dirty_cards
+    }
+
+    /// Returns the number of dirty cards.
+    pub fn len(&self) -> usize {
+        self.dirty_cards.len()
+    }
+
+    /// Returns whether no cards are dirty.
+    pub fn is_empty(&self) -> bool {
+        self.dirty_cards.is_empty()
+    }
+
+    /// Returns the card marker for `source`.
+    pub const fn card_for_source(&self, source: GcHeapAddress) -> GcDirtyCard {
+        GcDirtyCard::new(source.address_bits() / self.card_size_bytes, source)
+    }
+
+    /// Marks the source object's card dirty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::GcCardTableLengthOverflow`] if the dirty
+    /// card count overflows, or
+    /// [`GenerationalGcError::GcCardTableAllocationFailed`] if card storage
+    /// cannot be reserved.
+    pub fn mark_source(
+        &mut self,
+        source: GcHeapAddress,
+    ) -> Result<GcCardTableUpdate, GenerationalGcError> {
+        let card = self.card_for_source(source);
+        if let Some(card) = self
+            .dirty_cards
+            .iter()
+            .copied()
+            .find(|dirty| dirty.index() == card.index())
+        {
+            return Ok(GcCardTableUpdate::AlreadyDirty { card });
+        }
+
+        let cards = self
+            .dirty_cards
+            .len()
+            .checked_add(1)
+            .ok_or(GenerationalGcError::GcCardTableLengthOverflow)?;
+        self.dirty_cards
+            .try_reserve_exact(1)
+            .map_err(|_| GenerationalGcError::GcCardTableAllocationFailed { cards })?;
+        self.dirty_cards.push(card);
+        Ok(GcCardTableUpdate::MarkedDirty { card })
     }
 }
 
@@ -2876,6 +3011,48 @@ pub fn record_thunk_resolve_write_barrier(
     Ok(action)
 }
 
+/// Classifies and records the write barrier plus dirty source card.
+///
+/// # Errors
+///
+/// Returns [`GenerationalGcError`] if the write requires a remembered edge and
+/// the remembered set or card table cannot reserve storage.
+pub fn record_thunk_resolve_write_barrier_with_card_table(
+    tier: GenerationalGcTier,
+    write: ThunkResolveWrite,
+    remembered_set: &mut RememberedSet,
+    card_table: &mut GcCardTable,
+) -> Result<ThunkResolveWriteBarrier, GenerationalGcError> {
+    record_thunk_resolve_write_barrier_with_card_marker(tier, write, remembered_set, |source| {
+        card_table.mark_source(source)
+    })
+}
+
+fn record_thunk_resolve_write_barrier_with_card_marker(
+    tier: GenerationalGcTier,
+    write: ThunkResolveWrite,
+    remembered_set: &mut RememberedSet,
+    mark_source: impl FnOnce(GcHeapAddress) -> Result<GcCardTableUpdate, GenerationalGcError>,
+) -> Result<ThunkResolveWriteBarrier, GenerationalGcError> {
+    let action = classify_thunk_resolve_write_barrier(tier, write);
+    if let ThunkResolveWriteBarrier::Remember { edge } = action {
+        let remembered_update = remembered_set.record(edge)?;
+        if let Err(error) = mark_source(edge.source()) {
+            if remembered_update == RememberedSetUpdate::Inserted {
+                if let Some(index) = remembered_set
+                    .edges
+                    .iter()
+                    .position(|remembered| *remembered == edge)
+                {
+                    remembered_set.edges.remove(index);
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(action)
+}
+
 /// A failed generational-GC policy or remembered-set operation.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum GenerationalGcError {
@@ -2896,6 +3073,21 @@ pub enum GenerationalGcError {
     RememberedSetAllocationFailed {
         /// The requested remembered-set capacity.
         edges: usize,
+    },
+    /// A card table was created with an invalid card size.
+    #[error("invalid GC card size {card_size_bytes}")]
+    InvalidGcCardSize {
+        /// The rejected card size in bytes.
+        card_size_bytes: usize,
+    },
+    /// The card-table dirty-card count overflowed.
+    #[error("GC card-table dirty-card count overflow")]
+    GcCardTableLengthOverflow,
+    /// The card table could not reserve storage.
+    #[error("failed to reserve {cards} GC dirty-card entries")]
+    GcCardTableAllocationFailed {
+        /// The requested dirty-card capacity.
+        cards: usize,
     },
     /// A remembered-set snapshot did not belong to the requested collection
     /// epoch.
@@ -3529,6 +3721,51 @@ mod tests {
     }
 
     #[test]
+    fn card_table_validates_card_size_and_deduplicates_dirty_cards() {
+        assert_eq!(
+            GcCardTable::new(0),
+            Err(GenerationalGcError::InvalidGcCardSize { card_size_bytes: 0 })
+        );
+        assert_eq!(
+            GcCardTable::new(768),
+            Err(GenerationalGcError::InvalidGcCardSize {
+                card_size_bytes: 768,
+            })
+        );
+
+        let mut table = GcCardTable::new(0x1000).expect("card table builds");
+        let first = address(0x2000);
+        let same_card = address(0x2800);
+        let second = address(0x3000);
+
+        assert_eq!(table.card_size_bytes(), 0x1000);
+        assert_eq!(
+            table.mark_source(first).expect("first card marks"),
+            GcCardTableUpdate::MarkedDirty {
+                card: GcDirtyCard::new(2, first),
+            }
+        );
+        assert_eq!(
+            table.mark_source(same_card).expect("same card is accepted"),
+            GcCardTableUpdate::AlreadyDirty {
+                card: GcDirtyCard::new(2, first),
+            }
+        );
+        assert_eq!(
+            table.mark_source(second).expect("second card marks"),
+            GcCardTableUpdate::MarkedDirty {
+                card: GcDirtyCard::new(3, second),
+            }
+        );
+        assert_eq!(
+            table.dirty_cards(),
+            &[GcDirtyCard::new(2, first), GcDirtyCard::new(3, second)]
+        );
+        assert_eq!(table.len(), 2);
+        assert!(!table.is_empty());
+    }
+
+    #[test]
     fn record_thunk_resolve_write_barrier_records_only_required_edges() {
         let edge = RememberedEdge::new(address(0x1000), address(0x2000));
         let write = ThunkResolveWrite::new(
@@ -3562,6 +3799,75 @@ mod tests {
 
         assert_eq!(action, ThunkResolveWriteBarrier::NotRequired);
         assert_eq!(set.edges(), &[edge]);
+    }
+
+    #[test]
+    fn record_thunk_resolve_write_barrier_marks_only_required_cards() {
+        let edge = RememberedEdge::new(address(0x1000), address(0x2000));
+        let write = ThunkResolveWrite::new(
+            edge.source(),
+            HeapGeneration::Permanent,
+            ResolvedValueGeneration::young(edge.target()),
+        );
+        let mut set = RememberedSet::new();
+        let mut card_table = GcCardTable::new(0x1000).expect("card table builds");
+
+        let action = record_thunk_resolve_write_barrier_with_card_table(
+            GenerationalGcTier::DaemonGenerational,
+            write,
+            &mut set,
+            &mut card_table,
+        )
+        .expect("barrier records");
+
+        assert_eq!(action, ThunkResolveWriteBarrier::Remember { edge });
+        assert_eq!(set.edges(), &[edge]);
+        assert_eq!(
+            card_table.dirty_cards(),
+            &[GcDirtyCard::new(1, edge.source())]
+        );
+
+        let no_barrier = ThunkResolveWrite::new(
+            address(0x3000),
+            HeapGeneration::Permanent,
+            ResolvedValueGeneration::old(address(0x4000)),
+        );
+        let action = record_thunk_resolve_write_barrier_with_card_table(
+            GenerationalGcTier::DaemonGenerational,
+            no_barrier,
+            &mut set,
+            &mut card_table,
+        )
+        .expect("non-barrier write succeeds");
+
+        assert_eq!(action, ThunkResolveWriteBarrier::NotRequired);
+        assert_eq!(set.edges(), &[edge]);
+        assert_eq!(
+            card_table.dirty_cards(),
+            &[GcDirtyCard::new(1, edge.source())]
+        );
+    }
+
+    #[test]
+    fn card_mark_failure_rolls_back_new_remembered_edge() {
+        let edge = RememberedEdge::new(address(0x1000), address(0x2000));
+        let write = ThunkResolveWrite::new(
+            edge.source(),
+            HeapGeneration::Old,
+            ResolvedValueGeneration::young(edge.target()),
+        );
+        let mut set = RememberedSet::new();
+        let error = GenerationalGcError::GcCardTableAllocationFailed { cards: 1 };
+
+        let result = record_thunk_resolve_write_barrier_with_card_marker(
+            GenerationalGcTier::DaemonGenerational,
+            write,
+            &mut set,
+            |_| Err(error.clone()),
+        );
+
+        assert_eq!(result, Err(error));
+        assert!(set.is_empty());
     }
 
     #[test]

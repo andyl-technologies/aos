@@ -1278,6 +1278,7 @@ pub struct EvalOutcome {
     pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
     pub(crate) thunk_resolve_remembered_set: RememberedSet,
+    pub(crate) thunk_resolve_card_table: GcCardTable,
     pub(crate) memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
     pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
@@ -1304,6 +1305,7 @@ impl std::fmt::Debug for EvalOutcome {
                 "thunk_resolve_remembered_set",
                 &self.thunk_resolve_remembered_set,
             )
+            .field("thunk_resolve_card_table", &self.thunk_resolve_card_table)
             .field("memory_budget_action", &self.memory_budget_action)
             .field("cheap_memory_budget_plan", &self.cheap_memory_budget_plan)
             .field(
@@ -1372,6 +1374,11 @@ impl EvalOutcome {
     /// Returns the remembered set populated by thunk-resolution write barriers.
     pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
         &self.thunk_resolve_remembered_set
+    }
+
+    /// Returns the card table populated by thunk-resolution write barriers.
+    pub const fn thunk_resolve_card_table(&self) -> &GcCardTable {
+        &self.thunk_resolve_card_table
     }
 
     /// Returns the final high-water heap budget action, if one was configured.

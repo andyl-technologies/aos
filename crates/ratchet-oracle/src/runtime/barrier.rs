@@ -10,7 +10,7 @@
 
 use crate::eval::heap::{EvalHeap, EvalHeapError, EvalHeapThunkResolveBarrier};
 use crate::eval::thunk::{DisabledThunkResolveBarrier, ForceError, ThunkResolveBarrier};
-use crate::heap::{GenerationalGcTier, RememberedSet};
+use crate::heap::{GcCardTable, GenerationalGcTier, RememberedSet};
 use crate::value::Value;
 
 /// The write-barrier entry point owned by the runtime ABI.
@@ -57,6 +57,7 @@ type RuntimeThunkResolveWriteBarrierFn =
         GenerationalGcTier,
         Value,
         &'a mut RememberedSet,
+        Option<&'a mut GcCardTable>,
     ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError>;
 
 /// A selected safe write-barrier dispatch table for one evaluator GC tier.
@@ -95,8 +96,9 @@ impl RuntimeWriteBarrierVTable {
         heap: &'a EvalHeap,
         source_thunk: Value,
         remembered_set: &'a mut RememberedSet,
+        card_table: Option<&'a mut GcCardTable>,
     ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
-        (self.thunk_resolve)(heap, self.tier, source_thunk, remembered_set)
+        (self.thunk_resolve)(heap, self.tier, source_thunk, remembered_set, card_table)
     }
 }
 
@@ -144,7 +146,33 @@ pub(crate) fn runtime_thunk_resolve_write_barrier<'a>(
     source_thunk: Value,
     remembered_set: &'a mut RememberedSet,
 ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
-    runtime_write_barrier_vtable(tier).aos_gc_write_barrier(heap, source_thunk, remembered_set)
+    runtime_write_barrier_vtable(tier).aos_gc_write_barrier(
+        heap,
+        source_thunk,
+        remembered_set,
+        None,
+    )
+}
+
+/// Creates the safe runtime thunk-resolution barrier with a mutable card table.
+///
+/// # Errors
+///
+/// Returns [`EvalHeapError`] if the selected heap-backed barrier cannot be
+/// created for `source_thunk`.
+pub(crate) fn runtime_thunk_resolve_write_barrier_with_card_table<'a>(
+    tier: GenerationalGcTier,
+    heap: &'a EvalHeap,
+    source_thunk: Value,
+    remembered_set: &'a mut RememberedSet,
+    card_table: &'a mut GcCardTable,
+) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+    runtime_write_barrier_vtable(tier).aos_gc_write_barrier(
+        heap,
+        source_thunk,
+        remembered_set,
+        Some(card_table),
+    )
 }
 
 /// The active safe thunk-resolution barrier selected by runtime dispatch.
@@ -189,6 +217,7 @@ fn one_shot_aos_gc_write_barrier<'a>(
     tier: GenerationalGcTier,
     _source_thunk: Value,
     _remembered_set: &'a mut RememberedSet,
+    _card_table: Option<&'a mut GcCardTable>,
 ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
     debug_assert_eq!(tier, GenerationalGcTier::OneShotArena);
     Ok(RuntimeThunkResolveBarrier::Disabled(
@@ -201,10 +230,19 @@ fn daemon_generational_aos_gc_write_barrier<'a>(
     tier: GenerationalGcTier,
     source_thunk: Value,
     remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
 ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
     debug_assert_eq!(tier, GenerationalGcTier::DaemonGenerational);
-    heap.thunk_resolve_write_barrier(tier, source_thunk, remembered_set)
-        .map(RuntimeThunkResolveBarrier::Heap)
+    match card_table {
+        Some(card_table) => heap.thunk_resolve_write_barrier_with_card_table(
+            tier,
+            source_thunk,
+            remembered_set,
+            card_table,
+        ),
+        None => heap.thunk_resolve_write_barrier(tier, source_thunk, remembered_set),
+    }
+    .map(RuntimeThunkResolveBarrier::Heap)
 }
 
 impl RuntimeWriteBarrierEntryPoint {
@@ -504,5 +542,34 @@ mod tests {
         );
         drop(barrier);
         assert!(remembered_set.is_empty());
+    }
+
+    #[test]
+    fn daemon_write_barrier_vtable_can_attach_card_table() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        let source = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(1)))
+            .expect("source thunk allocates");
+        let mut remembered_set = RememberedSet::new();
+        let mut card_table = GcCardTable::default();
+        let mut barrier = runtime_thunk_resolve_write_barrier_with_card_table(
+            GenerationalGcTier::DaemonGenerational,
+            &heap,
+            source,
+            &mut remembered_set,
+            &mut card_table,
+        )
+        .expect("daemon barrier creates");
+
+        let heap_barrier = barrier
+            .heap_barrier()
+            .expect("daemon barrier uses heap adapter");
+        assert!(heap_barrier.card_table().is_some());
+        barrier
+            .before_publish_forced(Value::int(11))
+            .expect("heap adapter allows inline publish");
+        drop(barrier);
+        assert!(remembered_set.is_empty());
+        assert!(card_table.is_empty());
     }
 }

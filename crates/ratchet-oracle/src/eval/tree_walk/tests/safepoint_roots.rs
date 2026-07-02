@@ -1044,6 +1044,7 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
         memory_budget_action: None,
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,

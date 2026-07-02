@@ -37,14 +37,14 @@ fn daemon_thunk_forcing_records_remembered_edge() {
     let (evaluator, thunk_value, forced) = force_permanent_attr_thunk(
         TreeWalkOptions::with_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational),
     );
+    let edge = RememberedEdge::new(gc_address(thunk_value), gc_address(forced));
 
     assert_eq!(forced.tag(), ValueTag::Lambda);
+    assert_eq!(evaluator.thunk_resolve_remembered_set().edges(), &[edge]);
+    assert_eq!(evaluator.thunk_resolve_card_table().len(), 1);
     assert_eq!(
-        evaluator.thunk_resolve_remembered_set().edges(),
-        &[RememberedEdge::new(
-            gc_address(thunk_value),
-            gc_address(forced)
-        )]
+        evaluator.thunk_resolve_card_table().dirty_cards()[0].source(),
+        edge.source()
     );
 }
 
@@ -54,6 +54,7 @@ fn one_shot_thunk_forcing_keeps_remembered_set_empty() {
 
     assert_eq!(forced.tag(), ValueTag::Lambda);
     assert!(evaluator.thunk_resolve_remembered_set().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
 #[test]
@@ -139,5 +140,9 @@ fn daemon_force_cache_replay_runs_barrier_without_remembered_edge_for_permanent_
     assert!(
         replay.thunk_resolve_remembered_set().is_empty(),
         "force-cache replayed composites rehydrate as permanent targets"
+    );
+    assert!(
+        replay.thunk_resolve_card_table().is_empty(),
+        "force-cache replayed permanent targets do not dirty cards"
     );
 }

@@ -5261,14 +5261,15 @@ and helps the oracle directly.
       `aos_gc_write_barrier` entry-point/signature inventory plus a safe Rust
       function pointer for thunk-result publication. The one-shot table returns
       a disabled `ThunkResolveBarrier`, while the daemon-generational table
-      creates the existing heap-backed `EvalHeapThunkResolveBarrier`. Tree-walk
-      thunk publication now enters this runtime dispatch wall before calling
-      `ForceGuard::finish_with_barrier`, and tests cover tier selection, the
-      disabled route, the daemon heap-adapter route, and the existing
-      end-to-end remembered-edge behavior. This is internal safe Rust dispatch
+      creates the heap-backed `EvalHeapThunkResolveBarrier` and can attach a
+      caller-owned card table. Tree-walk thunk publication now enters this
+      runtime dispatch wall before calling `ForceGuard::finish_with_barrier`,
+      and tests cover tier selection, the disabled route, the daemon
+      heap-adapter route with and without a card table, and end-to-end
+      remembered-edge/card-mark behavior. This is internal safe Rust dispatch
       only; it does not export the `unsafe extern "C"` function, register
-      Cranelift symbols, implement a daemon card table, mutate object
-      generations, or install the Tier-B collector table.
+      Cranelift symbols, mutate object generations, or install the Tier-B
+      collector table.
 - [x] Current runtime-helper binding-manifest precursor:
       `ratchet-oracle::runtime::helpers` now combines the allocation and
       write-barrier helper families into one safe `RuntimeHelperBinding`
@@ -5890,24 +5891,23 @@ and helps the oracle directly.
       forced result. `EvalHeap::thunk_resolve_write_barrier` now builds a
       heap-backed adapter that validates the source thunk against the side table,
       classifies the forced value's current generation (including inline and
-      external values), delegates remembered-edge insertion to the lower-level
-      barrier helper, and implements the `ThunkResolveBarrier` hook for
-      `ForceGuard::finish_with_barrier`. Unit tests cover remembered-edge
-      insertion for a permanent-to-young publication, inline/external no-op
-      classification, non-thunk source rejection, and the current caller-owned
-      invariant that the adapter must be paired with the matching force guard.
+      external values), delegates remembered-edge insertion and optional
+      dirty-card marking to the lower-level barrier helper, and implements the
+      `ThunkResolveBarrier` hook for `ForceGuard::finish_with_barrier`. Unit
+      tests cover remembered-edge insertion and card marking for a
+      permanent-to-young publication, inline/external no-op classification,
+      non-thunk source rejection, and the current caller-owned invariant that
+      the adapter must be paired with the matching force guard.
       `TreeWalkOptions` can now select the thunk-resolution barrier tier;
       tree-walk forcing publishes newly evaluated and force-cache replayed thunk
       results through the heap-backed barrier when daemon mode is selected, and
-      exposes the tree-walk-owned `RememberedSet` on `TreeWalk`/`EvalOutcome`.
-      Required old/permanent-to-young edges are recorded there; replayed
-      permanent-shared payloads remain no-op barrier writes. The tree-walk
-      publish path now enters the `runtime::barrier` vtable first, selecting
-      the one-shot disabled adapter or daemon heap-backed adapter from the
-      configured tier. The actual daemon
-      card table, mutable generation updates, and Tier-B collector integration
-      remain open
-      under `heap/gc.rs`.
+      exposes the tree-walk-owned `RememberedSet` and `GcCardTable` on
+      `TreeWalk`/`EvalOutcome`. Required old/permanent-to-young edges and source
+      cards are recorded there; replayed permanent-shared payloads remain no-op
+      barrier writes. The tree-walk publish path now enters the
+      `runtime::barrier` vtable first, selecting the one-shot disabled adapter
+      or daemon heap-backed adapter from the configured tier. Mutable generation
+      updates and Tier-B collector integration remain open under `heap/gc.rs`.
 - [x] Current unsafe-policy precursor: the oracle/frontend/glue layer keeps
       `unsafe_code` denied by default, with the current exception limited to the
       typed region-pop handoff into `BumpArena::pop_region_to_mark` after

@@ -5,8 +5,8 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    AllocationRegionFacts, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
-    HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
+    AllocationRegionFacts, GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
+    HeapGeneration, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
     MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPlan,
     MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectAge,
     NurseryObjectLayout, ProcessResidentMemorySource, RegionPlan, RegionRuntimeTier,
@@ -780,6 +780,44 @@ fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
         Some(ThunkResolveWriteBarrier::Remember { edge })
     );
     assert_eq!(barrier.remembered_set().edges(), &[edge]);
+}
+
+#[test]
+fn thunk_resolve_write_barrier_marks_card_for_permanent_to_young_forced_value() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("source thunk allocates");
+    let forced = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("forced lambda allocates");
+    set_allocation_domain(&mut heap, source, HeapAllocationDomain::PermanentShared);
+    let mut remembered_set = RememberedSet::new();
+    let mut card_table = GcCardTable::default();
+    let mut barrier = heap
+        .thunk_resolve_write_barrier_with_card_table(
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+            &mut card_table,
+        )
+        .expect("barrier creates");
+
+    let action = barrier
+        .record(forced)
+        .expect("barrier records edge and card");
+
+    let edge = RememberedEdge::new(gc_address(source), gc_address(forced));
+    assert_eq!(action, ThunkResolveWriteBarrier::Remember { edge });
+    assert_eq!(barrier.remembered_set().edges(), &[edge]);
+    let card_table = barrier.card_table().expect("card table is attached");
+    assert_eq!(card_table.len(), 1);
+    assert_eq!(card_table.dirty_cards()[0].source(), edge.source());
 }
 
 #[test]

@@ -82,7 +82,7 @@ use crate::compile::{
     IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness, resolve,
 };
 use crate::heap::{
-    AllocationRegionFacts, GenerationalGcError, GenerationalGcTier, HeapMemoryBudget,
+    AllocationRegionFacts, GcCardTable, GenerationalGcError, GenerationalGcTier, HeapMemoryBudget,
     MinorGcCommitReport, MinorGcDestinationBases, MinorGcForwardingSlot,
     MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, RegionEffect, RegionLifetime,
     RegionPlacement, RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing,
@@ -873,6 +873,7 @@ pub struct TreeWalk {
     active_primop_arg_frames: Vec<ActivePrimopArgFrame>,
     suspended_env_roots: Vec<SuspendedTreeWalkEnv>,
     thunk_resolve_remembered_set: RememberedSet,
+    thunk_resolve_card_table: GcCardTable,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
