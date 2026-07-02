@@ -691,6 +691,42 @@ pub enum EvalHeapError {
         /// The relocation value whose address collides with the source set.
         destination: ResolvedValueGeneration,
     },
+    /// Boundary live destination-byte snapshots have already been installed.
+    #[error(
+        "boundary minor-GC live destination storage already contains {existing} object snapshots"
+    )]
+    BoundaryMinorGcLiveDestinationStorageAlreadyInstalled {
+        /// The number of previously installed destination object snapshots.
+        existing: usize,
+    },
+    /// Boundary sibling dry-runs disagreed about one destination byte snapshot.
+    #[error(
+        "boundary minor-GC live destination storage object mismatch for source 0x{source_address:x}: expected {expected:?}, found {actual:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcLiveDestinationStorageObjectMismatch {
+        /// The from-space survivor address present in both sibling applications.
+        source_address: GcHeapAddress,
+        /// The first byte-copy request recorded for the source.
+        expected: AllocationCollectorPollObjectByteCopyRequest,
+        /// The sibling byte-copy request recorded for the source.
+        actual: AllocationCollectorPollObjectByteCopyRequest,
+    },
+    /// Boundary sibling dry-runs mapped different sources to one byte snapshot.
+    #[error(
+        "boundary minor-GC live destination storage destination collision for 0x{destination_address:x}: source 0x{source_address:x} conflicts with 0x{existing_source_address:x}",
+        destination_address = destination_address.address_bits(),
+        source_address = source_address.address_bits(),
+        existing_source_address = existing_source_address.address_bits()
+    )]
+    BoundaryMinorGcLiveDestinationStorageDestinationCollision {
+        /// The from-space survivor address currently being validated.
+        source_address: GcHeapAddress,
+        /// The earlier from-space survivor address that uses the same destination.
+        existing_source_address: GcHeapAddress,
+        /// The duplicate destination object address.
+        destination_address: GcHeapAddress,
+    },
     /// A live forwarding installation received an empty forwarding slot.
     #[error(
         "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",

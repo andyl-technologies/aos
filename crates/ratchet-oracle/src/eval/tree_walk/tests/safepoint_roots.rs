@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::eval::heap::{
-    AllocationCollectorPollScan, EvalRoot, EvalRootSource, HeapAllocationDomain, InternedRootTable,
+    AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollScan, EvalRoot,
+    EvalRootSource, HeapAllocationDomain, InternedRootTable,
 };
 use crate::heap::{
     GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
@@ -87,6 +88,8 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
             cheap_memory_budget_plan: None,
             cheap_memory_advice_report: None,
             gc_stress_boundary_scans,
+            gc_stress_boundary_minor_gc_destination_storage:
+                EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         },
         thunk_value,
     )
@@ -856,6 +859,60 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         }]
     );
 
+    let mut destination_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live destination storage");
+    assert!(
+        destination_outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    let live_destination_dry_run = destination_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live destination bytes");
+    let live_destination_commit = live_destination_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live destination worker commit records");
+    let live_destination_object_copy = &live_destination_commit.object_byte_copies()[0];
+    let live_destination_storage =
+        destination_outcome.gc_stress_boundary_minor_gc_destination_storage();
+    assert_eq!(live_destination_dry_run.object_copies_installed(), 1);
+    assert_eq!(live_destination_storage.len(), 1);
+    assert_eq!(
+        live_destination_storage.install_report(),
+        live_destination_dry_run.destination_storage_install_report()
+    );
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].request(),
+        live_destination_object_copy.request()
+    );
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].destination_bytes(),
+        live_destination_object_copy.destination_bytes()
+    );
+    let destination_storage_before_repeat = live_destination_storage.clone();
+    let repeat_error = destination_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live destination storage rejects repeat install");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveDestinationStorageAlreadyInstalled { existing: 1 }
+    );
+    assert_eq!(
+        destination_outcome.gc_stress_boundary_minor_gc_destination_storage(),
+        &destination_storage_before_repeat
+    );
+
     let mut forwarding_outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
@@ -1005,6 +1062,48 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
             address: old_base,
             generation: HeapGeneration::Old,
         }]
+    );
+
+    let mut destination_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for promoted destination storage");
+    let live_destination_dry_run = destination_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), old_base),
+        )
+        .expect("promoted worker dry-run installs live destination bytes");
+    let live_destination_commit = live_destination_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live promoted destination worker commit records");
+    let live_destination_object_copy = &live_destination_commit.object_byte_copies()[0];
+    let live_destination_storage =
+        destination_outcome.gc_stress_boundary_minor_gc_destination_storage();
+    assert_eq!(live_destination_dry_run.object_copies_installed(), 1);
+    assert_eq!(
+        live_destination_dry_run
+            .destination_storage_install_report()
+            .promoted_to_old(),
+        1
+    );
+    assert_eq!(
+        live_destination_dry_run
+            .destination_storage_install_report()
+            .old_payload_bytes(),
+        live_destination_object_copy.request().size_bytes()
+    );
+    assert_eq!(live_destination_storage.len(), 1);
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].request(),
+        live_destination_object_copy.request()
+    );
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].destination_bytes(),
+        live_destination_object_copy.destination_bytes()
     );
 
     let live_forwarding_dry_run = outcome
@@ -1485,6 +1584,67 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         );
     }
 
+    let (mut destination_outcome, _) = boundary_remembered_edge_outcome();
+    let live_destination_dry_run = destination_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("sibling boundary preflights install merged live destination bytes");
+    let live_destination_worker = live_destination_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live destination worker commit records");
+    let live_destination_permanent = live_destination_dry_run
+        .dry_run()
+        .commit_applications()
+        .permanent_shared()
+        .expect("live destination permanent commit records");
+    let mut expected_destination_objects: Vec<(
+        AllocationCollectorPollObjectByteCopyRequest,
+        Vec<u8>,
+    )> = Vec::new();
+    let mut overlapping_destination_sources = 0usize;
+    for object_copy in live_destination_worker
+        .object_byte_copies()
+        .iter()
+        .chain(live_destination_permanent.object_byte_copies())
+    {
+        if let Some((expected_request, expected_bytes)) = expected_destination_objects
+            .iter()
+            .find(|(request, _)| request.source() == object_copy.request().source())
+        {
+            overlapping_destination_sources = overlapping_destination_sources.saturating_add(1);
+            assert_eq!(*expected_request, object_copy.request());
+            assert_eq!(expected_bytes.as_slice(), object_copy.destination_bytes());
+            continue;
+        }
+        expected_destination_objects.push((
+            object_copy.request(),
+            object_copy.destination_bytes().to_vec(),
+        ));
+    }
+    let live_destination_storage =
+        destination_outcome.gc_stress_boundary_minor_gc_destination_storage();
+    assert!(!expected_destination_objects.is_empty());
+    assert!(overlapping_destination_sources > 0);
+    assert_eq!(
+        live_destination_dry_run.object_copies_installed(),
+        expected_destination_objects.len()
+    );
+    assert_eq!(
+        live_destination_storage.len(),
+        expected_destination_objects.len()
+    );
+    for installed in live_destination_storage.object_bytes() {
+        let (_, expected_bytes) = expected_destination_objects
+            .iter()
+            .find(|(request, _)| *request == installed.request())
+            .expect("installed destination object has expected dry-run source");
+        assert_eq!(installed.destination_bytes(), expected_bytes.as_slice());
+    }
+
     let (mut merge_outcome, _) = boundary_remembered_edge_outcome();
     let extra_card_source = next_dirty_card_source(merge_outcome.thunk_resolve_card_table());
     merge_outcome
@@ -1620,6 +1780,8 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_destination_storage:
+            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
 
     let nursery_base = static_gc_address(0x1000_0000);
@@ -1823,6 +1985,8 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_destination_storage:
+            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
 
     let error = outcome
@@ -1895,6 +2059,8 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_destination_storage:
+            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
     };
 
     let error = outcome
@@ -2094,6 +2260,23 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
     assert_eq!(
         empty_live_forwarding_dry_run.forwarding_pointers_installed(),
         0
+    );
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    let empty_live_destination_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary dry run leaves live destination storage alone");
+    assert!(empty_live_destination_dry_run.dry_run().is_empty());
+    assert_eq!(empty_live_destination_dry_run.object_copies_installed(), 0);
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
     );
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let remembered_set_before_empty = outcome.thunk_resolve_remembered_set().clone();

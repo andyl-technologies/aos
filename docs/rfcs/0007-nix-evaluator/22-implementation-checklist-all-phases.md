@@ -5659,9 +5659,9 @@ and helps the oracle directly.
       boundary successes, multi-card live clears, empty-boundary no-clear
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
-      root/field mutation, live object bytes, forwarding metadata,
-      object-generation mutation, semispace ownership, and Tier-B dispatch
-      remain open.
+      root/field mutation, live heap-object byte binding, real object-header
+      forwarding metadata, object-generation mutation, semispace ownership, and
+      Tier-B dispatch remain open.
 - [x] Current boundary live remembered-set publication bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
       derives the same boundary commit dry run, leaves empty outcomes unchanged,
@@ -5678,8 +5678,9 @@ and helps the oracle directly.
       clearing, multi-tier merge publication with observed raw relocation-map
       coherence and live-card clearing, and empty-boundary no-mutation behavior.
       This is still not a full live collector commit: live root/field mutation,
-      live object bytes, forwarding metadata, object-generation mutation,
-      semispace ownership, and Tier-B dispatch remain open.
+      live heap-object byte binding, real object-header forwarding metadata,
+      object-generation mutation, semispace ownership, and Tier-B dispatch
+      remain open.
 - [x] Current boundary live forwarding-slot bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
       derives the same owned boundary commit dry run, merges sibling
@@ -5692,10 +5693,25 @@ and helps the oracle directly.
       partial mutation. Unit tests cover copied-young, promoted-old, multi-tier
       overlapping-source merge, repeat-install rejection/no-mutation, and
       empty-boundary no-op behavior. This is still not a full live collector
-      commit: live root/field mutation, live object bytes, real ABI
+      commit: live root/field mutation, live heap-object byte binding, real ABI
       object-header forwarding writes, object-generation mutation, semispace
       ownership, remembered-source field mutation, and Tier-B dispatch remain
       open.
+- [x] Current boundary live destination-byte side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
+      derives the same owned boundary commit dry run, verifies sibling
+      worker/permanent applications through the shared raw relocation-map
+      coherence checks, deduplicates overlapping object-copy snapshots that
+      agree, and installs per-destination object payload bytes into an
+      outcome-owned side table only after dry-run and merge validation succeeds.
+      Empty/no-survivor boundaries leave the side table unchanged, and repeat
+      installs reject without partial mutation. Unit tests cover copied-young,
+      promoted-old, multi-tier overlapping-source merge, repeat-install
+      rejection/no-mutation, and empty-boundary no-op behavior. This is still
+      not a full live collector commit: installed bytes are not bound to live
+      heap-object bodies or semispace pages, and live root/field mutation, real
+      ABI object-header forwarding writes, object-generation mutation,
+      remembered-source field mutation, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6190,9 +6206,10 @@ and helps the oracle directly.
       merges external root
       values with live heap-field reads into one caller-owned reference buffer.
       This connects the roots bridge to commit-buffer preflight/application tests,
-      but still does not provide live object-byte slices, destination storage,
-      tree-walk root writeback, live object-field mutation, old/permanent field
-      mutation in evaluator-owned objects, or JIT stack-map writeback slots.
+      but still does not provide live heap-object byte slices, semispace
+      destination storage, tree-walk root writeback, live object-field mutation,
+      old/permanent field mutation in evaluator-owned objects, or JIT stack-map
+      writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,
@@ -6233,17 +6250,19 @@ and helps the oracle directly.
       alongside rewritten root/heap-field counts and lower-level commit counts.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
-      owned dry-run validation, and
+      owned dry-run validation;
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
       publishes an outcome-owned remembered set after the same dry run, merging
-      sibling worker/permanent next sets when both tiers produced applications,
-      and
+      sibling worker/permanent next sets when both tiers produced applications;
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
       installs evaluator-owned side-table forwarding values after the same dry
-      run. These helpers still do not bind live object-byte buffers, live
-      root/field storage, real ABI object-header forwarding storage,
-      object-generation metadata, or semispace storage, and they do not commit
-      those live mutations.
+      run; and
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
+      installs deduplicated outcome-owned destination-byte snapshots from the
+      same validated commit applications. These helpers still do not bind those
+      bytes to live heap-object bodies, live root/field storage, real ABI
+      object-header forwarding storage, object-generation metadata, or semispace
+      storage, and they do not commit those live mutations.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

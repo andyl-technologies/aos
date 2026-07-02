@@ -24,6 +24,8 @@ const BOUNDARY_MINOR_GC_OLD_DESTINATION_STORAGE_BYTES_TABLE: &str =
     "boundary minor-GC old destination storage bytes";
 const BOUNDARY_MINOR_GC_DESTINATION_STORAGE_LAYOUTS_TABLE: &str =
     "boundary minor-GC destination storage layouts";
+const BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE: &str =
+    "boundary minor-GC live destination object bytes";
 const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
     "boundary minor-GC forwarding slot buffer";
 const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
@@ -596,6 +598,157 @@ impl EvalGcStressBoundaryMinorGcDestinationStorageApplication {
     }
 }
 
+/// Outcome-owned destination-byte installation counts for a boundary dry run.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+    object_copies: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    nursery_payload_bytes: usize,
+    old_payload_bytes: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+    fn record(&mut self, request: AllocationCollectorPollObjectByteCopyRequest) {
+        self.object_copies = self.object_copies.saturating_add(1);
+        match request.action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+                self.nursery_payload_bytes = self
+                    .nursery_payload_bytes
+                    .saturating_add(request.size_bytes());
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+                self.old_payload_bytes =
+                    self.old_payload_bytes.saturating_add(request.size_bytes());
+            }
+        }
+    }
+
+    /// Returns how many destination object payloads were installed.
+    pub const fn object_copies(self) -> usize {
+        self.object_copies
+    }
+
+    /// Returns how many installed payloads target next-nursery storage.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many installed payloads target old-generation storage.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns installed next-nursery payload bytes.
+    pub const fn nursery_payload_bytes(self) -> usize {
+        self.nursery_payload_bytes
+    }
+
+    /// Returns installed old-generation payload bytes.
+    pub const fn old_payload_bytes(self) -> usize {
+        self.old_payload_bytes
+    }
+
+    /// Returns total installed object payload bytes.
+    pub const fn payload_bytes(self) -> usize {
+        self.nursery_payload_bytes
+            .saturating_add(self.old_payload_bytes)
+    }
+}
+
+/// Outcome-owned byte snapshot for one relocated minor-GC object payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes {
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes {
+    fn new(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            request,
+            destination_bytes,
+        }
+    }
+
+    /// Returns the byte-copy request that produced this installed snapshot.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the from-space source object address.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.request.source()
+    }
+
+    /// Returns the destination object address represented by this snapshot.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.request.destination()
+    }
+
+    /// Returns the copied payload bytes for the destination object.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
+/// Outcome-owned destination-byte snapshots installed by a boundary dry run.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+    install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    object_bytes: Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+    fn install(
+        &mut self,
+        object_bytes: Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport, EvalHeapError> {
+        if object_bytes.is_empty() {
+            return Ok(EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport::default());
+        }
+        if !self.object_bytes.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveDestinationStorageAlreadyInstalled {
+                    existing: self.object_bytes.len(),
+                },
+            );
+        }
+
+        let install_report = live_destination_storage_install_report(&object_bytes);
+        self.object_bytes = object_bytes;
+        self.install_report = install_report;
+        Ok(install_report)
+    }
+
+    /// Returns whether no destination byte snapshots are installed.
+    pub fn is_empty(&self) -> bool {
+        self.object_bytes.is_empty()
+    }
+
+    /// Returns how many destination object byte snapshots are installed.
+    pub fn len(&self) -> usize {
+        self.object_bytes.len()
+    }
+
+    /// Returns the report for the last non-empty destination-byte install.
+    pub const fn install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+        self.install_report
+    }
+
+    /// Returns the installed destination object byte snapshots.
+    pub fn object_bytes(&self) -> &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes] {
+        &self.object_bytes
+    }
+}
+
 /// Applied boundary-owned buffers for one minor-GC commit preflight.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcCommitApplication {
@@ -852,6 +1005,16 @@ fn clone_boundary_destination_storage_bytes(
     Ok(cloned)
 }
 
+fn live_destination_storage_install_report(
+    object_bytes: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+    let mut report = EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport::default();
+    for object in object_bytes {
+        report.record(object.request());
+    }
+    report
+}
+
 fn clone_boundary_forwarding_slots(
     slots: &[MinorGcForwardingSlot],
 ) -> Result<Vec<MinorGcForwardingSlot>, EvalHeapError> {
@@ -888,6 +1051,86 @@ fn clone_boundary_remembered_set(
         cloned.record(*edge)?;
     }
     Ok(cloned)
+}
+
+fn boundary_minor_gc_merged_destination_object_bytes(
+    applications: &EvalGcStressBoundaryMinorGcCommitApplications,
+) -> Result<Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>, EvalHeapError> {
+    let mut merged = Vec::new();
+    merge_boundary_minor_gc_destination_object_bytes_application(
+        &mut merged,
+        applications.worker(),
+    )?;
+    merge_boundary_minor_gc_destination_object_bytes_application(
+        &mut merged,
+        applications.permanent_shared(),
+    )?;
+    Ok(merged)
+}
+
+fn merge_boundary_minor_gc_destination_object_bytes_application(
+    merged: &mut Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
+    application: Option<&EvalGcStressBoundaryMinorGcCommitApplication>,
+) -> Result<(), EvalHeapError> {
+    let Some(application) = application else {
+        return Ok(());
+    };
+
+    for object_copy in application.object_byte_copies() {
+        let request = object_copy.request();
+        if let Some(existing) = merged
+            .iter()
+            .find(|existing| existing.source() == request.source())
+        {
+            if existing.request() != request
+                || existing.destination_bytes() != object_copy.destination_bytes()
+            {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcLiveDestinationStorageObjectMismatch {
+                        source_address: request.source(),
+                        expected: existing.request(),
+                        actual: request,
+                    },
+                );
+            }
+            continue;
+        }
+
+        if let Some(existing) = merged
+            .iter()
+            .find(|existing| existing.destination() == request.destination())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveDestinationStorageDestinationCollision {
+                    source_address: request.source(),
+                    existing_source_address: existing.source(),
+                    destination_address: request.destination(),
+                },
+            );
+        }
+
+        let entries = merged
+            .len()
+            .checked_add(1)
+            .ok_or(EvalHeapError::RootScanLengthOverflow {
+                table: BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE,
+            })?;
+        merged
+            .try_reserve_exact(1)
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE,
+                entries,
+            })?;
+        merged.push(EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes::new(
+            request,
+            clone_boundary_destination_storage_bytes(
+                BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE,
+                object_copy.destination_bytes(),
+            )?,
+        ));
+    }
+
+    Ok(())
 }
 
 fn boundary_minor_gc_merged_forwarding_slots(
@@ -1533,6 +1776,50 @@ impl EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus outcome-owned destination-byte installation.
+///
+/// This report preserves the owned dry-run artifacts and records the object
+/// payload snapshots installed into [`EvalOutcome`]'s destination-byte side
+/// table after all dry-run validation succeeds. It still does not bind those
+/// bytes to live heap objects, write ABI object headers, mutate roots or heap
+/// fields, publish remembered-set storage, mutate object generations, clear
+/// card-table storage, or manage semispaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    destination_storage_install_report:
+        EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        destination_storage_install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            destination_storage_install_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated byte-snapshot install.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live destination-byte installation report.
+    pub const fn destination_storage_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+        self.destination_storage_install_report
+    }
+
+    /// Returns how many destination object payload snapshots were installed.
+    pub const fn object_copies_installed(&self) -> usize {
+        self.destination_storage_install_report.object_copies()
+    }
+}
+
 /// Boundary commit dry run plus live remembered-set publication.
 ///
 /// This report preserves the owned dry-run artifacts and records the live
@@ -1973,6 +2260,8 @@ pub struct EvalOutcome {
     pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
+    pub(crate) gc_stress_boundary_minor_gc_destination_storage:
+        EvalGcStressBoundaryMinorGcLiveDestinationStorage,
 }
 
 impl std::fmt::Debug for EvalOutcome {
@@ -2003,6 +2292,10 @@ impl std::fmt::Debug for EvalOutcome {
                 &self.cheap_memory_advice_report,
             )
             .field("gc_stress_boundary_scans", &self.gc_stress_boundary_scans)
+            .field(
+                "gc_stress_boundary_minor_gc_destination_storage",
+                &self.gc_stress_boundary_minor_gc_destination_storage,
+            )
             .finish()
     }
 }
@@ -2093,6 +2386,16 @@ impl EvalOutcome {
     /// Returns GC-stress scans recorded at the successful evaluation boundary.
     pub const fn gc_stress_boundary_scans(&self) -> &EvalGcStressBoundaryScans {
         &self.gc_stress_boundary_scans
+    }
+
+    /// Returns outcome-owned destination byte snapshots installed by live dry runs.
+    ///
+    /// These snapshots are GC-stress bridge metadata. They are not live
+    /// semispace object bodies and are not read by ordinary evaluation.
+    pub const fn gc_stress_boundary_minor_gc_destination_storage(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+        &self.gc_stress_boundary_minor_gc_destination_storage
     }
 
     /// Builds minor-GC plans from the recorded GC-stress boundary scans.
@@ -2326,6 +2629,52 @@ impl EvalOutcome {
             dry_run,
             forwarding_install_report,
         ))
+    }
+
+    /// Runs a boundary dry run and installs outcome-owned destination bytes.
+    ///
+    /// The method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. It validates sibling
+    /// worker/permanent applications with the same raw relocation-map coherence
+    /// checks used by live remembered-set publication, then merges overlapping
+    /// object-copy snapshots that agree before publishing them into this
+    /// outcome's destination-byte side table. Empty boundaries, or non-empty
+    /// boundaries with no copied/promoted survivors, leave the side table
+    /// unchanged.
+    ///
+    /// This is a live metadata bridge for GC-stress experiments, not a full
+    /// collector commit. It does not bind bytes to live heap objects, write ABI
+    /// object headers, mutate roots or heap fields, install forwarding headers,
+    /// publish remembered sets, clear card-table storage, mutate object
+    /// generations, reserve semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling applications do not form one
+    /// coherent survivor relocation map, if overlapping object-copy snapshots
+    /// disagree, or if destination-byte snapshots have already been installed
+    /// for this outcome. When an error is returned, the destination-byte side
+    /// table is left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let object_bytes =
+            boundary_minor_gc_merged_destination_object_bytes(dry_run.commit_applications())?;
+        let destination_storage_install_report = self
+            .gc_stress_boundary_minor_gc_destination_storage
+            .install(object_bytes)?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun::new(
+                dry_run,
+                destination_storage_install_report,
+            ),
+        )
     }
 
     /// Runs a boundary minor-GC dry run and clears the outcome-owned card table.

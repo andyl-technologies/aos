@@ -87,9 +87,9 @@ use crate::heap::{
     MinorGcDestinationPlacementPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
     MinorGcObjectCopyPlan, MinorGcOwnedDestinationStorage,
     MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcSourceObjectBytes, NurseryObjectLayout, RegionEffect, RegionLifetime, RegionPlacement,
-    RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedSet,
-    RememberedSetEpoch, ResolvedValueGeneration,
+    MinorGcSourceObjectBytes, MinorGcSurvivorAction, NurseryObjectLayout, RegionEffect,
+    RegionLifetime, RegionPlacement, RegionPlacementReason, RegionPlan, RegionRuntimeTier,
+    RegionSharing, RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
@@ -338,6 +338,10 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcCommitApplications, EvalGcStressBoundaryMinorGcCommitDryRun,
     EvalGcStressBoundaryMinorGcCommitDryRunSummary, EvalGcStressBoundaryMinorGcCommitPreflight,
     EvalGcStressBoundaryMinorGcCommitPreflights,
+    EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes,
+    EvalGcStressBoundaryMinorGcLiveDestinationStorage,
+    EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun,
+    EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
     EvalGcStressBoundaryMinorGcObjectByteCopyApplication, EvalGcStressBoundaryMinorGcPlans,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
