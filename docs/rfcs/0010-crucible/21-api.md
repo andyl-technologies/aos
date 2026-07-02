@@ -608,10 +608,18 @@ ran in-process against the double or over the wire against QEMU.
   the RPC client posts the typed `Hello` payload over HTTP/2 to
   `/crucible.rpc/hello`, and both transports serialize through the same wire
   model; command mapping remains T-API-2.
-- [ ] **T-API-2** Implement the API as a thin wrapper over the session command set:
+- [x] **T-API-2** Implement the API as a thin wrapper over the session command set:
   every method/RPC maps to one session command (20 §4) or one lock-free mirror
   read, with no control semantics of its own and no browser-shaped request. —
   satisfies [API-2], [API-3]; spec §21.1, §21.2.
+  Completed by `checks.crucible.phase5.apiSessionCommandMapping`:
+  `crucible-api::session_mapping` declares the closed service-method mapping,
+  the full `SessionCommandKind::ALL` API command mapping, and the
+  `validate_thin_api_mapping` gate assertion. `CreateSession` maps to
+  `SessionCommandKind::Start`, `DestroySession` maps to `Stop`, session listings
+  and watch attach snapshots read `LiveQueryKind::Status`, and `Control`/`Send`
+  accept exactly one session command per typed programmatic envelope. Lifecycle
+  RPC execution remains T-API-3; streaming equivalence remains T-API-4.
 - [ ] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
   (version + open-set capabilities), `ListScenarios`, `CreateSession` (scenario ref
   or inline def + seed + start-paused), `ListSessions`, `DestroySession`

@@ -281,6 +281,11 @@ long-held locks.
   which defines the shared async `ControlClient` trait, in-process and HTTP/2 RPC
   client handles, the `/crucible.rpc/hello` HTTP/2 negotiation path, and a shared
   `ControlWireModel` over the frozen RPC ABI encoder.
+  `T-API-2` is green through `checks.crucible.phase5.apiSessionCommandMapping`,
+  which freezes the thin API-to-session mapping: service methods are typed
+  programmatic requests, map to session commands, lock-free mirror reads, or
+  server/control-log reads, and the API command table covers
+  `SessionCommandKind::ALL` exactly once.
 - CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

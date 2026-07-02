@@ -10,9 +10,10 @@
 //! and its in-process/RPC implementations; [`rpc_abi`] owns the versioned RPC
 //! boundary constants and frozen golden vectors; [`control_responsive`] owns the
 //! quantum-counted acknowledgement contract used by `gate:control-responsive`;
-//! [`event_log_stream`] owns the cursor-backed live event-log subscription facade.
-//! Later modules will split by lifecycle, query, and temporal-graph surfaces as
-//! those APIs land.
+//! [`event_log_stream`] owns the cursor-backed live event-log subscription facade;
+//! [`session_mapping`] owns the API-to-session thin-wrapper contract. Later
+//! modules will split by lifecycle, query, and temporal-graph surfaces as those
+//! APIs land.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -22,6 +23,7 @@ pub mod client;
 pub mod control_responsive;
 pub mod event_log_stream;
 pub mod rpc_abi;
+pub mod session_mapping;
 
 pub use client::{
     ControlClient, ControlClientError, ControlClientFuture, ControlTransportKind, ControlWireModel,
@@ -46,4 +48,10 @@ pub use rpc_abi::{
     RpcEventClass, RpcGoldenVector, RpcGoldenVectorMessage, RpcStatusCode,
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol,
+};
+pub use session_mapping::{
+    API_COMMAND_MAPPINGS, API_METHOD_MAPPINGS, ApiCommandMapping, ApiDispatch, ApiMappingError,
+    ApiMethod, ApiMethodMapping, ApiRequestShape, CommandDispatchCardinality,
+    api_command_for_session_command, method_mapping, session_command_for_api_command,
+    validate_thin_api_mapping,
 };
