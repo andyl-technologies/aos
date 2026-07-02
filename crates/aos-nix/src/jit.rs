@@ -11,7 +11,8 @@ use std::num::NonZeroUsize;
 
 use ratchet_core::{IrArena, IrId, RuntimeSymbolKind, RuntimeSymbolNameError};
 use ratchet_jit::{
-    JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftTier1PromotionError,
+    JitCompiledCodePointer, JitCraneliftRegisteredTier1PromotionPreflight,
+    JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftTier1PromotionError,
     JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitTieredCodeSlot, TierUpDecision,
     TierUpDemandHint, TierUpPolicy,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
@@ -83,6 +84,76 @@ impl NixJitRegisteredTier1PromotionError {
 /// Result returned by registered tier-1 promotion preflights.
 pub type NixJitRegisteredTier1PromotionResult =
     Result<JitCraneliftRegisteredTier1PromotionPreflight, NixJitRegisteredTier1PromotionError>;
+
+/// Safe handoff for a registered tier-1 install attempt.
+///
+/// This value owns the registered promotion preflight so any promoted tier-1
+/// code pointer metadata remains tied to the Cranelift module owner that
+/// produced it. It is a future evaluator-thunk install handoff only: it does
+/// not publish into heap state, perform an atomic compare-and-swap, cast the
+/// code pointer to a function, dereference registered helper addresses, or call
+/// native code.
+pub struct NixJitRegisteredTier1InstallPlan {
+    promotion_preflight: JitCraneliftRegisteredTier1PromotionPreflight,
+}
+
+impl NixJitRegisteredTier1InstallPlan {
+    /// Wraps one registered promotion preflight as an evaluator install handoff.
+    pub fn from_promotion_preflight(
+        promotion_preflight: JitCraneliftRegisteredTier1PromotionPreflight,
+    ) -> Self {
+        Self {
+            promotion_preflight,
+        }
+    }
+
+    /// Returns the owned registered promotion preflight.
+    pub const fn promotion_preflight(&self) -> &JitCraneliftRegisteredTier1PromotionPreflight {
+        &self.promotion_preflight
+    }
+
+    /// Returns the policy decision made for this install attempt.
+    pub const fn decision(&self) -> TierUpDecision {
+        self.promotion_preflight.decision()
+    }
+
+    /// Returns true when this attempt produced tier-1 code metadata.
+    pub const fn did_compile(&self) -> bool {
+        self.promotion_preflight.did_compile()
+    }
+
+    /// Returns true when tier-1 pointer metadata is ready for future thunk install.
+    pub fn is_ready_for_install(&self) -> bool {
+        self.did_compile() && self.tier1_code_ptr().is_some() && self.owns_encapsulated_module()
+    }
+
+    /// Returns the updated safe tiered-code slot.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        self.promotion_preflight.slot()
+    }
+
+    /// Returns opaque tier-1 code pointer metadata, when promotion compiled.
+    ///
+    /// The returned pointer is not callable, and its validity remains bounded by
+    /// the module owner kept inside this plan.
+    pub const fn tier1_code_ptr(&self) -> Option<JitCompiledCodePointer> {
+        self.slot().tier1_code_ptr()
+    }
+
+    /// Returns the promoted registered tier-1 preflight when compilation occurred.
+    pub const fn promoted_preflight(&self) -> Option<&JitCraneliftRegisteredTier1SlotPreflight> {
+        self.promotion_preflight.promoted_preflight()
+    }
+
+    /// Returns true when this plan owns the Cranelift module backing the pointer.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.promotion_preflight.owns_encapsulated_module()
+    }
+}
+
+/// Result returned by registered tier-1 install-plan preflights.
+pub type NixJitRegisteredTier1InstallPlanResult =
+    Result<NixJitRegisteredTier1InstallPlan, NixJitRegisteredTier1PromotionError>;
 
 /// Process-local JIT address candidates derived from oracle helper callables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,6 +275,36 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
         root,
         nix_jit_runtime_symbol_address_candidate_preflight,
     )
+}
+
+/// Builds a safe registered tier-1 install plan for an IR root.
+///
+/// This composes the `aos-nix` registered promotion bridge with a handoff object
+/// that can later feed evaluator thunk-state integration. A cold result records
+/// the invocation and carries the updated slot. A promoted result additionally
+/// owns the registered Cranelift tier-1 preflight and its encapsulated module.
+/// The plan still does not mutate evaluator heap state, cast or call the code
+/// pointer, dereference registered helper addresses, or call native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError`] under the same conditions as
+/// [`nix_jit_registered_tier1_promotion_preflight_for_ir_root`].
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_registered_tier1_promotion_preflight_for_ir_root`] when policy
+/// requests promotion.
+pub fn nix_jit_registered_tier1_install_plan_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitRegisteredTier1InstallPlanResult {
+    nix_jit_registered_tier1_promotion_preflight_for_ir_root(slot, policy, demand_hint, arena, root)
+        .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
 }
 
 fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(

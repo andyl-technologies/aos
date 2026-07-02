@@ -5315,6 +5315,17 @@ and helps the oracle directly.
       atomic thunk-state CAS, cast or call finalized code pointers, dereference
       registered addresses, call native code, or complete runtime-symbol
       registration.
+- [x] Current `aos-nix` registered tier-1 install-plan handoff:
+      `aos_nix::jit::nix_jit_registered_tier1_install_plan_for_ir_root()`
+      wraps the registered promotion preflight in a safe handoff object that
+      owns the updated tier slot and, for promoted roots, the encapsulated
+      Cranelift module backing the opaque tier-1 code pointer. Tests cover cold
+      slot preservation, promoted pointer metadata, registered `aos_env_get`
+      visibility, and module ownership. This creates the future evaluator thunk
+      install boundary but still does not mutate heap thunks, perform atomic
+      thunk-state CAS, cast or call code pointers, dereference registered
+      addresses, call native code, or complete full/native runtime-symbol
+      registration for unrelated stable symbols.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

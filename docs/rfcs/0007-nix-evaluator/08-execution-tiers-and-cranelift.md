@@ -1347,6 +1347,17 @@ harness, never cut for scope.
       preflight assembly only: no evaluator heap thunk is mutated, no atomic
       thunk-state CAS runs, no finalized code pointer is cast or called, and no
       registered helper address is dereferenced or called.
+- [x] Current `aos-nix` registered tier-1 install-plan handoff:
+      `aos_nix::jit::nix_jit_registered_tier1_install_plan_for_ir_root()`
+      wraps the registered promotion preflight in an `aos-nix` handoff object
+      that owns the updated tier slot and, when promotion compiled, the
+      encapsulated Cranelift module backing the opaque tier-1 code pointer.
+      Tests pin cold slot preservation, promoted pointer metadata, registered
+      `aos_env_get` visibility, and module ownership. This is still a safe plan
+      only: no evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
+      no code pointer is cast or called, and no registered helper address is
+      dereferenced or called; full/native runtime-symbol registration for
+      unrelated stable symbols remains open.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

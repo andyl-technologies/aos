@@ -243,3 +243,76 @@ fn nix_jit_registered_tier1_promotion_preflight_uses_oracle_candidates() {
     );
     assert!(promotion.owns_encapsulated_module());
 }
+
+#[test]
+fn nix_jit_registered_tier1_install_plan_records_cold_slot_without_pointer() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Str,
+            Span::new(0, 5),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+
+    let plan = nix_jit_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+    )
+    .expect("cold unsupported root records slot state");
+
+    assert!(!plan.did_compile());
+    assert!(!plan.is_ready_for_install());
+    assert_eq!(plan.slot().invocation_counter().invocations(), 1);
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier0Oracle);
+    assert!(plan.tier1_code_ptr().is_none());
+    assert!(plan.promoted_preflight().is_none());
+    assert!(!plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_registered_tier1_install_plan_carries_promoted_slot_and_module_owner() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::LocalVar,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Local { slot: 3 },
+        )],
+        Vec::new(),
+    );
+
+    let plan = nix_jit_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+    )
+    .expect("env slot root builds a registered install plan");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(plan.owns_encapsulated_module());
+}
