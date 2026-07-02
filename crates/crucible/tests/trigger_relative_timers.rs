@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use crucible::{
     Action, CodePoint, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
     EventFirings, EventGraph, EventGraphState, EventId, FaultTag, Icount, LinkDef, LogLevel,
@@ -232,7 +234,8 @@ fn evaluate_without_scheduler_timer_state(
     let mut pass = ConditionEvaluationPass::from_log_prefix(
         scheduler.condition_event_log_prefix().clone(),
         NoLeaves,
-    );
+    )
+    .with_timer_fires(BTreeMap::new());
     pass.evaluate_event_graph(graph, state)
 }
 

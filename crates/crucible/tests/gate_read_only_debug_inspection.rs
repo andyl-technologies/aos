@@ -36,8 +36,11 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
         rng_entry(0, 12, "read-only-debug-causal", 31),
         boundary_entry(1, 13),
     ];
+    let request_time = VirtualTime {
+        ticks: u64::try_from(branch.schedule.len())?,
+    };
     let request = DebugReadOnlyInspectionRequest::new(
-        VirtualTime::default(),
+        request_time,
         [
             DebugReadOnlyInspectionKind::RegisterRead,
             DebugReadOnlyInspectionKind::MemoryRead,
