@@ -8,6 +8,7 @@ use crate::heap::{
     GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
     MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
 };
+use crate::list::NixList;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
 
@@ -1238,8 +1239,196 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
             .remembered_set_published_edges()
             .saturating_add(permanent_report.remembered_set_published_edges())
     );
+    assert_eq!(
+        summary.card_table_dirty_cards_cleared(),
+        worker_report
+            .card_table_dirty_cards_cleared()
+            .saturating_add(permanent_report.card_table_dirty_cards_cleared())
+    );
     assert!(summary.remembered_set_source_edges() > 0);
     assert!(summary.remembered_set_published_edges() > 0);
+}
+
+#[test]
+fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda evaluates");
+    let permanent_parent = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(permanent_parent, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark parent permanent");
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(permanent_parent)
+        .expect("permanent parent builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    let mut card_table = GcCardTable::default();
+    card_table
+        .mark_source(gc_address(permanent_parent))
+        .expect("permanent parent card marks");
+    let outcome = EvalOutcome {
+        value: permanent_parent,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: RememberedSet::new(),
+        thunk_resolve_card_table: card_table,
+        memory_budget_action: None,
+        cheap_memory_budget_plan: None,
+        cheap_memory_advice_report: None,
+        gc_stress_boundary_scans,
+    };
+
+    let nursery_base = static_gc_address(0x1000_0000);
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("dirty old-field boundary scan builds commit preflight metadata");
+    let worker_preflight = preflights.worker().expect("worker preflight records");
+
+    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 0);
+    assert_eq!(worker_preflight.card_table().len(), 1);
+    assert_eq!(
+        worker_preflight
+            .relocation_plan()
+            .minor_gc_plan()
+            .plan()
+            .survivors()[0]
+            .address(),
+        gc_address(child)
+    );
+    assert_eq!(
+        worker_preflight
+            .reference_writeback_plan()
+            .heap_field_writebacks()
+            .len(),
+        1
+    );
+    assert!(worker_preflight.root_writeback_slots().is_empty());
+    assert_eq!(worker_preflight.heap_field_writeback_slots().len(), 1);
+    assert_eq!(
+        worker_preflight.heap_field_writeback_slots()[0].validation_object(),
+        gc_address(permanent_parent)
+    );
+
+    let application = worker_preflight
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("dirty old-field boundary writeback slots apply");
+    assert_eq!(application.report().root_writebacks(), 0);
+    assert_eq!(application.report().heap_field_writebacks(), 1);
+    assert_eq!(
+        application.heap_field_writeback_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let commit_application = worker_preflight
+        .apply_commit_to_owned_buffers()
+        .expect("dirty old-field boundary commit buffers apply");
+    assert_eq!(commit_application.report().remembered_set_source_edges(), 0);
+    assert_eq!(
+        commit_application.report().remembered_set_published_edges(),
+        1
+    );
+    assert_eq!(
+        commit_application.report().card_table_dirty_cards_cleared(),
+        1
+    );
+    assert_eq!(commit_application.remembered_set().len(), 1);
+    assert_eq!(
+        commit_application.remembered_set().edges()[0].source(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        commit_application.remembered_set().edges()[0].target(),
+        nursery_base
+    );
+    assert!(commit_application.card_table().is_empty());
+
+    let dry_run = preflights
+        .apply_owned_commit_dry_run()
+        .expect("dirty old-field boundary dry-run applies");
+    let summary = dry_run.summary();
+    let dry_worker_commit = dry_run
+        .commit_applications()
+        .worker()
+        .expect("worker dirty old-field dry-run commit records");
+    let dry_permanent_commit = dry_run
+        .commit_applications()
+        .permanent_shared()
+        .expect("permanent dirty old-field dry-run commit records");
+    let dry_worker_writebacks = dry_run
+        .reference_writebacks()
+        .worker()
+        .expect("worker dirty old-field writebacks record");
+    let dry_permanent_writebacks = dry_run
+        .reference_writebacks()
+        .permanent_shared()
+        .expect("permanent dirty old-field writebacks record");
+    let dry_worker_report = dry_worker_commit.report();
+    let dry_permanent_report = dry_permanent_commit.report();
+
+    assert_eq!(summary.tiers(), dry_run.len());
+    assert_eq!(
+        summary.root_writebacks(),
+        dry_worker_writebacks
+            .report()
+            .root_writebacks()
+            .saturating_add(dry_permanent_writebacks.report().root_writebacks())
+    );
+    assert_eq!(
+        summary.heap_field_writebacks(),
+        dry_worker_writebacks
+            .report()
+            .heap_field_writebacks()
+            .saturating_add(dry_permanent_writebacks.report().heap_field_writebacks())
+    );
+    assert_eq!(
+        summary.reference_rewrites(),
+        dry_worker_report
+            .reference_rewrites()
+            .saturating_add(dry_permanent_report.reference_rewrites())
+    );
+    assert_eq!(
+        summary.remembered_set_source_edges(),
+        dry_worker_report
+            .remembered_set_source_edges()
+            .saturating_add(dry_permanent_report.remembered_set_source_edges())
+    );
+    assert_eq!(
+        summary.remembered_set_published_edges(),
+        dry_worker_report
+            .remembered_set_published_edges()
+            .saturating_add(dry_permanent_report.remembered_set_published_edges())
+    );
+    assert_eq!(
+        summary.card_table_dirty_cards_cleared(),
+        dry_worker_report
+            .card_table_dirty_cards_cleared()
+            .saturating_add(dry_permanent_report.card_table_dirty_cards_cleared())
+    );
+    assert_eq!(dry_worker_report.remembered_set_source_edges(), 0);
+    assert_eq!(dry_worker_report.remembered_set_published_edges(), 1);
 }
 
 #[test]

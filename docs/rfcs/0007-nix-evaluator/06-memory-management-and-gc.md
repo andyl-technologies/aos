@@ -1155,8 +1155,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       clears dirty cards only after object-byte copies, forwarding slots,
       reference rewrites, and remembered-set publication validate and apply.
       Worker and permanent-shared boundary applications each receive their own
-      daemon-wide clone, so their dirty-card clearing counts are per-owned
-      application and are intentionally not aggregated in the dry-run summary.
+      daemon-wide clone, and the dry-run summary aggregates their dirty-card
+      clearing counts alongside the per-owned application reports.
       Tests cover low-level dirty-card clearing, no-partial-clear on stale commit
       buffers, boundary remembered-edge dry-run clearing of the owned card
       table, and sibling boundary preflights clearing independent daemon-wide
@@ -1320,13 +1320,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates
       per-tier dry-run counts for copies, promotions, forwarding installs,
       reference rewrites, root/heap-field writebacks, remembered-set
-      publication, and object-payload byte totals from the preserved preflight
-      metadata. Tests cover the worker dry-run path, including copy, promotion,
+      publication, dirty-card clearing, and object-payload byte totals from the
+      preserved preflight metadata. Tests cover the worker dry-run path,
+      including copy, promotion,
       forwarding, reference-rewrite, owned-buffer byte equality,
       destination-storage byte placement, and summary counts/bytes;
       permanent-shared empty dry-run partitioning; mixed root/heap-field summary
-      aggregation; plus the stress-disabled empty path. This is still an owned
-      dry-run telemetry surface only: it does not bind
+      aggregation; dirty old-field rescan publication/writeback at the boundary;
+      plus the stress-disabled empty path. This is still an owned dry-run
+      telemetry surface only: it does not bind
       raw bytes to live heap objects, install real object-header forwarding
       slots, mutate live
       tree-walk roots or heap fields, mutate remembered source fields, publish

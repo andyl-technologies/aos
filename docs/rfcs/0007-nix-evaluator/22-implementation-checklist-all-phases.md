@@ -5639,8 +5639,8 @@ and helps the oracle directly.
       clears dirty cards only after object-byte copies, forwarding slots,
       reference rewrites, and remembered-set publication validate and apply.
       Worker and permanent-shared boundary applications each receive their own
-      daemon-wide clone, so their dirty-card clearing counts are per-owned
-      application and are intentionally not aggregated in the dry-run summary.
+      daemon-wide clone, and the dry-run summary aggregates their dirty-card
+      clearing counts alongside the per-owned application reports.
       Tests cover low-level dirty-card clearing, no-partial-clear on stale commit
       buffers, boundary remembered-edge dry-run clearing of the owned card
       table, and sibling boundary preflights clearing independent daemon-wide
@@ -5803,14 +5803,16 @@ and helps the oracle directly.
       boundary pipeline from the recorded GC-stress scans in one checked call,
       and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates per-tier
       dry-run counts for copies, promotions, forwarding installs, reference
-      rewrites, root/heap-field writebacks, remembered-set publication, and
-      object-payload byte totals from the preserved preflight metadata.
+      rewrites, root/heap-field writebacks, remembered-set publication,
+      dirty-card clearing, and object-payload byte totals from the preserved
+      preflight metadata.
       Tests cover the worker dry-run path, including copy, promotion,
       forwarding, reference-rewrite, owned-buffer byte equality,
       destination-storage byte placement, and summary counts/bytes;
       permanent-shared empty dry-run partitioning; mixed root/heap-field summary
-      aggregation; plus the stress-disabled empty path. This remains an owned
-      dry-run telemetry surface only; live heap-object byte binding, real
+      aggregation; dirty old-field rescan publication/writeback at the boundary;
+      plus the stress-disabled empty path. This remains an owned dry-run
+      telemetry surface only; live heap-object byte binding, real
       object-header forwarding installation, live tree-walk root/heap-field
       mutation, remembered-source field mutation, evaluator remembered-set
       publication, and semispace management remain open.

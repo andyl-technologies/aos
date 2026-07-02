@@ -1119,9 +1119,9 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
 /// not imply that live roots, heap fields, object bytes, forwarding headers,
 /// remembered sets, card-table storage, or semispace storage were mutated. It
-/// intentionally omits card-table clearing totals because each tier-owned
-/// dry-run clears an independent clone of the daemon-wide card table, so those
-/// counts are not additive across worker and permanent-shared tiers.
+/// includes dirty-card clearing totals from each tier-owned daemon-card-table
+/// clone, so those counts describe owned dry-run applications rather than live
+/// daemon card-table storage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     tiers: usize,
@@ -1136,6 +1136,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     heap_field_writebacks: usize,
     remembered_set_source_edges: usize,
     remembered_set_published_edges: usize,
+    card_table_dirty_cards_cleared: usize,
 }
 
 impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
@@ -1226,6 +1227,9 @@ impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
         self.remembered_set_published_edges = self
             .remembered_set_published_edges
             .saturating_add(report.remembered_set_published_edges());
+        self.card_table_dirty_cards_cleared = self
+            .card_table_dirty_cards_cleared
+            .saturating_add(report.card_table_dirty_cards_cleared());
     }
 
     /// Returns how many allocator tiers produced dry-run applications.
@@ -1305,6 +1309,11 @@ impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     /// Returns remembered-set edges published into next epochs.
     pub const fn remembered_set_published_edges(self) -> usize {
         self.remembered_set_published_edges
+    }
+
+    /// Returns dirty cards cleared from owned dry-run card-table buffers.
+    pub const fn card_table_dirty_cards_cleared(self) -> usize {
+        self.card_table_dirty_cards_cleared
     }
 }
 
