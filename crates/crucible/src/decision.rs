@@ -682,6 +682,28 @@ mod tests {
         assert_eq!(from_toml.app_random_draw_cap(), 3);
         assert_eq!(from_binary.id(), form.id());
         assert_eq!(from_binary.app_random_draw_cap(), 3);
+
+        let unbounded = ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(0x0010_c01d),
+        )
+        .expect("default app-random cap scenario form should build");
+        let unbounded_toml = unbounded
+            .to_canonical_toml()
+            .expect("default app-random cap scenario form TOML should serialize");
+        let unbounded_from_toml = ScenarioDefForm::from_canonical_toml(&unbounded_toml)
+            .expect("default app-random cap scenario form TOML should parse");
+        assert!(unbounded_toml.contains(&format!(
+            "app_random_draw_cap = \"{}\"",
+            crate::DEFAULT_APP_RANDOM_DRAW_CAP
+        )));
+        assert_eq!(unbounded_from_toml.id(), unbounded.id());
+        assert_eq!(
+            unbounded_from_toml.app_random_draw_cap(),
+            crate::DEFAULT_APP_RANDOM_DRAW_CAP
+        );
     }
 
     #[test]

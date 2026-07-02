@@ -5556,15 +5556,15 @@ tag = "negative-time"
         );
         assert_eq!(
             authored_form.id().to_hex(),
-            "ff875d3d8ad89db5298ca68dfd6f70f6ee895891a43930e94df8d384ac47f51f"
+            "e13a8e94a43857719319c913ba7036109d033e47263411799a8baee73a50ea94"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-            "420eb3bea78a29f1bbcfc57fbcd6fed5bdad1ae0c7d39f762c06e6865ce03f4d"
+            "d74fc071677d443ee8263436ab9279169085b3e1e121815b902b53339b0f4bb0"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-            "64e947f6585ea7c6dce06670bc7d76d50d695dc94172373fd62764ba0543ae61"
+            "455912b3f3ad4878d8d40af3b41b75179d3ad06b7038081d2ed8993b42fa2a44"
         );
         assert_eq!(authored_world.id(), canonical_world.id());
         assert_eq!(authored_world.nodes(), canonical_world.nodes());
