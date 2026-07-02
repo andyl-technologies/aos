@@ -1031,6 +1031,13 @@ branch on the verdict without parsing output:
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
   satisfies [CLI-22]; spec §12.
+  Work in progress under `checks.crucible.phase5.cliReplayCheck`: the CLI now
+  accepts `replay --check <original-log>`, validates the artifact through the
+  pinned identity path, reconstructs the replay canonical log, returns exit 1 on
+  byte mismatch, and keeps `--to`/`--bisect` rejected until those behaviors are
+  implemented. Full closure remains blocked on content-addressed component
+  resolution, replay-to-savepoint, on-mismatch bisection, and
+  machine-independent backend replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
