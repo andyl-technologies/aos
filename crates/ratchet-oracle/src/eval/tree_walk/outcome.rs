@@ -1400,18 +1400,28 @@ fn boundary_minor_gc_root_writeback_destination_bindings(
     writebacks: &EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
     destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
 ) -> Result<Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>, EvalHeapError> {
+    boundary_minor_gc_root_writeback_destination_bindings_from_applications(
+        writebacks.applications(),
+        destination_storage.object_bytes(),
+    )
+}
+
+fn boundary_minor_gc_root_writeback_destination_bindings_from_applications(
+    applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>, EvalHeapError> {
     let mut bindings = Vec::new();
     extend_boundary_minor_gc_root_writeback_destination_bindings(
         &mut bindings,
         HeapAllocationDomain::Worker,
-        writebacks.worker(),
-        destination_storage.object_bytes(),
+        applications.worker(),
+        destination_objects,
     )?;
     extend_boundary_minor_gc_root_writeback_destination_bindings(
         &mut bindings,
         HeapAllocationDomain::PermanentShared,
-        writebacks.permanent_shared(),
-        destination_storage.object_bytes(),
+        applications.permanent_shared(),
+        destination_objects,
     )?;
     Ok(bindings)
 }
@@ -1529,18 +1539,28 @@ fn boundary_minor_gc_heap_field_writeback_destination_bindings(
     writebacks: &EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
     destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
 ) -> Result<Vec<EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding>, EvalHeapError> {
+    boundary_minor_gc_heap_field_writeback_destination_bindings_from_applications(
+        writebacks.applications(),
+        destination_storage.object_bytes(),
+    )
+}
+
+fn boundary_minor_gc_heap_field_writeback_destination_bindings_from_applications(
+    applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<Vec<EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding>, EvalHeapError> {
     let mut bindings = Vec::new();
     extend_boundary_minor_gc_heap_field_writeback_destination_bindings(
         &mut bindings,
         HeapAllocationDomain::Worker,
-        writebacks.worker(),
-        destination_storage.object_bytes(),
+        applications.worker(),
+        destination_objects,
     )?;
     extend_boundary_minor_gc_heap_field_writeback_destination_bindings(
         &mut bindings,
         HeapAllocationDomain::PermanentShared,
-        writebacks.permanent_shared(),
-        destination_storage.object_bytes(),
+        applications.permanent_shared(),
+        destination_objects,
     )?;
     Ok(bindings)
 }
@@ -3354,8 +3374,10 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
 /// validated against the same dry run. It installs evaluator forwarding
 /// side-table values, destination-byte snapshots, reference-writeback metadata,
 /// the merged next remembered set, and the daemon card-table clear together. It
-/// still does not mutate live root variables, heap fields, object bytes, ABI
-/// forwarding headers, object generations, or semispace pages.
+/// also validates root and heap-field writeback destination bindings before the
+/// first live metadata mutation. It still does not mutate live root variables,
+/// heap fields, object bytes, ABI forwarding headers, object generations, or
+/// semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4415,11 +4437,12 @@ impl EvalOutcome {
     /// The method derives one owned commit dry run, then validates every live
     /// metadata payload derived from it before mutating the outcome: sibling
     /// survivor relocations, destination-byte snapshots, reference-writeback
-    /// metadata, remembered-set publication, and live forwarding slots. After
-    /// those checks pass, it installs evaluator side-table forwarding values,
-    /// destination-byte snapshots, reference-writeback metadata, the merged next
-    /// remembered set, and clears the daemon card table. Empty boundaries leave
-    /// the outcome unchanged.
+    /// metadata, root/heap-field destination bindings, remembered-set
+    /// publication, and live forwarding slots. After those checks pass, it
+    /// installs evaluator side-table forwarding values, destination-byte
+    /// snapshots, reference-writeback metadata, the merged next remembered set,
+    /// and clears the daemon card table. Empty boundaries leave the outcome
+    /// unchanged.
     ///
     /// This is a staged live-metadata bridge for GC-stress experiments, not a
     /// full collector commit. It does not mutate live root variables, heap
@@ -4432,9 +4455,11 @@ impl EvalOutcome {
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
     /// reference-writeback metadata have already been installed, if remembered
-    /// set publication cannot be merged, or if forwarding installation fails.
-    /// All installable side-table payloads are validated before the first live
-    /// mutation; if forwarding installation fails, destination storage,
+    /// set publication cannot be merged, if writeback destination bindings do
+    /// not match the dry-run destination snapshots, or if forwarding
+    /// installation fails. All installable side-table payloads are validated
+    /// before the first live mutation; if forwarding installation fails,
+    /// destination storage,
     /// reference-writeback metadata, remembered-set state, and card-table state
     /// are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
@@ -4457,6 +4482,16 @@ impl EvalOutcome {
             live_reference_writeback_install_report(&writebacks);
         self.gc_stress_boundary_minor_gc_reference_writebacks
             .can_install(reference_writeback_install_report)?;
+        let _root_writeback_destination_bindings =
+            boundary_minor_gc_root_writeback_destination_bindings_from_applications(
+                &writebacks,
+                &object_bytes,
+            )?;
+        let _heap_field_writeback_destination_bindings =
+            boundary_minor_gc_heap_field_writeback_destination_bindings_from_applications(
+                &writebacks,
+                &object_bytes,
+            )?;
         let remembered_set = boundary_minor_gc_merged_remembered_set(
             dry_run.commit_applications(),
             self.thunk_resolve_remembered_set.epoch(),

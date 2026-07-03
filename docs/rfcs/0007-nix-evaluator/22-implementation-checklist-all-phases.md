@@ -6492,10 +6492,12 @@ and helps the oracle directly.
       same validated commit applications.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       stages forwarding, destination-byte, reference-writeback, remembered-set,
-      and card-table-clear projections from one owned dry run, validates every
-      installable side-table payload before the first live metadata mutation,
+      card-table-clear, and root/heap-field destination-binding projections
+      from one owned dry run, validates every installable side-table payload
+      and destination-binding report before the first live metadata mutation,
       and then installs the outcome-owned side tables and clears the outcome
-      card table together. These helpers still do not bind those bytes to live
+      card table together.
+      These helpers still do not bind those bytes to live
       heap-object bodies, live root/field storage, real ABI object-header
       forwarding storage, object-generation metadata, or semispace storage, and
       they do not commit those live mutations.

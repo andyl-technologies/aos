@@ -2122,9 +2122,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       same validated commit applications.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       now stages those live metadata projections from one dry run, validating
-      forwarding, destination-byte, reference-writeback, and remembered-set
-      payloads before installing outcome-owned side tables and clearing the
-      outcome card table together.
+      forwarding, destination-byte, reference-writeback, root/heap-field
+      destination-binding, and remembered-set payloads before installing
+      outcome-owned side tables and clearing the outcome card table together.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can
