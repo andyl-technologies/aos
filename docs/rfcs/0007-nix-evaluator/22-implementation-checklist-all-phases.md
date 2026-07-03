@@ -6910,6 +6910,17 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       malformed IR cannot silently retain stale `NoEscape` facts. Aggregate
       escape analysis, the full primop escape surface, scalar replacement, and
       frame-local thunk integration remain open.
+- [x] Current strict thunk escape-propagation precursor:
+      `annotate_escape` now propagates `NoEscape` through `ThunkAlloc` wrappers
+      only when the thunk itself is already proven `Strict`, its body result is
+      already proven `NoEscape`, and the thunk has exactly one IR reference as
+      the argument to a direct simple identity lambda. This lets existing
+      strict-thunk lowering distinguish the currently safe scalar strict-thunk
+      shape without claiming that lazy thunk objects are frame-local.
+      Lazy/unproven wrapping thunks, mixed strict-and-captured formals,
+      raw/shared IR aliases through arena nodes, the root id, or dynamic
+      `with` chains, aggregate escape, and closure-capture/frame escape remain
+      conservative.
 - [x] Current escape fact-table validation hardening:
       `annotate_escape` now rejects fact-table/node-count mismatches before
       scrubbing or producing escape facts, so overlong imported fact tables
@@ -6936,8 +6947,8 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       operations such as `seq`/`trace`, aggregate/string builders, unknown
       builtins, and effectful import/fetch/filesystem boundaries remain
       conservative. This does not yet propagate primop result facts through
-      wrapping thunks, infer aggregate escape, or provide the property-test
-      harness for the full builtin surface.
+      lazy or unproven wrapping thunks, infer aggregate escape, or provide the
+      property-test harness for the full builtin surface.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and
       later the JIT), and the strictness FV set reused by the cache key (`C-2`).
 - [x] Current `ir/annotate.rs` precursor: `ratchet-core::ir::annotate_ir`

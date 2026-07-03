@@ -4,7 +4,8 @@ use super::*;
 use crate::ir::{
     Cardinality, EffectClass, Escape, ExprFacts, Ir, IrArena, IrAttrPathId, IrAttrPathSegment,
     IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrFacts, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrWithChain, Strictness, lower, lower_with_options,
+    IrLowerOptions, IrNode, IrShape, IrWithChain, Strictness, annotate_ir, lower,
+    lower_with_options,
 };
 use crate::resolve;
 use crate::scope::{FrameId, FrameInfo};
@@ -794,6 +795,175 @@ fn escape_keeps_heap_and_thunk_values_escaping() {
     assert_eq!(escape(&list_ir, list_ir.root), Escape::Escapes);
     let elements = list_elements(&list_ir, list_ir.root);
     assert_eq!(escape(&list_ir, elements[0]), Escape::Escapes);
+}
+
+#[test]
+fn escape_propagates_no_escape_bodies_to_strict_wrapping_thunks() {
+    let mut ir = lowered("(x: x) (builtins.sub 3 1)");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    let IrData::Node(body) = node(&ir, argument).data else {
+        panic!("thunk body expected");
+    };
+
+    annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, argument), Escape::NoEscape);
+}
+
+#[test]
+fn escape_keeps_lazy_wrapping_thunks_conservative() {
+    let mut ir = lowered("let x = builtins.sub 3 1; in 1");
+    let binding = let_binding_values(&ir, ir.root)[0];
+    let IrData::Node(body) = node(&ir, binding).data else {
+        panic!("thunk body expected");
+    };
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, binding), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_strict_and_captured_wrapping_thunks_conservative() {
+    let mut ir = lowered("(x: builtins.seq x [ x ]) (builtins.sub 3 1)");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    let IrData::Node(body) = node(&ir, argument).data else {
+        panic!("thunk body expected");
+    };
+
+    annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, argument), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_shared_strict_wrapping_thunks_conservative() {
+    let body = IrId::new(0);
+    let thunk = IrId::new(1);
+    let aggregate = IrId::new(6);
+    let mut ir = raw_identity_thunk_ir(aggregate, thunk, Box::new([]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_root_strict_wrapping_thunks_conservative() {
+    let body = IrId::new(0);
+    let thunk = IrId::new(1);
+    let mut ir = raw_identity_thunk_ir(thunk, body, Box::new([]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_with_chain_strict_wrapping_thunks_conservative() {
+    let body = IrId::new(0);
+    let thunk = IrId::new(1);
+    let apply = IrId::new(5);
+    let mut ir =
+        raw_identity_thunk_ir(apply, body, Box::new([IrWithChain::new(Box::new([thunk]))]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, body), Escape::NoEscape);
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+fn raw_identity_thunk_ir(root: IrId, aggregate_child: IrId, with_chains: Box<[IrWithChain]>) -> Ir {
+    let span = Span::new(0, 1);
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("symbol interns");
+    let body = IrId::new(0);
+    let thunk = IrId::new(1);
+    let pattern = IrId::new(2);
+    let lambda_body = IrId::new(3);
+    let lambda = IrId::new(4);
+    let nodes = vec![
+        IrNode::new(IrKind::Int, span, EffectClass::pure(), IrData::Int(1)),
+        IrNode::new(
+            IrKind::ThunkAlloc,
+            span,
+            EffectClass::pure(),
+            IrData::Node(body),
+        ),
+        IrNode::new(
+            IrKind::Formal,
+            span,
+            EffectClass::pure(),
+            IrData::Formal {
+                name: x,
+                default: None,
+            },
+        ),
+        IrNode::new(
+            IrKind::LocalVar,
+            span,
+            EffectClass::pure(),
+            IrData::Local { slot: 0 },
+        ),
+        IrNode::new(
+            IrKind::Lambda,
+            span,
+            EffectClass::pure(),
+            IrData::Lambda {
+                pattern,
+                body: lambda_body,
+                frame: None,
+            },
+        ),
+        IrNode::new(
+            IrKind::Apply,
+            span,
+            EffectClass::pure(),
+            IrData::Pair {
+                first: lambda,
+                second: thunk,
+            },
+        ),
+        IrNode::new(
+            IrKind::List,
+            span,
+            EffectClass::pure(),
+            IrData::Children(IrChildSlice::new(0, 1)),
+        ),
+    ];
+    let mut ir = Ir {
+        root,
+        arena: IrArena::from_raw_parts(nodes, vec![aggregate_child]),
+        facts: IrFacts::conservative(7),
+        symbols,
+        frames: Box::new([]),
+        with_chains,
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts
+        .get_mut(thunk)
+        .expect("thunk fact exists")
+        .strictness = Strictness::Strict;
+    ir
 }
 
 #[test]

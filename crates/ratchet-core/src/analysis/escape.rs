@@ -3,16 +3,21 @@
 //! This first pass only proves the allocation-free bottom cases: immediate
 //! scalar literals that cannot allocate a heap object and therefore cannot
 //! publish one outside the current frame. Aggregate values, thunks, strings,
-//! paths, variables, primops, and all nodes whose result depends on another
-//! expression stay conservative unless the current primitive-operation escape
-//! signature table proves an immediate scalar result.
+//! paths, variables, and most nodes whose result depends on another expression
+//! stay conservative unless the current primitive-operation escape signature
+//! table proves an immediate scalar result, or a strict thunk allocation is the
+//! unique argument reference to a direct simple identity lambda and wraps a
+//! value that is already proven not to escape.
 
 use thiserror::Error;
 
 use crate::analysis::PrimOpEscapeSignature;
 use crate::analysis::escape_signature::primop_escape_signature;
 use crate::builtins::direct_builtin;
-use crate::ir::{Escape, Ir, IrChildSlice, IrData, IrId, IrKind};
+use crate::ir::{
+    Escape, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
+    IrKind, Strictness,
+};
 use crate::syntax::Symbol;
 
 /// Summary of one escape annotation run.
@@ -50,6 +55,22 @@ pub enum EscapeAnalysisError {
         id: IrId,
         /// The invalid child slice.
         slice: IrChildSlice,
+    },
+    /// A binding slice did not resolve through the binding table.
+    #[error("invalid binding slice {slice:?} at IR node {id:?}")]
+    InvalidBindingSlice {
+        /// The node that referenced the invalid binding slice.
+        id: IrId,
+        /// The invalid binding slice.
+        slice: IrBindingSlice,
+    },
+    /// An attribute path id did not resolve through the attribute-path table.
+    #[error("invalid attribute path {path:?} at IR node {id:?}")]
+    InvalidAttrPath {
+        /// The node that referenced the invalid path.
+        id: IrId,
+        /// The invalid path id.
+        path: IrAttrPathId,
     },
     /// A child id did not resolve through the arena.
     #[error("invalid IR node id {id:?}")]
@@ -94,8 +115,10 @@ pub enum EscapeAnalysisError {
 /// The pass owns the current escape fact approximation. It resets every visited
 /// node to [`Escape::Escapes`] unless this pass positively proves
 /// [`Escape::NoEscape`]. The current positive proofs are allocation-free
-/// immediate scalar literals and direct primops whose escape signatures return
-/// an immediate scalar result.
+/// immediate scalar literals, direct primops whose escape signatures return an
+/// immediate scalar result, and strict thunk allocations that are the unique
+/// argument reference to a direct simple identity lambda whose body result is
+/// already proven not to escape.
 ///
 /// # Errors
 ///
@@ -170,6 +193,22 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
         facts.escape = Escape::NoEscape;
         report.nodes_marked_no_escape += 1;
     }
+    for index in 0..node_count {
+        let id = IrId::new(index as u32);
+        let node = *ir
+            .arena
+            .node(id)
+            .ok_or(EscapeAnalysisError::MissingFact { id })?;
+        if !strict_thunk_wraps_no_escape_body(ir, id, node)? {
+            continue;
+        }
+        let facts = ir
+            .facts
+            .get_mut(id)
+            .ok_or(EscapeAnalysisError::MissingFact { id })?;
+        facts.escape = Escape::NoEscape;
+        report.nodes_marked_no_escape += 1;
+    }
     Ok(report)
 }
 
@@ -226,6 +265,236 @@ fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), EscapeAnaly
             expected: expected_payload(node.kind),
         })
     }
+}
+
+fn strict_thunk_wraps_no_escape_body(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+) -> Result<bool, EscapeAnalysisError> {
+    let IrKind::ThunkAlloc = node.kind else {
+        return Ok(false);
+    };
+    let IrData::Node(body) = node.data else {
+        return Err(EscapeAnalysisError::InvalidPayload {
+            id,
+            kind: node.kind,
+            expected: expected_payload(node.kind),
+        });
+    };
+    ir.arena
+        .node(body)
+        .ok_or(EscapeAnalysisError::InvalidNode { id: body })?;
+
+    let facts = ir
+        .facts
+        .get(id)
+        .ok_or(EscapeAnalysisError::MissingFact { id })?;
+    let body_facts = ir
+        .facts
+        .get(body)
+        .ok_or(EscapeAnalysisError::MissingFact { id: body })?;
+
+    if facts.strictness != Strictness::Strict || body_facts.escape != Escape::NoEscape {
+        return Ok(false);
+    }
+
+    unique_direct_identity_lambda_argument(ir, id)
+}
+
+fn unique_direct_identity_lambda_argument(
+    ir: &Ir,
+    argument: IrId,
+) -> Result<bool, EscapeAnalysisError> {
+    let mut reference_count = count_id(ir.root, argument);
+    let mut identity_argument_count = 0usize;
+
+    for with_chain in &ir.with_chains {
+        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+    }
+
+    for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
+        let current = IrId::new(index as u32);
+        reference_count =
+            reference_count.saturating_add(reference_count_in_node(ir, current, node, argument)?);
+
+        if node.kind != IrKind::Apply {
+            continue;
+        }
+        let IrData::Pair {
+            first: callee,
+            second,
+        } = node.data
+        else {
+            return Err(EscapeAnalysisError::InvalidPayload {
+                id: current,
+                kind: node.kind,
+                expected: expected_payload(node.kind),
+            });
+        };
+        if second != argument {
+            continue;
+        }
+        let callee_node = *ir
+            .arena
+            .node(callee)
+            .ok_or(EscapeAnalysisError::InvalidNode { id: callee })?;
+        if callee_node.kind != IrKind::Lambda {
+            return Ok(false);
+        }
+        if simple_identity_lambda(ir, callee, callee_node)? {
+            identity_argument_count = identity_argument_count.saturating_add(1);
+        }
+    }
+
+    Ok(reference_count == 1 && identity_argument_count == 1)
+}
+
+fn simple_identity_lambda(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+) -> Result<bool, EscapeAnalysisError> {
+    let IrData::Lambda { pattern, body, .. } = node.data else {
+        return Err(EscapeAnalysisError::InvalidPayload {
+            id,
+            kind: node.kind,
+            expected: expected_payload(node.kind),
+        });
+    };
+    let pattern_node = *ir
+        .arena
+        .node(pattern)
+        .ok_or(EscapeAnalysisError::InvalidNode { id: pattern })?;
+    let body_node = *ir
+        .arena
+        .node(body)
+        .ok_or(EscapeAnalysisError::InvalidNode { id: body })?;
+
+    let simple_pattern = matches!(
+        (pattern_node.kind, pattern_node.data),
+        (IrKind::Formal, IrData::Formal { default: None, .. })
+    );
+    let identity_body = matches!(
+        (body_node.kind, body_node.data),
+        (IrKind::LocalVar, IrData::Local { slot: 0 })
+    );
+    Ok(simple_pattern && identity_body)
+}
+
+fn reference_count_in_node(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+    target: IrId,
+) -> Result<usize, EscapeAnalysisError> {
+    match node.data {
+        IrData::None
+        | IrData::Int(_)
+        | IrData::Float(_)
+        | IrData::Bool(_)
+        | IrData::Symbol(_)
+        | IrData::Local { .. }
+        | IrData::Upval { .. }
+        | IrData::DialectScopeVar { .. } => Ok(0),
+        IrData::SearchPath { search_path, .. } => Ok(count_optional_id(search_path, target)),
+        IrData::Node(child) => Ok(count_id(child, target)),
+        IrData::Pair { first, second } => Ok(count_id(first, target) + count_id(second, target)),
+        IrData::Triple {
+            first,
+            second,
+            third,
+        } => Ok(count_id(first, target) + count_id(second, target) + count_id(third, target)),
+        IrData::Children(slice) | IrData::PrimOp { args: slice, .. } => {
+            Ok(count_ids(child_ids(ir, id, slice)?, target))
+        }
+        IrData::Bindings(slice) => count_binding_references(ir, id, slice, target),
+        IrData::Binary { lhs, rhs, .. } => Ok(count_id(lhs, target) + count_id(rhs, target)),
+        IrData::Unary { operand, .. } => Ok(count_id(operand, target)),
+        IrData::Select {
+            receiver,
+            path,
+            default,
+            ..
+        } => Ok(count_id(receiver, target)
+            + count_optional_id(default, target)
+            + count_attr_path_references(ir, id, path, target)?),
+        IrData::HasAttr { receiver, path, .. } => {
+            Ok(count_id(receiver, target) + count_attr_path_references(ir, id, path, target)?)
+        }
+        IrData::DialectNode { argument, .. } => Ok(count_id(argument, target)),
+        IrData::Lambda { pattern, body, .. } => {
+            Ok(count_id(pattern, target) + count_id(body, target))
+        }
+        IrData::Let { bindings, body, .. } => {
+            Ok(count_binding_references(ir, id, bindings, target)? + count_id(body, target))
+        }
+        IrData::AttrSet { bindings, .. } => count_binding_references(ir, id, bindings, target),
+        IrData::FormalSet { formals, .. } => Ok(count_ids(child_ids(ir, id, formals)?, target)),
+        IrData::Formal { default, .. } => Ok(count_optional_id(default, target)),
+    }
+}
+
+fn count_binding_references(
+    ir: &Ir,
+    id: IrId,
+    slice: IrBindingSlice,
+    target: IrId,
+) -> Result<usize, EscapeAnalysisError> {
+    let start = slice.start as usize;
+    let end = start
+        .checked_add(slice.len())
+        .ok_or(EscapeAnalysisError::InvalidBindingSlice { id, slice })?;
+    let bindings = ir
+        .bindings
+        .get(start..end)
+        .ok_or(EscapeAnalysisError::InvalidBindingSlice { id, slice })?;
+
+    let mut count = 0usize;
+    for binding in bindings {
+        if let IrAttrPathSegment::Dynamic(key) = binding.key {
+            count += count_id(key, target);
+        }
+        count += count_id(binding.value, target);
+    }
+    Ok(count)
+}
+
+fn count_attr_path_references(
+    ir: &Ir,
+    id: IrId,
+    path: IrAttrPathId,
+    target: IrId,
+) -> Result<usize, EscapeAnalysisError> {
+    let segments = ir
+        .attr_paths
+        .get(path.index())
+        .ok_or(EscapeAnalysisError::InvalidAttrPath { id, path })?;
+    Ok(segments
+        .iter()
+        .map(|segment| match segment {
+            IrAttrPathSegment::Static(_) => 0,
+            IrAttrPathSegment::Dynamic(dynamic) => count_id(*dynamic, target),
+        })
+        .sum())
+}
+
+fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], EscapeAnalysisError> {
+    ir.arena
+        .child_slice(slice)
+        .ok_or(EscapeAnalysisError::InvalidChildSlice { id, slice })
+}
+
+fn count_ids(ids: &[IrId], target: IrId) -> usize {
+    ids.iter().filter(|id| **id == target).count()
+}
+
+fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {
+    id.map_or(0, |id| count_id(id, target))
+}
+
+fn count_id(id: IrId, target: IrId) -> usize {
+    usize::from(id == target)
 }
 
 fn primop_signature(
