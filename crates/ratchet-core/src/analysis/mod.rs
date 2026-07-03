@@ -8,6 +8,7 @@ pub mod cardinality;
 pub mod dead_binding;
 pub mod escape;
 pub mod full_laziness;
+pub mod scalar_replacement;
 pub mod strictness;
 pub mod thunk_sharing;
 
@@ -21,6 +22,10 @@ pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
 pub use full_laziness::{
     FullLazinessAnalysisError, FullLazinessAnalysisReport, FullLazinessCandidate,
     analyze_full_laziness,
+};
+pub use scalar_replacement::{
+    ScalarReplacement, ScalarReplacementError, ScalarReplacementKind, ScalarReplacementPlan,
+    ScalarReplacementRetention, ScalarReplacementRetentionReason, scalar_replacement_plan,
 };
 pub use strictness::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
 pub use thunk_sharing::{

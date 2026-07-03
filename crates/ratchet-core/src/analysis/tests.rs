@@ -832,5 +832,6 @@ fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
 }
 
 mod dead_binding;
+mod scalar_replacement;
 mod strictness;
 mod thunk_sharing;
