@@ -28,6 +28,8 @@ const BOUNDARY_MINOR_GC_DESTINATION_STORAGE_LAYOUTS_TABLE: &str =
     "boundary minor-GC destination storage layouts";
 const BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE: &str =
     "boundary minor-GC live destination object bytes";
+const BOUNDARY_MINOR_GC_LIVE_OBJECT_GENERATIONS_TABLE: &str =
+    "boundary minor-GC live object generations";
 const BOUNDARY_MINOR_GC_DESTINATION_OBJECT_GENERATION_BINDINGS_TABLE: &str =
     "boundary minor-GC destination object-generation bindings";
 const BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE: &str =
@@ -939,6 +941,167 @@ impl EvalGcStressBoundaryMinorGcLiveDestinationStorage {
     }
 }
 
+/// Outcome-owned object-generation installation counts for a boundary dry run.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+    objects: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+    fn record(&mut self, generation: &EvalGcStressBoundaryMinorGcLiveObjectGeneration) {
+        self.objects = self.objects.saturating_add(1);
+        match generation.action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns how many object-generation records were installed.
+    pub const fn objects(self) -> usize {
+        self.objects
+    }
+
+    /// Returns how many installed records target next-nursery generation.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many installed records target old generation.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+}
+
+/// Outcome-owned generation metadata for one relocated minor-GC object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveObjectGeneration {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    action: MinorGcSurvivorAction,
+    generation: HeapGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveObjectGeneration {
+    const fn new(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+        generation: HeapGeneration,
+        request: AllocationCollectorPollObjectByteCopyRequest,
+    ) -> Self {
+        Self {
+            source,
+            destination,
+            action,
+            generation,
+            request,
+        }
+    }
+
+    /// Returns the from-space survivor source object.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object address.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns whether this destination keeps the object young or promotes it.
+    pub const fn action(&self) -> MinorGcSurvivorAction {
+        self.action
+    }
+
+    /// Returns the generation that owns the destination object in this metadata.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the object-copy request that produced this generation metadata.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+}
+
+/// Outcome-owned object-generation metadata installed by a boundary dry run.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveObjectGenerations {
+    install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
+    object_generations: Vec<EvalGcStressBoundaryMinorGcLiveObjectGeneration>,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveObjectGenerations {
+    fn can_install(
+        &self,
+        install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
+    ) -> Result<(), EvalHeapError> {
+        if install_report.objects() != 0 && !self.object_generations.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveObjectGenerationsAlreadyInstalled {
+                    existing: self.object_generations.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn install(
+        &mut self,
+        object_generations: Vec<EvalGcStressBoundaryMinorGcLiveObjectGeneration>,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport, EvalHeapError> {
+        if object_generations.is_empty() {
+            return Ok(EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport::default());
+        }
+        let install_report = live_object_generation_install_report(&object_generations);
+        self.can_install(install_report)?;
+        self.install_prevalidated(object_generations, install_report);
+        Ok(install_report)
+    }
+
+    fn install_prevalidated(
+        &mut self,
+        object_generations: Vec<EvalGcStressBoundaryMinorGcLiveObjectGeneration>,
+        install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
+    ) {
+        if install_report.objects() == 0 {
+            return;
+        }
+
+        self.object_generations = object_generations;
+        self.install_report = install_report;
+    }
+
+    /// Returns whether no object-generation metadata is installed.
+    pub fn is_empty(&self) -> bool {
+        self.object_generations.is_empty()
+    }
+
+    /// Returns how many object-generation records are installed.
+    pub fn len(&self) -> usize {
+        self.object_generations.len()
+    }
+
+    /// Returns the report for the last non-empty object-generation install.
+    pub const fn install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+        self.install_report
+    }
+
+    /// Returns the installed object-generation metadata records.
+    pub fn object_generations(&self) -> &[EvalGcStressBoundaryMinorGcLiveObjectGeneration] {
+        &self.object_generations
+    }
+}
+
 /// A destination byte snapshot matched to its future object generation.
 ///
 /// The binding is validation metadata for a future object-generation writer. It
@@ -1522,6 +1685,16 @@ fn live_destination_storage_install_report(
     report
 }
 
+fn live_object_generation_install_report(
+    object_generations: &[EvalGcStressBoundaryMinorGcLiveObjectGeneration],
+) -> EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+    let mut report = EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport::default();
+    for generation in object_generations {
+        report.record(generation);
+    }
+    report
+}
+
 fn live_reference_writeback_install_report(
     applications: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
 ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
@@ -1541,6 +1714,32 @@ fn boundary_minor_gc_destination_object_generation_bindings(
     boundary_minor_gc_destination_object_generation_bindings_from_objects(
         destination_storage.object_bytes(),
     )
+}
+
+fn boundary_minor_gc_live_object_generations_from_objects(
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<Vec<EvalGcStressBoundaryMinorGcLiveObjectGeneration>, EvalHeapError> {
+    validate_boundary_minor_gc_destination_generation_objects(destination_objects)?;
+    let mut object_generations = Vec::new();
+    object_generations
+        .try_reserve_exact(destination_objects.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_LIVE_OBJECT_GENERATIONS_TABLE,
+            entries: destination_objects.len(),
+        })?;
+
+    for object in destination_objects {
+        let generation = validated_destination_object_generation(object)?;
+        object_generations.push(EvalGcStressBoundaryMinorGcLiveObjectGeneration::new(
+            object.source(),
+            object.destination(),
+            object.request().action(),
+            generation,
+            object.request(),
+        ));
+    }
+
+    Ok(object_generations)
 }
 
 fn boundary_minor_gc_destination_object_generation_bindings_from_objects(
@@ -4120,6 +4319,48 @@ impl EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus outcome-owned object-generation installation.
+///
+/// This report preserves the owned dry-run artifacts and records the
+/// destination-to-generation metadata installed into [`EvalOutcome`]. It is a
+/// GC-stress bridge only: it does not mutate evaluator heap records, allocate
+/// old-generation storage, bind payload bytes to live object bodies, write
+/// object headers, or manage semispaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveObjectGenerationCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveObjectGenerationCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            object_generation_install_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated generation-metadata install.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live object-generation installation report.
+    pub const fn object_generation_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+        self.object_generation_install_report
+    }
+
+    /// Returns how many object-generation records were installed.
+    pub const fn object_generations_installed(&self) -> usize {
+        self.object_generation_install_report.objects()
+    }
+}
+
 /// Boundary commit dry run plus outcome-owned reference-writeback installation.
 ///
 /// This report preserves the owned dry-run artifacts and records the copied root
@@ -4218,17 +4459,19 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
 /// metadata installed into [`EvalOutcome`] after all derived side-table payloads
 /// validated against the same dry run. It installs evaluator forwarding
 /// side-table values, destination-byte snapshots, reference-writeback metadata,
-/// the merged next remembered set, and the daemon card-table clear together. It
-/// also validates destination generation, forwarding-destination, and root/
-/// heap-field writeback destination bindings before the first live metadata
-/// mutation. It still does not mutate live root variables, heap fields, object
-/// bytes, ABI forwarding headers, object generations, or semispace pages.
+/// object-generation metadata, the merged next remembered set, and the daemon
+/// card-table clear together. It also validates destination generation,
+/// forwarding-destination, and root/heap-field writeback destination bindings
+/// before the first live metadata mutation. It still does not mutate live root
+/// variables, heap fields, object bytes, ABI forwarding headers, evaluator
+/// heap-record generations, or semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
     forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
     destination_storage_install_report:
         EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
     reference_writeback_install_report:
         EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
     remembered_set_published: bool,
@@ -4240,6 +4483,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
         dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
         forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
         destination_storage_install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+        object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
         reference_writeback_install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
         remembered_set_published: bool,
         card_table_clear_report: GcCardTableClearReport,
@@ -4248,6 +4492,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
             dry_run,
             forwarding_install_report,
             destination_storage_install_report,
+            object_generation_install_report,
             reference_writeback_install_report,
             remembered_set_published,
             card_table_clear_report,
@@ -4281,6 +4526,18 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     /// Returns how many destination object payload snapshots were installed.
     pub const fn object_copies_installed(&self) -> usize {
         self.destination_storage_install_report.object_copies()
+    }
+
+    /// Returns the live object-generation installation report.
+    pub const fn object_generation_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport {
+        self.object_generation_install_report
+    }
+
+    /// Returns how many object-generation records were installed.
+    pub const fn object_generations_installed(&self) -> usize {
+        self.object_generation_install_report.objects()
     }
 
     /// Returns the live reference-writeback installation report.
@@ -4730,6 +4987,8 @@ pub struct EvalOutcome {
         EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
     pub(crate) gc_stress_boundary_minor_gc_destination_storage:
         EvalGcStressBoundaryMinorGcLiveDestinationStorage,
+    pub(crate) gc_stress_boundary_minor_gc_object_generations:
+        EvalGcStressBoundaryMinorGcLiveObjectGenerations,
 }
 
 impl std::fmt::Debug for EvalOutcome {
@@ -4771,6 +5030,10 @@ impl std::fmt::Debug for EvalOutcome {
             .field(
                 "gc_stress_boundary_minor_gc_destination_storage",
                 &self.gc_stress_boundary_minor_gc_destination_storage,
+            )
+            .field(
+                "gc_stress_boundary_minor_gc_object_generations",
+                &self.gc_stress_boundary_minor_gc_object_generations,
             )
             .finish()
     }
@@ -4897,6 +5160,17 @@ impl EvalOutcome {
         &self,
     ) -> &EvalGcStressBoundaryMinorGcLiveDestinationStorage {
         &self.gc_stress_boundary_minor_gc_destination_storage
+    }
+
+    /// Returns outcome-owned object-generation metadata installed by live dry runs.
+    ///
+    /// These records are GC-stress bridge metadata. They are not evaluator heap
+    /// record generation fields, old-generation semispace ownership, or object
+    /// headers, and ordinary evaluation does not read them.
+    pub const fn gc_stress_boundary_minor_gc_object_generations(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcLiveObjectGenerations {
+        &self.gc_stress_boundary_minor_gc_object_generations
     }
 
     /// Matches installed destination-byte snapshots to object generations.
@@ -5283,6 +5557,53 @@ impl EvalOutcome {
         )
     }
 
+    /// Runs a boundary dry run and installs outcome-owned object generations.
+    ///
+    /// The method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`]. It validates sibling
+    /// survivor relocations, merges the destination object-copy snapshots, and
+    /// installs destination-to-generation metadata derived from each copy action.
+    /// Empty boundaries, or non-empty boundaries with no copied/promoted
+    /// survivors, leave the side table unchanged.
+    ///
+    /// This is a live object-generation metadata bridge for GC-stress
+    /// experiments, not a full collector commit. It does not mutate evaluator
+    /// heap records, allocate old-generation storage, bind bytes to live object
+    /// bodies, write object headers, mutate roots or fields, publish remembered
+    /// sets, clear card-table storage, reserve semispace storage, or invoke Tier
+    /// B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling applications do not form one
+    /// coherent survivor relocation map, if destination snapshots fail
+    /// generation validation, or if object-generation metadata has already been
+    /// installed for this outcome. When an error is returned, the
+    /// object-generation side table is left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveObjectGenerationCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let object_bytes =
+            boundary_minor_gc_merged_destination_object_bytes(dry_run.commit_applications())?;
+        let object_generations =
+            boundary_minor_gc_live_object_generations_from_objects(&object_bytes)?;
+        let object_generation_install_report = self
+            .gc_stress_boundary_minor_gc_object_generations
+            .install(object_generations)?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveObjectGenerationCommitDryRun::new(
+                dry_run,
+                object_generation_install_report,
+            ),
+        )
+    }
+
     /// Runs a boundary dry run and installs outcome-owned writeback metadata.
     ///
     /// The method derives the same owned commit dry run as
@@ -5336,29 +5657,30 @@ impl EvalOutcome {
     /// metadata, root/heap-field destination bindings, remembered-set
     /// publication, and live forwarding slots. After those checks pass, it
     /// installs evaluator side-table forwarding values, destination-byte
-    /// snapshots, reference-writeback metadata, the merged next remembered set,
-    /// and clears the daemon card table. Empty boundaries leave the outcome
-    /// unchanged.
+    /// snapshots, object-generation metadata, reference-writeback metadata, the
+    /// merged next remembered set, and clears the daemon card table. Empty
+    /// boundaries leave the outcome unchanged.
     ///
     /// This is a staged live-metadata bridge for GC-stress experiments, not a
     /// full collector commit. It does not mutate live root variables, heap
-    /// fields, object bytes, ABI forwarding headers, object generations,
-    /// reserve semispace storage, or invoke Tier B.
+    /// fields, object bytes, ABI forwarding headers, evaluator heap-record
+    /// generations, reserve semispace storage, or invoke Tier B.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
-    /// reference-writeback metadata have already been installed, if remembered
-    /// set publication cannot be merged, if destination generation or writeback
-    /// destination bindings do not match the dry-run destination snapshots, if
-    /// the combined installed and planned forwarding cells do not match the
-    /// final destination snapshot view, or if forwarding installation fails.
+    /// object-generation or reference-writeback metadata have already been
+    /// installed, if remembered set publication cannot be merged, if destination
+    /// generation or writeback destination bindings do not match the dry-run
+    /// destination snapshots, if the combined installed and planned forwarding
+    /// cells do not match the final destination snapshot view, or if forwarding
+    /// installation fails.
     /// All installable side-table payloads are validated before the first live
     /// mutation; if forwarding installation fails, destination storage,
-    /// reference-writeback metadata, remembered-set state, and card-table state
-    /// are left unchanged.
+    /// object-generation metadata, reference-writeback metadata, remembered-set
+    /// state, and card-table state are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
         &mut self,
         promotion_policy: MinorGcPromotionPolicy,
@@ -5373,8 +5695,12 @@ impl EvalOutcome {
             live_destination_storage_install_report(&object_bytes);
         self.gc_stress_boundary_minor_gc_destination_storage
             .can_install(destination_storage_install_report)?;
-        let _destination_object_generation_bindings =
-            boundary_minor_gc_destination_object_generation_bindings_from_objects(&object_bytes)?;
+        let object_generations =
+            boundary_minor_gc_live_object_generations_from_objects(&object_bytes)?;
+        let object_generation_install_report =
+            live_object_generation_install_report(&object_generations);
+        self.gc_stress_boundary_minor_gc_object_generations
+            .can_install(object_generation_install_report)?;
         let forwarding_destination_objects = if object_bytes.is_empty() {
             self.gc_stress_boundary_minor_gc_destination_storage
                 .object_bytes()
@@ -5414,6 +5740,8 @@ impl EvalOutcome {
 
         self.gc_stress_boundary_minor_gc_destination_storage
             .install_prevalidated(object_bytes, destination_storage_install_report);
+        self.gc_stress_boundary_minor_gc_object_generations
+            .install_prevalidated(object_generations, object_generation_install_report);
         self.gc_stress_boundary_minor_gc_reference_writebacks
             .install_prevalidated(writebacks, reference_writeback_install_report);
         let remembered_set_published = remembered_set.is_some();
@@ -5428,6 +5756,7 @@ impl EvalOutcome {
             dry_run,
             forwarding_install_report,
             destination_storage_install_report,
+            object_generation_install_report,
             reference_writeback_install_report,
             remembered_set_published,
             card_table_clear_report,

@@ -104,6 +104,8 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
                 EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
             gc_stress_boundary_minor_gc_destination_storage:
                 EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+            gc_stress_boundary_minor_gc_object_generations:
+                EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
         },
         thunk_value,
     )
@@ -1035,6 +1037,75 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         &destination_storage_before_repeat
     );
 
+    let mut object_generation_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live object generations");
+    assert!(
+        object_generation_outcome
+            .gc_stress_boundary_minor_gc_object_generations()
+            .is_empty()
+    );
+    let live_object_generation_dry_run = object_generation_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live object generations");
+    let live_object_generation_commit = live_object_generation_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live object-generation worker commit records");
+    let live_object_generation_copy = &live_object_generation_commit.object_byte_copies()[0];
+    let live_object_generations =
+        object_generation_outcome.gc_stress_boundary_minor_gc_object_generations();
+    assert_eq!(
+        live_object_generation_dry_run.object_generations_installed(),
+        1
+    );
+    assert_eq!(live_object_generations.len(), 1);
+    assert_eq!(
+        live_object_generations.install_report(),
+        live_object_generation_dry_run.object_generation_install_report()
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].source(),
+        live_object_generation_copy.request().source()
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].destination(),
+        live_object_generation_copy.request().destination()
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].action(),
+        MinorGcSurvivorAction::CopyToNursery
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].request(),
+        live_object_generation_copy.request()
+    );
+    let object_generations_before_repeat = live_object_generations.clone();
+    let repeat_error = object_generation_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live object generations reject repeat install");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveObjectGenerationsAlreadyInstalled { existing: 1 }
+    );
+    assert_eq!(
+        object_generation_outcome.gc_stress_boundary_minor_gc_object_generations(),
+        &object_generations_before_repeat
+    );
+
     let mut forwarding_outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
@@ -1137,6 +1208,11 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert!(
         outcome
+            .gc_stress_boundary_minor_gc_object_generations()
+            .is_empty()
+    );
+    assert!(
+        outcome
             .gc_stress_boundary_minor_gc_destination_object_generation_bindings()
             .expect("empty object-generation binding report builds")
             .is_empty()
@@ -1176,6 +1252,11 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(live_metadata.object_copies_installed(), 1);
     assert_eq!(
         live_metadata.object_copies_installed(),
+        summary.object_copies()
+    );
+    assert_eq!(live_metadata.object_generations_installed(), 1);
+    assert_eq!(
+        live_metadata.object_generations_installed(),
         summary.object_copies()
     );
     assert_eq!(live_metadata.reference_writebacks_installed(), 1);
@@ -1218,6 +1299,40 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(
         live_destination_storage.object_bytes()[0].destination_bytes(),
         live_object_copy.destination_bytes()
+    );
+    let live_object_generations = outcome.gc_stress_boundary_minor_gc_object_generations();
+    assert_eq!(live_object_generations.len(), 1);
+    assert_eq!(
+        live_object_generations.install_report().objects(),
+        summary.object_copies()
+    );
+    assert_eq!(
+        live_object_generations.install_report().copied_to_nursery(),
+        summary.object_copies()
+    );
+    assert_eq!(
+        live_object_generations.install_report().promoted_to_old(),
+        0
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].source(),
+        live_object_copy.request().source()
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].action(),
+        MinorGcSurvivorAction::CopyToNursery
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        live_object_generations.object_generations()[0].request(),
+        live_object_copy.request()
     );
     let object_generation_bindings = outcome
         .gc_stress_boundary_minor_gc_destination_object_generation_bindings()
@@ -1315,6 +1430,7 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
 
     let destination_storage_before_repeat = live_destination_storage.clone();
+    let object_generations_before_repeat = live_object_generations.clone();
     let writebacks_before_repeat = live_writebacks.clone();
     let repeat_error = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
@@ -1330,6 +1446,10 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_destination_storage(),
         &destination_storage_before_repeat
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_object_generations(),
+        &object_generations_before_repeat
     );
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
@@ -1436,6 +1556,8 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+        gc_stress_boundary_minor_gc_object_generations:
+            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
     };
     outcome
         .heap
@@ -1468,6 +1590,11 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
     assert!(
         outcome
             .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_object_generations()
             .is_empty()
     );
     assert!(
@@ -1518,6 +1645,9 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     let destination_storage_before = outcome
         .gc_stress_boundary_minor_gc_destination_storage()
         .clone();
+    let object_generations_before = outcome
+        .gc_stress_boundary_minor_gc_object_generations()
+        .clone();
     let writebacks_before = outcome
         .gc_stress_boundary_minor_gc_reference_writebacks()
         .clone();
@@ -1535,12 +1665,17 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
 
     assert_eq!(empty_live_metadata.forwarding_pointers_installed(), 0);
     assert_eq!(empty_live_metadata.object_copies_installed(), 0);
+    assert_eq!(empty_live_metadata.object_generations_installed(), 0);
     assert_eq!(empty_live_metadata.reference_writebacks_installed(), 0);
     assert!(!empty_live_metadata.remembered_set_published());
     assert_eq!(empty_live_metadata.card_table_dirty_cards_cleared(), 0);
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_destination_storage(),
         &destination_storage_before
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_object_generations(),
+        &object_generations_before
     );
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
@@ -2394,6 +2529,8 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+        gc_stress_boundary_minor_gc_object_generations:
+            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
     };
 
     let nursery_base = static_gc_address(0x1000_0000);
@@ -2716,6 +2853,8 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+        gc_stress_boundary_minor_gc_object_generations:
+            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
     };
 
     let error = outcome
@@ -2793,6 +2932,8 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+        gc_stress_boundary_minor_gc_object_generations:
+            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
     };
 
     let error = outcome

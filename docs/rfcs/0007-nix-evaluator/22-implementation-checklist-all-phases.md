@@ -5605,8 +5605,8 @@ and helps the oracle directly.
       heap-adapter route with and without a card table, and end-to-end
       remembered-edge/card-mark behavior. This is internal safe Rust dispatch
       only; it does not export the `unsafe extern "C"` function, register
-      Cranelift symbols, mutate object generations, or install the Tier-B
-      collector table.
+      Cranelift symbols, mutate heap-record object generations, or install the
+      Tier-B collector table.
 - [x] Current write-barrier Rust-callable address precursor:
       `runtime::barrier::runtime_write_barrier_rust_callable_bindings()` now
       attaches a process-local Rust thunk-resolution barrier-constructor address
@@ -5619,8 +5619,8 @@ and helps the oracle directly.
       exported C ABI: the Rust address is not callable through
       `RuntimeWriteBarrierAbiSignature`, and no `unsafe extern "C"` symbol,
       runtime-context extraction, native thunk/value decoding, trap transfer,
-      Cranelift registration, object-generation mutation, or Tier-B collector
-      installation is implemented here.
+      Cranelift registration, real heap-record object-generation mutation, or
+      Tier-B collector installation is implemented here.
 - [x] Current runtime-helper binding-manifest precursor:
       `ratchet-oracle::runtime::helpers` now combines the allocation,
       call-control, attrset-access, environment-access, forcing, and
@@ -5768,8 +5768,8 @@ and helps the oracle directly.
       coverage, direct and boundary-level missing dirty-card rejection,
       dirty-card success, and the existing boundary remembered-edge dry-run.
       This remains validation metadata only; card-table clearing against the
-      live daemon table, object-generation mutation, and Tier-B collector
-      installation remain open.
+      live daemon table, real heap-record object-generation mutation, and Tier-B
+      collector installation remain open.
 - [x] Current allocation-poll dirty old-field rescan bridge precursor:
       card-table-aware `AllocationCollectorPollMinorGcPlan`s now capture an
       owned dirty-card snapshot plus current old/permanent field metadata.
@@ -5819,8 +5819,8 @@ and helps the oracle directly.
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
       root/field mutation, live heap-object byte binding, real object-header
-      forwarding metadata, object-generation mutation, semispace ownership, and
-      Tier-B dispatch remain open.
+      forwarding metadata, real heap-record object-generation mutation,
+      semispace ownership, and Tier-B dispatch remain open.
 - [x] Current boundary live remembered-set publication bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
       derives the same boundary commit dry run, leaves empty outcomes unchanged,
@@ -5838,8 +5838,8 @@ and helps the oracle directly.
       coherence and live-card clearing, and empty-boundary no-mutation behavior.
       This is still not a full live collector commit: live root/field mutation,
       live heap-object byte binding, real object-header forwarding metadata,
-      object-generation mutation, semispace ownership, and Tier-B dispatch
-      remain open.
+      real heap-record object-generation mutation, semispace ownership, and
+      Tier-B dispatch remain open.
 - [x] Current boundary live forwarding-slot bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
       derives the same owned boundary commit dry run, merges sibling
@@ -5853,9 +5853,9 @@ and helps the oracle directly.
       overlapping-source merge, repeat-install rejection/no-mutation, and
       empty-boundary no-op behavior. This is still not a full live collector
       commit: live root/field mutation, live heap-object byte binding, real ABI
-      object-header forwarding writes, object-generation mutation, semispace
-      ownership, remembered-source field mutation, and Tier-B dispatch remain
-      open.
+      object-header forwarding writes, real heap-record object-generation
+      mutation, semispace ownership, remembered-source field mutation, and
+      Tier-B dispatch remain open.
 - [x] Current boundary live destination-byte side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       derives the same owned boundary commit dry run, verifies sibling
@@ -5869,8 +5869,26 @@ and helps the oracle directly.
       rejection/no-mutation, and empty-boundary no-op behavior. This is still
       not a full live collector commit: installed bytes are not bound to live
       heap-object bodies or semispace pages, and live root/field mutation, real
-      ABI object-header forwarding writes, object-generation mutation,
-      remembered-source field mutation, and Tier-B dispatch remain open.
+      ABI object-header forwarding writes, real heap-record object-generation
+      mutation, remembered-source field mutation, and Tier-B dispatch remain
+      open.
+- [x] Current boundary live object-generation side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations`
+      derives the same owned boundary commit dry run, validates sibling
+      worker/permanent applications through the shared raw relocation-map
+      coherence checks, merges destination object-copy snapshots, validates each
+      copied/promoted object's action-implied destination generation and copied
+      byte length, and installs source/destination/action/generation/request
+      records into an outcome-owned side table. Empty/no-survivor boundaries
+      leave the side table unchanged, and repeat installs reject without partial
+      mutation. Unit tests cover copied-young installation, repeat-install
+      rejection/no-mutation, all-in-one live metadata installation and
+      atomicity, and empty-boundary no-op behavior. This is still not a full
+      live collector commit: object-generation metadata is not written back to
+      evaluator heap records or semispace ownership, and live root/field
+      mutation, live heap-object byte binding, real ABI object-header forwarding
+      writes, remembered-source field mutation, and Tier-B dispatch remain
+      open.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -6490,10 +6508,13 @@ and helps the oracle directly.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       installs deduplicated outcome-owned destination-byte snapshots from the
       same validated commit applications.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations`
+      installs outcome-owned destination generation metadata from the same
+      validated object-copy snapshots.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
-      stages forwarding, destination-byte, destination object-generation,
-      forwarding-destination binding over the combined installed and planned
-      forwarding cells against the final destination snapshot view,
+      stages forwarding, destination-byte, outcome-owned object-generation
+      metadata, forwarding-destination binding over the combined installed and
+      planned forwarding cells against the final destination snapshot view,
       reference-writeback, remembered-set, card-table-clear, and root/heap-field
       destination-binding projections from one owned dry run, validates every
       installable side-table payload and
@@ -6502,13 +6523,14 @@ and helps the oracle directly.
       table together.
       These helpers still do not bind those bytes to live
       heap-object bodies, live root/field storage, real ABI object-header
-      forwarding storage, live object-generation state, or semispace storage,
-      and they do not commit those live mutations.
+      forwarding storage, real heap-record object-generation state, or
+      semispace storage, and they do not commit those live mutations.
       `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
       validates installed destination-byte snapshots against their
       action-implied generation and object-copy byte length, producing
-      destination-to-generation binding metadata for a later live object
-      generation writer without mutating evaluator heap records.
+      destination-to-generation binding metadata for the outcome-owned live
+      object-generation side-table bridge without mutating evaluator heap
+      records.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without

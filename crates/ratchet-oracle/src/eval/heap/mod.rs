@@ -735,6 +735,12 @@ pub enum EvalHeapError {
         /// The number of previously installed destination object snapshots.
         existing: usize,
     },
+    /// Boundary live object-generation metadata has already been installed.
+    #[error("boundary minor-GC live object generations already contain {existing} object records")]
+    BoundaryMinorGcLiveObjectGenerationsAlreadyInstalled {
+        /// The number of previously installed object-generation records.
+        existing: usize,
+    },
     /// Boundary live reference-writeback metadata has already been installed.
     #[error(
         "boundary minor-GC live reference writebacks already contain {existing} rewritten slots"
