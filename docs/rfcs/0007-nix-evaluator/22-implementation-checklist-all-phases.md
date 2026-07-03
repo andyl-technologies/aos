@@ -6728,6 +6728,23 @@ nurseries build on the bump arena.
       change tree-walk allocation, install a single-entry representation,
       implement call-by-name lowering, improve cardinality/escape precision, or
       close the loom/Miri/TSan audit.
+- [x] Current tree-walk thunk allocation planning precursor:
+      `ratchet-oracle::eval::thunk_lowering` consumes the C-8
+      `frame_local_single_entry_thunk_downgrade` proof at the tree-walk
+      allocation boundary and returns an explicit plan: ordinary update slot,
+      single-entry lazy storage, omitted absent binding, or strict WHNF elision.
+      The plan preserves the existing order-sensitive binding-assembly guard by
+      forcing ordinary update slots while frames are populated before consulting
+      analysis facts, lets strictness elision take precedence over lazy
+      single-entry storage when no thunk is allocated, and treats contradictory
+      absent-plus-strict facts conservatively as an update slot. Tests cover lazy
+      frame-local single-entry admission, strict elision precedence,
+      order-sensitive update fallback with present and missing facts,
+      escaping-thunk update fallback, absent omission, and absent-strict conflict
+      rejection of elision. This is still a planning precursor only: it does not
+      install a single-entry runtime representation, change `ThunkCell`,
+      implement call-by-name lowering, remove absent bindings from frame layout,
+      improve analysis precision, or close the loom/Miri/TSan audit.
 - [x] Current fallible L1 root execution precursor:
       `ratchet-oracle::eval::parallel_failure` adds a safe fallible top-level
       executor for independent roots. Root-local failures are stored as per-task
