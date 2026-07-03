@@ -155,14 +155,14 @@
       needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "fleet equivalence waits for e2e and fleet store";
-      edge = "gate:e2e-determinism+fleet-store->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore];";
+      label = "fleet equivalence waits for e2e, fleet store, and seam proof";
+      edge = "gate:e2e-determinism+fleet-store+same-seam->gate:fleet-equivalence";
+      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "fleet equivalence wrapper waits for e2e and fleet store";
-      edge = "gate:e2e-determinism-wrapper+fleet-store->gate:fleet-equivalence-wrapper";
-      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore];";
+      label = "fleet equivalence wrapper waits for e2e, fleet store, and seam proof";
+      edge = "gate:e2e-determinism-wrapper+fleet-store+same-seam->gate:fleet-equivalence-wrapper";
+      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "campaign continuity waits for fleet equivalence and campaign provenance";
@@ -441,6 +441,10 @@
         needle = ''attrPath = "checks.crucible.phase7.crucibleFleetStore";'';
       }
       {
+        label = "T-PKG-23 CAS fleet seam guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleCasFleetRatchetSeam";'';
+      }
+      {
         label = "T-PKG-22 campaign provenance guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";'';
       }
@@ -505,6 +509,14 @@
       {
         label = "T-PKG-22 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleCampaignProvenance`";
+      }
+      {
+        label = "T-PKG-23 checklist complete";
+        needle = "- [x] **T-PKG-23**";
+      }
+      {
+        label = "T-PKG-23 completion note";
+        needle = "Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`";
       }
     ];
 

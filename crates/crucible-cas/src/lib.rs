@@ -11,11 +11,15 @@
 //! Future RFC-0007 integration marker: RFC-0007 is the future home for a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
 //! narrow interface is exactly [`DagStore::put`], [`DagStore::get`],
-//! [`DagStore::has`], and [`InvalidationQuery::evaluate`]. The future-merge plan
-//! is a thin adapter behind that unchanged interface; no Crucible ABI or determinism
-//! contract may change, and the adapter replaces these internals only after
-//! `gate:content-address`, `gate:replay-oracle`, and `gate:e2e-determinism` pass
-//! unchanged. Until then, no RFC-0007 dependency exists.
+//! [`DagStore::has`], and [`InvalidationQuery::evaluate`]. [`SharedDagStore`] is
+//! the fleet-visible backend for that same seam; dependency-gated invalidation is
+//! not a second substrate.
+//! Merge invariant: thin adapter behind that unchanged interface.
+//! No Crucible ABI or determinism contract may change, and the adapter replaces
+//! these internals only after `gate:content-address`, `gate:replay-oracle`, and
+//! `gate:e2e-determinism` pass unchanged. Until then, no RFC-0007 dependency
+//! exists.
+//! Standalone rule: no RFC-0007 dependency exists.
 //!
 //! Module map: the crate root owns [`ContentHash`], [`DagStore`],
 //! [`MemoryDagStore`], [`LocalDagStore`], [`SharedDagStore`], and the
@@ -50,6 +54,13 @@ pub const FUTURE_RATCHET_MERGE_BAR: &str =
 /// States the ABI and determinism stability rule for a future shared substrate.
 pub const FUTURE_RATCHET_STABILITY_RULE: &str =
     "no Crucible ABI or determinism contract may change";
+
+/// Names the fleet-store and invalidation members of the same future seam.
+pub const FUTURE_RATCHET_SHARED_SEAM: &str = "SharedDagStore+InvalidationQuery::evaluate";
+
+/// Lists the exact public surface a future ratchet adapter must preserve.
+pub const FUTURE_RATCHET_SEAM_INTERFACE: &str =
+    "DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate";
 
 /// A BLAKE3 content address for raw store bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
