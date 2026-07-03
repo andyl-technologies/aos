@@ -36,6 +36,7 @@ use crucible_session::{
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v1";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
@@ -271,8 +272,48 @@ struct SelftestArgs {
     with_qemu: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SaveAtArg {
+    /// Stop at a virtual-time coordinate.
+    VirtualTime,
+    /// Stop at scheduler quiescence.
+    Quiescence,
+    /// Stop at a property verdict.
+    Property,
+    /// Stop at a named guest marker.
+    Marker,
+}
+
+impl SaveAtArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::VirtualTime => "virtual-time",
+            Self::Quiescence => "quiescence",
+            Self::Property => "property",
+            Self::Marker => "marker",
+        }
+    }
+}
+
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct SaveArgs {}
+struct SaveArgs {
+    /// Scenario file or content hash.
+    #[arg(value_name = "SCENARIO")]
+    scenario: Option<String>,
+    /// Stop and save at this point.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "virtual-time|quiescence|property|marker"
+    )]
+    at: Option<SaveAtArg>,
+    /// Human label for the savepoint.
+    #[arg(long, value_name = "name")]
+    label: Option<String>,
+    /// Write the exported savepoint handle here.
+    #[arg(long, value_name = "path")]
+    out: Option<PathBuf>,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ResumeArgs {}
@@ -1116,6 +1157,33 @@ struct RunInvocationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct SaveInvocationPlan {
+    at: SaveAtArg,
+    label: String,
+    output: SaveOutputTarget,
+    run_plan: RunInvocationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SaveOutputTarget {
+    Explicit(PathBuf),
+    ArtifactDir(PathBuf),
+}
+
+impl SaveOutputTarget {
+    fn resolve(&self, label: &str, handle_digest: &str) -> PathBuf {
+        match self {
+            Self::Explicit(path) => path.clone(),
+            Self::ArtifactDir(dir) => dir.join(format!(
+                "savepoint-{}-{}.crucible-savepoint",
+                sanitize_slug(label),
+                short_digest(handle_digest)
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum RunScenarioRef {
     File {
         path: PathBuf,
@@ -1130,7 +1198,6 @@ enum RunScenarioRef {
 }
 
 impl RunScenarioRef {
-    #[cfg(test)]
     fn label(&self) -> String {
         match self {
             Self::File { path, .. } => path.display().to_string(),
@@ -1314,6 +1381,15 @@ impl RunTerminalCondition {
             RunUntilArg::Stopped => Self::Stopped,
         }
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Quiescence => "quiescence",
+            Self::VirtualTime => "virtual-time",
+            Self::Property => "property",
+            Self::Stopped => "stopped",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1489,6 +1565,72 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
         ],
         invalid_scenario_exit_code: CliError::InvalidScenario(String::new()).exit_code(),
     })
+}
+
+fn plan_save_invocation(
+    args: &SaveArgs,
+    store_root: &Path,
+    artifact_dir: &Path,
+) -> Result<SaveInvocationPlan, CliError> {
+    let at = args.at.ok_or_else(|| {
+        usage_error("save requires --at <virtual-time|quiescence|property|marker>")
+    })?;
+    let until = match at {
+        SaveAtArg::Quiescence => RunUntilArg::Quiescence,
+        SaveAtArg::VirtualTime => {
+            return Err(usage_error(
+                "save --at virtual-time requires a concrete virtual-time coordinate; tracked by T-CLI-9",
+            ));
+        }
+        SaveAtArg::Property => {
+            return Err(usage_error(
+                "save --at property requires property-breakpoint savepoint export; tracked by T-CLI-9",
+            ));
+        }
+        SaveAtArg::Marker => {
+            return Err(usage_error(
+                "save --at marker requires a marker coordinate; tracked by T-CLI-9",
+            ));
+        }
+    };
+    let label = plan_save_label(args.label.as_deref())?;
+    let run_args = RunArgs {
+        scenario: args.scenario.clone(),
+        until,
+        max_virtual_time: None,
+        max_quanta: None,
+        interactive: false,
+        save_on: RunSaveOnArg::Always,
+        watch: false,
+        emit_mock_failure_artifact: false,
+    };
+    let run_plan = plan_run_invocation(&run_args, store_root)?;
+    let output = args
+        .out
+        .clone()
+        .map(SaveOutputTarget::Explicit)
+        .unwrap_or_else(|| SaveOutputTarget::ArtifactDir(artifact_dir.to_path_buf()));
+
+    Ok(SaveInvocationPlan {
+        at,
+        label,
+        output,
+        run_plan,
+    })
+}
+
+fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
+    let label = label.unwrap_or("savepoint").trim();
+    if label.is_empty()
+        || label
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(usage_error(
+            "--label must not be empty or contain control whitespace",
+        ));
+    }
+    Ok(label.to_string())
 }
 
 fn plan_verify_invocation(
@@ -2923,6 +3065,7 @@ struct BackendCommandOutcome {
     canonical_log: Vec<CanonicalLogEntry>,
     canonical_log_digest: String,
     artifact_digest: String,
+    terminal_savepoint: Option<crucible::ContentHash>,
     reproduction_artifact: Option<Vec<u8>>,
     side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
 }
@@ -2938,6 +3081,7 @@ impl BackendCommandOutcome {
             stderr: self.stderr.clone(),
             canonical_log_digest: self.canonical_log_digest.clone(),
             artifact_digest: self.artifact_digest.clone(),
+            terminal_savepoint: self.terminal_savepoint,
         }
     }
 }
@@ -2992,6 +3136,7 @@ struct BackendCommandOutcomeProjection {
     stderr: Vec<String>,
     canonical_log_digest: String,
     artifact_digest: String,
+    terminal_savepoint: Option<crucible::ContentHash>,
 }
 
 trait BackendCommandRunner {
@@ -3056,15 +3201,24 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                 }
             };
         }
-        if matches!(backend, ResolvedLocalBackend::Double) {
-            if let Some(run_plan) = run_plan {
-                return run_local_double_workflow(
+        if let Some(run_plan) = run_plan {
+            return match backend {
+                ResolvedLocalBackend::Double => {
+                    run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
+                }
+                ResolvedLocalBackend::Qemu { .. }
+                    if backend_plan.subcommand == CliSubcommand::Save =>
+                {
+                    Err(backend_error(
+                        "save with local QEMU requires the real-QEMU savepoint export runner tracked by T-CLI-9; use --backend double for the current quiescence savepoint workflow",
+                    ))
+                }
+                ResolvedLocalBackend::Qemu { .. } => Ok(backend_command_outcome(
                     thin_plan,
                     backend_plan,
                     ergonomics_plan,
-                    run_plan,
-                );
-            }
+                )),
+            };
         }
         Ok(backend_command_outcome(
             thin_plan,
@@ -3389,6 +3543,7 @@ fn finish_run_workflow_outcome(
     }
     append_local_double_run_entries(&mut outcome, run_plan, &report);
     if let Some(savepoint) = run_terminal_savepoint_for_policy(run_plan, &report)? {
+        outcome.terminal_savepoint = Some(savepoint);
         let savepoint = format_content_hash_ref(savepoint);
         outcome.stdout.push(format!(
             "run-savepoint\tpolicy={}\tcheckpoint={}\tfinal={}\toutcome={}",
@@ -3756,6 +3911,7 @@ fn canonical_run_log_entries(
         canonical_log: Vec::new(),
         canonical_log_digest: content_address_bytes(b"empty"),
         artifact_digest: content_address_bytes(b"empty"),
+        terminal_savepoint: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     };
@@ -4702,6 +4858,17 @@ async fn acknowledge_stream_command(
     acknowledged_commands: &mut Vec<SessionCommandKind>,
 ) -> Result<(), CliError> {
     let model_command = cli_stream_command(command)?;
+    acknowledge_stream_command_payload(control, command_id, model_command, acknowledged_commands)
+        .await
+}
+
+async fn acknowledge_stream_command_payload(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    model_command: SessionCommand,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError> {
+    let command = SessionCommandKind::from(&model_command);
     let response = control
         .send_command(*command_id, model_command)
         .await
@@ -5292,6 +5459,7 @@ fn backend_command_outcome(
         canonical_log,
         canonical_log_digest,
         artifact_digest,
+        terminal_savepoint: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     }
@@ -5389,6 +5557,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Verify(args) => Some(plan_verify_invocation(args, &run_store_root)?),
         _ => None,
     };
+    let save_plan = match &cli.command {
+        Commands::Save(args) => Some(plan_save_invocation(
+            args,
+            &run_store_root,
+            &cli.artifact_dir,
+        )?),
+        _ => None,
+    };
     let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
@@ -5405,7 +5581,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &thin_plan,
             &backend_plan,
             ergonomics_plan.as_ref(),
-            run_plan.as_ref(),
+            run_plan
+                .as_ref()
+                .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
             verify_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
@@ -5420,6 +5598,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         if emit_human && backend_plan.should_announce(cli.quiet) {
             println!("{}", backend_plan.announcement());
+        }
+        if let Some(save_plan) = &save_plan {
+            export_savepoint_handle(save_plan, &mut outcome)?;
         }
         emit_backend_command_output(cli, &outcome)?;
         if outcome.status.is_non_passing() {
@@ -5632,6 +5813,81 @@ fn mark_mock_failure_outcome(
     outcome.artifact_digest = content_address_bytes(&artifact);
     outcome.reproduction_artifact = Some(artifact);
     Ok(())
+}
+
+fn export_savepoint_handle(
+    plan: &SaveInvocationPlan,
+    outcome: &mut BackendCommandOutcome,
+) -> Result<(), CliError> {
+    if outcome.status.is_non_passing() {
+        return Ok(());
+    }
+    let savepoint = outcome
+        .terminal_savepoint
+        .ok_or_else(|| backend_error("save completed without a materialized terminal savepoint"))?;
+    let checkpoint = format_content_hash_ref(savepoint);
+    let handle = savepoint_handle_bytes(plan, &checkpoint, outcome);
+    let handle_digest = content_address_bytes(&handle);
+    let path = plan.output.resolve(&plan.label, &handle_digest);
+    if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, handle)?;
+    outcome.stdout.push(format!(
+        "save-handle\tcheckpoint={checkpoint}\tlabel={}\tout={}\tdigest={handle_digest}",
+        plan.label,
+        path.display()
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("cli"),
+        kind: String::from("save_export"),
+        summary: format!(
+            "at={} checkpoint={} label={} out={} digest={}",
+            plan.at.label(),
+            checkpoint,
+            plan.label,
+            path.display(),
+            handle_digest
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(())
+}
+
+fn savepoint_handle_bytes(
+    plan: &SaveInvocationPlan,
+    checkpoint: &str,
+    outcome: &BackendCommandOutcome,
+) -> Vec<u8> {
+    let mut text = String::new();
+    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    artifact_line(&mut text, &["label", &plan.label]);
+    artifact_line(&mut text, &["checkpoint", checkpoint]);
+    artifact_line(
+        &mut text,
+        &[
+            "scenario",
+            &plan.run_plan.scenario.scenario_id().to_hex(),
+            &plan.run_plan.scenario.label(),
+        ],
+    );
+    artifact_line(&mut text, &["at", plan.at.label()]);
+    artifact_line(
+        &mut text,
+        &[
+            "terminal-condition",
+            plan.run_plan.terminal_condition.label(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &["materialization", "terminal-savepoint", "session-summary"],
+    );
+    artifact_line(&mut text, &["oracle", "pending-fat-thin-replay-validation"]);
+    artifact_line(&mut text, &["canonical-log", &outcome.canonical_log_digest]);
+    text.into_bytes()
 }
 
 fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Result<(), CliError> {
@@ -8327,6 +8583,15 @@ mod tests {
                 ],
             ),
             ("selftest", &["--gates <list>", "--with-qemu"]),
+            (
+                "save",
+                &[
+                    "SCENARIO",
+                    "--at <virtual-time|quiescence|property|marker>",
+                    "--label <name>",
+                    "--out <path>",
+                ],
+            ),
             ("replay", &["ARTIFACT", "--check <original-log>"]),
             (
                 "serve",
@@ -9003,6 +9268,226 @@ mod tests {
         );
         assert_eq!(artifact.identity.plugin_abi, plugin_abi);
         assert!(backend_plan.proves_t_cli_5());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_save_workflow_plans_quiescence_savepoint_and_rejects_unbacked_points()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let artifact_dir = temp.path().join("artifacts");
+        let out = temp.path().join("release.crucible-savepoint");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("release-candidate"),
+            String::from("--out"),
+            out.display().to_string(),
+        ]);
+        let Commands::Save(args) = &cli.command else {
+            panic!("expected save command");
+        };
+        let plan = plan_save_invocation(args, temp.path(), &cli.artifact_dir)?;
+
+        assert_eq!(plan.at, SaveAtArg::Quiescence);
+        assert_eq!(plan.label, "release-candidate");
+        assert_eq!(plan.output, SaveOutputTarget::Explicit(out));
+        assert_eq!(plan.run_plan.save_policy, RunSavePolicy::Always);
+        assert_eq!(
+            plan.run_plan.terminal_condition,
+            RunTerminalCondition::Quiescence
+        );
+
+        let missing_at = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+        ]);
+        let Commands::Save(args) = &missing_at.command else {
+            panic!("expected save command");
+        };
+        let error = match plan_save_invocation(args, temp.path(), temp.path()) {
+            Ok(_) => panic!("save without --at must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        for at in ["virtual-time", "property", "marker"] {
+            let cli = Cli::parse_from([
+                String::from("crucible"),
+                String::from("save"),
+                scenario.display().to_string(),
+                String::from("--at"),
+                String::from(at),
+            ]);
+            let Commands::Save(args) = &cli.command else {
+                panic!("expected save command");
+            };
+            let error = match plan_save_invocation(args, temp.path(), temp.path()) {
+                Ok(_) => panic!("{at} savepoint planning must remain explicit until implemented"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, CliError::Usage(_)));
+            assert_eq!(error.exit_code(), 64);
+            assert!(error.to_string().contains("T-CLI-9"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_save_workflow_executes_local_double_and_exports_handle() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let artifact_dir = temp.path().join("artifacts");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("9"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("release candidate"),
+        ]);
+        let Commands::Save(args) = &cli.command else {
+            panic!("expected save command");
+        };
+        let save_plan = plan_save_invocation(args, temp.path(), &cli.artifact_dir)?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("save should resolve a seed");
+        let backend_plan = plan_backend_selection(&cli)?.expect("save should require backend");
+        let mut outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            Some(&seed_plan),
+            Some(&save_plan.run_plan),
+            None,
+            &mut NullBackendCommandRunner,
+        )?;
+        export_savepoint_handle(&save_plan, &mut outcome)?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(
+            outcome.stdout.iter().any(|line| {
+                line.starts_with("run-savepoint\tpolicy=always\tcheckpoint=blake3:")
+            })
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("save-handle\tcheckpoint=blake3:")
+                    && line.contains("label=release candidate"))
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "save_export")
+        );
+
+        let handles = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(handles.len(), 1);
+        let handle_path = handles[0].path();
+        assert!(
+            handle_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("savepoint-release-candidate-")
+                    && name.ends_with(".crucible-savepoint"))
+        );
+        let handle = fs::read_to_string(handle_path)?;
+        assert!(handle.contains("schema\tcrucible.savepoint-handle.v1\n"));
+        assert!(handle.contains("label\trelease candidate\n"));
+        assert!(handle.contains("checkpoint\tblake3:"));
+        assert!(handle.contains("at\tquiescence\n"));
+        assert!(handle.contains("materialization\tterminal-savepoint\tsession-summary\n"));
+        assert!(handle.contains("oracle\tpending-fat-thin-replay-validation\n"));
+
+        let explicit = temp.path().join("explicit.crucible-savepoint");
+        let dispatch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("10"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("explicit"),
+            String::from("--out"),
+            explicit.display().to_string(),
+        ]);
+        dispatch(&dispatch_cli)?;
+        assert!(fs::read_to_string(explicit)?.contains("label\texplicit\n"));
+
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let qemu_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("qemu"),
+            String::from("--qemu"),
+            qemu,
+            String::from("--plugin"),
+            plugin,
+            String::from("--seed"),
+            String::from("11"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+        ]);
+        let Commands::Save(args) = &qemu_cli.command else {
+            panic!("expected save command");
+        };
+        let qemu_save_plan = plan_save_invocation(args, temp.path(), &qemu_cli.artifact_dir)?;
+        let qemu_seed_plan = plan_determinism_ergonomics(
+            &qemu_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("save should resolve a seed");
+        let qemu_error = match execute_backend_routed_command(
+            &plan_cli_invocation(&qemu_cli),
+            &plan_backend_selection(&qemu_cli)?.expect("save should require backend"),
+            Some(&qemu_seed_plan),
+            Some(&qemu_save_plan.run_plan),
+            None,
+            &mut NullBackendCommandRunner,
+        ) {
+            Ok(_) => panic!("local QEMU save must fail until the QEMU runner exists"),
+            Err(error) => error,
+        };
+        assert!(matches!(qemu_error, CliError::Backend(_)));
+        assert_eq!(qemu_error.exit_code(), 4);
+        assert!(qemu_error.to_string().contains("local QEMU"));
+        assert!(qemu_error.to_string().contains("T-CLI-9"));
 
         Ok(())
     }

@@ -1481,6 +1481,16 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliSaveWorkflow = import ./phase5-cli-save-workflow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliSaveWorkflow";
+      taskIds = ["T-CLI-9"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase4.gates.replayOracle.rawGate
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliVerifyWorkflow = import ./phase5-cli-verify-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
