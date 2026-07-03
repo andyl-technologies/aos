@@ -993,6 +993,28 @@ fn root_value_writebacks_update_supported_tree_walk_roots() {
 }
 
 #[test]
+fn root_value_writebacks_reject_late_frame_borrow_before_partial_mutation() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let nursery_base = static_gc_address(0x1000_0000);
+    let plan =
+        root_writeback_plan_for_supported_mutable_roots(&evaluator, &value_stack, nursery_base);
+    let suspended_frame = evaluator.suspended_env_roots[0].env[0].clone();
+    let _held_frame_borrow = suspended_frame
+        .borrow_slots_for_test()
+        .expect("test holds suspended frame borrow");
+
+    let err = evaluator
+        .apply_root_value_writebacks_to_safepoint_roots(&plan, &mut value_stack)
+        .expect_err("held later frame borrow rejects before root mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Environment(EvalEnvError::BorrowConflict)
+    );
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+}
+
+#[test]
 fn collector_poll_minor_gc_root_writebacks_apply_to_safepoint_roots() {
     let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
     let poll = evaluator
@@ -1556,6 +1578,42 @@ fn reference_writebacks_apply_root_storage_after_field_buffer_validation() {
             .expect("parent list element exists"),
         child,
     );
+}
+
+#[test]
+fn reference_writebacks_root_storage_reject_late_frame_borrow_before_partial_mutation() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("reference writeback plan derives for supported roots");
+    let suspended_frame = evaluator.suspended_env_roots[0].env[0].clone();
+    let _held_frame_borrow = suspended_frame
+        .borrow_slots_for_test()
+        .expect("test holds suspended frame borrow");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("held later frame borrow rejects before root mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Environment(EvalEnvError::BorrowConflict)
+    );
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
 }
 
 #[test]

@@ -2566,7 +2566,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       value-stack slots, active/suspended lexical frames, active/suspended
       dynamic scopes, active force continuations, active first-class primop
       arguments, and ready import-cache entries are read into a temporary typed
-      slot buffer, validated, and then rewritten only after validation succeeds.
+      slot buffer, validated, checked for writable live targets, and then
+      rewritten only after validation succeeds.
       Tests cover a real collector-poll plan rewriting every supported
       tree-walk root kind, distinct reverse-depth mapping for suspended roots,
       force continuations, and active first-class primop argument frames,
@@ -2588,9 +2589,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       caller-owned typed root buffers plus live heap-field buffers read from
       current typed heap fields.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
-      then uses that same complete-partition prevalidation before writing the
-      supported tree-walk root storage while leaving heap-field rewrites in
-      caller-owned buffers.
+      then uses that same complete-partition prevalidation plus writable
+      root-target prevalidation before writing the supported tree-walk root
+      storage while leaving heap-field rewrites in caller-owned buffers.
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       derives the same complete-partition and object-copy plan, then preflights
       supported tree-walk root slots, existing-destination object
@@ -2617,8 +2618,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       application through a pre-existing scratch destination, active-frame borrow
       rejection before destination body/generation or field mutation, synthetic
       destination rejection in both the preflight and applicator before root or
-      field mutation, stale live heap-field
-      rejection before root mutation, and dirty permanent-list mixed-plan
+      field mutation, late suspended-frame root-target borrow rejection before
+      partial root mutation, stale live heap-field rejection before root
+      mutation, and dirty permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
       allocate destination records, mutate interned roots, detached primop

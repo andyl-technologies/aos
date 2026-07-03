@@ -6779,14 +6779,16 @@ and helps the oracle directly.
       active/suspended `with`, active/suspended scoped-global, force-continuation,
       active first-class primop-argument, and ready import-cache roots into a
       temporary typed slot buffer, validates that buffer with
-      `AllocationCollectorPollRootWritebackPlan::apply_to_value_slots`, and only
-      then writes relocated values back to those roots. Tests cover a real
+      `AllocationCollectorPollRootWritebackPlan::apply_to_value_slots`, checks
+      every supported target for writable live storage, and only then writes
+      relocated values back to those roots. Tests cover a real
       collector-poll plan rewriting every supported tree-walk root kind,
       distinct reverse-depth mapping for suspended roots, force continuations,
       and active first-class primop argument frames, ready-import indexing that
       skips evaluating entries, and stale value-stack plus stale active-frame
-      rejection that leaves tree-walk-owned roots unchanged. This is not wired
-      into evaluator allocation safepoints yet and still does not mutate
+      rejection plus late suspended-frame root-target borrow rejection that
+      leave tree-walk-owned roots unchanged. This is not wired into evaluator
+      allocation safepoints yet and still does not mutate
       interned roots, detached primop-argument metadata, JIT stack-map slots,
       heap fields, object bytes, forwarding headers, remembered/card state, or
       semispace storage.
@@ -6809,9 +6811,9 @@ and helps the oracle directly.
       caller-owned typed root buffers plus live heap-field buffers read from
       current typed heap fields.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
-      then uses that same complete-partition prevalidation before writing the
-      supported tree-walk root storage while leaving heap-field rewrites in
-      caller-owned buffers.
+      then uses that same complete-partition prevalidation plus writable
+      root-target prevalidation before writing the supported tree-walk root
+      storage while leaving heap-field rewrites in caller-owned buffers.
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       derives the same complete-partition and object-copy plan, then preflights
       supported tree-walk root slots, existing-destination object
@@ -6840,9 +6842,10 @@ and helps the oracle directly.
       active-frame borrow rejection before destination body/generation or field
       mutation, synthetic destination rejection in both the preflight and
       applicator before root or field mutation, stale live heap-field rejection
-      before root mutation, and a dirty permanent-list
-      remembered edge whose mixed root/field plan is rejected without touching
-      the value stack, active frame root, or ready import-cache root. This is
+      before root mutation, late suspended-frame root-target borrow rejection
+      before partial root mutation, and a dirty permanent-list remembered edge
+      whose mixed root/field plan is rejected without touching the value stack,
+      active frame root, or ready import-cache root. This is
       still not automatic allocation-site dispatch and still does not allocate
       destination records, reserve semispace storage, install forwarding
       headers, publish a full remembered-set refresh, or consume JIT stack maps.

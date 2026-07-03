@@ -866,6 +866,7 @@ impl TreeWalk {
     {
         let mut slots = self.safepoint_root_value_writeback_slots(plan, value_stack)?;
         let report = plan.apply_to_value_slots(&mut slots)?;
+        self.validate_safepoint_root_writeback_targets(&slots, value_stack)?;
         for slot in &slots {
             self.write_safepoint_root_writeback_value(slot.source(), slot.value(), value_stack)?;
         }
@@ -1091,8 +1092,8 @@ impl TreeWalk {
     /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
     /// longer current, if root storage cannot be read or written, if
     /// caller-owned buffer storage cannot be reserved, or if the plan rejects
-    /// the current root or live heap-field slots. Heap-field validation happens
-    /// before any tree-walk root is rewritten.
+    /// the current root or live heap-field slots. Heap-field and root-target
+    /// validation happen before any tree-walk root is rewritten.
     pub fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers(
         &mut self,
         plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
@@ -1103,6 +1104,10 @@ impl TreeWalk {
     > {
         let application =
             self.apply_reference_writebacks_to_safepoint_buffers(plan, value_stack)?;
+        self.validate_safepoint_root_writeback_targets(
+            application.root_value_writeback_slots(),
+            value_stack,
+        )?;
         for slot in application.root_value_writeback_slots() {
             self.write_safepoint_root_writeback_value(slot.source(), slot.value(), value_stack)?;
         }
@@ -1286,9 +1291,10 @@ impl TreeWalk {
             live_heap_field_writebacks: preflight_live_heap_field_writebacks,
             ..
         } = preflight;
-        for slot in application.root_value_writeback_slots() {
-            self.validate_safepoint_root_writeback_target(slot.source(), value_stack)?;
-        }
+        self.validate_safepoint_root_writeback_targets(
+            application.root_value_writeback_slots(),
+            value_stack,
+        )?;
         let (copied_writes, direct_writes) = self
             .heap
             .collector_poll_minor_gc_live_heap_field_write_inputs(
@@ -1395,6 +1401,17 @@ impl TreeWalk {
         }
 
         Ok(slots)
+    }
+
+    fn validate_safepoint_root_writeback_targets(
+        &self,
+        slots: &[AllocationCollectorPollRootValueWritebackSlot],
+        value_stack: &[Value],
+    ) -> Result<(), TreeWalkSafepointRootWritebackError> {
+        for slot in slots {
+            self.validate_safepoint_root_writeback_target(slot.source(), value_stack)?;
+        }
+        Ok(())
     }
 
     fn read_safepoint_root_writeback_value(
