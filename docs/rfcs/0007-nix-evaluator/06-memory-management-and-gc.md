@@ -1288,6 +1288,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       live heap-object bodies, and live root/field mutation, real ABI
       object-header forwarding writes, remembered-source field mutation, and
       Tier-B dispatch remain open.
+- [x] Current boundary live forwarding-header write-plan bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_header_write_plan`
+      validates installed live forwarding cells against installed
+      forwarding-destination binding metadata, rejects bindings without live
+      forwarding cells, rejects extra live forwarding cells without bindings,
+      and returns the exact immutable source/destination/generation/payload
+      records that a later ABI object-header writer would consume. Empty
+      boundaries return an empty plan. Tests cover coherent all-in-one live
+      metadata, binding-without-forwarding rejection, stale-forwarding mismatch
+      rejection, extra-forwarding rejection, and empty-boundary no-op behavior.
+      This remains write planning only: it does not write ABI object headers,
+      bind destination bytes to heap-object bodies, mutate heap-record
+      generations, mutate roots/fields, manage semispaces, or invoke Tier B.
 - [x] Current boundary live destination-byte side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       derives the same owned boundary commit dry run, verifies sibling
@@ -2200,6 +2213,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       destination snapshots, producing forwarding-to-destination binding
       metadata for the live forwarding-destination binding side-table bridge and
       a later ABI object-header writer without mutating object headers.
+      `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_header_write_plan`
+      then validates that installed live forwarding cells and installed
+      forwarding-destination binding metadata are exact mirrors before producing
+      the immutable source/destination/generation/payload records for a future
+      ABI object-header writer.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can

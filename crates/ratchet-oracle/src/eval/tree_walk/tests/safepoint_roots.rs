@@ -1284,8 +1284,51 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
             .expect("forwarding binding source remains known"),
         None
     );
+    let header_plan_error = forwarding_binding_outcome
+        .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
+        .expect_err("forwarding header plan requires the live forwarding cell");
+    assert!(matches!(
+        header_plan_error,
+        EvalHeapError::BoundaryMinorGcForwardingHeaderWriteMissingForwarding {
+            source_address,
+            expected
+        } if source_address == forwarding_binding_source
+            && expected
+                == live_forwarding_binding_slot
+                    .forwarded_value()
+                    .expect("planned forwarding value exists")
+    ));
     let forwarding_destination_bindings_before_repeat =
         live_forwarding_destination_bindings.clone();
+    let stale_forwarded_value = ResolvedValueGeneration::Heap {
+        address: static_gc_address(0x3000_0000),
+        generation: HeapGeneration::Young,
+    };
+    forwarding_binding_outcome
+        .heap
+        .install_collector_poll_minor_gc_forwarding_slots(&[
+            MinorGcForwardingSlot::with_forwarded_value(
+                forwarding_binding_source,
+                stale_forwarded_value,
+            ),
+        ])
+        .expect("stale live forwarding value installs for header-plan mismatch test");
+    let header_plan_error = forwarding_binding_outcome
+        .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
+        .expect_err("forwarding header plan rejects stale live forwarding value");
+    assert!(matches!(
+        header_plan_error,
+        EvalHeapError::BoundaryMinorGcForwardingHeaderWriteForwardingMismatch {
+            source_address,
+            expected,
+            actual
+        } if source_address == forwarding_binding_source
+            && expected
+                == live_forwarding_binding_slot
+                    .forwarded_value()
+                    .expect("planned forwarding value exists")
+            && actual == stale_forwarded_value
+    ));
     let repeat_error = forwarding_binding_outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings(
             MinorGcPromotionPolicy::new(2),
@@ -1624,6 +1667,50 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
         live_forwarding_destination_bindings.forwarding_destination_bindings()[0],
         forwarding_destination_bindings[0]
     );
+    let forwarding_header_write_plan = outcome
+        .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
+        .expect("forwarding header write plan validates installed live metadata");
+    assert_eq!(forwarding_header_write_plan.len(), 1);
+    assert_eq!(
+        forwarding_header_write_plan.report().headers(),
+        summary.forwarding_pointers()
+    );
+    assert_eq!(
+        forwarding_header_write_plan.report().copied_to_nursery(),
+        summary.object_copies()
+    );
+    assert_eq!(forwarding_header_write_plan.report().promoted_to_old(), 0);
+    assert_eq!(
+        forwarding_header_write_plan.report().payload_bytes(),
+        live_object_copy.destination_bytes().len()
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].source(),
+        original_address
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].forwarded_value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        forwarding_header_write_plan.writes()[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
 
     let live_writebacks = outcome.gc_stress_boundary_minor_gc_reference_writebacks();
     let live_worker_writebacks = live_writebacks
@@ -1803,6 +1890,20 @@ fn forwarding_destination_bindings_reject_extra_installed_forwarding_cell() {
         err,
         EvalHeapError::BoundaryMinorGcForwardingDestinationMissing { source_address }
             if source_address == extra_source_address
+    ));
+    let header_plan_error = outcome
+        .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
+        .expect_err("extra forwarding cell without a binding rejects header planning");
+    assert!(matches!(
+        header_plan_error,
+        EvalHeapError::BoundaryMinorGcForwardingHeaderWriteUnboundForwarding {
+            source_address,
+            actual
+        } if source_address == extra_source_address
+                && actual == (ResolvedValueGeneration::Heap {
+                    address: static_gc_address(0x3000_0000),
+                    generation: HeapGeneration::Young,
+                })
     ));
 }
 
@@ -3566,6 +3667,12 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         0
     );
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
+            .expect("empty boundary has no forwarding header writes")
+            .is_empty()
+    );
     let empty_live_destination_dry_run = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
             MinorGcPromotionPolicy::new(2),

@@ -34,6 +34,10 @@ const BOUNDARY_MINOR_GC_DESTINATION_OBJECT_GENERATION_BINDINGS_TABLE: &str =
     "boundary minor-GC destination object-generation bindings";
 const BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE: &str =
     "boundary minor-GC forwarding destination bindings";
+const BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITES_TABLE: &str =
+    "boundary minor-GC forwarding-header writes";
+const BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITE_BYTES_TABLE: &str =
+    "boundary minor-GC forwarding-header write bytes";
 const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE: &str =
     "boundary minor-GC root writeback destination bindings";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_DESTINATION_BINDINGS_TABLE: &str =
@@ -1471,6 +1475,158 @@ impl EvalGcStressBoundaryMinorGcForwardingDestinationBinding {
     }
 }
 
+/// Counts for an ABI forwarding-header write plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport {
+    headers: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    payload_bytes: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport {
+    fn record(&mut self, write: &EvalGcStressBoundaryMinorGcForwardingHeaderWrite) {
+        self.headers = self.headers.saturating_add(1);
+        self.payload_bytes = self
+            .payload_bytes
+            .saturating_add(write.destination_bytes().len());
+        match write.request().action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns how many object headers would receive forwarding metadata.
+    pub const fn headers(self) -> usize {
+        self.headers
+    }
+
+    /// Returns how many planned header writes point to next-nursery objects.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many planned header writes point to promoted old objects.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the total destination payload bytes covered by the plan.
+    pub const fn payload_bytes(self) -> usize {
+        self.payload_bytes
+    }
+}
+
+/// One validated forwarding-header write input.
+///
+/// This is an immutable write plan for a future ABI object-header writer. It
+/// proves that an installed live forwarding cell still matches an installed
+/// forwarding-destination binding and carries the destination payload metadata
+/// needed by the eventual writer, but it does not mutate object headers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcForwardingHeaderWrite {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    generation: HeapGeneration,
+    forwarded_value: ResolvedValueGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcForwardingHeaderWrite {
+    fn from_binding(
+        binding: &EvalGcStressBoundaryMinorGcForwardingDestinationBinding,
+    ) -> Result<Self, EvalHeapError> {
+        Ok(Self {
+            source: binding.source(),
+            destination: binding.destination(),
+            generation: binding.generation(),
+            forwarded_value: binding.forwarded_value(),
+            request: binding.request(),
+            destination_bytes: clone_boundary_destination_storage_bytes(
+                BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITE_BYTES_TABLE,
+                binding.destination_bytes(),
+            )?,
+        })
+    }
+
+    /// Returns the from-space object whose ABI header would be written.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object address carried by the forwarding value.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the destination generation carried by the forwarding value.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the forwarding value that would be written into the header.
+    pub const fn forwarded_value(&self) -> ResolvedValueGeneration {
+        self.forwarded_value
+    }
+
+    /// Returns the object-copy request associated with this header write.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the installed destination payload bytes covered by this write.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
+/// A validated forwarding-header write plan.
+///
+/// The plan is derived from installed live forwarding cells and installed
+/// forwarding-destination bindings. It is a checked input set for a future
+/// unsafe ABI header writer; creating it does not write headers, copy object
+/// bodies, or change evaluator heap records.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan {
+    report: EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+    writes: Vec<EvalGcStressBoundaryMinorGcForwardingHeaderWrite>,
+}
+
+impl EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan {
+    fn new(writes: Vec<EvalGcStressBoundaryMinorGcForwardingHeaderWrite>) -> Self {
+        let mut report = EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport::default();
+        for write in &writes {
+            report.record(write);
+        }
+        Self { report, writes }
+    }
+
+    /// Returns whether this plan has no header writes.
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+    }
+
+    /// Returns how many header writes are planned.
+    pub fn len(&self) -> usize {
+        self.writes.len()
+    }
+
+    /// Returns aggregate counts for the plan.
+    pub const fn report(&self) -> EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport {
+        self.report
+    }
+
+    /// Returns the planned forwarding-header writes.
+    pub fn writes(&self) -> &[EvalGcStressBoundaryMinorGcForwardingHeaderWrite] {
+        &self.writes
+    }
+}
+
 /// A root writeback matched to an installed destination-byte snapshot.
 ///
 /// The binding is validation metadata for a future live root writer. It proves
@@ -2189,6 +2345,63 @@ fn boundary_minor_gc_forwarding_destination_bindings_from_slots(
     }
 
     Ok(bindings)
+}
+
+fn boundary_minor_gc_forwarding_header_write_plan(
+    heap: &EvalHeap,
+    live_bindings: &EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings,
+) -> Result<EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan, EvalHeapError> {
+    let bindings = live_bindings.forwarding_destination_bindings();
+    let forwarding_values = heap.minor_gc_forwarding_values()?;
+
+    for forwarding_value in forwarding_values.iter().copied() {
+        if !bindings
+            .iter()
+            .any(|binding| binding.source() == forwarding_value.source())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcForwardingHeaderWriteUnboundForwarding {
+                    source_address: forwarding_value.source(),
+                    actual: forwarding_value.forwarded_value(),
+                },
+            );
+        }
+    }
+
+    let mut writes = Vec::new();
+    writes.try_reserve_exact(bindings.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITES_TABLE,
+            entries: bindings.len(),
+        }
+    })?;
+
+    for binding in bindings {
+        let expected = binding.forwarded_value();
+        let Some(actual) = heap.minor_gc_forwarding_value_at(binding.source())? else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcForwardingHeaderWriteMissingForwarding {
+                    source_address: binding.source(),
+                    expected,
+                },
+            );
+        };
+        if actual != expected {
+            return Err(
+                EvalHeapError::BoundaryMinorGcForwardingHeaderWriteForwardingMismatch {
+                    source_address: binding.source(),
+                    expected,
+                    actual,
+                },
+            );
+        }
+
+        writes.push(EvalGcStressBoundaryMinorGcForwardingHeaderWrite::from_binding(binding)?);
+    }
+
+    Ok(EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan::new(
+        writes,
+    ))
 }
 
 fn validate_boundary_minor_gc_forwarding_slot_sources(
@@ -5653,6 +5866,30 @@ impl EvalOutcome {
         boundary_minor_gc_forwarding_destination_bindings(
             &self.heap,
             &self.gc_stress_boundary_minor_gc_destination_storage,
+        )
+    }
+
+    /// Plans ABI forwarding-header writes from installed live metadata.
+    ///
+    /// This validates the installed live forwarding cells against the
+    /// outcome-owned forwarding-destination binding side table. The returned
+    /// plan is an immutable input set for a future ABI object-header writer; it
+    /// does not write headers, bind destination bytes to heap-object storage,
+    /// mutate object-generation state, or validate semispace ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if an installed forwarding value has no
+    /// installed forwarding-destination binding, if an installed binding has no
+    /// matching live forwarding value, if the live forwarding value disagrees
+    /// with the installed binding, if a binding source no longer belongs to the
+    /// evaluator heap, or if the plan cannot reserve storage.
+    pub fn gc_stress_boundary_minor_gc_forwarding_header_write_plan(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan, EvalHeapError> {
+        boundary_minor_gc_forwarding_header_write_plan(
+            &self.heap,
+            &self.gc_stress_boundary_minor_gc_forwarding_destination_bindings,
         )
     }
 

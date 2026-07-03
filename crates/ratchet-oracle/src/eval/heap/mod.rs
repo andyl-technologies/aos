@@ -1017,6 +1017,41 @@ pub enum EvalHeapError {
         /// The source address recorded by the installed destination snapshot.
         actual_source: GcHeapAddress,
     },
+    /// A forwarding-header write plan has no installed forwarding value for a binding.
+    #[error(
+        "boundary minor-GC forwarding-header write for 0x{source_address:x} is missing live forwarding value {expected:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcForwardingHeaderWriteMissingForwarding {
+        /// The from-space object whose header would be written.
+        source_address: GcHeapAddress,
+        /// The forwarding value required by the installed destination binding.
+        expected: ResolvedValueGeneration,
+    },
+    /// A forwarding-header write plan found a stale forwarding value.
+    #[error(
+        "boundary minor-GC forwarding-header write for 0x{source_address:x} expected live forwarding value {expected:?}, found {actual:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcForwardingHeaderWriteForwardingMismatch {
+        /// The from-space object whose header would be written.
+        source_address: GcHeapAddress,
+        /// The forwarding value required by the installed destination binding.
+        expected: ResolvedValueGeneration,
+        /// The live forwarding value currently installed on the heap record.
+        actual: ResolvedValueGeneration,
+    },
+    /// A live forwarding value has no installed forwarding-destination binding.
+    #[error(
+        "boundary minor-GC live forwarding value for 0x{source_address:x} has no forwarding-header destination binding: {actual:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcForwardingHeaderWriteUnboundForwarding {
+        /// The from-space object whose forwarding value is unbound.
+        source_address: GcHeapAddress,
+        /// The live forwarding value currently installed on the heap record.
+        actual: ResolvedValueGeneration,
+    },
     /// A live forwarding installation received an empty forwarding slot.
     #[error(
         "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",
