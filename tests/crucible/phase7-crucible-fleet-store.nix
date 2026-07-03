@@ -119,6 +119,14 @@
         needle = "\"probe\"";
       }
       {
+        label = "probe actual concurrent put proof";
+        needle = "prove_concurrent_put_idempotent";
+      }
+      {
+        label = "probe concurrent writer count";
+        needle = "const CONCURRENT_WRITERS: usize = 16;";
+      }
+      {
         label = "shared store backend";
         needle = "SharedDagStore";
       }
@@ -133,6 +141,14 @@
       {
         label = "concurrent put output";
         needle = "concurrent_put=idempotent";
+      }
+      {
+        label = "concurrent writer output";
+        needle = "concurrent_writers={CONCURRENT_WRITERS}";
+      }
+      {
+        label = "single object output";
+        needle = "object_file_count={object_file_count}";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStorePackage [
@@ -167,6 +183,10 @@
       {
         label = "fleet visibility marker";
         needle = "fleet_visible=true";
+      }
+      {
+        label = "DCE shared store task marker";
+        needle = "dce_task=T-DCE-1";
       }
     ]
     ++ forbiddenFor "pkgs/tools/crucible-fleet-store.nix" fleetStorePackage [
@@ -213,6 +233,10 @@
         needle = ''"''${fleetStore}/bin/crucible-fleet-store" probe "$probe_root"'';
       }
       {
+        label = "shared DagStore source check input";
+        needle = "sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;";
+      }
+      {
         label = "distributed search marker";
         needle = "distributed_search_surface=enabled";
       }
@@ -245,12 +269,16 @@
         needle = "crucibleFleetStore = import ./phase7-crucible-fleet-store.nix";
       }
       {
+        label = "phase7 shared DagStore check imported";
+        needle = "crucibleSharedDagStore = import ./phase7-crucible-shared-dag-store.nix";
+      }
+      {
         label = "fleet equivalence raw gate waits for fleet store package";
-        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
       }
       {
         label = "fleet equivalence wrapper waits for fleet store package";
-        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-gate-ci-wiring.nix" gateCiWiring [
@@ -261,6 +289,10 @@
       {
         label = "CI wiring expects fleet store package";
         needle = "pkgs.crucible-fleet-store";
+      }
+      {
+        label = "CI wiring expects shared DagStore proof";
+        needle = "checks.crucible.phase7.crucibleSharedDagStore";
       }
       {
         label = "CI wiring expects TCG-only fleet store";

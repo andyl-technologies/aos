@@ -36,7 +36,10 @@ in
       "$out/bin/crucible-fleet-store" probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^backend=SharedDagStore$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^location_independent_identity=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^location_independent_roots=2$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^concurrent_put=idempotent$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^concurrent_writers=16$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^object_file_count=1$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -51,6 +54,8 @@ in
       store_interface=DagStore::put,DagStore::get,DagStore::has
       fleet_visible=true
       aos_from_source=true
+      dce_task=T-DCE-1
+      shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"
