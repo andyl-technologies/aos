@@ -2721,6 +2721,131 @@ impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport {
     }
 }
 
+/// Counts for validated forwarding metadata plus committed live reference writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
+    forwarding_header_write_plan_report: EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+    reference_writeback_apply_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
+    const fn new(
+        forwarding_header_write_plan_report:
+            EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+        reference_writeback_apply_report:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport,
+    ) -> Self {
+        Self {
+            forwarding_header_write_plan_report,
+            reference_writeback_apply_report,
+        }
+    }
+
+    /// Returns the forwarding-header write-plan report that was validated.
+    pub const fn forwarding_header_write_plan_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport {
+        self.forwarding_header_write_plan_report
+    }
+
+    /// Returns how many forwarding headers were validated.
+    pub const fn forwarding_headers_validated(self) -> usize {
+        self.forwarding_header_write_plan_report.headers()
+    }
+
+    /// Returns how many validated forwarding headers point to next-nursery objects.
+    pub const fn forwarding_headers_copied_to_nursery(self) -> usize {
+        self.forwarding_header_write_plan_report.copied_to_nursery()
+    }
+
+    /// Returns how many validated forwarding headers point to promoted old objects.
+    pub const fn forwarding_headers_promoted_to_old(self) -> usize {
+        self.forwarding_header_write_plan_report.promoted_to_old()
+    }
+
+    /// Returns the payload bytes covered by validated forwarding-header metadata.
+    pub const fn forwarding_header_payload_bytes(self) -> usize {
+        self.forwarding_header_write_plan_report.payload_bytes()
+    }
+
+    /// Returns the live reference writeback apply report.
+    pub const fn reference_writeback_apply_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport {
+        self.reference_writeback_apply_report
+    }
+
+    /// Returns the paired object-body and object-generation write report.
+    pub const fn object_body_and_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.reference_writeback_apply_report
+            .object_body_and_generation_write_report()
+    }
+
+    /// Returns the destination object-body write report.
+    pub const fn object_body_write_report(self) -> AllocationCollectorPollObjectBodyWriteReport {
+        self.reference_writeback_apply_report
+            .object_body_write_report()
+    }
+
+    /// Returns how many destination object bodies were written.
+    pub const fn object_bodies_written(self) -> usize {
+        self.reference_writeback_apply_report
+            .object_bodies_written()
+    }
+
+    /// Returns the destination object-generation write report.
+    pub const fn object_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.reference_writeback_apply_report
+            .object_generation_write_report()
+    }
+
+    /// Returns how many destination object generations were written.
+    pub const fn object_generations_written(self) -> usize {
+        self.reference_writeback_apply_report
+            .object_generations_written()
+    }
+
+    /// Returns the outcome-root writeback report.
+    pub const fn outcome_root_writeback_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
+        self.reference_writeback_apply_report
+            .outcome_root_writeback_report()
+    }
+
+    /// Returns how many outcome-owned value-stack roots were rewritten.
+    pub const fn value_stack_roots(self) -> usize {
+        self.reference_writeback_apply_report.value_stack_roots()
+    }
+
+    /// Returns how many outcome-owned roots were rewritten.
+    pub const fn roots(self) -> usize {
+        self.reference_writeback_apply_report.roots()
+    }
+
+    /// Returns the heap-field writeback report.
+    pub const fn heap_field_writeback_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport {
+        self.reference_writeback_apply_report
+            .heap_field_writeback_report()
+    }
+
+    /// Returns how many heap fields were rewritten.
+    pub const fn fields(self) -> usize {
+        self.reference_writeback_apply_report.fields()
+    }
+
+    /// Returns how many supported references were rewritten.
+    pub const fn references(self) -> usize {
+        self.reference_writeback_apply_report.references()
+    }
+}
+
 /// One validated live heap-field writeback input.
 ///
 /// This is an immutable write plan for a future object-field writer. It proves
@@ -3789,6 +3914,22 @@ fn boundary_minor_gc_forwarding_header_write_plan(
     Ok(EvalGcStressBoundaryMinorGcForwardingHeaderWritePlan::new(
         writes,
     ))
+}
+
+fn validate_boundary_minor_gc_existing_destination_commit_forwarding_header_coverage(
+    report: EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+    installed_references: usize,
+) -> Result<(), EvalHeapError> {
+    if installed_references != 0 && report.headers() == 0 {
+        return Err(
+            EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingForwardingHeaders {
+                references: installed_references,
+                forwarding_headers: report.headers(),
+            },
+        );
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -10956,21 +11097,82 @@ impl EvalOutcome {
             .gc_stress_boundary_minor_gc_reference_writebacks
             .install_report()
             .writebacks();
-        let forwarding_headers = forwarding_header_write_plan.report().headers();
-        if installed_references != 0 && forwarding_headers == 0 {
-            return Err(
-                EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingForwardingHeaders {
-                    references: installed_references,
-                    forwarding_headers,
-                },
-            );
-        }
+        validate_boundary_minor_gc_existing_destination_commit_forwarding_header_coverage(
+            forwarding_header_write_plan.report(),
+            installed_references,
+        )?;
         let reference_writeback_preflight =
             self.validate_gc_stress_boundary_minor_gc_live_reference_writebacks()?;
         Ok(
             EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport::new(
                 forwarding_header_write_plan.report(),
                 reference_writeback_preflight,
+            ),
+        )
+    }
+
+    /// Validates forwarding metadata and applies supported live reference writes.
+    ///
+    /// This is the mutating counterpart to
+    /// [`Self::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`].
+    /// It first validates installed live forwarding cells against installed
+    /// forwarding-destination bindings, including the zero-coverage guard for
+    /// independently installed reference metadata. It then consumes installed
+    /// root and heap-field writeback metadata plus installed writeback
+    /// destination bindings through the live-reference applicator, binding
+    /// destination object bodies/generations, rewriting supported record-owned
+    /// heap fields, publishing staged remembered/card-table barriers, and
+    /// finally updating the prevalidated outcome root.
+    ///
+    /// This is a narrow GC-stress orchestration bridge for existing destination
+    /// records. It validates forwarding-header metadata but does not write ABI
+    /// object headers, allocate synthetic destinations, reserve semispace
+    /// storage, mutate active evaluator frames or import caches, update JIT
+    /// stack maps, rewrite shared lexical frame slots, blackholed thunk
+    /// deferred-work/capture fields, or forced thunk cached-result fields, or
+    /// invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if forwarding-header metadata is missing,
+    /// absent for installed reference writebacks, or stale, if installed
+    /// root/heap-field writeback metadata is inconsistent, if live roots or
+    /// fields no longer hold the expected from-space values, if a destination
+    /// heap record aliases a direct in-place heap-field write owner, if existing
+    /// destination records reject paired body/generation writes, or if supported
+    /// field or remembered/card-table writes cannot be staged. Forwarding
+    /// metadata validation happens before destination object bodies,
+    /// generations, roots, heap fields, remembered-set/card-table state, or the
+    /// outcome value are changed.
+    pub fn apply_gc_stress_boundary_minor_gc_live_existing_destination_commit(
+        &mut self,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport, EvalHeapError>
+    {
+        let forwarding_header_write_plan =
+            self.gc_stress_boundary_minor_gc_forwarding_header_write_plan()?;
+        let installed_references = self
+            .gc_stress_boundary_minor_gc_reference_writebacks
+            .install_report()
+            .writebacks();
+        validate_boundary_minor_gc_existing_destination_commit_forwarding_header_coverage(
+            forwarding_header_write_plan.report(),
+            installed_references,
+        )?;
+        let root_plan = self.gc_stress_boundary_minor_gc_root_writeback_write_plan()?;
+        let heap_field_plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
+        let reference_writeback_apply_report = apply_boundary_minor_gc_live_reference_writebacks(
+            &mut self.value,
+            &mut self.heap,
+            &mut self.thunk_resolve_remembered_set,
+            &mut self.thunk_resolve_card_table,
+            &root_plan,
+            &heap_field_plan,
+        )?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport::new(
+                forwarding_header_write_plan.report(),
+                reference_writeback_apply_report,
             ),
         )
     }

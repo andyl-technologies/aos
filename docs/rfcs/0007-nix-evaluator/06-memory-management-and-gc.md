@@ -1704,6 +1704,25 @@ GC must be observationally invisible (§8): every item is gated by the different
       arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
       blackholed thunk deferred-work/capture fields, forced thunk cached-result
       fields, semispace storage, or Tier-B dispatch.
+- [x] Current boundary existing-destination live commit applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_existing_destination_commit`
+      composes installed forwarding-header metadata validation with the
+      mutating live reference writeback bridge. It validates live forwarding
+      cells and the zero forwarding-header coverage gate before deriving
+      root/field write plans or committing writes, then binds paired
+      object-body/generation writes, rewrites the supported outcome-owned
+      value-stack root and record-owned heap fields, and publishes staged
+      remembered/card-table barriers through the live-reference applicator.
+      Tests cover mixed root plus dirty permanent lambda-capture field success
+      with the preinstalled forwarding cell unchanged, reference-only metadata
+      rejection before stale-root validation or mutation, and stale-forwarding
+      rejection before reference mutation. This still requires destination
+      records and metadata to already exist, validates but does not write ABI
+      object headers, does not allocate synthetic destinations or own semispace
+      storage, and does not cover active evaluator frames, import caches,
+      arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
+      blackholed thunk deferred-work/capture fields, forced thunk cached-result
+      fields, or Tier-B dispatch.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
