@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 
 use aos_core::error::AosError;
 use aos_core::nix::{
-    DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
-    select_native_diff_candidate_with_config,
+    DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, NixEvalStrictJsonStats,
+    NixInstantiateStats, NixRunner, select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
 use aos_nix_harness::diff::{
@@ -1132,7 +1132,7 @@ fn eval_json_report(
     eval_config: &NixEvalConfig,
 ) -> EvalJsonReport {
     let oracle_result = eval_json_side(oracle, &entry.expr);
-    let candidate_result = eval_json_side(candidate, &entry.expr);
+    let (candidate_result, candidate_stats) = eval_json_candidate_side(candidate, &entry.expr);
     let failure = eval_json_expression_failure(&oracle_result, &candidate_result);
 
     EvalJsonReport {
@@ -1141,6 +1141,7 @@ fn eval_json_report(
         eval_config: eval_config.clone(),
         oracle: oracle_result,
         candidate: candidate_result,
+        candidate_stats,
         failure,
     }
 }
@@ -1149,6 +1150,16 @@ fn eval_json_side(eval: &dyn NixEval, expr: &str) -> EvalJsonResult {
     match eval.eval_expr(expr) {
         Ok(value) => EvalJsonResult::Value(value),
         Err(error) => EvalJsonResult::Error(format!("{error:#}")),
+    }
+}
+
+fn eval_json_candidate_side(
+    eval: &dyn NixEval,
+    expr: &str,
+) -> (EvalJsonResult, Option<NixEvalStrictJsonStats>) {
+    match eval.eval_expr_with_stats(expr) {
+        Ok((value, stats)) => (EvalJsonResult::Value(value), stats),
+        Err(error) => (EvalJsonResult::Error(format!("{error:#}")), None),
     }
 }
 
@@ -1218,6 +1229,7 @@ struct EvalJsonReport {
     eval_config: NixEvalConfig,
     oracle: EvalJsonResult,
     candidate: EvalJsonResult,
+    candidate_stats: Option<NixEvalStrictJsonStats>,
     failure: Option<NixDiffReportedFailure>,
 }
 
@@ -2547,6 +2559,26 @@ fn eval_json_entry_json(report: &EvalJsonReport, candidate_name: &str) -> serde_
         "candidate_value": eval_json_value(&report.candidate),
         "oracle_error": eval_json_error(&report.oracle),
         "candidate_error": eval_json_error(&report.candidate),
+        "candidate_stats": report.candidate_stats.as_ref().map(eval_json_stats_json),
+    })
+}
+
+fn eval_json_stats_json(stats: &NixEvalStrictJsonStats) -> serde_json::Value {
+    serde_json::json!({
+        "thunks_forced": stats.thunks_forced(),
+        "thunks_allocated": stats.thunks_allocated(),
+        "gc_bytes": stats.gc_bytes(),
+        "gc_pause_us": stats.gc_pause_us(),
+        "tier_promotions": stats.tier_promotions(),
+        "deopts": stats.deopts(),
+        "heap_chunks": stats.heap_chunks(),
+        "heap_reserved_bytes": stats.heap_reserved_bytes(),
+        "heap_mapped_bytes": stats.heap_mapped_bytes(),
+        "heap_used_bytes": stats.heap_used_bytes(),
+        "permanent_heap_chunks": stats.permanent_heap_chunks(),
+        "permanent_heap_reserved_bytes": stats.permanent_heap_reserved_bytes(),
+        "permanent_heap_mapped_bytes": stats.permanent_heap_mapped_bytes(),
+        "permanent_heap_used_bytes": stats.permanent_heap_used_bytes(),
     })
 }
 
@@ -3547,6 +3579,7 @@ mod tests {
     struct FixedJsonEval {
         name: &'static str,
         result: std::result::Result<&'static str, &'static str>,
+        stats: Option<NixEvalStrictJsonStats>,
         eval_expr_calls: AtomicUsize,
     }
 
@@ -3555,6 +3588,20 @@ mod tests {
             Self {
                 name,
                 result: Ok(value),
+                stats: None,
+                eval_expr_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn value_with_stats(
+            name: &'static str,
+            value: &'static str,
+            stats: NixEvalStrictJsonStats,
+        ) -> Self {
+            Self {
+                name,
+                result: Ok(value),
+                stats: Some(stats),
                 eval_expr_calls: AtomicUsize::new(0),
             }
         }
@@ -3563,6 +3610,7 @@ mod tests {
             Self {
                 name,
                 result: Err(message),
+                stats: None,
                 eval_expr_calls: AtomicUsize::new(0),
             }
         }
@@ -3591,6 +3639,13 @@ mod tests {
                 Ok(value) => Ok(value.to_string()),
                 Err(message) => Err(anyhow::anyhow!(message)),
             }
+        }
+
+        fn eval_expr_with_stats(
+            &self,
+            expr: &str,
+        ) -> Result<(String, Option<NixEvalStrictJsonStats>)> {
+            self.eval_expr(expr).map(|value| (value, self.stats))
         }
 
         fn name(&self) -> &'static str {
@@ -4464,6 +4519,47 @@ mod tests {
         assert_eq!(value["reports"][0]["candidate_value"], r#"{"a":1}"#);
         assert!(value["reports"][0]["oracle_error"].is_null());
         assert!(value["reports"][0]["candidate_error"].is_null());
+        assert!(value["reports"][0]["candidate_stats"].is_null());
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_candidate_stats() {
+        let oracle = FixedJsonEval::value("oracle", "1");
+        let candidate = FixedJsonEval::value_with_stats(
+            "candidate",
+            "1",
+            NixEvalStrictJsonStats::new(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
+        );
+        let config = repro_config();
+        let entry = EvalJsonEntry {
+            name: "stats".to_string(),
+            expr: "1".to_string(),
+            eval_config: None,
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+
+        assert_eq!(oracle.eval_expr_calls(), 1);
+        assert_eq!(candidate.eval_expr_calls(), 1);
+        assert!(failure.is_none());
+        let stats = &value["reports"][0]["candidate_stats"];
+        assert_eq!(stats["thunks_forced"], 1);
+        assert_eq!(stats["thunks_allocated"], 2);
+        assert_eq!(stats["gc_bytes"], 3);
+        assert_eq!(stats["gc_pause_us"], 4);
+        assert_eq!(stats["tier_promotions"], 5);
+        assert_eq!(stats["deopts"], 6);
+        assert_eq!(stats["heap_chunks"], 7);
+        assert_eq!(stats["heap_reserved_bytes"], 8);
+        assert_eq!(stats["heap_mapped_bytes"], 9);
+        assert_eq!(stats["heap_used_bytes"], 10);
+        assert_eq!(stats["permanent_heap_chunks"], 11);
+        assert_eq!(stats["permanent_heap_reserved_bytes"], 12);
+        assert_eq!(stats["permanent_heap_mapped_bytes"], 13);
+        assert_eq!(stats["permanent_heap_used_bytes"], 14);
     }
 
     #[test]

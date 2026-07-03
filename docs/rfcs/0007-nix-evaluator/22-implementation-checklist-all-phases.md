@@ -4955,6 +4955,14 @@ and helps the oracle directly.
       pause time, zero tier promotions, and zero deopts. This remains a focused
       expression-level proof; it does not close the final Tier-A row's
       full-closure byte-green and benchmark requirements.
+- [x] Current eval-json diff stats precursor: `NixEval::eval_expr_with_stats`
+      carries same-run strict-JSON stats when the candidate can provide them,
+      the raw native diff candidate fills those stats from
+      `NixNative::eval_expr_with_stats`, and
+      `aos nix-diff --eval-json --json` includes `candidate_stats` with worker
+      and permanent-shared mapped/reserved/used bytes plus GC/promotion/deopt
+      counters. This makes the Tier-A heap proof visible in CLI diff reports,
+      but does not close the final full-closure byte-green and benchmark row.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).

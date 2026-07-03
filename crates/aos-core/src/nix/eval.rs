@@ -326,6 +326,159 @@ impl NativeEvalStats {
     }
 }
 
+/// Native strict-JSON evaluator counters captured for one expression evaluation.
+///
+/// These counters are returned by [`NixEval::eval_expr_with_stats`] when the
+/// selected evaluator can report same-run tree-walk statistics. The heap fields
+/// distinguish worker-domain Tier-A allocations from permanent shared
+/// allocations so diff reports can prove which native memory domains were used
+/// without running the candidate expression twice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NixEvalStrictJsonStats {
+    thunks_forced: u64,
+    thunks_allocated: u64,
+    gc_bytes: u64,
+    gc_pause_us: u64,
+    tier_promotions: u64,
+    deopts: u64,
+    heap_chunks: u64,
+    heap_reserved_bytes: u64,
+    heap_mapped_bytes: u64,
+    heap_used_bytes: u64,
+    permanent_heap_chunks: u64,
+    permanent_heap_reserved_bytes: u64,
+    permanent_heap_mapped_bytes: u64,
+    permanent_heap_used_bytes: u64,
+}
+
+impl NixEvalStrictJsonStats {
+    /// Creates strict-JSON evaluator stats from explicit counter values.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        thunks_forced: u64,
+        thunks_allocated: u64,
+        gc_bytes: u64,
+        gc_pause_us: u64,
+        tier_promotions: u64,
+        deopts: u64,
+        heap_chunks: u64,
+        heap_reserved_bytes: u64,
+        heap_mapped_bytes: u64,
+        heap_used_bytes: u64,
+        permanent_heap_chunks: u64,
+        permanent_heap_reserved_bytes: u64,
+        permanent_heap_mapped_bytes: u64,
+        permanent_heap_used_bytes: u64,
+    ) -> Self {
+        Self {
+            thunks_forced,
+            thunks_allocated,
+            gc_bytes,
+            gc_pause_us,
+            tier_promotions,
+            deopts,
+            heap_chunks,
+            heap_reserved_bytes,
+            heap_mapped_bytes,
+            heap_used_bytes,
+            permanent_heap_chunks,
+            permanent_heap_reserved_bytes,
+            permanent_heap_mapped_bytes,
+            permanent_heap_used_bytes,
+        }
+    }
+
+    #[cfg(feature = "native-eval")]
+    fn from_native(stats: aos_nix::eval::EvalStats) -> Self {
+        Self::new(
+            stats.thunks_forced(),
+            stats.thunks_allocated(),
+            stats.gc_bytes(),
+            stats.gc_pause_us(),
+            stats.tier_promotions(),
+            stats.deopts(),
+            stats.heap_chunks(),
+            stats.heap_reserved_bytes(),
+            stats.heap_mapped_bytes(),
+            stats.heap_used_bytes(),
+            stats.permanent_heap_chunks(),
+            stats.permanent_heap_reserved_bytes(),
+            stats.permanent_heap_mapped_bytes(),
+            stats.permanent_heap_used_bytes(),
+        )
+    }
+
+    /// Returns the number of thunks forced during strict JSON evaluation.
+    pub const fn thunks_forced(&self) -> u64 {
+        self.thunks_forced
+    }
+
+    /// Returns the number of thunks allocated during strict JSON evaluation.
+    pub const fn thunks_allocated(&self) -> u64 {
+        self.thunks_allocated
+    }
+
+    /// Returns bytes attributed to evaluator GC work.
+    pub const fn gc_bytes(&self) -> u64 {
+        self.gc_bytes
+    }
+
+    /// Returns microseconds spent in evaluator GC work.
+    pub const fn gc_pause_us(&self) -> u64 {
+        self.gc_pause_us
+    }
+
+    /// Returns optimized-tier promotions observed during evaluation.
+    pub const fn tier_promotions(&self) -> u64 {
+        self.tier_promotions
+    }
+
+    /// Returns optimized-tier deoptimizations observed during evaluation.
+    pub const fn deopts(&self) -> u64 {
+        self.deopts
+    }
+
+    /// Returns the number of worker bump-arena chunks allocated.
+    pub const fn heap_chunks(&self) -> u64 {
+        self.heap_chunks
+    }
+
+    /// Returns bytes reserved by worker evaluator heap chunks.
+    pub const fn heap_reserved_bytes(&self) -> u64 {
+        self.heap_reserved_bytes
+    }
+
+    /// Returns page-rounded bytes mapped by the worker evaluator heap arena.
+    pub const fn heap_mapped_bytes(&self) -> u64 {
+        self.heap_mapped_bytes
+    }
+
+    /// Returns bytes consumed by worker evaluator heap allocations.
+    pub const fn heap_used_bytes(&self) -> u64 {
+        self.heap_used_bytes
+    }
+
+    /// Returns the number of permanent shared bump-arena chunks allocated.
+    pub const fn permanent_heap_chunks(&self) -> u64 {
+        self.permanent_heap_chunks
+    }
+
+    /// Returns bytes reserved by permanent shared evaluator heap chunks.
+    pub const fn permanent_heap_reserved_bytes(&self) -> u64 {
+        self.permanent_heap_reserved_bytes
+    }
+
+    /// Returns page-rounded bytes mapped by the permanent shared evaluator heap arena.
+    pub const fn permanent_heap_mapped_bytes(&self) -> u64 {
+        self.permanent_heap_mapped_bytes
+    }
+
+    /// Returns bytes consumed by permanent shared evaluator heap allocations.
+    pub const fn permanent_heap_used_bytes(&self) -> u64 {
+        self.permanent_heap_used_bytes
+    }
+}
+
 /// Returns native evaluator fallback counters captured for the current process.
 pub fn native_fallback_stats() -> NativeFallbackStats {
     #[cfg(feature = "native-eval")]
@@ -479,6 +632,19 @@ pub trait NixEval: Send + Sync {
     ///
     /// Returns an error when parsing, evaluation, or JSON rendering fails.
     fn eval_expr(&self, expr: &str) -> Result<String>;
+
+    /// Evaluates a raw expression with strict JSON semantics and optional stats.
+    ///
+    /// Implementations that return stats must capture them from the same
+    /// evaluator run that produced the returned JSON text. Implementations that
+    /// cannot report same-run counters return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parsing, evaluation, or JSON rendering fails.
+    fn eval_expr_with_stats(&self, expr: &str) -> Result<(String, Option<NixEvalStrictJsonStats>)> {
+        self.eval_expr(expr).map(|value| (value, None))
+    }
 
     /// Evaluates a raw expression with caller-selected diagnostic source text.
     ///
@@ -1688,6 +1854,12 @@ impl NixEval for NativeOnlyEval {
         let value = self.native.eval_expr(expr)?;
         observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
         Ok(value)
+    }
+
+    fn eval_expr_with_stats(&self, expr: &str) -> Result<(String, Option<NixEvalStrictJsonStats>)> {
+        let (value, stats) = self.native.eval_expr_with_stats(expr)?;
+        observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+        Ok((value, Some(NixEvalStrictJsonStats::from_native(stats))))
     }
 
     fn eval_expr_with_diagnostic_source(
@@ -3514,6 +3686,37 @@ mod tests {
         let before = native_success_stats();
 
         assert_eq!(evaluator.eval_expr("1 + 1")?, "2");
+
+        let after = native_success_stats();
+        assert!(after.expression_evaluations() > before.expression_evaluations());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_only_eval_reports_strict_json_stats() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        let evaluator = NativeOnlyEval::new(0, config)?;
+        let before = native_success_stats();
+
+        let (value, stats) =
+            evaluator.eval_expr_with_stats(r#"let f = x: { a = [ x "tier-a" ]; }; in f 1"#)?;
+
+        let stats = stats.expect("native-only evaluator reports strict JSON stats");
+        assert_eq!(value, r#"{"a":[1,"tier-a"]}"#);
+        assert!(stats.heap_chunks() > 0);
+        assert!(stats.heap_mapped_bytes() >= stats.heap_reserved_bytes());
+        assert!(stats.heap_reserved_bytes() >= stats.heap_used_bytes());
+        assert!(stats.heap_used_bytes() > 0);
+        assert!(stats.permanent_heap_chunks() > 0);
+        assert!(stats.permanent_heap_mapped_bytes() >= stats.permanent_heap_reserved_bytes());
+        assert!(stats.permanent_heap_reserved_bytes() >= stats.permanent_heap_used_bytes());
+        assert!(stats.permanent_heap_used_bytes() > 0);
+        assert_eq!(stats.gc_bytes(), 0);
+        assert_eq!(stats.gc_pause_us(), 0);
+        assert_eq!(stats.tier_promotions(), 0);
+        assert_eq!(stats.deopts(), 0);
 
         let after = native_success_stats();
         assert!(after.expression_evaluations() > before.expression_evaluations());

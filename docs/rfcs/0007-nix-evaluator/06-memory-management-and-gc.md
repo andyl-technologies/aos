@@ -1516,6 +1516,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       pause time, zero tier promotions, and zero deopts. This is still a
       focused expression-level proof, not the full closure-wide
       byte-green/benchmark evidence required by the final row.
+- [x] Current eval-json diff stats precursor: the `NixEval` seam can now return
+      same-run strict-JSON stats, the raw native diff candidate fills them from
+      `NixNative::eval_expr_with_stats`, and
+      `aos nix-diff --eval-json --json` emits `candidate_stats` with worker and
+      permanent-shared mapped/reserved/used bytes plus GC/promotion/deopt
+      counters. This makes Tier-A heap evidence visible in the CLI diff report,
+      but remains expression-level report plumbing rather than the final
+      full-closure byte-green/benchmark gate.
 - [ ] Final Tier-A runtime arena still open: geometric `mmap` chunk growth,
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A
