@@ -7030,6 +7030,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       facts are admitted. This still does not execute randomized semantic
       primop inputs against the evaluator, so aggregate/result-forwarding
       escape transparency remains open.
+- [x] Current scalar-replacement signature harness precursor:
+      the raw primop harness now also forges `Strict + NoEscape` facts, walks
+      every registered builtin deterministically, and fuzzes registered/unknown
+      names to check `scalar_replacement_plan` admits exactly one root primop
+      scalar replacement on the same immediate-scalar signature surface. The
+      harness preserves direct builtin arity rejection, requires conservative
+      cases to admit no raw-fixture replacements, and keeps unknown names
+      unsupported. This pins a second consumer of the escape-signature
+      allowlist, but still does not run randomized builtin semantics or prove
+      aggregate/result-forwarding escape behavior.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
       default, `Eager` gated by proven strictness, and `Scalar` gated by both
