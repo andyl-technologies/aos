@@ -17,8 +17,10 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
         fs::read_to_string(root.join("tests/crucible/phase2-patch-microtests.nix"))?;
     let spec = fs::read_to_string(root.join("docs/rfcs/0010-crucible/11-qemu-patches.md"))?;
 
-    assert_contains(&qemu_nix, "applyCruciblePatches ? true");
+    assert_contains(&qemu_nix, "applyCruciblePatches ? false");
     assert_contains(&qemu_nix, "patchPhase =");
+    assert_contains(&packages, "pname = \"qemu-crucible\";");
+    assert_contains(&packages, "applyCruciblePatches = true");
     assert_contains(&packages, "qemu-crucible-reference");
     assert_contains(&packages, "applyCruciblePatches = false");
 
@@ -32,8 +34,8 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
     );
     assert_contains(&patch_microtests, "qemuInertImplementedGateWired =");
 
-    assert_contains(&inert_gate, "referenceQemu = pkgs.qemu-crucible-reference");
-    assert_contains(&inert_gate, "patchedQemu = pkgs.qemu-crucible");
+    assert_contains(&inert_gate, "referenceQemu ? pkgs.qemu-crucible-reference");
+    assert_contains(&inert_gate, "patchedQemu ? pkgs.qemu-crucible");
     assert_contains(
         &inert_gate,
         "PATCH_MICROTESTS_RESULT = \"${patchMicrotests}/result\"",

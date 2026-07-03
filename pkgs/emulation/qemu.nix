@@ -16,7 +16,7 @@
   libslirp,
   pname ? "qemu",
   enablePlugins ? false,
-  applyCruciblePatches ? true,
+  applyCruciblePatches ? false,
   series ? import ./qemu-patches/_series.nix,
 }: let
   version = series.qemuVersion;

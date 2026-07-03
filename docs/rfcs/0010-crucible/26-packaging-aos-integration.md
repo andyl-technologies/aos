@@ -554,12 +554,18 @@ carries findings across an incompatible build.
   structure (mkDerivation / mkCargoPackage, inline pins, dep classification), no
   host tools, no nixpkgs. — satisfies [PKG-1], [PKG-2], [PKG-3], [PKG-4], [PKG-6],
   [G-7]; spec §26.1, §26.2.
-- [ ] **T-PKG-2** Package `qemu-crucible`: same pinned (≥ 10.0) QEMU source as
+- [x] **T-PKG-2** Package `qemu-crucible`: same pinned (≥ 10.0) QEMU source as
   production QEMU + ordered `crucible-*.patch` series applied at unpack, sim accel
   / shmem device files compiled in, completeness preserved; build `qemu-crucible`
   and `crucible-qemu-plugin` from the same pinned QEMU source, co-located as a
   matched pair with a sim-capability marker. — satisfies [PKG-5], [PKG-7], [PKG-8],
   [PKG-9], [PKG-10], [PKG-12]; spec §26.2, §26.3.
+  - Completed by `checks.crucible.phase7.crucibleQemuPackage`: production
+    `pkgs.qemu` now keeps `applyCruciblePatches = false` by default,
+    `pkgs.qemu-crucible` explicitly opts into the ordered patch series and plugin
+    support from the same QEMU pin, `pkgs.qemu-crucible-reference` stays unpatched
+    for inertness comparison, and the plugin package consumes the matched
+    `qemu-crucible` header and sim-capability marker.
 - [x] **T-PKG-3** Wire `gate:qemu-inert` as a `qemu-crucible` package check:
   unpatched vs patched-sim-off byte-identical over the upstream-equivalent corpus.
   — satisfies [PKG-13]; spec §26.3.1, routes [INV-7].

@@ -425,6 +425,7 @@
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";
         enablePlugins = true;
+        applyCruciblePatches = true;
       };
       qemu-crucible-reference = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible-reference";
