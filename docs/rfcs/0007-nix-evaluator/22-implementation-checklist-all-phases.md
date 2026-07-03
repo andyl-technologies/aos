@@ -6212,6 +6212,25 @@ and helps the oracle directly.
       not modeled yet. The historical copied-only
       `apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks` method now
       delegates to the broader applicator.
+- [x] Current boundary live heap-field writeback validation bridge:
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
+      consumes installed live heap-field writeback metadata and
+      writeback-destination bindings, validates paired object-body/generation
+      staging for replacement requests and copied writeback-object requests,
+      current record-owned source fields, staged heap-field mutations, direct
+      owner/destination aliasing, and barrier staging against cloned
+      remembered/card side tables,
+      then returns field/object preflight counts without committing any staged
+      writes. Unit tests cover a permanent-shared direct list field whose
+      existing scratch replacement is copied to young without mutating
+      destination body/generation state, heap fields, remembered/card side
+      tables, or the outcome value, and stale direct-field rejection without
+      mutating the original destination. This still requires destination records
+      to already exist as unaliased collector-owned scratch records, does not
+      allocate synthetic destinations, and does not cover shared lexical frame
+      slots, blackholed thunk deferred-work/capture fields, forced thunk
+      cached-result fields, ABI object headers, semispace storage, or Tier-B
+      dispatch.
 - [x] Current boundary live heap-field writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
       consumes the same installed live heap-field writeback metadata and
@@ -7062,6 +7081,10 @@ and helps the oracle directly.
       already-bound heap-field applicator. It also preflights the field and
       remembered-set/card-table staging path before writing destination
       body/generation state.
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
+      exposes the same object-body/generation, field, alias, and barrier staging
+      checks without committing destination bodies/generations, heap fields, or
+      remembered/card side-table changes.
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       combines the outcome-root and heap-field live bridges for one installed
       reference writeback set: it prevalidates the outcome-owned value-stack root

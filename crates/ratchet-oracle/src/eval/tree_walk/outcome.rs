@@ -2393,6 +2393,70 @@ impl EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackReport {
     }
 }
 
+/// Counts for prevalidated live object and heap-field writebacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackPreflightReport {
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    heap_field_writeback_report: EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackPreflightReport {
+    const fn new(
+        object_body_and_generation_write_report:
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+        heap_field_writeback_report: EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport,
+    ) -> Self {
+        Self {
+            object_body_and_generation_write_report,
+            heap_field_writeback_report,
+        }
+    }
+
+    /// Returns the paired object-body and object-generation preflight report.
+    pub const fn object_body_and_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
+    /// Returns the destination object-body preflight report.
+    pub const fn object_body_write_report(self) -> AllocationCollectorPollObjectBodyWriteReport {
+        self.object_body_and_generation_write_report
+            .body_write_report()
+    }
+
+    /// Returns how many destination object bodies were covered by the preflight.
+    pub const fn object_body_preflight_objects(self) -> usize {
+        self.object_body_write_report().objects()
+    }
+
+    /// Returns the destination object-generation preflight report.
+    pub const fn object_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.object_body_and_generation_write_report
+            .generation_write_report()
+    }
+
+    /// Returns how many destination object generations were covered by the preflight.
+    pub const fn object_generation_preflight_objects(self) -> usize {
+        self.object_generation_write_report().objects()
+    }
+
+    /// Returns the heap-field writeback plan report.
+    pub const fn heap_field_writeback_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport {
+        self.heap_field_writeback_report
+    }
+
+    /// Returns how many supported heap fields are covered by the preflight.
+    pub const fn fields(self) -> usize {
+        self.heap_field_writeback_report.fields()
+    }
+}
+
 /// Counts for live object-body/generation writes plus supported reference rewrites.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport {
@@ -4148,6 +4212,41 @@ fn apply_boundary_minor_gc_live_heap_field_writebacks(
 
     Ok(
         EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackReport::new(
+            object_body_and_generation_write_report,
+            plan.report(),
+        ),
+    )
+}
+
+fn validate_boundary_minor_gc_live_heap_field_writebacks(
+    heap: &EvalHeap,
+    remembered_set: &RememberedSet,
+    card_table: &GcCardTable,
+    plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
+) -> Result<EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackPreflightReport, EvalHeapError> {
+    let (copied_writes, direct_writes) = boundary_minor_gc_heap_field_writeback_writes(plan)?;
+    let object_body_plan = boundary_minor_gc_heap_field_writeback_object_body_write_plan(plan)?;
+    validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
+        &object_body_plan,
+        plan,
+    )?;
+    let (object_body_and_generation_write_report, copied_report, direct_report) = heap
+        .validate_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+            &object_body_plan,
+            &copied_writes,
+            &direct_writes,
+            remembered_set,
+            card_table,
+        )?;
+    debug_assert_eq!(
+        copied_report
+            .fields()
+            .saturating_add(direct_report.fields()),
+        plan.report().fields()
+    );
+
+    Ok(
+        EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackPreflightReport::new(
             object_body_and_generation_write_report,
             plan.report(),
         ),
@@ -10766,6 +10865,46 @@ impl EvalOutcome {
             &mut self.heap,
             &mut self.thunk_resolve_remembered_set,
             &mut self.thunk_resolve_card_table,
+            &plan,
+        )
+    }
+
+    /// Preflights supported boundary heap-field writebacks without mutation.
+    ///
+    /// This consumes the installed heap-field writeback write plan, validates
+    /// paired object-body/generation staging for replacement objects and copied
+    /// writeback-object destinations, validates current record-owned source
+    /// fields, rejects direct in-place field owners that alias those object-copy
+    /// destinations, and stages remembered-set/card-table barriers against local
+    /// side-table clones. It returns the same object and field counts the
+    /// live-field applicator would cover, but does not commit any staged writes.
+    ///
+    /// This is a read-only live-field bridge for GC-stress experiments. It still
+    /// requires destination heap records to pre-exist, and it does not allocate
+    /// destination records, reserve semispace storage, mutate shared lexical
+    /// frame slots, rewrite blackholed thunk deferred-work/capture fields or
+    /// forced thunk cached-result fields, write ABI forwarding headers, or
+    /// invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed heap-field writeback metadata is
+    /// inconsistent, if a current source field no longer holds the expected
+    /// young from-space value, if field or barrier staging fails, if a
+    /// destination heap record aliases a direct in-place heap-field write owner,
+    /// or if a destination heap record is missing or rejects paired
+    /// body/generation staging. Whether this returns `Ok` or `Err`, destination
+    /// object bodies, generations, heap fields, remembered-set/card-table state,
+    /// and the outcome value are left unchanged.
+    pub fn validate_gc_stress_boundary_minor_gc_live_heap_field_writebacks(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackPreflightReport, EvalHeapError>
+    {
+        let plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
+        validate_boundary_minor_gc_live_heap_field_writebacks(
+            &self.heap,
+            &self.thunk_resolve_remembered_set,
+            &self.thunk_resolve_card_table,
             &plan,
         )
     }
