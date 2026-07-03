@@ -359,7 +359,7 @@ in
             grep -q '^apply_clean_regenerated_series=true$' "$out/patch-regeneration.result"
             grep -q '^qemu_package_patch_phase_generated_from_manifest=true$' "$out/patch-regeneration.result"
             grep -q '^qemu_build_identity_metadata_installed=true$' "$out/patch-regeneration.result"
-            grep -q '^qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash$' "$out/patch-regeneration.result"
+            grep -q '^qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash$' "$out/patch-regeneration.result"
             grep -q '^artifact_build_id_match=true$' "$out/patch-regeneration.result"
             grep -q '^artifact_validator_rejects_mismatch=true$' "$out/patch-regeneration.result"
             grep -q '^artifact_mismatch_regates=true$' "$out/patch-regeneration.result"

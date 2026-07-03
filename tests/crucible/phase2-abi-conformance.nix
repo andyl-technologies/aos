@@ -233,11 +233,11 @@
     ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 1;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 2;";
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 2;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "explicit patch version";
@@ -245,7 +245,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v1\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v2\";";
       }
       {
         label = "golden vector protocol version";
@@ -362,8 +362,8 @@
         needle = "- [x] **T-API-12**";
       }
       {
-        label = "reference client remains pending";
-        needle = "- [ ] **T-API-13**";
+        label = "reference client conformance suite complete";
+        needle = "- [x] **T-API-13**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsSpec [
@@ -505,7 +505,7 @@ in
             engine_abi_aggregate=true
             version_bump_rule=shmem+protocol+rpc-golden-corpora
             rpc_major_mismatch_rejection=true
-            reference_client_scope=pending-T-API-13
+            reference_client_scope=implemented-T-API-13
             RESULT
           '';
         }

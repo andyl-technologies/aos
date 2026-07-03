@@ -3432,12 +3432,18 @@ struct QemuArtifactIdentity {
 struct QemuBuildMarker {
     raw_build_id: String,
     artifact_build_id: String,
+    shmem_abi_version: String,
+    shmem_abi: String,
+    shmem_header_hash: String,
 }
 
 #[derive(Debug)]
 struct PluginBuildMarker {
     plugin_abi: String,
     qemu_build_id: String,
+    shmem_abi_version: String,
+    shmem_abi: String,
+    shmem_header_hash: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -3704,6 +3710,45 @@ fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<QemuArtifactIde
             qemu_discovery_order_help()
         )));
     }
+    if qemu_marker.shmem_abi != plugin_marker.plugin_abi {
+        return Err(qemu_backend_config_error(format!(
+            "patched QEMU `{}` advertises shmem ABI `{}` but plugin `{}` advertises `{}`; {}",
+            qemu.display(),
+            qemu_marker.shmem_abi,
+            plugin.display(),
+            plugin_marker.plugin_abi,
+            qemu_discovery_order_help()
+        )));
+    }
+    if plugin_marker.shmem_abi != plugin_marker.plugin_abi {
+        return Err(qemu_backend_config_error(format!(
+            "plugin `{}` advertises plugin ABI `{}` but its shmem ABI marker is `{}`; {}",
+            plugin.display(),
+            plugin_marker.plugin_abi,
+            plugin_marker.shmem_abi,
+            qemu_discovery_order_help()
+        )));
+    }
+    if qemu_marker.shmem_abi_version != plugin_marker.shmem_abi_version {
+        return Err(qemu_backend_config_error(format!(
+            "patched QEMU `{}` advertises shmem ABI version `{}` but plugin `{}` advertises `{}`; {}",
+            qemu.display(),
+            qemu_marker.shmem_abi_version,
+            plugin.display(),
+            plugin_marker.shmem_abi_version,
+            qemu_discovery_order_help()
+        )));
+    }
+    if qemu_marker.shmem_header_hash != plugin_marker.shmem_header_hash {
+        return Err(qemu_backend_config_error(format!(
+            "patched QEMU `{}` advertises shmem header hash `{}` but plugin `{}` was built with `{}`; {}",
+            qemu.display(),
+            qemu_marker.shmem_header_hash,
+            plugin.display(),
+            plugin_marker.shmem_header_hash,
+            qemu_discovery_order_help()
+        )));
+    }
     Ok(QemuArtifactIdentity {
         qemu_build_id: qemu_marker.artifact_build_id,
         plugin_abi: plugin_marker.plugin_abi,
@@ -3733,10 +3778,11 @@ fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
 }
 
 fn required_qemu_plugin_abi() -> String {
-    format!(
-        "{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{}",
-        crucible::SHMEM_ABI_VERSION
-    )
+    shmem_abi_label_for_version(&crucible::SHMEM_ABI_VERSION.to_string())
+}
+
+fn shmem_abi_label_for_version(version: &str) -> String {
+    format!("{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{version}")
 }
 
 fn qemu_discovery_order_help() -> String {
@@ -3754,6 +3800,14 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
         ))
     })?;
     let fields = read_key_value_metadata(&marker)?;
+    let sim_capability = required_metadata_field(&fields, "qemu_sim_capability", &marker)?;
+    if sim_capability != "qemu-crucible" {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU `{}` does not advertise the qemu-crucible sim capability (qemu_sim_capability={sim_capability}); {}",
+            qemu.display(),
+            qemu_discovery_order_help()
+        )));
+    }
     let patches_applied =
         required_metadata_field(&fields, "qemu_crucible_patches_applied", &marker)?;
     if patches_applied != "true" {
@@ -3779,6 +3833,32 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
             qemu_discovery_order_help()
         )));
     }
+    let shmem_abi_version = required_metadata_field(&fields, "qemu_shmem_abi_version", &marker)?;
+    let shmem_abi = required_metadata_field(&fields, "qemu_shmem_abi", &marker)?;
+    let shmem_header = required_metadata_field(&fields, "qemu_shmem_header", &marker)?;
+    let shmem_header_hash = required_metadata_field(&fields, "qemu_shmem_header_hash", &marker)?;
+    if shmem_abi_version.is_empty()
+        || shmem_abi.is_empty()
+        || shmem_header.is_empty()
+        || shmem_header_hash.is_empty()
+    {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU marker `{}` must contain non-empty qemu_shmem_abi_version, qemu_shmem_abi, qemu_shmem_header, and qemu_shmem_header_hash; {}",
+            marker.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    let expected_shmem_abi = shmem_abi_label_for_version(&shmem_abi_version);
+    if shmem_abi != expected_shmem_abi {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU marker `{}` has qemu_shmem_abi_version `{}` but qemu_shmem_abi `{}`; expected `{}`; {}",
+            marker.display(),
+            shmem_abi_version,
+            shmem_abi,
+            expected_shmem_abi,
+            qemu_discovery_order_help()
+        )));
+    }
     let artifact_build_id = if is_content_address(&raw_build_id) {
         raw_build_id.clone()
     } else {
@@ -3787,6 +3867,9 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
     Ok(QemuBuildMarker {
         raw_build_id,
         artifact_build_id,
+        shmem_abi_version,
+        shmem_abi,
+        shmem_header_hash,
     })
 }
 
@@ -3801,16 +3884,39 @@ fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError
     let fields = read_key_value_metadata(&marker)?;
     let plugin_abi = required_metadata_field(&fields, "plugin_abi", &marker)?;
     let qemu_build_id = required_metadata_field(&fields, "qemu_build_id", &marker)?;
-    if plugin_abi.is_empty() || qemu_build_id.is_empty() {
+    let shmem_abi_version = required_metadata_field(&fields, "shmem_abi_version", &marker)?;
+    let shmem_abi = required_metadata_field(&fields, "shmem_abi", &marker)?;
+    let shmem_header_hash =
+        required_metadata_field(&fields, "shmem_generated_header_hash", &marker)?;
+    if plugin_abi.is_empty()
+        || qemu_build_id.is_empty()
+        || shmem_abi_version.is_empty()
+        || shmem_abi.is_empty()
+        || shmem_header_hash.is_empty()
+    {
         return Err(qemu_backend_config_error(format!(
-            "plugin marker `{}` must contain non-empty plugin_abi and qemu_build_id; {}",
+            "plugin marker `{}` must contain non-empty plugin_abi, qemu_build_id, shmem_abi_version, shmem_abi, and shmem_generated_header_hash; {}",
             marker.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    let expected_shmem_abi = shmem_abi_label_for_version(&shmem_abi_version);
+    if shmem_abi != expected_shmem_abi {
+        return Err(qemu_backend_config_error(format!(
+            "plugin marker `{}` has shmem_abi_version `{}` but shmem_abi `{}`; expected `{}`; {}",
+            marker.display(),
+            shmem_abi_version,
+            shmem_abi,
+            expected_shmem_abi,
             qemu_discovery_order_help()
         )));
     }
     Ok(PluginBuildMarker {
         plugin_abi,
         qemu_build_id,
+        shmem_abi_version,
+        shmem_abi,
+        shmem_header_hash,
     })
 }
 
@@ -9319,16 +9425,17 @@ mod tests {
         qemu_build_id: &str,
         plugin_abi: &str,
     ) -> Result<(), Box<dyn Error>> {
+        let shmem_abi_version = crucible::SHMEM_ABI_VERSION;
         fs::write(
             dir.join("qemu-build-identity.env"),
             format!(
-                "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_build_id={qemu_build_id}\n"
+                "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
             ),
         )?;
         fs::write(
             dir.join("crucible-qemu-plugin-build-info"),
             format!(
-                "package=crucible-qemu-plugin\nqemu_package=qemu-crucible\nqemu_build_id={qemu_build_id}\nplugin_abi={plugin_abi}\n"
+                "package=crucible-qemu-plugin\nqemu_package=qemu-crucible\nqemu_build_id={qemu_build_id}\nshmem_abi_version={shmem_abi_version}\nshmem_abi={plugin_abi}\nshmem_generated_header=include/aos/crucible/crucible_shmem_abi.h\nshmem_generated_header_hash=sha256-test-shmem-header\nplugin_abi={plugin_abi}\n"
             ),
         )?;
         Ok(())
@@ -10227,6 +10334,7 @@ mod tests {
 
         let temp = TempDir::new()?;
         let plugin_abi = required_qemu_plugin_abi();
+        let shmem_abi_version = crucible::SHMEM_ABI_VERSION;
         let (qemu, plugin) =
             qemu_artifacts_in_dir(&temp.path().join("mismatch"), "qemu-build-a", &plugin_abi)?;
         fs::write(
@@ -10234,7 +10342,7 @@ mod tests {
                 .join("mismatch")
                 .join("crucible-qemu-plugin-build-info"),
             format!(
-                "package=crucible-qemu-plugin\nqemu_build_id=qemu-build-b\nplugin_abi={plugin_abi}\n"
+                "package=crucible-qemu-plugin\nqemu_build_id=qemu-build-b\nshmem_abi_version=1\nshmem_abi={plugin_abi}\nshmem_generated_header_hash=sha256-test-shmem-header\nplugin_abi={plugin_abi}\n"
             ),
         )?;
         let mismatch_cli = Cli::parse_from([
@@ -10258,6 +10366,107 @@ mod tests {
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
         assert!(error.to_string().contains("built for QEMU identity"));
+
+        let (qemu, plugin) = qemu_artifacts_in_dir(
+            &temp.path().join("shmem-mismatch"),
+            "qemu-build-c",
+            &plugin_abi,
+        )?;
+        fs::write(
+            temp.path()
+                .join("shmem-mismatch")
+                .join("qemu-build-identity.env"),
+            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
+        )?;
+        let mismatch_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection_with_discovery(
+            &mismatch_cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        ) {
+            Ok(_) => panic!("mismatched QEMU shmem ABI must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("advertises shmem ABI"));
+
+        let (qemu, plugin) = qemu_artifacts_in_dir(
+            &temp.path().join("shmem-version-mismatch"),
+            "qemu-build-d",
+            &plugin_abi,
+        )?;
+        fs::write(
+            temp.path()
+                .join("shmem-version-mismatch")
+                .join("qemu-build-identity.env"),
+            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v1\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
+        )?;
+        let mismatch_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection_with_discovery(
+            &mismatch_cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        ) {
+            Ok(_) => panic!("inconsistent QEMU shmem ABI version marker must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("qemu_shmem_abi_version"));
+
+        let (qemu, plugin) = qemu_artifacts_in_dir(
+            &temp.path().join("shmem-header-hash-mismatch"),
+            "qemu-build-e",
+            &plugin_abi,
+        )?;
+        fs::write(
+            temp.path()
+                .join("shmem-header-hash-mismatch")
+                .join("crucible-qemu-plugin-build-info"),
+            format!(
+                "package=crucible-qemu-plugin\nqemu_build_id=qemu-build-e\nshmem_abi_version={shmem_abi_version}\nshmem_abi={plugin_abi}\nshmem_generated_header_hash=sha256-different-shmem-header\nplugin_abi={plugin_abi}\n"
+            ),
+        )?;
+        let mismatch_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "qemu",
+            "--qemu",
+            &qemu,
+            "--plugin",
+            &plugin,
+            "run",
+        ]);
+        let error = match plan_backend_selection_with_discovery(
+            &mismatch_cli,
+            &FakeQemuDiscoveryEnvironment::default(),
+            &FakeAosQemuPackageSet::default(),
+        ) {
+            Ok(_) => panic!("mismatched shmem generated-header hash must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("shmem header hash"));
 
         Ok(())
     }

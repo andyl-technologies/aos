@@ -40,11 +40,18 @@
     inherit patchBranchCommits;
   };
   patchBranchMaterialHash = builtins.hashString "sha256" patchBranchMaterial;
-  patchSeriesHash = qemuPackage.passthru.patchSeriesHash;
-  qemuBuildIdentity = qemuPackage.passthru.qemuBuildIdentity;
-  qemuBuildIdentityMaterial = qemuPackage.passthru.qemuBuildIdentityMaterial;
-  qemuNixHash = qemuPackage.passthru.qemuNixHash;
-  qemuConfigureFlagsHash = qemuPackage.passthru.qemuConfigureFlagsHash;
+  inherit
+    (qemuPackage.passthru)
+    patchSeriesHash
+    qemuBuildIdentity
+    qemuBuildIdentityMaterial
+    qemuConfigureFlagsHash
+    qemuNixHash
+    shmemAbi
+    shmemAbiVersion
+    shmemHeaderHash
+    shmemHeaderInstallPath
+    ;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -101,6 +108,15 @@
     ]
     ++ lib.optionals (!(hasInfix "qemu-build-identity.env" qemuNix && hasInfix "qemu_build_id=" qemuNix)) [
       "pkgs/emulation/qemu.nix: QEMU package must install build identity metadata"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu_sim_capability=qemu-crucible" qemuNix && hasInfix "qemu_shmem_abi=" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU package must install Crucible sim-capability and shmem ABI metadata"
+    ]
+    ++ lib.optionals (!(hasInfix "crucible_shmem_abi.h" qemuNix && hasInfix "shmemHeaderHash" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU package must consume the generated Crucible shmem header"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu-crucible-shmem-abi-probe.c" qemuNix && hasInfix "CRUCIBLE_EXPECTED_SHMEM_ABI_VERSION" qemuNix)) [
+      "pkgs/emulation/qemu.nix: QEMU package must compile a C-side probe against the generated Crucible shmem header"
     ]
     ++ lib.optionals (!(hasInfix "qemu_nix_hash=" qemuNix && hasInfix "qemu_configure_flags_hash=" qemuNix)) [
       "pkgs/emulation/qemu.nix: QEMU build identity must include qemu.nix and configure flag material"
@@ -289,6 +305,11 @@ in
             grep -q '^qemu_patch_branch_base_tree=${series.patchBranchBaseTree}$' "$identity_file"
             grep -q '^qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}$' "$identity_file"
             grep -q '^qemu_patch_branch_material_hash=${patchBranchMaterialHash}$' "$identity_file"
+            grep -q '^qemu_sim_capability=qemu-crucible$' "$identity_file"
+            grep -q '^qemu_shmem_abi_version=${shmemAbiVersion}$' "$identity_file"
+            grep -q '^qemu_shmem_abi=${shmemAbi}$' "$identity_file"
+            grep -q '^qemu_shmem_header=${shmemHeaderInstallPath}$' "$identity_file"
+            grep -q '^qemu_shmem_header_hash=${shmemHeaderHash}$' "$identity_file"
             grep -q '^qemu_build_id=${qemuBuildIdentity}$' "$identity_file"
 
             changed_build_id=$(
@@ -301,7 +322,7 @@ in
               || fail "version-bump negative control did not change build identity"
 
             cat > "$out/reproduction-artifact.json" <<ARTIFACT
-            {"qemu_build_id":"$qemu_build_id","qemu_version":"${series.qemuVersion}","qemu_source_hash":"${series.qemuSourceHash}","qemu_patch_series_hash":"${patchSeriesHash}","qemu_patch_branch_ref":"${series.patchBranchRef}","qemu_patch_branch_bundle_hash":"${patchBranchBundleHash}","qemu_patch_branch_material_hash":"${patchBranchMaterialHash}","qemu_nix_hash":"${qemuNixHash}","qemu_configure_flags_hash":"${qemuConfigureFlagsHash}"}
+            {"qemu_build_id":"$qemu_build_id","qemu_version":"${series.qemuVersion}","qemu_source_hash":"${series.qemuSourceHash}","qemu_patch_series_hash":"${patchSeriesHash}","qemu_patch_branch_ref":"${series.patchBranchRef}","qemu_patch_branch_bundle_hash":"${patchBranchBundleHash}","qemu_patch_branch_material_hash":"${patchBranchMaterialHash}","qemu_nix_hash":"${qemuNixHash}","qemu_configure_flags_hash":"${qemuConfigureFlagsHash}","qemu_shmem_abi":"${shmemAbi}","qemu_shmem_abi_version":"${shmemAbiVersion}","qemu_shmem_header_hash":"${shmemHeaderHash}"}
             ARTIFACT
             validate_artifact_build_id "$out/reproduction-artifact.json" "$qemu_build_id" \
               || fail "reproduction artifact validator rejected matching QEMU build identity"
@@ -349,7 +370,12 @@ in
             qemu_build_id=${qemuBuildIdentity}
             qemu_nix_hash=${qemuNixHash}
             qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-            qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash
+            qemu_sim_capability=qemu-crucible
+            qemu_shmem_abi_version=${shmemAbiVersion}
+            qemu_shmem_abi=${shmemAbi}
+            qemu_shmem_header=${shmemHeaderInstallPath}
+            qemu_shmem_header_hash=${shmemHeaderHash}
+            qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash
             artifact_build_id_match=true
             artifact_validator_accepts_match=true
             artifact_validator_rejects_mismatch=true
