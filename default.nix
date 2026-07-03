@@ -275,6 +275,7 @@
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
+      fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -290,6 +291,7 @@
           fleetStoreGate
           sharedDagStoreGate
           frontierLeaseGate
+          fourLayerDedupGate
         ];
 
         phases = [
@@ -321,6 +323,14 @@
               grep -q '^stale_claim_lock=reclaimable$' "$frontier_lease_result"
               grep -q '^hash_affinity=priority-only$' "$frontier_lease_result"
 
+              four_layer_dedup_result="${fourLayerDedupGate}/result"
+              grep -q '^PASS$' "$four_layer_dedup_result"
+              grep -q '^tasks=T-DCE-3$' "$four_layer_dedup_result"
+              grep -q '^dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set$' "$four_layer_dedup_result"
+              grep -q '^coverage_map_admission=compare-and-merge$' "$four_layer_dedup_result"
+              grep -q '^coverage_map_repair=entry-markers-before-fingerprint$' "$four_layer_dedup_result"
+              grep -q '^reduction_fingerprint=shared-prune$' "$four_layer_dedup_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -339,6 +349,13 @@
               grep -q '^hash_affinity=priority-only$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^affinity_filters_frontier=false$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^static_partitioning=false$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^exists_gated_expansion=skip-existing$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_map_admission=compare-and-merge$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_map_repair=entry-markers-before-fingerprint$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_map_duplicate=skipped$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^reduction_fingerprint=shared-prune$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^claim_set_anti_redundancy=unclaimed-first$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -351,6 +368,7 @@
               fleet_store_gate_result=${fleetStoreGate}/result
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
               frontier_lease_gate_result=${frontierLeaseGate}/result
+              four_layer_dedup_gate_result=${fourLayerDedupGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -374,6 +392,13 @@
               hash_affinity=priority-only
               affinity_filters_frontier=false
               static_partitioning=false
+              dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set
+              exists_gated_expansion=skip-existing
+              coverage_map_admission=compare-and-merge
+              coverage_map_repair=entry-markers-before-fingerprint
+              coverage_map_duplicate=skipped
+              reduction_fingerprint=shared-prune
+              claim_set_anti_redundancy=unclaimed-first
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

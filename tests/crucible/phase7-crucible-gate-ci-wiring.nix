@@ -157,12 +157,12 @@
     {
       label = "fleet equivalence waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
       edge = "gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
+      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
       edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence-wrapper";
-      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
+      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "campaign continuity waits for fleet equivalence and campaign provenance";
@@ -417,6 +417,10 @@
         needle = "frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;";
       }
       {
+        label = "distributed fleet wrapper consumes four-layer dedup gate";
+        needle = "fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;";
+      }
+      {
         label = "distributed fleet wrapper records TCG-only execution";
         needle = "tcg_only=true";
       }
@@ -579,6 +583,7 @@ in
             qemu_package_checks=${builtins.concatStringsSep "," (map (gate: gate.packagePath) packageClassGates)}
             shared_dag_store_source=checks.crucible.phase7.crucibleSharedDagStore
             frontier_lease_source=checks.crucible.phase7.crucibleFrontierLeases
+            four_layer_dedup_source=checks.crucible.phase7.crucibleFourLayerDedup
             fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';

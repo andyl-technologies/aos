@@ -18,7 +18,8 @@ use std::sync::Barrier;
 use std::thread;
 
 use crucible_cas::{
-    ContentHash, DagStore, FrontierClaimRequest, SharedDagStore, SharedFrontier, SoftHashAffinity,
+    ContentHash, DagStore, ExpansionDedupDecision, FrontierClaimRequest, SharedDagStore,
+    SharedDedupIndex, SharedFrontier, SoftHashAffinity,
 };
 
 const PROBE_PAYLOAD: &[u8] = b"crucible-fleet-store-probe-v1";
@@ -76,6 +77,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
         ));
     }
     prove_frontier_claim_leases(&root.join("leases"))?;
+    prove_four_layer_dedup(&root.join("dedup"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -98,6 +100,13 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("affinity_filters_frontier=false");
     println!("static_partitioning=false");
     println!("lease_ttl_ticks=5");
+    println!("dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set");
+    println!("exists_gated_expansion=skip-existing");
+    println!("coverage_map_admission=compare-and-merge");
+    println!("coverage_map_repair=entry-markers-before-fingerprint");
+    println!("coverage_map_duplicate=skipped");
+    println!("reduction_fingerprint=shared-prune");
+    println!("claim_set_anti_redundancy=unclaimed-first");
     Ok(())
 }
 
@@ -271,6 +280,133 @@ fn prove_frontier_claim_leases(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn prove_four_layer_dedup(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let store = SharedDagStore::new(root.join("objects"));
+    let index = SharedDedupIndex::new(root.join("index"));
+
+    let child = ContentHash::from_bytes(b"four-layer-child");
+    if index.exists_gated_expansion(&store, &child)? != ExpansionDedupDecision::Expand {
+        return Err(input_error("absent child was not expandable"));
+    }
+    if store.put(b"four-layer-child")? != child {
+        return Err(input_error("four-layer child did not use its content key"));
+    }
+    if index.exists_gated_expansion(&store, &child)? != ExpansionDedupDecision::SkipExisting {
+        return Err(input_error("existing child was not skipped"));
+    }
+
+    let edge_a = ContentHash::from_bytes(b"coverage-edge-a");
+    let edge_b = ContentHash::from_bytes(b"coverage-edge-b");
+    let edge_c = ContentHash::from_bytes(b"coverage-edge-c");
+    let coverage_ab = ContentHash::from_bytes(b"coverage-a-b");
+    let first_coverage = index.admit_coverage_map(coverage_ab, [edge_a, edge_b])?;
+    if !first_coverage.admitted() || first_coverage.new_entries.len() != 2 {
+        return Err(input_error("new shared coverage was not admitted"));
+    }
+    let same_fingerprint = index.admit_coverage_map(coverage_ab, [edge_a, edge_b])?;
+    if !same_fingerprint.redundant() || same_fingerprint.duplicate_entries.len() != 2 {
+        return Err(input_error(
+            "duplicate coverage fingerprint was not skipped",
+        ));
+    }
+    let interrupted_fingerprint = ContentHash::from_bytes(b"coverage-interrupted");
+    let interrupted_a = ContentHash::from_bytes(b"coverage-interrupted-a");
+    let interrupted_b = ContentHash::from_bytes(b"coverage-interrupted-b");
+    let interrupted_path = probe_content_path(
+        &index.root().join("coverage-fingerprints"),
+        &interrupted_fingerprint,
+    );
+    if let Some(parent) = interrupted_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &interrupted_path,
+        probe_coverage_fingerprint_record_material(
+            &interrupted_fingerprint,
+            &[interrupted_a, interrupted_b],
+        ),
+    )?;
+    if probe_content_path(&index.root().join("coverage-map"), &interrupted_a).exists() {
+        return Err(input_error(
+            "interrupted coverage admission already had entry markers",
+        ));
+    }
+    let repaired =
+        index.admit_coverage_map(interrupted_fingerprint, [interrupted_a, interrupted_b])?;
+    if !repaired.redundant()
+        || repaired.duplicate_entries.len() != 2
+        || !probe_content_path(&index.root().join("coverage-map"), &interrupted_a).exists()
+        || !probe_content_path(&index.root().join("coverage-map"), &interrupted_b).exists()
+    {
+        return Err(input_error(
+            "interrupted coverage admission was not repaired",
+        ));
+    }
+    let duplicate_coverage = index.admit_coverage_map(
+        ContentHash::from_bytes(b"coverage-a-b-duplicate"),
+        [edge_a, edge_b],
+    )?;
+    if !duplicate_coverage.redundant() || duplicate_coverage.duplicate_entries.len() != 2 {
+        return Err(input_error("duplicate shared coverage was not skipped"));
+    }
+    let merged_coverage =
+        index.admit_coverage_map(ContentHash::from_bytes(b"coverage-b-c"), [edge_b, edge_c])?;
+    if merged_coverage.new_entries != vec![edge_c]
+        || merged_coverage.duplicate_entries != vec![edge_b]
+    {
+        return Err(input_error(
+            "shared coverage compare-and-merge did not isolate novelty",
+        ));
+    }
+
+    let reduction_fingerprint = ContentHash::from_bytes(b"symmetry-por-fingerprint");
+    let representative = ContentHash::from_bytes(b"canonical-representative");
+    let covered = ContentHash::from_bytes(b"covered-equivalent");
+    let first_reduction =
+        index.admit_reduction_fingerprint(reduction_fingerprint, representative)?;
+    if !first_reduction.admitted() || first_reduction.representative != representative {
+        return Err(input_error(
+            "first shared reduction fingerprint was not retained",
+        ));
+    }
+    let covered_reduction = index.admit_reduction_fingerprint(reduction_fingerprint, covered)?;
+    if !covered_reduction.covered()
+        || covered_reduction.representative != representative
+        || covered_reduction.covered != Some(covered)
+    {
+        return Err(input_error(
+            "shared reduction fingerprint did not prune covered candidate",
+        ));
+    }
+
+    let frontier = SharedFrontier::new(root.join("frontier"));
+    let node_a = store.put(b"claim-anti-redundancy-a")?;
+    let node_b = store.put(b"claim-anti-redundancy-b")?;
+    frontier.admit(&node_a)?;
+    frontier.admit(&node_b)?;
+    let first_claim = frontier
+        .claim_next(&FrontierClaimRequest::new("host-a", 1, 5))?
+        .ok_or_else(|| input_error("first host did not claim a frontier node"))?;
+    let second_claim = frontier
+        .claim_next(&FrontierClaimRequest::new("host-b", 2, 5))?
+        .ok_or_else(|| input_error("second host did not claim fallback frontier node"))?;
+    if first_claim.node == second_claim.node {
+        return Err(input_error(
+            "claim-set anti-redundancy reused a leased node",
+        ));
+    }
+    if frontier.claimable_nodes(3)?.contains(&first_claim.node) {
+        return Err(input_error("leased node remained in the claimable set"));
+    }
+
+    Ok(())
+}
+
 fn probe_content_path(root: &Path, node: &ContentHash) -> PathBuf {
     let hex = node.to_hex();
     root.join(&hex[0..2]).join(hex)
@@ -284,6 +420,21 @@ fn probe_claim_lock_record_material(
     format!(
         "format=crucible.frontier-claim-lock.v1\nnode={}\nacquired_at_tick={acquired_at_tick}\nexpires_at_tick={expires_at_tick}\n",
         node.to_hex()
+    )
+}
+
+fn probe_coverage_fingerprint_record_material(
+    coverage_fingerprint: &ContentHash,
+    entries: &[ContentHash],
+) -> String {
+    let entries = entries
+        .iter()
+        .map(|entry| entry.to_hex())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "format=crucible.coverage-fingerprint.v1\ncoverage_fingerprint={}\nentries={entries}\n",
+        coverage_fingerprint.to_hex()
     )
 }
 

@@ -979,12 +979,22 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     records a TTL lease, falls back to another claimable node instead of static
     partitioning, reclaims both an expired node lease and an abandoned claim-lock
     sidecar, then re-puts the same bytes through `SharedDagStore` to prove
-    byte-identical dedup. Full fleet search equivalence and divergence localization
-    remain T-DCE-8.
-- [ ] **T-DCE-3** Implement the four dedup layers (exists()-gated expansion, shared
+    byte-identical dedup. Four-layer dedup, full fleet search equivalence, and
+    divergence localization remain T-DCE-3/T-DCE-8.
+- [x] **T-DCE-3** Implement the four dedup layers (exists()-gated expansion, shared
   coverage-map compare-and-merge admission, symmetry/partial-order reduction over
   shared fingerprints, claim-set anti-redundancy). — satisfies [DCE-8]; spec
   §35.2.4; cross-ref 07 §7/§9, 22 §22.6.
+  - Completed by `checks.crucible.phase7.crucibleFourLayerDedup`: `crucible-cas`
+    now exposes `SharedDedupIndex`, `ExpansionDedupDecision`, `CoverageAdmission`,
+    and `ReductionAdmission`. The packaged `crucible-fleet-store probe` proves
+    exists-gated expansion skips a child already in `SharedDagStore`, shared
+    coverage-map admission admits only entries that add new coverage and repairs an
+    interrupted fingerprint-before-entry admission, shared reduction fingerprints
+    retain one representative and prune covered candidates, and claim-set
+    anti-redundancy sends a second host to an unleased frontier node.
+    Full single-host-vs-fleet equivalence and divergence localization remain
+    T-DCE-8.
 - [ ] **T-DCE-4** Implement the persistent campaign store + the CAS-advanced
   campaign manifest (the only mutable, non-content-addressed object) naming
   corpus/coverage/findings roots, genesis pin, and provenance, with read-merge-retry

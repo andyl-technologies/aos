@@ -2470,6 +2470,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleFrontierLeases";
       taskIds = ["T-DCE-2"];
     };
+    crucibleFourLayerDedup = import ./phase7-crucible-four-layer-dedup.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleFourLayerDedup";
+      taskIds = ["T-DCE-3"];
+    };
     crucibleCampaignProvenance = import ./phase7-crucible-campaign-provenance.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";
@@ -2569,9 +2574,9 @@ in rec {
           phase = "phase7";
           taskIds = ["T-PLAN-3" "T-DCE-7"];
           reason = "fleet equivalence gate is intentionally pending";
-          dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];
+          dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];
         };
-        dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];
+        dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];
       };
       campaignContinuity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.campaignContinuity";
