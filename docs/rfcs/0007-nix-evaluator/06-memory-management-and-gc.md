@@ -2093,6 +2093,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       remembered-set buffers. Boundary preflights expose per-generation
       object-payload byte totals, and the dry-run summary reports those totals
       alongside rewritten root/heap-field counts and lower-level commit counts.
+      Boundary preflights also carry caller-owned typed root-slot buffers
+      reconstructed from root writeback metadata, and reference writeback
+      applications validate/rewrite those typed buffers alongside the existing
+      generation-style root and heap-field slots without binding them to live
+      evaluator roots.
       Root-backed reference slots and derived root writebacks now carry the
       copied heap `ValueTag`, so a later live root-slot writer has the tag needed
       to reconstruct typed relocated `Value` handles from address/generation

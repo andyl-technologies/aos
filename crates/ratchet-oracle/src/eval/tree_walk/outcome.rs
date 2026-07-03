@@ -30,10 +30,14 @@ const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
     "boundary minor-GC forwarding slot buffer";
 const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
 const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE: &str = "boundary minor-GC root writeback slots";
+const BOUNDARY_MINOR_GC_ROOT_VALUE_WRITEBACK_SLOTS_TABLE: &str =
+    "boundary minor-GC root value writeback slots";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC heap-field writeback slots";
 const BOUNDARY_MINOR_GC_LIVE_ROOT_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC live root writeback slots";
+const BOUNDARY_MINOR_GC_LIVE_ROOT_VALUE_WRITEBACK_SLOTS_TABLE: &str =
+    "boundary minor-GC live root value writeback slots";
 const BOUNDARY_MINOR_GC_LIVE_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC live heap-field writeback slots";
 
@@ -283,6 +287,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitPreflight {
     reference_buffer: Vec<ResolvedValueGeneration>,
     reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
     root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+    root_value_writeback_slots: Vec<AllocationCollectorPollRootValueWritebackSlot>,
     heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
     card_table: GcCardTable,
 }
@@ -296,6 +301,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         reference_buffer: Vec<ResolvedValueGeneration>,
         reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
         root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+        root_value_writeback_slots: Vec<AllocationCollectorPollRootValueWritebackSlot>,
         heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
         card_table: GcCardTable,
     ) -> Self {
@@ -306,6 +312,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
             reference_buffer,
             reference_writeback_plan,
             root_writeback_slots,
+            root_value_writeback_slots,
             heap_field_writeback_slots,
             card_table,
         }
@@ -366,6 +373,11 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         &self.root_writeback_slots
     }
 
+    /// Returns caller-owned typed root writeback slots copied from the plan.
+    pub fn root_value_writeback_slots(&self) -> &[AllocationCollectorPollRootValueWritebackSlot] {
+        &self.root_value_writeback_slots
+    }
+
     /// Returns caller-owned heap-field writeback slots copied from the plan.
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         &self.heap_field_writeback_slots
@@ -399,16 +411,22 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     ) -> Result<EvalGcStressBoundaryMinorGcReferenceWritebackApplication, EvalHeapError> {
         let mut root_writeback_slots =
             clone_boundary_root_writeback_slots(&self.root_writeback_slots)?;
+        let mut root_value_writeback_slots =
+            clone_boundary_root_value_writeback_slots(&self.root_value_writeback_slots)?;
         let mut heap_field_writeback_slots =
             clone_boundary_heap_field_writeback_slots(&self.heap_field_writeback_slots)?;
         let report = self
             .reference_writeback_plan
             .apply_to_slots(&mut root_writeback_slots, &mut heap_field_writeback_slots)?;
+        self.reference_writeback_plan
+            .root_writebacks()
+            .apply_to_value_slots(&mut root_value_writeback_slots)?;
 
         Ok(
             EvalGcStressBoundaryMinorGcReferenceWritebackApplication::new(
                 report,
                 root_writeback_slots,
+                root_value_writeback_slots,
                 heap_field_writeback_slots,
             ),
         )
@@ -480,6 +498,7 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
 pub struct EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
     report: AllocationCollectorPollReferenceWritebackReport,
     root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+    root_value_writeback_slots: Vec<AllocationCollectorPollRootValueWritebackSlot>,
     heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
 }
 
@@ -487,11 +506,13 @@ impl EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
     const fn new(
         report: AllocationCollectorPollReferenceWritebackReport,
         root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+        root_value_writeback_slots: Vec<AllocationCollectorPollRootValueWritebackSlot>,
         heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
     ) -> Self {
         Self {
             report,
             root_writeback_slots,
+            root_value_writeback_slots,
             heap_field_writeback_slots,
         }
     }
@@ -504,6 +525,11 @@ impl EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
     /// Returns caller-owned root writeback slots after application.
     pub fn root_writeback_slots(&self) -> &[AllocationCollectorPollRootWritebackSlot] {
         &self.root_writeback_slots
+    }
+
+    /// Returns caller-owned typed root writeback slots after application.
+    pub fn root_value_writeback_slots(&self) -> &[AllocationCollectorPollRootValueWritebackSlot] {
+        &self.root_value_writeback_slots
     }
 
     /// Returns caller-owned heap-field writeback slots after application.
@@ -1189,6 +1215,9 @@ fn clone_boundary_reference_writeback_application(
         EvalGcStressBoundaryMinorGcReferenceWritebackApplication::new(
             application.report(),
             clone_boundary_live_root_writeback_slots(application.root_writeback_slots())?,
+            clone_boundary_live_root_value_writeback_slots(
+                application.root_value_writeback_slots(),
+            )?,
             clone_boundary_live_heap_field_writeback_slots(
                 application.heap_field_writeback_slots(),
             )?,
@@ -1204,6 +1233,20 @@ fn clone_boundary_live_root_writeback_slots(
         .try_reserve_exact(slots.len())
         .map_err(|_| EvalHeapError::RootScanAllocationFailed {
             table: BOUNDARY_MINOR_GC_LIVE_ROOT_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
+    Ok(cloned)
+}
+
+fn clone_boundary_live_root_value_writeback_slots(
+    slots: &[AllocationCollectorPollRootValueWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollRootValueWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_LIVE_ROOT_VALUE_WRITEBACK_SLOTS_TABLE,
             entries: slots.len(),
         })?;
     cloned.extend(slots.iter().cloned());
@@ -1658,6 +1701,20 @@ fn clone_boundary_root_writeback_slots(
         .try_reserve_exact(slots.len())
         .map_err(|_| EvalHeapError::RootScanAllocationFailed {
             table: BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
+    Ok(cloned)
+}
+
+fn clone_boundary_root_value_writeback_slots(
+    slots: &[AllocationCollectorPollRootValueWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollRootValueWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_ROOT_VALUE_WRITEBACK_SLOTS_TABLE,
             entries: slots.len(),
         })?;
     cloned.extend(slots.iter().cloned());
@@ -2441,6 +2498,28 @@ fn boundary_minor_gc_root_writeback_slots(
     Ok(slots)
 }
 
+fn boundary_minor_gc_root_value_writeback_slots(
+    plan: &AllocationCollectorPollReferenceWritebackPlan,
+) -> Result<Vec<AllocationCollectorPollRootValueWritebackSlot>, EvalHeapError> {
+    let writebacks = plan.root_writebacks().writebacks();
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(writebacks.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_ROOT_VALUE_WRITEBACK_SLOTS_TABLE,
+            entries: writebacks.len(),
+        }
+    })?;
+
+    for writeback in writebacks {
+        slots.push(AllocationCollectorPollRootValueWritebackSlot::new(
+            writeback.source().clone(),
+            writeback.expected_value()?,
+        ));
+    }
+
+    Ok(slots)
+}
+
 fn boundary_minor_gc_heap_field_writeback_slots(
     plan: &AllocationCollectorPollReferenceWritebackPlan,
 ) -> Result<Vec<AllocationCollectorPollHeapFieldWritebackSlot>, EvalHeapError> {
@@ -3082,6 +3161,7 @@ impl EvalOutcome {
             reference_buffer,
             reference_writeback_plan,
             root_writeback_slots,
+            root_value_writeback_slots,
             heap_field_writeback_slots,
         ) = {
             let commit_plan = relocation_plan.commit_plan()?;
@@ -3097,6 +3177,8 @@ impl EvalOutcome {
                 .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
             let root_writeback_slots =
                 boundary_minor_gc_root_writeback_slots(&reference_writeback_plan)?;
+            let root_value_writeback_slots =
+                boundary_minor_gc_root_value_writeback_slots(&reference_writeback_plan)?;
             let heap_field_writeback_slots =
                 boundary_minor_gc_heap_field_writeback_slots(&reference_writeback_plan)?;
             (
@@ -3105,6 +3187,7 @@ impl EvalOutcome {
                 reference_buffer,
                 reference_writeback_plan,
                 root_writeback_slots,
+                root_value_writeback_slots,
                 heap_field_writeback_slots,
             )
         };
@@ -3116,6 +3199,7 @@ impl EvalOutcome {
             reference_buffer,
             reference_writeback_plan,
             root_writeback_slots,
+            root_value_writeback_slots,
             heap_field_writeback_slots,
             self.thunk_resolve_card_table.try_clone()?,
         ))

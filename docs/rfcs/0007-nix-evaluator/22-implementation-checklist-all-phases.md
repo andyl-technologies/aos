@@ -6431,6 +6431,10 @@ and helps the oracle directly.
       validate and rewrite caller-owned typed root-slot buffers with those
       reconstructed values. These helpers still do not validate object
       liveness, bind semispace storage, or mutate live root slots.
+      Boundary preflights carry those caller-owned typed root-slot buffers
+      beside the existing generation-style root slots, and owned reference
+      writeback applications validate/rewrite both root-slot representations
+      before exposing the applied preflight buffers.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live heap-object byte slices, semispace
       destination storage, tree-walk root writeback, live object-field mutation,

@@ -22,6 +22,15 @@ fn static_gc_address(address_bits: usize) -> GcHeapAddress {
     GcHeapAddress::new(address_bits).expect("static address is a valid GC address")
 }
 
+fn relocated_value(tag: ValueTag, address: GcHeapAddress) -> Value {
+    Value::heap(
+        tag,
+        NonNull::new(address.address_bits() as *mut HeapObject)
+            .expect("relocated heap address is non-null"),
+    )
+    .expect("relocated heap value rebuilds")
+}
+
 fn resolved_heap_destination_address(value: ResolvedValueGeneration) -> Option<GcHeapAddress> {
     let ResolvedValueGeneration::Heap { address, .. } = value else {
         return None;
@@ -685,6 +694,12 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
             .heap_field_writebacks()
             .is_empty()
     );
+    assert_eq!(preflight.root_value_writeback_slots().len(), 1);
+    assert!(
+        preflight.root_value_writeback_slots()[0]
+            .value()
+            .raw_eq(outcome.value())
+    );
     let application = preflight
         .apply_reference_writebacks_to_owned_slots()
         .expect("boundary preflight applies owned writeback slots");
@@ -696,6 +711,11 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
             address: nursery_base,
             generation: HeapGeneration::Young,
         }
+    );
+    assert!(
+        application.root_value_writeback_slots()[0]
+            .value()
+            .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
     );
     let commit_application = preflight
         .apply_commit_to_owned_buffers()
@@ -849,6 +869,11 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
             generation: HeapGeneration::Young,
         }
     );
+    assert!(
+        writeback_application.root_value_writeback_slots()[0]
+            .value()
+            .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
+    );
 
     let commit_report = commit_application.report();
     assert_eq!(
@@ -932,6 +957,11 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
             address: nursery_base,
             generation: HeapGeneration::Young,
         }
+    );
+    assert!(
+        live_worker_writebacks.root_value_writeback_slots()[0]
+            .value()
+            .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
     );
     let writebacks_before_repeat = live_writebacks.clone();
     let repeat_error = writeback_outcome
@@ -1389,6 +1419,10 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
 
     let preflight = preflights.worker().expect("worker preflight records");
     assert_eq!(preflight.root_writeback_slots().len(), 1);
+    assert_eq!(
+        preflight.root_value_writeback_slots().len(),
+        preflight.root_writeback_slots().len()
+    );
     assert!(!preflight.heap_field_writeback_slots().is_empty());
     let expected_object_copy_bytes = preflight.object_copy_bytes();
     let expected_copy_to_nursery_bytes = preflight.copy_to_nursery_bytes();
@@ -1403,6 +1437,10 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
         application.root_writeback_slots().len()
     );
     assert_eq!(
+        application.root_value_writeback_slots().len(),
+        application.root_writeback_slots().len()
+    );
+    assert_eq!(
         application.report().heap_field_writebacks(),
         application.heap_field_writeback_slots().len()
     );
@@ -1413,6 +1451,20 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
             .writebacks(),
     ) {
         assert_eq!(slot.value(), writeback.replacement());
+    }
+    for (slot, writeback) in application.root_value_writeback_slots().iter().zip(
+        preflight
+            .reference_writeback_plan()
+            .root_writebacks()
+            .writebacks(),
+    ) {
+        assert!(
+            slot.value().raw_eq(
+                writeback
+                    .replacement_value()
+                    .expect("root typed writeback value rebuilds")
+            )
+        );
     }
     for (slot, writeback) in application.heap_field_writeback_slots().iter().zip(
         preflight
@@ -1905,6 +1957,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         1
     );
     assert!(worker_preflight.root_writeback_slots().is_empty());
+    assert!(worker_preflight.root_value_writeback_slots().is_empty());
     assert_eq!(worker_preflight.heap_field_writeback_slots().len(), 1);
     assert_eq!(
         worker_preflight.heap_field_writeback_slots()[0].validation_object(),
@@ -2278,12 +2331,14 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     )));
     assert!(preflight.reference_writeback_plan().is_empty());
     assert!(preflight.root_writeback_slots().is_empty());
+    assert!(preflight.root_value_writeback_slots().is_empty());
     assert!(preflight.heap_field_writeback_slots().is_empty());
     let application = preflight
         .apply_reference_writebacks_to_owned_slots()
         .expect("empty boundary writeback slots apply");
     assert_eq!(application.report().writebacks(), 0);
     assert!(application.root_writeback_slots().is_empty());
+    assert!(application.root_value_writeback_slots().is_empty());
     assert!(application.heap_field_writeback_slots().is_empty());
     let commit_application = preflight
         .apply_commit_to_owned_buffers()
