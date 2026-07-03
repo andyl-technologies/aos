@@ -4211,9 +4211,12 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     )
                 }
                 (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Qemu { .. }) => {
-                    Err(backend_error(
-                        "verify with local QEMU requires an RFC-0010 execution-fingerprint runner; shared-memory quantum fingerprints are not sufficient",
-                    ))
+                    run_local_qemu_verify_workflow(
+                        thin_plan,
+                        backend_plan,
+                        ergonomics_plan,
+                        verify_plan,
+                    )
                 }
             };
         }
@@ -4457,6 +4460,60 @@ fn run_local_double_verify_workflow(
         verify_plan,
         report,
     )
+}
+
+fn run_local_qemu_verify_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    verify_plan: &VerifyInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-qemu-verify",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_verify_workflow_async(
+        &client,
+        verify_plan,
+        backend_plan.resolved_backend.as_ref(),
+        ergonomics_plan,
+    ))?;
+    let mut outcome = finish_verify_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        verify_plan,
+        report,
+    )?;
+    append_local_qemu_verify_identity(&mut outcome, backend_plan)?;
+    Ok(outcome)
+}
+
+fn append_local_qemu_verify_identity(
+    outcome: &mut BackendCommandOutcome,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<(), CliError> {
+    let Some(ResolvedLocalBackend::Qemu {
+        qemu_build_id,
+        qemu_patch_series_hash,
+        plugin_abi,
+        shmem_abi_version,
+        ..
+    }) = backend_plan.resolved_backend.as_ref()
+    else {
+        return Err(backend_error(
+            "local QEMU verify requires a resolved QEMU backend identity",
+        ));
+    };
+    outcome.stdout.push(format!(
+        "verify-qemu-runner\tfingerprint_source=control-client-execution-fingerprint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+    ));
+    Ok(())
 }
 
 fn run_remote_workflow(
@@ -12693,6 +12750,15 @@ mod tests {
                 .stdout
                 .iter()
                 .filter(|line| line.starts_with("verify-run\t"))
+                .all(|line| line.contains("\tcanonical_log=")
+                    && line.contains("\tfingerprint=")
+                    && line.contains("\tsamples=2"))
+        );
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
                 .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
         );
         assert!(
@@ -13113,7 +13179,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_verify_workflow_rejects_local_qemu_without_rfc_fingerprint_runner()
+    fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity()
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
@@ -13138,7 +13204,7 @@ mod tests {
         let backend_plan =
             plan_backend_selection(&cli)?.expect("qemu verify should require backend selection");
 
-        let error = execute_backend_routed_command(
+        let outcome = execute_backend_routed_command(
             &plan_cli_invocation(&cli),
             &backend_plan,
             None,
@@ -13146,10 +13212,26 @@ mod tests {
             Some(&verify_plan),
             &mut NullBackendCommandRunner,
         )
-        .expect_err("local qemu verify must not fall through to a generic pass");
+        .expect("local qemu verify should run independent reductions");
 
-        assert!(matches!(error, CliError::Backend(_)));
-        assert!(error.to_string().contains("execution-fingerprint runner"));
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(
+            outcome
+                .stdout
+                .iter()
+                .filter(|line| line.starts_with("verify-run\t"))
+                .count(),
+            2
+        );
+        let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
+        let expected_plugin_abi = required_qemu_plugin_abi();
+        let expected_shmem_abi = crucible::SHMEM_ABI_VERSION.to_string();
+        assert!(outcome.stdout.iter().any(|line| {
+            line == &format!(
+                "verify-qemu-runner\tfingerprint_source=control-client-execution-fingerprint\tqemu_build_id={expected_qemu_build_id}\tqemu_patch_series=sha256-test-qemu-patch-series\tplugin_abi={expected_plugin_abi}\tshmem_abi={expected_shmem_abi}"
+            )
+        }));
 
         Ok(())
     }
