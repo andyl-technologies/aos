@@ -1217,6 +1217,18 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   `scheduler_quantum_loop`, `scheduler_effective_horizon`,
   `scheduler_run_ceiling`, `scheduler_resolve`, `scheduler_event_order`, and
   `scheduler_emit_step`.
-- [ ] **T-PAT-7** Ensure the block sub-node follows the §29.7 CoW-overlay shape
+- [x] **T-PAT-7** Ensure the block sub-node follows the §29.7 CoW-overlay shape
   (base never written; ordered, deterministic snapshot deltas). — satisfies
   [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).
+  Completed by `checks.crucible.phase3.blockCowOverlayPattern`. The concrete
+  block sub-node uses `BaseImage` as an immutable content-addressed base and
+  `CowOverlay` as an in-memory 4 KiB copy-on-write page layer. Overlay pages are
+  stored in a `BTreeMap`, dirty page bases in a `BTreeSet`, reads consult the
+  overlay before falling back to `BaseImage`, writes copy up from the base and
+  patch only overlay pages, and `dirty_delta` captures only pages dirtied since
+  the last checkpoint boundary in deterministic order. `BlockSnapshot` carries
+  the overlay delta, full overlay page set, dirty set, RNG cursor, active faults,
+  in-flight responses, base hash, and device length; restore stacks the delta
+  over the parent and reinstates the dirty set, while `BlockDevice::materialize`
+  copies base bytes into a fresh image before applying overlay pages, so the
+  base image is never mutated.
