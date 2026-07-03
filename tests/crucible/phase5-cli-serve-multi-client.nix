@@ -44,22 +44,22 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 remains open";
-        needle = "- [ ] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 marked complete";
+        needle = "- [x] **T-CLI-14** Implement `serve`";
       }
       {
-        label = "T-CLI-14 multi-client progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliServeMultiClient`";
+        label = "T-CLI-14 multi-client completion note";
+        needle = "`checks.crucible.phase5.cliServeMultiClient`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI serve multi-client progress note";
-        needle = "`checks.crucible.phase5.cliServeMultiClient` covers";
+        label = "phase5 CLI serve multi-client completion note";
+        needle = "`checks.crucible.phase5.cliServeMultiClient`, and";
       }
       {
         label = "phase5 CLI serve multi-client coverage wording";
-        needle = "production HTTP/2 server admitting concurrent read-only Watch and Query";
+        needle = "admits concurrent";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientGate [

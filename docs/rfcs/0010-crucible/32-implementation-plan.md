@@ -403,7 +403,7 @@ long-held locks.
   covers shell completion generation, `--version`, the current non-overclaiming
   help surface, and rejection of future flags whose command behavior is not
   implemented yet; full closure waits for the command-behavior gates
-  `T-CLI-7 … T-CLI-14` so the final help text can be certified in sync with
+  `T-CLI-7 … T-CLI-13` so the final help text can be certified in sync with
   behavior.
   `T-CLI-8` remains open. `checks.crucible.phase5.cliSelftest` currently covers
   `--gates <list>` for the built-in corpus replay-oracle gate, canonical gate
@@ -417,27 +417,16 @@ long-held locks.
   rejection of `--to`/`--bisect`; full closure waits for content-addressed
   component resolution, replay-to-savepoint, on-mismatch bisection, and
   machine-independent backend replay coverage.
-  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeReadOnly` currently
-  covers `serve --read-only` parsing/help, CLI-to-daemon mode plumbing, and
-  HTTP/2 rejection of session creation/destruction, control attach, and mutating
-  send commands while allowing read-only query sends to reach normal routing;
-  full closure waits for the external signal-process harness.
-  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeMaxSessions`
-  currently covers `serve --max-sessions <n>` parsing/help, zero-value usage
-  rejection, lifecycle live-session cap enforcement, and typed daemon
-  session-limit responses; full closure waits for the external signal-process
-  harness.
-  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeMultiClient` covers
-  the production HTTP/2 server admitting concurrent read-only Watch and Query
-  clients while a Control client drives the same session and both Watch clients
-  observe the live running update; full closure waits for the external
-  signal-process harness.
-  `T-CLI-14` remains open. `checks.crucible.phase5.cliServeShutdown` covers
-  the graceful-shutdown HTTP/2 server helper, production `serve` waiting on the
-  `ctrl-c` shutdown signal, Control/Watch stream termination on server shutdown,
-  injected clean-shutdown testing with an active Watch stream, and serve
-  bind/backend errors mapping to exit 3; full closure waits for the external
-  signal-process harness.
+  `T-CLI-14` is complete under `checks.crucible.phase5.cliServeReadOnly`,
+  `checks.crucible.phase5.cliServeMaxSessions`,
+  `checks.crucible.phase5.cliServeMultiClient`, and
+  `checks.crucible.phase5.cliServeShutdown`: the CLI advertises and enforces
+  `serve --read-only` and `serve --max-sessions <n>`, rejects invalid caps before
+  binding, runs the production HTTP/2 daemon over the shared lifecycle/session
+  actor path, rejects state-mutating calls in read-only mode, admits concurrent
+  Watch and Query clients while Control drives the same session, propagates
+  shutdown to active Control/Watch streams, maps serve bind/backend failures to
+  exit 3, and proves a real process exits 0 after an external shutdown signal.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
