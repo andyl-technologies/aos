@@ -18,10 +18,11 @@ use std::sync::Barrier;
 use std::thread;
 
 use crucible_cas::{
-    CampaignCasOutcome, CampaignCheckpointMaterialization, CampaignCorpusRetentionPolicy,
-    CampaignFinding, CampaignManifest, CampaignProvenance, CampaignReplayArtifact, ContentHash,
-    DagStore, ExpansionDedupDecision, FrontierClaimRequest, SharedCampaignStore, SharedDagStore,
-    SharedDedupIndex, SharedFrontier, SoftHashAffinity,
+    CampaignCasOutcome, CampaignCheckpointMaterialization, CampaignContinuitySeedDecision,
+    CampaignCorpusRetentionPolicy, CampaignFinding, CampaignFreshLineageRoots, CampaignManifest,
+    CampaignProvenance, CampaignReplayArtifact, ContentHash, DagStore, ExpansionDedupDecision,
+    FrontierClaimRequest, SharedCampaignStore, SharedDagStore, SharedDedupIndex, SharedFrontier,
+    SoftHashAffinity,
 };
 
 const PROBE_PAYLOAD: &[u8] = b"crucible-fleet-store-probe-v1";
@@ -83,6 +84,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     prove_campaign_manifest_store(&root.join("campaign"))?;
     prove_campaign_seed_coverage_findings(&root.join("campaign-continuity-substrate"))?;
     prove_campaign_storage_bounding(&root.join("campaign-storage-bounding"))?;
+    prove_campaign_continuity_gate(&root.join("campaign-continuity-gate"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -146,6 +148,13 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("corpus_retention_reproducible=true");
     println!("corpus_retention_root=source-cap-seed-proof");
     println!("findings_ledger_retention=never-evict");
+    println!("campaign_continuity=implemented");
+    println!("campaign_continuity_seed_reproducible=true");
+    println!("campaign_continuity_coverage_monotone=true");
+    println!("campaign_continuity_cross_provenance_refused=true");
+    println!("campaign_continuity_fresh_lineage=forked");
+    println!("campaign_continuity_prior_findings_reproducible=true");
+    println!("provenance_seed_gate=triple-keyed");
     Ok(())
 }
 
@@ -599,7 +608,7 @@ fn prove_campaign_seed_coverage_findings(root: &Path) -> Result<(), Box<dyn Erro
         CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1"),
     );
 
-    let seeds = campaign.seed_next_run(&manifest)?;
+    let seeds = campaign.seed_next_run(&manifest, &manifest.provenance)?;
     if seeds.len() != 2 || !seeds.iter().all(|seed| seed.reproduces_bit_identically()) {
         return Err(input_error(
             "campaign corpus seeds did not replay bit-identically",
@@ -707,7 +716,7 @@ fn prove_campaign_storage_bounding(root: &Path) -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| input_error("storage bounding probe did not persist a finding"))?;
     let abandoned = campaign.manifest_store().put(b"storage-abandoned-object")?;
     let seed_artifact_hashes = campaign
-        .seed_next_run(&manifest)?
+        .seed_next_run(&manifest, &manifest.provenance)?
         .into_iter()
         .map(|seed| seed.artifact_hash)
         .collect::<Vec<_>>();
@@ -823,6 +832,184 @@ fn prove_campaign_storage_bounding(root: &Path) -> Result<(), Box<dyn Error>> {
         return Err(input_error(
             "campaign storage bounding evicted a finding ledger entry",
         ));
+    }
+
+    Ok(())
+}
+
+fn prove_campaign_continuity_gate(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let campaign = SharedCampaignStore::new(root);
+    let prior_provenance = CampaignProvenance::new(
+        "crucible-probe",
+        "qemu-probe+series-a",
+        "shmem:1,gh:1,rpc:1",
+    );
+    let next_provenance = CampaignProvenance::new(
+        "crucible-probe",
+        "qemu-probe+series-b",
+        "shmem:1,gh:1,rpc:1",
+    );
+    let artifact_a = CampaignReplayArtifact::new(
+        b"definition:continuity-a".to_vec(),
+        b"seed:a".to_vec(),
+        b"schedule:a".to_vec(),
+    );
+    let artifact_b = CampaignReplayArtifact::new(
+        b"definition:continuity-b".to_vec(),
+        b"seed:b".to_vec(),
+        b"schedule:b".to_vec(),
+    );
+    let prior_edge = ContentHash::from_bytes(b"continuity-edge-a");
+    let next_edge = ContentHash::from_bytes(b"continuity-edge-b");
+    let prior_corpus = campaign.persist_campaign_corpus([artifact_a.clone()])?;
+    let prior_coverage = campaign.persist_accumulated_coverage_map([prior_edge])?;
+    let prior_findings = campaign.persist_findings_ledger([CampaignFinding::new(
+        ContentHash::from_bytes(b"continuity-finding-a"),
+        artifact_a.clone(),
+    )])?;
+    let prior_genesis = campaign.manifest_store().put(b"continuity-genesis-a")?;
+    let prior_manifest = CampaignManifest::new(
+        prior_corpus,
+        prior_coverage,
+        prior_findings,
+        prior_genesis,
+        prior_provenance.clone(),
+    );
+
+    let unused_fresh_roots = CampaignFreshLineageRoots::new(
+        campaign.persist_campaign_corpus([])?,
+        campaign.persist_accumulated_coverage_map([])?,
+        campaign.persist_findings_ledger([])?,
+        campaign
+            .manifest_store()
+            .put(b"continuity-unused-fresh-genesis")?,
+    );
+    let same_provenance = campaign.seed_next_run_for_provenance(
+        &prior_manifest,
+        &prior_provenance,
+        unused_fresh_roots,
+    )?;
+    match same_provenance {
+        CampaignContinuitySeedDecision::SeedPriorCorpus { seeds, .. } => {
+            if seeds.len() != 1 || !seeds.iter().all(|seed| seed.reproduces_bit_identically()) {
+                return Err(input_error(
+                    "campaign continuity did not seed reproducible prior corpus entries",
+                ));
+            }
+        }
+        CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse(_) => {
+            return Err(input_error(
+                "campaign continuity refused same-provenance corpus reuse",
+            ));
+        }
+    }
+    if !matches!(
+        campaign.seed_next_run(&prior_manifest, &next_provenance),
+        Err(crucible_cas::CasError::InvalidCampaignRecord {
+            reason: "campaign seed provenance does not match manifest provenance",
+            ..
+        })
+    ) {
+        return Err(input_error(
+            "campaign continuity allowed unkeyed cross-provenance seeding",
+        ));
+    }
+
+    let next_corpus = campaign.persist_campaign_corpus([artifact_a.clone(), artifact_b.clone()])?;
+    let next_coverage = campaign.merge_accumulated_coverage_maps(
+        prior_coverage,
+        campaign.persist_accumulated_coverage_map([next_edge])?,
+    )?;
+    let next_findings = campaign.merge_findings_ledgers(
+        prior_findings,
+        campaign.persist_findings_ledger([CampaignFinding::new(
+            ContentHash::from_bytes(b"continuity-finding-b"),
+            artifact_b,
+        )])?,
+    )?;
+    let next_manifest = CampaignManifest::new(
+        next_corpus,
+        next_coverage,
+        next_findings,
+        prior_genesis,
+        prior_provenance,
+    );
+    let head = match campaign.compare_and_swap_head(None, &prior_manifest)? {
+        CampaignCasOutcome::Advanced(head) => head,
+        CampaignCasOutcome::LostUpdate { .. } => {
+            return Err(input_error("initial continuity campaign CAS lost"));
+        }
+    };
+    match campaign.compare_and_swap_head(Some(head.manifest_hash), &next_manifest)? {
+        CampaignCasOutcome::Advanced(_) => {}
+        CampaignCasOutcome::LostUpdate { .. } => {
+            return Err(input_error("continuity campaign CAS lost"));
+        }
+    }
+    let coverage_edges = campaign.accumulated_coverage_edges(next_coverage)?;
+    if coverage_edges.len() != 2 || !coverage_edges.contains(&prior_edge) {
+        return Err(input_error(
+            "campaign continuity coverage ratchet was not monotone",
+        ));
+    }
+
+    let fresh_roots = CampaignFreshLineageRoots::new(
+        campaign.persist_campaign_corpus([])?,
+        campaign.persist_accumulated_coverage_map([])?,
+        campaign.persist_findings_ledger([])?,
+        campaign.manifest_store().put(b"continuity-genesis-b")?,
+    );
+    let cross_provenance =
+        campaign.seed_next_run_for_provenance(&next_manifest, &next_provenance, fresh_roots)?;
+    match cross_provenance {
+        CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse(event) => {
+            let recorded_event =
+                campaign.read_fresh_lineage_baseline_event(event.baseline_event_hash)?;
+            if event.reason != crucible_cas::CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON
+                || event.baseline_event_hash == ContentHash::default()
+                || event.refused_corpus_root != next_manifest.corpus_root
+                || event.fresh_manifest.provenance != next_provenance
+                || event.fresh_manifest.corpus_root == next_manifest.corpus_root
+                || event.fresh_manifest.coverage_map_root == next_manifest.coverage_map_root
+                || event.fresh_manifest.findings_root == next_manifest.findings_root
+                || event.fresh_manifest.genesis_pin == next_manifest.genesis_pin
+                || recorded_event != event
+                || !campaign.manifest_store().has(&event.baseline_event_hash)?
+                || !campaign.manifest_store().has(&event.fresh_manifest_hash)?
+            {
+                return Err(input_error(
+                    "campaign continuity did not fork a fresh cross-provenance lineage",
+                ));
+            }
+            let fresh_head = campaign
+                .read_head()?
+                .ok_or_else(|| input_error("campaign continuity did not install fresh head"))?;
+            if fresh_head.manifest_hash != event.fresh_manifest_hash
+                || fresh_head.manifest != event.fresh_manifest
+            {
+                return Err(input_error(
+                    "campaign continuity fresh lineage was not installed as head",
+                ));
+            }
+        }
+        CampaignContinuitySeedDecision::SeedPriorCorpus { .. } => {
+            return Err(input_error(
+                "campaign continuity seeded a cross-provenance corpus",
+            ));
+        }
+    }
+    for entry in campaign.findings_ledger_entries(prior_findings)? {
+        let artifact = campaign.read_replay_artifact(entry.artifact_hash)?;
+        if !entry.reproduces_bit_identically(&artifact) {
+            return Err(input_error(
+                "prior campaign finding stopped reproducing after fresh-lineage fork",
+            ));
+        }
     }
 
     Ok(())

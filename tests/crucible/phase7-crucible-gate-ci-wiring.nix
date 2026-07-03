@@ -23,6 +23,7 @@
   qemuInert = builtins.readFile ./phase2-qemu-inert.nix;
   phase7E2e = builtins.readFile ./phase7-e2e-determinism.nix;
   phase7FleetEquivalence = builtins.readFile ./phase7-crucible-fleet-equivalence.nix;
+  phase7CampaignContinuity = builtins.readFile ./phase7-crucible-campaign-continuity.nix;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -185,6 +186,10 @@
     {
       gate = "gate:fleet-equivalence";
       path = "checks.crucible.phase7.gates.fleetEquivalence";
+    }
+    {
+      gate = "gate:campaign-continuity";
+      path = "checks.crucible.phase7.gates.campaignContinuity";
     }
   ];
 
@@ -430,12 +435,24 @@
         needle = "determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;";
       }
       {
+        label = "distributed fleet wrapper consumes campaign provenance gate";
+        needle = "campaignProvenanceGate = crucibleChecks.phase7.crucibleCampaignProvenance;";
+      }
+      {
         label = "distributed fleet wrapper consumes fleet equivalence gate";
         needle = "fleetEquivalenceGate = crucibleChecks.phase7.gates.fleetEquivalence.rawGate;";
       }
       {
+        label = "distributed fleet wrapper consumes campaign continuity gate";
+        needle = "campaignContinuityGate = crucibleChecks.phase7.gates.campaignContinuity.rawGate;";
+      }
+      {
         label = "distributed fleet wrapper records fleet equivalence result";
         needle = ''fleet_equivalence_gate_result=''${fleetEquivalenceGate}/result'';
+      }
+      {
+        label = "distributed fleet wrapper records campaign continuity result";
+        needle = ''campaign_continuity_gate_result=''${campaignContinuityGate}/result'';
       }
       {
         label = "distributed fleet wrapper records byte-identical fleet equivalence";
@@ -448,6 +465,22 @@
       {
         label = "distributed fleet wrapper records real-QEMU fleet equivalence source";
         needle = "fleet_equivalence_real_qemu_slice=checks.crucible.phase2.gates.singleVmFingerprint";
+      }
+      {
+        label = "distributed fleet wrapper records reproducible campaign continuity seed";
+        needle = "campaign_continuity_seed_reproducible=bit-identical-prior-corpus";
+      }
+      {
+        label = "distributed fleet wrapper records campaign continuity refusal";
+        needle = "campaign_continuity_cross_provenance_refused=true";
+      }
+      {
+        label = "distributed fleet wrapper records campaign continuity fresh lineage";
+        needle = "campaign_continuity_fresh_lineage=forked";
+      }
+      {
+        label = "distributed fleet wrapper records triple-keyed provenance seeding";
+        needle = "provenance_seed_gate=triple-keyed";
       }
       {
         label = "distributed fleet wrapper records TCG-only execution";
@@ -517,6 +550,10 @@
         label = "phase7 fleet equivalence gate import";
         needle = "gate = import ./phase7-crucible-fleet-equivalence.nix";
       }
+      {
+        label = "phase7 campaign continuity gate import";
+        needle = "gate = import ./phase7-crucible-campaign-continuity.nix";
+      }
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
@@ -552,6 +589,28 @@
       {
         label = "phase7 fleet equivalence gate records bisection handoff";
         needle = "divergence_bisection=SearchReplayOracleBisectionRequest";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase7-crucible-campaign-continuity.nix" phase7CampaignContinuity [
+      {
+        label = "phase7 campaign continuity gate records seed reproducibility";
+        needle = "seed_reproducibility=bit-identical-prior-corpus";
+      }
+      {
+        label = "phase7 campaign continuity gate records coverage ratchet";
+        needle = "coverage_ratchet=monotone-non-decreasing";
+      }
+      {
+        label = "phase7 campaign continuity gate records provenance refusal";
+        needle = "cross_provenance_reuse=refused";
+      }
+      {
+        label = "phase7 campaign continuity gate records fresh lineage";
+        needle = "fresh_lineage=forked";
+      }
+      {
+        label = "phase7 campaign continuity gate records triple-keyed provenance";
+        needle = "provenance_seed_gate=triple-keyed";
       }
     ];
 
@@ -655,6 +714,8 @@ in
             campaign_manifest_source=checks.crucible.phase7.crucibleCampaignManifest
             campaign_seeding_source=checks.crucible.phase7.crucibleCampaignSeeding
             campaign_storage_bounding_source=checks.crucible.phase7.crucibleCampaignStorageBounding
+            campaign_provenance_source=checks.crucible.phase7.crucibleCampaignProvenance
+            campaign_continuity_source=checks.crucible.phase7.gates.campaignContinuity
             fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';

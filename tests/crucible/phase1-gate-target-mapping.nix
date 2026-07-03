@@ -243,6 +243,13 @@
       requiredFeatures = ["test-double"];
       placeholder = false;
     }
+    {
+      gate = "gate:campaign-continuity";
+      package = "crucible-cas";
+      testTarget = "gate_campaign_continuity";
+      requiredFeatures = [];
+      placeholder = false;
+    }
   ];
 
   canonicalGates = [
@@ -262,6 +269,7 @@
     "gate:adversarial-determinism"
     "gate:e2e-determinism"
     "gate:fleet-equivalence"
+    "gate:campaign-continuity"
   ];
 
   crucibleTestDoubleGates = [

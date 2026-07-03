@@ -372,7 +372,7 @@ in
             corpus_retention_root=source-cap-seed-proof
             findings_ledger_retention=never-evict
             gate_dependency=checks.crucible.phase7.gates.campaignContinuity
-            campaign_continuity_gate_status=red-pending
+            campaign_continuity_gate_status=implemented
             RESULT
           '';
         }

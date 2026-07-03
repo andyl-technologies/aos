@@ -202,8 +202,8 @@
         needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
       }
       {
-        label = "campaign continuity remains red gate";
-        needle = "reason = \"campaign continuity gate is intentionally pending\";";
+        label = "campaign continuity implemented gate import";
+        needle = "gate = import ./phase7-crucible-campaign-continuity.nix";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-gate-ci-wiring.nix" gateCiWiring [
@@ -243,7 +243,7 @@ in
             baseline_event=crucible.campaign.fresh-lineage-baseline.v1
             refusal_reason=cross-provenance-corpus-reuse-refused
             gate_dependency=checks.crucible.phase7.gates.campaignContinuity
-            campaign_continuity_gate_status=red-pending
+            campaign_continuity_gate_status=implemented
             RESULT
           '';
         }

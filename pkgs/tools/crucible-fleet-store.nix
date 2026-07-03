@@ -86,6 +86,13 @@ in
       grep -q '^corpus_retention_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^corpus_retention_root=source-cap-seed-proof$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^findings_ledger_retention=never-evict$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity=implemented$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity_seed_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity_coverage_monotone=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity_cross_provenance_refused=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity_fresh_lineage=forked$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_continuity_prior_findings_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^provenance_seed_gate=triple-keyed$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -106,6 +113,7 @@ in
       dce_campaign_manifest_task=T-DCE-4
       dce_campaign_seed_task=T-DCE-5
       dce_campaign_storage_bounding_task=T-DCE-6
+      dce_campaign_continuity_task=T-DCE-9
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable
@@ -130,6 +138,13 @@ in
       corpus_retention_authorized=explicit-policy
       corpus_retention_reproducible=true
       findings_ledger_retention=never-evict
+      campaign_continuity=implemented
+      campaign_continuity_seed_reproducible=true
+      campaign_continuity_coverage_monotone=true
+      campaign_continuity_cross_provenance_refused=true
+      campaign_continuity_fresh_lineage=forked
+      campaign_continuity_prior_findings_reproducible=true
+      provenance_seed_gate=triple-keyed
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"

@@ -234,7 +234,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:campaign-continuity",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
 ];
 

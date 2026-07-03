@@ -224,6 +224,28 @@ pub(super) fn source_shape_failures(
         ));
     }
 
+    if standard.shape == TestShape::CampaignContinuity {
+        for required in [
+            "seed_next_run_for_provenance",
+            "CampaignContinuitySeedDecision",
+            "SeedPriorCorpus",
+            "RefuseCrossProvenanceReuse",
+            "baseline_event_hash",
+            "read_fresh_lineage_baseline_event",
+            "seed_next_run(&prior_manifest",
+            "accumulated_coverage_delta",
+            "compare_and_swap_head",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove seed replay, coverage monotonicity, and provenance refusal for campaign continuity",
+                    target.package, target.test_target
+                ));
+                break;
+            }
+        }
+    }
+
     failures
 }
 
@@ -238,7 +260,7 @@ pub(super) fn package_layer(package: &str) -> Option<Layer> {
         "crucible-sim" | "crucible-assert" => Some(Layer::L0),
         "crucible-shmem" | "crucible-protocol" | "crucible-device" => Some(Layer::L1),
         "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" => Some(Layer::L2),
-        "crucible" => Some(Layer::L3),
+        "crucible" | "crucible-cas" => Some(Layer::L3),
         "crucible-session" | "crucible-api" | "crucible-daemon" | "crucible-cli" => Some(Layer::L4),
         "crucible-harness" => Some(Layer::CrossCutting),
         _ => None,

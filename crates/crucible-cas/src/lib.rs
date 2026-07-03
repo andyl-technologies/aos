@@ -28,8 +28,9 @@
 //! [`CoverageAdmission`], [`ReductionAdmission`], [`SharedCampaignStore`],
 //! [`CampaignReplayArtifact`], [`CampaignCorpusSeed`], [`CampaignCoverageDelta`],
 //! [`CampaignFinding`], [`CampaignCorpusRetentionPolicy`], [`CampaignGcRoots`],
-//! [`CampaignManifest`], [`CampaignProvenance`], and the invalidation types
-//! [`DependencySnapshot`], [`InvalidationQuery`], and
+//! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
+//! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
+//! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
 //! [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
@@ -71,6 +72,19 @@ pub const FUTURE_RATCHET_SHARED_SEAM: &str = "SharedDagStore+InvalidationQuery::
 /// Lists the exact public surface a future ratchet adapter must preserve.
 pub const FUTURE_RATCHET_SEAM_INTERFACE: &str =
     "DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate";
+
+/// Schema for campaign provenance keys.
+pub const CAMPAIGN_PROVENANCE_SCHEMA: &str = "crucible.campaign.provenance.v1";
+
+/// Schema for campaign lineage ids.
+pub const CAMPAIGN_LINEAGE_SCHEMA: &str = "crucible.campaign.lineage.v1";
+
+/// Schema for a fresh-lineage baseline event.
+pub const CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA: &str =
+    "crucible.campaign.fresh-lineage-baseline.v1";
+
+/// Reason recorded when a prior corpus is refused across provenance boundaries.
+pub const CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON: &str = "cross-provenance-corpus-reuse-refused";
 
 /// A BLAKE3 content address for raw store bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1500,8 +1514,8 @@ impl SharedCampaignStore {
     /// Advances the campaign head with read-merge-retry semantics.
     ///
     /// On CAS conflict, this reads the winning head, merges the proposed roots
-    /// into it, and retries. Provenance and genesis pins must match; provenance
-    /// lineage forking is owned by later campaign-continuity work.
+    /// into it, and retries. Provenance and genesis pins must match; changed
+    /// provenance is handled by the campaign-continuity fresh-lineage fork path.
     ///
     /// # Errors
     ///
@@ -1595,29 +1609,152 @@ impl SharedCampaignStore {
 
     /// Loads the corpus named by `manifest` as the seed plan for run N+1.
     ///
+    /// The caller must provide the provenance for the run being seeded. This API
+    /// refuses drift; use [`SharedCampaignStore::seed_next_run_for_provenance`]
+    /// when a changed provenance should fork a fresh campaign lineage.
+    ///
     /// # Errors
     ///
     /// Returns [`CasError`] when the corpus root or any replay artifact is
-    /// missing, corrupt, or not self-validating.
+    /// missing, corrupt, not self-validating, or keyed to different provenance
+    /// than `run_provenance`.
     pub fn seed_next_run(
         &self,
         manifest: &CampaignManifest,
+        run_provenance: &CampaignProvenance,
     ) -> Result<Vec<CampaignCorpusSeed>, CasError> {
+        validate_campaign_manifest(manifest)?;
+        validate_campaign_provenance(run_provenance)?;
+        if manifest.provenance != *run_provenance {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&manifest.corpus_root),
+                reason: "campaign seed provenance does not match manifest provenance",
+            });
+        }
         self.seed_next_run_from_prior_corpus(manifest.corpus_root)
     }
 
-    /// Loads a prior corpus root as self-contained run N+1 seed artifacts.
+    /// Decides whether `manifest` may seed a run with `run_provenance`.
+    ///
+    /// Matching provenance loads the prior corpus as self-contained seed
+    /// artifacts. Mismatched provenance refuses reuse, persists a fresh lineage
+    /// manifest from `fresh_lineage_roots`, and returns a baseline event for the
+    /// new lineage.
     ///
     /// # Errors
     ///
-    /// Returns [`CasError`] when the corpus root or any replay artifact is
-    /// missing, corrupt, or not self-validating.
-    pub fn seed_next_run_from_prior_corpus(
+    /// Returns [`CasError`] when campaign roots are malformed, a same-provenance
+    /// seed artifact cannot reproduce its recorded replay hash, or a
+    /// cross-provenance fresh lineage would reuse prior campaign roots or entries.
+    pub fn seed_next_run_for_provenance(
+        &self,
+        manifest: &CampaignManifest,
+        run_provenance: &CampaignProvenance,
+        fresh_lineage_roots: CampaignFreshLineageRoots,
+    ) -> Result<CampaignContinuitySeedDecision, CasError> {
+        validate_campaign_manifest(manifest)?;
+        validate_campaign_provenance(run_provenance)?;
+        if manifest.provenance == *run_provenance {
+            return Ok(CampaignContinuitySeedDecision::SeedPriorCorpus {
+                seeds: self.seed_next_run(manifest, run_provenance)?,
+                lineage_id: campaign_lineage_id(manifest)?,
+                provenance_key: campaign_provenance_key(run_provenance)?,
+            });
+        }
+
+        self.fork_fresh_campaign_lineage(manifest, run_provenance.clone(), fresh_lineage_roots)
+            .map(CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse)
+    }
+
+    fn seed_next_run_from_prior_corpus(
         &self,
         corpus_root: ContentHash,
     ) -> Result<Vec<CampaignCorpusSeed>, CasError> {
         self.corpus_seed_map(corpus_root)
             .map(|entries| entries.into_values().collect())
+    }
+
+    /// Persists a fresh campaign lineage after provenance drift.
+    ///
+    /// The fresh lineage uses new corpus, coverage, findings, and genesis roots
+    /// and records `run_provenance`; the fresh manifest is installed as the
+    /// campaign head when `prior` is the current head. The prior lineage remains
+    /// untouched and reproducible through its original manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when provenance did not change, any fresh root is
+    /// malformed or missing, the prior manifest is not the current head, or the
+    /// fresh roots silently reuse prior campaign corpus, coverage, or findings
+    /// entries.
+    pub fn fork_fresh_campaign_lineage(
+        &self,
+        prior: &CampaignManifest,
+        run_provenance: CampaignProvenance,
+        fresh_roots: CampaignFreshLineageRoots,
+    ) -> Result<CampaignFreshLineageBaselineEvent, CasError> {
+        validate_campaign_manifest(prior)?;
+        validate_campaign_provenance(&run_provenance)?;
+        if prior.provenance == run_provenance {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "fresh campaign lineage requires changed provenance",
+            });
+        }
+        self.validate_fresh_lineage_roots(prior, &fresh_roots)?;
+        self.require_fresh_lineage_current_head(prior)?;
+
+        let fresh_manifest = CampaignManifest::new(
+            fresh_roots.corpus_root,
+            fresh_roots.coverage_map_root,
+            fresh_roots.findings_root,
+            fresh_roots.genesis_pin,
+            run_provenance,
+        );
+        let fresh_manifest_hash = self.persist_manifest(&fresh_manifest)?;
+        let mut event = CampaignFreshLineageBaselineEvent {
+            baseline_event_hash: ContentHash::default(),
+            schema_version: CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA.to_owned(),
+            reason: CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON.to_owned(),
+            refused_corpus_root: prior.corpus_root,
+            previous_lineage_id: campaign_lineage_id(prior)?,
+            fresh_lineage_id: campaign_lineage_id(&fresh_manifest)?,
+            previous_provenance_key: campaign_provenance_key(&prior.provenance)?,
+            run_provenance_key: campaign_provenance_key(&fresh_manifest.provenance)?,
+            fresh_manifest_hash,
+            fresh_manifest,
+        };
+        event.baseline_event_hash = self
+            .store
+            .put(campaign_fresh_lineage_baseline_event_material(&event).as_bytes())?;
+        self.install_fresh_lineage_head(prior, event.fresh_manifest_hash)?;
+        Ok(event)
+    }
+
+    /// Reads a persisted fresh-lineage baseline event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when `event_hash` is missing, malformed, or does not
+    /// describe a valid fresh-lineage baseline event.
+    pub fn read_fresh_lineage_baseline_event(
+        &self,
+        event_hash: ContentHash,
+    ) -> Result<CampaignFreshLineageBaselineEvent, CasError> {
+        let material = self.read_campaign_object_text(event_hash)?;
+        let event = parse_fresh_lineage_baseline_event(
+            &self.store.object_path(&event_hash),
+            event_hash,
+            &material,
+        )?;
+        let fresh_manifest = self.read_manifest_object(event.fresh_manifest_hash)?;
+        if fresh_manifest != event.fresh_manifest {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&event.fresh_manifest_hash),
+                reason: "fresh-lineage baseline event manifest hash does not match manifest",
+            });
+        }
+        Ok(event)
     }
 
     /// Persists an accumulated coverage map root.
@@ -2091,6 +2228,140 @@ impl SharedCampaignStore {
                 _ => "campaign manifest root object is missing",
             },
         })
+    }
+
+    fn validate_fresh_lineage_roots(
+        &self,
+        prior: &CampaignManifest,
+        fresh_roots: &CampaignFreshLineageRoots,
+    ) -> Result<(), CasError> {
+        if prior.corpus_root == fresh_roots.corpus_root {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.corpus_root),
+                reason: "fresh campaign lineage must use a new corpus root",
+            });
+        }
+        if prior.coverage_map_root == fresh_roots.coverage_map_root {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.coverage_map_root),
+                reason: "fresh campaign lineage must use a new coverage-map root",
+            });
+        }
+        if prior.findings_root == fresh_roots.findings_root {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.findings_root),
+                reason: "fresh campaign lineage must use a new findings root",
+            });
+        }
+        if prior.genesis_pin == fresh_roots.genesis_pin {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.genesis_pin),
+                reason: "fresh campaign lineage must use a new genesis pin",
+            });
+        }
+        if !self.supports_typed_campaign_root("corpus", fresh_roots.corpus_root)? {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.corpus_root),
+                reason: "fresh campaign lineage corpus root is not a typed corpus root",
+            });
+        }
+        if !self.supports_typed_campaign_root("coverage-map", fresh_roots.coverage_map_root)? {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.coverage_map_root),
+                reason: "fresh campaign lineage coverage-map root is not a typed coverage root",
+            });
+        }
+        if !self.supports_typed_campaign_root("findings", fresh_roots.findings_root)? {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.findings_root),
+                reason: "fresh campaign lineage findings root is not a typed findings root",
+            });
+        }
+        if !self.store.has(&fresh_roots.genesis_pin)? {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.genesis_pin),
+                reason: "fresh campaign lineage genesis pin is missing",
+            });
+        }
+
+        let prior_corpus = self.corpus_entry_hashes(prior.corpus_root)?;
+        let fresh_corpus = self.corpus_entry_hashes(fresh_roots.corpus_root)?;
+        if fresh_corpus
+            .keys()
+            .any(|artifact_hash| prior_corpus.contains_key(artifact_hash))
+        {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.corpus_root),
+                reason: "fresh campaign lineage corpus must not reuse prior corpus entries",
+            });
+        }
+
+        let prior_coverage = self.coverage_edge_set(prior.coverage_map_root)?;
+        let fresh_coverage = self.coverage_edge_set(fresh_roots.coverage_map_root)?;
+        if fresh_coverage
+            .iter()
+            .any(|edge| prior_coverage.contains(edge))
+        {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.coverage_map_root),
+                reason: "fresh campaign lineage coverage must not reuse prior coverage edges",
+            });
+        }
+
+        let prior_findings = self.finding_entry_hashes(prior.findings_root)?;
+        let fresh_findings = self.finding_entry_hashes(fresh_roots.findings_root)?;
+        if fresh_findings
+            .keys()
+            .any(|artifact_hash| prior_findings.contains_key(artifact_hash))
+        {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&fresh_roots.findings_root),
+                reason: "fresh campaign lineage findings must not reuse prior finding artifacts",
+            });
+        }
+
+        Ok(())
+    }
+
+    fn install_fresh_lineage_head(
+        &self,
+        prior: &CampaignManifest,
+        fresh_manifest_hash: ContentHash,
+    ) -> Result<(), CasError> {
+        let mut guard = self.acquire_head_lock(FlockOperation::LockExclusive)?;
+        let current_pointer = self.read_head_pointer()?;
+        let Some(pointer) = current_pointer else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "fresh campaign lineage requires prior manifest to be current head",
+            });
+        };
+        let current_manifest = self.read_manifest_object(pointer.manifest_hash)?;
+        if current_manifest != *prior {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "fresh campaign lineage requires prior manifest to be current head",
+            });
+        }
+        let current_pointer = Some(pointer);
+        self.write_head(&mut guard, current_pointer, fresh_manifest_hash)
+    }
+
+    fn require_fresh_lineage_current_head(&self, prior: &CampaignManifest) -> Result<(), CasError> {
+        let Some(pointer) = self.read_head_pointer()? else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "fresh campaign lineage requires prior manifest to be current head",
+            });
+        };
+        let current_manifest = self.read_manifest_object(pointer.manifest_hash)?;
+        if current_manifest != *prior {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "fresh campaign lineage requires prior manifest to be current head",
+            });
+        }
+        Ok(())
     }
 
     fn merge_manifests(
@@ -2662,6 +2933,35 @@ impl CampaignProvenance {
     }
 }
 
+/// Computes the content-addressed key for a campaign provenance triple.
+///
+/// # Errors
+///
+/// Returns [`CasError`] when any provenance field is empty or contains a
+/// newline.
+pub fn campaign_provenance_key(provenance: &CampaignProvenance) -> Result<ContentHash, CasError> {
+    validate_campaign_provenance(provenance)?;
+    Ok(ContentHash::from_bytes(
+        campaign_provenance_material(provenance).as_bytes(),
+    ))
+}
+
+/// Computes the deterministic lineage id for a campaign manifest.
+///
+/// The lineage id is keyed to the manifest's genesis pin and provenance key, not
+/// to the mutable corpus, coverage, or findings roots that advance over time.
+///
+/// # Errors
+///
+/// Returns [`CasError`] when the manifest or provenance fields are invalid.
+pub fn campaign_lineage_id(manifest: &CampaignManifest) -> Result<ContentHash, CasError> {
+    validate_campaign_manifest(manifest)?;
+    let provenance_key = campaign_provenance_key(&manifest.provenance)?;
+    Ok(ContentHash::from_bytes(
+        campaign_lineage_material(manifest, provenance_key).as_bytes(),
+    ))
+}
+
 /// Current content-addressed campaign manifest head.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignHead {
@@ -2769,6 +3069,61 @@ impl CampaignCorpusSeed {
     }
 }
 
+/// Provenance-aware decision for campaign run N+1 seeding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignContinuitySeedDecision {
+    /// The prior campaign corpus may seed this run.
+    SeedPriorCorpus {
+        /// Self-contained corpus entries loaded from the prior manifest root.
+        seeds: Vec<CampaignCorpusSeed>,
+        /// Stable id of the existing campaign lineage.
+        lineage_id: ContentHash,
+        /// Provenance key shared by the prior corpus and this run.
+        provenance_key: ContentHash,
+    },
+    /// The prior corpus was refused and a fresh lineage baseline was recorded.
+    RefuseCrossProvenanceReuse(CampaignFreshLineageBaselineEvent),
+}
+
+impl CampaignContinuitySeedDecision {
+    /// Returns whether this decision seeds the prior corpus.
+    #[must_use]
+    pub fn seeds_prior_corpus(&self) -> bool {
+        matches!(self, Self::SeedPriorCorpus { .. })
+    }
+
+    /// Returns whether this decision refused cross-provenance reuse.
+    #[must_use]
+    pub fn refuses_cross_provenance_reuse(&self) -> bool {
+        matches!(self, Self::RefuseCrossProvenanceReuse(_))
+    }
+}
+
+/// Baseline event recorded when a campaign forks a fresh lineage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignFreshLineageBaselineEvent {
+    /// Content-addressed event record persisted in the campaign object store.
+    pub baseline_event_hash: ContentHash,
+    /// Event schema identifier.
+    pub schema_version: String,
+    /// Loud refusal reason for operators and CI logs.
+    pub reason: String,
+    /// Prior corpus root refused as a seed.
+    pub refused_corpus_root: ContentHash,
+    /// Previous campaign lineage id.
+    pub previous_lineage_id: ContentHash,
+    /// Fresh campaign lineage id.
+    pub fresh_lineage_id: ContentHash,
+    /// Provenance key for the refused prior campaign.
+    pub previous_provenance_key: ContentHash,
+    /// Provenance key for the current run.
+    pub run_provenance_key: ContentHash,
+    /// Content-addressed manifest object for the fresh lineage.
+    pub fresh_manifest_hash: ContentHash,
+    /// Fresh immutable manifest persisted for the new lineage.
+    pub fresh_manifest: CampaignManifest,
+}
+
 /// Novelty result for a candidate against accumulated campaign coverage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignCoverageDelta {
@@ -2852,6 +3207,37 @@ impl CampaignGcRoots {
             self.findings_root,
             self.genesis_pin,
         ])
+    }
+}
+
+/// New roots used when provenance drift forks a fresh campaign lineage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignFreshLineageRoots {
+    /// Fresh retained corpus root for the new lineage.
+    pub corpus_root: ContentHash,
+    /// Fresh accumulated coverage root for the new lineage.
+    pub coverage_map_root: ContentHash,
+    /// Fresh findings ledger root for the new lineage.
+    pub findings_root: ContentHash,
+    /// Fresh genesis checkpoint pin for the new lineage.
+    pub genesis_pin: ContentHash,
+}
+
+impl CampaignFreshLineageRoots {
+    /// Builds a fresh-lineage root set.
+    #[must_use]
+    pub fn new(
+        corpus_root: ContentHash,
+        coverage_map_root: ContentHash,
+        findings_root: ContentHash,
+        genesis_pin: ContentHash,
+    ) -> Self {
+        Self {
+            corpus_root,
+            coverage_map_root,
+            findings_root,
+            genesis_pin,
+        }
     }
 }
 
@@ -3111,6 +3497,44 @@ fn manifest_record_material(manifest: &CampaignManifest) -> String {
         manifest.provenance.crucible_version,
         manifest.provenance.qemu_build,
         manifest.provenance.abi_versions,
+    )
+}
+
+fn campaign_provenance_material(provenance: &CampaignProvenance) -> String {
+    format!(
+        "format={CAMPAIGN_PROVENANCE_SCHEMA}\ncrucible_version={}\nqemu_build={}\nabi_versions={}\n",
+        provenance.crucible_version, provenance.qemu_build, provenance.abi_versions,
+    )
+}
+
+fn campaign_lineage_material(manifest: &CampaignManifest, provenance_key: ContentHash) -> String {
+    format!(
+        "format={CAMPAIGN_LINEAGE_SCHEMA}\ngenesis_pin={}\nprovenance_key={provenance_key}\n",
+        manifest.genesis_pin.to_hex(),
+        provenance_key = provenance_key.to_hex(),
+    )
+}
+
+fn campaign_fresh_lineage_baseline_event_material(
+    event: &CampaignFreshLineageBaselineEvent,
+) -> String {
+    format!(
+        "format={}\nreason={}\nrefused_corpus_root={}\nprevious_lineage_id={}\nfresh_lineage_id={}\nprevious_provenance_key={}\nrun_provenance_key={}\nfresh_manifest_hash={}\nfresh_manifest.corpus_root={}\nfresh_manifest.coverage_map_root={}\nfresh_manifest.findings_root={}\nfresh_manifest.genesis_pin={}\nfresh_manifest.provenance.crucible_version={}\nfresh_manifest.provenance.qemu_build={}\nfresh_manifest.provenance.abi_versions={}\n",
+        event.schema_version,
+        event.reason,
+        event.refused_corpus_root.to_hex(),
+        event.previous_lineage_id.to_hex(),
+        event.fresh_lineage_id.to_hex(),
+        event.previous_provenance_key.to_hex(),
+        event.run_provenance_key.to_hex(),
+        event.fresh_manifest_hash.to_hex(),
+        event.fresh_manifest.corpus_root.to_hex(),
+        event.fresh_manifest.coverage_map_root.to_hex(),
+        event.fresh_manifest.findings_root.to_hex(),
+        event.fresh_manifest.genesis_pin.to_hex(),
+        event.fresh_manifest.provenance.crucible_version,
+        event.fresh_manifest.provenance.qemu_build,
+        event.fresh_manifest.provenance.abi_versions,
     )
 }
 
@@ -3622,6 +4046,83 @@ fn parse_campaign_root_merge_record(
     })
 }
 
+fn parse_fresh_lineage_baseline_event(
+    path: &Path,
+    baseline_event_hash: ContentHash,
+    material: &str,
+) -> Result<CampaignFreshLineageBaselineEvent, CasError> {
+    let fields = parse_key_value_record(path, material, "fresh-lineage baseline event")?;
+    if fields.get("format") != Some(&CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA) {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "fresh-lineage baseline event format is unsupported",
+        });
+    }
+    let fresh_manifest = CampaignManifest {
+        corpus_root: parse_required_campaign_hash(path, &fields, "fresh_manifest.corpus_root")?,
+        coverage_map_root: parse_required_campaign_hash(
+            path,
+            &fields,
+            "fresh_manifest.coverage_map_root",
+        )?,
+        findings_root: parse_required_campaign_hash(path, &fields, "fresh_manifest.findings_root")?,
+        genesis_pin: parse_required_campaign_hash(path, &fields, "fresh_manifest.genesis_pin")?,
+        provenance: CampaignProvenance {
+            crucible_version: parse_required_string(
+                path,
+                &fields,
+                "fresh_manifest.provenance.crucible_version",
+            )?,
+            qemu_build: parse_required_string(
+                path,
+                &fields,
+                "fresh_manifest.provenance.qemu_build",
+            )?,
+            abi_versions: parse_required_string(
+                path,
+                &fields,
+                "fresh_manifest.provenance.abi_versions",
+            )?,
+        },
+    };
+    validate_campaign_manifest(&fresh_manifest)?;
+    let event = CampaignFreshLineageBaselineEvent {
+        baseline_event_hash,
+        schema_version: CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA.to_owned(),
+        reason: parse_required_string(path, &fields, "reason")?,
+        refused_corpus_root: parse_required_campaign_hash(path, &fields, "refused_corpus_root")?,
+        previous_lineage_id: parse_required_campaign_hash(path, &fields, "previous_lineage_id")?,
+        fresh_lineage_id: parse_required_campaign_hash(path, &fields, "fresh_lineage_id")?,
+        previous_provenance_key: parse_required_campaign_hash(
+            path,
+            &fields,
+            "previous_provenance_key",
+        )?,
+        run_provenance_key: parse_required_campaign_hash(path, &fields, "run_provenance_key")?,
+        fresh_manifest_hash: parse_required_campaign_hash(path, &fields, "fresh_manifest_hash")?,
+        fresh_manifest,
+    };
+    if event.reason != CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "fresh-lineage baseline event reason is unsupported",
+        });
+    }
+    if event.fresh_lineage_id != campaign_lineage_id(&event.fresh_manifest)? {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "fresh-lineage baseline event lineage id is invalid",
+        });
+    }
+    if event.run_provenance_key != campaign_provenance_key(&event.fresh_manifest.provenance)? {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "fresh-lineage baseline event provenance key is invalid",
+        });
+    }
+    Ok(event)
+}
+
 fn parse_campaign_head_record(
     path: &Path,
     material: &str,
@@ -3853,9 +4354,14 @@ fn decode_hex_field(
 }
 
 fn validate_campaign_manifest(manifest: &CampaignManifest) -> Result<(), CasError> {
-    validate_campaign_provenance_field(&manifest.provenance.crucible_version)?;
-    validate_campaign_provenance_field(&manifest.provenance.qemu_build)?;
-    validate_campaign_provenance_field(&manifest.provenance.abi_versions)?;
+    validate_campaign_provenance(&manifest.provenance)?;
+    Ok(())
+}
+
+fn validate_campaign_provenance(provenance: &CampaignProvenance) -> Result<(), CasError> {
+    validate_campaign_provenance_field(&provenance.crucible_version)?;
+    validate_campaign_provenance_field(&provenance.qemu_build)?;
+    validate_campaign_provenance_field(&provenance.abi_versions)?;
     Ok(())
 }
 
@@ -4627,7 +5133,7 @@ mod tests {
             CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
         );
 
-        let seeds = campaign.seed_next_run(&manifest)?;
+        let seeds = campaign.seed_next_run(&manifest, &manifest.provenance)?;
 
         assert_eq!(seeds.len(), 2);
         for seed in seeds {
@@ -4797,7 +5303,12 @@ mod tests {
         assert!(!campaign.manifest_store().has(&abandoned)?);
         assert!(campaign.manifest_store().has(&corpus_root)?);
         assert!(campaign.manifest_store().has(&findings_root)?);
-        assert_eq!(campaign.seed_next_run(&manifest)?.len(), 1);
+        assert_eq!(
+            campaign
+                .seed_next_run(&manifest, &manifest.provenance)?
+                .len(),
+            1
+        );
         assert_eq!(campaign.findings_ledger_entries(findings_root)?.len(), 1);
 
         Ok(())
@@ -5112,7 +5623,12 @@ mod tests {
         let mut expected_edges = vec![edge_a, edge_b];
         expected_edges.sort();
 
-        assert_eq!(campaign.seed_next_run(&report.head.manifest)?.len(), 2);
+        assert_eq!(
+            campaign
+                .seed_next_run(&report.head.manifest, &report.head.manifest.provenance)?
+                .len(),
+            2
+        );
         assert_eq!(
             campaign.accumulated_coverage_edges(report.head.manifest.coverage_map_root)?,
             expected_edges
