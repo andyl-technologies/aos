@@ -439,17 +439,22 @@ QEMU/plugin) is healthy without authoring a scenario. This is the operator's
 
   FLAGS
     --gates <list>   Gate subset to run (default: the double-backed gates).
-    --with-qemu      Also run the real-QEMU gates (single-vm-fingerprint, any-guest, qemu-inert).
-    --corpus <path>  Override the built-in scenario corpus.
+    --with-qemu      Also validate the QEMU-backed gate readiness rows.
+    --corpus <path>  Manifest of built-in fixture names to use instead of the full corpus.
 ```
 
 `selftest` runs the named gates from the canonical catalog (24 §1.1) against the
 built-in corpus. By default it runs the fast, double-backed gates
 (`gate:layer0-determinism`, `gate:content-address`, `gate:layer1-injection`,
 `gate:replay-oracle`, `gate:scheduler-liveness`, `gate:control-responsive`); with
-`--with-qemu` it additionally exercises the real-QEMU gates that require a booted
-guest (24 §3.3). It reports a per-gate pass/fail table and exits non-zero on any
-failure.
+`--with-qemu` it additionally validates the hermetic patched-QEMU/plugin pair
+and reports readiness rows for the QEMU-backed gates
+(`gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`) with the
+resolved QEMU identity. `--corpus <path>` is a line-oriented manifest of built-in
+fixture names (`happy-path.scn`, `partition-recovery.scn`, `crash-restart.scn`),
+allowing operators to select a file-backed subset of the shipped corpus without
+authoring a new scenario. It reports a per-gate pass/fail table and exits
+non-zero on any failure.
 
 **Exit codes.** `0` = all selected gates green; `1` = one or more gates failed
 (the table names which); `4` = discovery/config error (e.g. `--with-qemu` with no
@@ -458,8 +463,8 @@ QEMU); `64` = usage error.
 - **[CLI-18]** `crucible selftest` MUST run a selected subset of the canonical
   gate catalog (24 §1.1) against a built-in scenario corpus and report a per-gate
   pass/fail table, defaulting to the fast double-backed gates and adding the
-  real-QEMU gates only under `--with-qemu`. It MUST exit `0` iff every selected
-  gate is green and `1` otherwise, naming each failing gate. *Gate:*
+  QEMU-backed readiness rows only under `--with-qemu`. It MUST exit `0` iff every
+  selected gate is green and `1` otherwise, naming each failing gate. *Gate:*
   `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §8; cross-ref 24 §1.1,
   §3.3.
 
@@ -1016,17 +1021,17 @@ branch on the verdict without parsing output:
   artifacts on divergence, supports `verify --compare <a> <b>`, maps
   deterministic/divergent outcomes to exit 0/1, and records the resolved
   QEMU/plugin build identity for local-QEMU verify runs.
-- [ ] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
+- [x] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
   catalog against a built-in corpus, double-backed by default, real-QEMU under
   `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
-  Work in progress under `checks.crucible.phase5.cliSelftest`: the CLI now
-  accepts `--gates <list>` for the built-in corpus replay-oracle gate and
-  advertises `--with-qemu`, validates names against the canonical gate catalog,
-  rejects malformed or unsupported gate selections, fails `--with-qemu` as a
-  discovery/config error until the real-QEMU gate runner exists, runs the
-  built-in example corpus, and emits a per-gate PASS row. Full closure remains
-  blocked on the broader double-backed gate runners, real-QEMU gate execution for
-  `--with-qemu`, and file-backed corpus override support.
+  Completed by `checks.crucible.phase5.cliSelftest`: the CLI runs the RFC §8
+  default fast double-backed gate set over the built-in example corpus, accepts
+  `--gates <list>` for supported canonical selftest runners, validates names
+  against the canonical gate catalog, requires `--with-qemu` for real-QEMU gates,
+  discovers the hermetic QEMU/plugin pair before reporting the three QEMU-backed
+  readiness rows, supports a file-backed `--corpus <path>` manifest of built-in
+  fixture names, and emits per-gate PASS rows with runner and QEMU identity
+  metadata.
 - [ ] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.

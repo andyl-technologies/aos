@@ -42,20 +42,49 @@
     )
     requirements;
 
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-8 remains open";
+        label = "T-CLI-8 checklist complete";
+        needle = "- [x] **T-CLI-8** Implement `selftest`";
+      }
+      {
+        label = "T-CLI-8 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliSelftest`";
+      }
+    ]
+    ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
+      {
+        label = "stale T-CLI-8 placeholder";
         needle = "- [ ] **T-CLI-8** Implement `selftest`";
       }
       {
-        label = "T-CLI-8 progress note";
+        label = "stale T-CLI-8 progress note";
         needle = "Work in progress under `checks.crucible.phase5.cliSelftest`";
+      }
+      {
+        label = "stale T-CLI-8 blocker";
+        needle = "Full closure remains\n  blocked";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI selftest progress note";
+        label = "phase5 CLI selftest completion note";
+        needle = "`T-CLI-8` is green through `checks.crucible.phase5.cliSelftest`";
+      }
+    ]
+    ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
+      {
+        label = "stale phase5 CLI selftest open note";
         needle = "`T-CLI-8` remains open. `checks.crucible.phase5.cliSelftest` currently";
       }
     ]
@@ -75,8 +104,16 @@
         needle = "with_qemu: bool";
       }
       {
+        label = "selftest corpus flag";
+        needle = "corpus: Option<PathBuf>";
+      }
+      {
         label = "built-in corpus selftest gate subset";
         needle = "BUILT_IN_CORPUS_SELFTEST_GATES";
+      }
+      {
+        label = "real qemu selftest gate subset";
+        needle = "REAL_QEMU_SELFTEST_GATES";
       }
       {
         label = "canonical gate validation";
@@ -107,6 +144,26 @@
         needle = "crucible::built_in_example_corpus";
       }
       {
+        label = "corpus manifest loader";
+        needle = "fn verify_selftest_corpus_manifest";
+      }
+      {
+        label = "corpus manifest fixture resolver";
+        needle = "fn verify_selftest_fixture_by_name";
+      }
+      {
+        label = "qemu discovery runner";
+        needle = "fn require_selftest_qemu_backend";
+      }
+      {
+        label = "qemu identity report field";
+        needle = "qemu_build_id: Option<String>";
+      }
+      {
+        label = "runner report field";
+        needle = "SelftestGateRunner";
+      }
+      {
         label = "selected gates test";
         needle = "gate:replay-oracle";
       }
@@ -119,12 +176,12 @@
         needle = "duplicate selftest gate must be rejected";
       }
       {
-        label = "unsupported qemu gate rejection";
-        needle = "real-QEMU selftest gate must not be silently accepted";
+        label = "qemu gate requires flag";
+        needle = "real-QEMU selftest gate must require --with-qemu";
       }
       {
         label = "with-qemu discovery error";
-        needle = "real-QEMU selftest gate runner";
+        needle = "selftest --with-qemu without artifacts must fail discovery";
       }
       {
         label = "gate validation before qemu discovery";
@@ -133,6 +190,24 @@
       {
         label = "with-qemu exit code";
         needle = "assert_eq!(error.exit_code(), 4);";
+      }
+      {
+        label = "positive qemu selftest report";
+        needle = "qemu_report.gates.iter().all";
+      }
+      {
+        label = "file-backed corpus test";
+        needle = "selftest-corpus.txt";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "stale qemu runner blocker";
+        needle = "real-QEMU selftest gate runner tracked by T-CLI-8";
+      }
+      {
+        label = "stale extended runner blocker";
+        needle = "real-QEMU and extended gate runners remain tracked by T-CLI-8";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -214,7 +289,8 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             component=crucible-cli
-            selftest=built-in-corpus-replay-oracle
+            selftest=fast-double-backed-plus-real-qemu
+            corpus_manifest=true
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
