@@ -245,6 +245,9 @@ pub enum Commands {
         /// Raw Nix expression to compare under --eval-json
         #[arg(long, value_name = "EXPR", requires = "eval_json")]
         expr: Vec<String>,
+        /// Source seed file or directory to compare under --eval-json
+        #[arg(long = "eval-json-corpus", value_name = "PATH", requires = "eval_json")]
+        eval_json_corpus: Vec<std::path::PathBuf>,
         /// Nix file to instantiate (default: repository default.nix)
         #[arg(conflicts_with_all = ["eval_json", "oracle_drv", "candidate_drv"])]
         file: Option<std::path::PathBuf>,
@@ -454,6 +457,7 @@ mod tests {
                 systems,
                 eval_json,
                 expr,
+                eval_json_corpus,
                 file,
                 mode,
                 oracle_stats,
@@ -469,6 +473,7 @@ mod tests {
                 assert!(!systems);
                 assert!(!eval_json);
                 assert!(expr.is_empty());
+                assert!(eval_json_corpus.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
@@ -502,6 +507,7 @@ mod tests {
                 systems,
                 eval_json,
                 expr,
+                eval_json_corpus,
                 file,
                 mode,
                 oracle_stats,
@@ -517,6 +523,7 @@ mod tests {
                 assert!(!systems);
                 assert!(!eval_json);
                 assert!(expr.is_empty());
+                assert!(eval_json_corpus.is_empty());
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
                 assert!(!oracle_stats);
@@ -598,6 +605,7 @@ mod tests {
                 systems,
                 eval_json,
                 expr,
+                eval_json_corpus,
                 file,
                 oracle_stats,
                 cache_validation,
@@ -609,9 +617,40 @@ mod tests {
                 assert!(!systems);
                 assert!(eval_json);
                 assert_eq!(expr, ["1 + 1".to_string(), "{ a = 1; }".to_string()]);
+                assert!(eval_json_corpus.is_empty());
                 assert_eq!(file, None);
                 assert!(!oracle_stats);
                 assert!(!cache_validation);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_eval_json_corpus_paths() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--eval-json",
+            "--eval-json-corpus",
+            "fuzz/corpus/parity_json",
+            "--expr",
+            "1 + 1",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                eval_json,
+                expr,
+                eval_json_corpus,
+                ..
+            } => {
+                assert!(eval_json);
+                assert_eq!(expr, ["1 + 1".to_string()]);
+                assert_eq!(
+                    eval_json_corpus,
+                    [std::path::PathBuf::from("fuzz/corpus/parity_json")]
+                );
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -632,6 +671,14 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 
         let err = parse_cli_error(["aos", "nix-diff", "--expr", "1 + 1"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--eval-json-corpus",
+            "fuzz/corpus/parity_json",
+        ]);
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
@@ -655,6 +702,7 @@ mod tests {
                 systems,
                 eval_json,
                 expr,
+                eval_json_corpus,
                 file,
                 mode,
                 oracle_stats,
@@ -667,6 +715,7 @@ mod tests {
                 assert!(!systems);
                 assert!(!eval_json);
                 assert!(expr.is_empty());
+                assert!(eval_json_corpus.is_empty());
                 assert_eq!(file.as_deref(), Some(std::path::Path::new("default.nix")));
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
@@ -697,6 +746,7 @@ mod tests {
                 systems,
                 eval_json,
                 expr,
+                eval_json_corpus,
                 file,
                 mode,
                 oracle_stats,
@@ -712,6 +762,7 @@ mod tests {
                 assert!(!systems);
                 assert!(!eval_json);
                 assert!(expr.is_empty());
+                assert!(eval_json_corpus.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Structural);
                 assert!(!oracle_stats);

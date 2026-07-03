@@ -35,6 +35,17 @@ When `AOS_NIX_LANG_TESTS` points at the pinned C++ Nix lang corpus, supported
 `eval-okay` cases are included through a copied
 `generated-conformance-corpus.nix` support file beside the generated seeds.
 
+Replay source seeds through the command-line JSON diff gate:
+
+```text
+aos nix-diff --eval-json --eval-json-corpus fuzz/corpus/parity_json
+aos nix-diff --eval-json --eval-json-corpus fuzz/corpus/parity_json/generated
+```
+
+The CLI loader accepts only `# aos-nix-fuzz-source` seed files, strips
+`# aos-nix-fuzz-config ...` metadata comments, and uses the command's global
+eval flags for both evaluators.
+
 `internal_diff_raw` currently uses a tree-walk mirror candidate so the fuzz
 target and corpus are live before optimized tiers exist. P6/P7 tiers replace
 that mirror candidate with their own `InternalDiffTier` implementation.

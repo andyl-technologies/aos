@@ -20,6 +20,9 @@ use aos_nix_harness::diff::{
     diff_drv_pair_with_bundles,
 };
 
+const SOURCE_SEED_PREFIX: &str = "# aos-nix-fuzz-source\n";
+const SOURCE_SEED_CONFIG_PREFIX: &str = "# aos-nix-fuzz-config ";
+
 const EXPLICIT_TOOLCHAIN_CORPUS_ATTRS: &[&str] = &[
     "stdenv.stdenv",
     "stdenv.cc",
@@ -245,6 +248,7 @@ pub fn run(
     systems: bool,
     eval_json: bool,
     exprs: &[String],
+    eval_json_corpus: &[PathBuf],
     mode: DiffMode,
     oracle_stats: bool,
     cache_validation: bool,
@@ -279,6 +283,7 @@ pub fn run(
             candidate_name,
             &eval_config,
             exprs,
+            eval_json_corpus,
         );
     }
 
@@ -743,8 +748,9 @@ fn run_eval_json(
     candidate_name: &str,
     eval_config: &NixEvalConfig,
     exprs: &[String],
+    eval_json_corpus: &[PathBuf],
 ) -> Result<()> {
-    let entries = eval_json_entries(exprs);
+    let entries = eval_json_entries(exprs, eval_json_corpus)?;
     printer.info(&format!(
         "Comparing {} strict JSON expression(s)...",
         entries.len()
@@ -809,19 +815,31 @@ fn run_eval_json(
     Err(failure.into())
 }
 
-fn eval_json_entries(exprs: &[String]) -> Vec<EvalJsonEntry> {
-    if exprs.is_empty() {
-        return default_eval_json_entries();
+fn eval_json_entries(exprs: &[String], eval_json_corpus: &[PathBuf]) -> Result<Vec<EvalJsonEntry>> {
+    if exprs.is_empty() && eval_json_corpus.is_empty() {
+        return Ok(default_eval_json_entries());
     }
 
-    exprs
+    let mut entries = exprs
         .iter()
         .enumerate()
         .map(|(index, expr)| EvalJsonEntry {
             name: format!("expr[{index}]"),
             expr: expr.clone(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    for path in eval_json_corpus {
+        entries.extend(eval_json_corpus_entries(path)?);
+    }
+
+    if entries.is_empty() {
+        return Err(AosError::InvalidArgument {
+            message: "nix-diff --eval-json found no source expressions".to_string(),
+        }
+        .into());
+    }
+    Ok(entries)
 }
 
 fn default_eval_json_entries() -> Vec<EvalJsonEntry> {
@@ -853,6 +871,119 @@ in builtins.getContext "${x}""#,
         expr: expr.to_string(),
     })
     .collect()
+}
+
+fn eval_json_corpus_entries(path: &Path) -> Result<Vec<EvalJsonEntry>> {
+    if path.is_file() {
+        return eval_json_seed_entry(path).map(|entry| vec![entry]);
+    }
+    if !path.exists() {
+        return Err(AosError::InvalidArgument {
+            message: format!("eval-json corpus path does not exist: {}", path.display()),
+        }
+        .into());
+    }
+    if !path.is_dir() {
+        return Err(AosError::InvalidArgument {
+            message: format!(
+                "eval-json corpus path is neither a file nor directory: {}",
+                path.display()
+            ),
+        }
+        .into());
+    }
+
+    let mut seed_paths = fs::read_dir(path)
+        .with_context(|| format!("reading eval-json corpus directory {}", path.display()))?
+        .map(|entry| {
+            let entry = entry
+                .with_context(|| format!("reading entry in eval-json corpus {}", path.display()))?;
+            Ok(entry.path())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    seed_paths.retain(|seed_path| {
+        seed_path.is_file()
+            && matches!(
+                seed_path
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+                Some("seed")
+            )
+    });
+    seed_paths.sort();
+
+    if seed_paths.is_empty() {
+        return Err(AosError::InvalidArgument {
+            message: format!(
+                "eval-json corpus directory contains no .seed files: {}",
+                path.display()
+            ),
+        }
+        .into());
+    }
+
+    seed_paths
+        .iter()
+        .map(|seed_path| eval_json_seed_entry(seed_path))
+        .collect()
+}
+
+fn eval_json_seed_entry(path: &Path) -> Result<EvalJsonEntry> {
+    let seed = fs::read_to_string(path)
+        .with_context(|| format!("reading eval-json source seed {}", path.display()))?;
+    let expr = eval_json_source_seed_expr(&seed).map_err(|error| AosError::InvalidArgument {
+        message: format!(
+            "eval-json source seed {}: {}",
+            error.description(),
+            path.display()
+        ),
+    })?;
+    Ok(EvalJsonEntry {
+        name: format!("seed:{}", path.display()),
+        expr,
+    })
+}
+
+fn eval_json_source_seed_expr(seed: &str) -> std::result::Result<String, EvalJsonSourceSeedError> {
+    let seed = seed
+        .strip_prefix(SOURCE_SEED_PREFIX)
+        .ok_or(EvalJsonSourceSeedError::MissingPrefix)?;
+    let mut source_lines = Vec::new();
+    let mut reading_config = true;
+    for line in seed.lines() {
+        if reading_config {
+            if line.starts_with(SOURCE_SEED_CONFIG_PREFIX) {
+                continue;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            reading_config = false;
+        }
+        source_lines.push(line);
+    }
+
+    let source = source_lines.join("\n").trim().to_string();
+    if source.is_empty() {
+        Err(EvalJsonSourceSeedError::EmptySource)
+    } else {
+        Ok(source)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum EvalJsonSourceSeedError {
+    MissingPrefix,
+    EmptySource,
+}
+
+impl EvalJsonSourceSeedError {
+    fn description(self) -> &'static str {
+        match self {
+            Self::MissingPrefix => "must start with \"# aos-nix-fuzz-source\\n\"",
+            Self::EmptySource => "contains no source expression after metadata",
+        }
+    }
 }
 
 fn eval_json_report(
@@ -3404,6 +3535,89 @@ mod tests {
     }
 
     #[test]
+    fn eval_json_entries_loads_source_seed_directory() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path();
+        fs::write(
+            dir.join("b.seed"),
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config eval-mode=impure\n\
+             \n\
+             { b = 2; }\n",
+        )?;
+        fs::write(dir.join("a.seed"), "# aos-nix-fuzz-source\n{ a = 1; }\n")?;
+        fs::write(dir.join("ignored.txt"), "# aos-nix-fuzz-source\n0\n")?;
+
+        let entries = eval_json_entries(&[], &[dir.to_path_buf()])?;
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].name.ends_with("a.seed"));
+        assert_eq!(entries[0].expr, "{ a = 1; }");
+        assert!(entries[1].name.ends_with("b.seed"));
+        assert_eq!(entries[1].expr, "{ b = 2; }");
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_combines_expressions_and_source_seed_file() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("case.seed");
+        fs::write(
+            &seed,
+            "# aos-nix-fuzz-source\nbuiltins.length [ (1 / 0) ]\n",
+        )?;
+
+        let entries = eval_json_entries(&["1 + 1".to_string()], &[seed])?;
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "expr[0]");
+        assert_eq!(entries[0].expr, "1 + 1");
+        assert!(entries[1].name.ends_with("case.seed"));
+        assert_eq!(entries[1].expr, "builtins.length [ (1 / 0) ]");
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_rejects_non_source_seed_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("opaque.seed");
+        fs::write(&seed, "not a source seed")?;
+
+        let error = eval_json_entries(&[], &[seed])
+            .expect_err("opaque fuzz bytes are not replayable as eval-json source seeds");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source seed must start with \"# aos-nix-fuzz-source"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_rejects_empty_source_seed_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("empty.seed");
+        fs::write(
+            &seed,
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config eval-mode=impure\n",
+        )?;
+
+        let error =
+            eval_json_entries(&[], &[seed]).expect_err("empty source seeds should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("contains no source expression after metadata"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn cache_validation_side_configs_only_change_native_cache_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let work_dir = temp.path().join("work");
@@ -3927,7 +4141,7 @@ mod tests {
         let oracle = FixedJsonEval::value("oracle", "1");
         let candidate = FixedJsonEval::value("candidate", "2");
         let entry = EvalJsonEntry {
-            name: "number".to_string(),
+            name: "seed:/tmp/parity_json/number.seed".to_string(),
             expr: "1 + 1".to_string(),
         };
         let report = eval_json_report(&oracle, &candidate, &entry);
@@ -3944,6 +4158,10 @@ mod tests {
         assert_eq!(value["expressions_failed"], 1);
         assert_eq!(value["divergence_count"], 1);
         assert_eq!(value["reports"][0]["matched"], false);
+        assert_eq!(
+            value["reports"][0]["name"],
+            "seed:/tmp/parity_json/number.seed"
+        );
         assert_eq!(value["reports"][0]["error"], "eval-json output diverged");
         assert_eq!(value["reports"][0]["oracle_value"], "1");
         assert_eq!(value["reports"][0]["candidate_value"], "2");

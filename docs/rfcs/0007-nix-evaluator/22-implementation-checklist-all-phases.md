@@ -7085,8 +7085,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       commands, and treats native fallback/errors as gate failures rather than
       silently accepting CLI output. This is a runnable CLI precursor for
       `C-4`, but it does not yet run the generated package/conformance eval
-      corpus, consume the `parity_json` fuzz corpus budget, wire CI, or close
-      `C-4`.
+      corpus, wire CI, or close `C-4`.
+- [x] Current `--eval --json` source-corpus precursor:
+      `aos nix-diff --eval-json --eval-json-corpus <DIR|SEED>` now replays
+      checked-in or generated `# aos-nix-fuzz-source` seeds from the
+      `parity_json` cargo-fuzz corpus through the same nix-cli/native JSON
+      diff gate. Corpus directories are loaded in deterministic filename order,
+      seed metadata comments are stripped before evaluation, explicit `--expr`
+      inputs can be combined with corpus paths, and failures keep seed-path
+      names in the human and machine-readable reports. This lets the command
+      consume the source-seed portion of the `parity_json` corpus budget, but it
+      does not generate the corpus, apply per-seed eval config metadata instead
+      of the command's global eval flags, wire CI, or close `C-4`.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with
