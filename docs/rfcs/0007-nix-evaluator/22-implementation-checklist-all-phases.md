@@ -7040,6 +7040,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       unsupported. This pins a second consumer of the escape-signature
       allowlist, but still does not run randomized builtin semantics or prove
       aggregate/result-forwarding escape behavior.
+- [x] Current semantic escape-signature harness precursor:
+      `ratchet-oracle` tree-walk tests now require the semantic sample table to
+      cover every current immediate-scalar signature, assert each sample lowers
+      to a root direct `PrimOp` for the same builtin name, and verify the
+      resulting `ValueTag` is an inline non-heap tag. A `proptest` harness
+      randomizes integer inputs for the arithmetic, bitwise, and
+      numeric-comparison subset, while conservative samples cover heap-returning
+      builders plus scalar-returning overloaded/result-forwarding calls such as
+      `add`, `seq`, and `elemAt`. This connects the allowlist to evaluator
+      semantics, but still does not exhaustively generate valid inputs for every
+      builtin, compare against the C++ oracle for each generated sample, or prove
+      aggregate/result-forwarding escape behavior.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
       default, `Eager` gated by proven strictness, and `Scalar` gated by both
