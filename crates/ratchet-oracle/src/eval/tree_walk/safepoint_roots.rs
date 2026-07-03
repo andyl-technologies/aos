@@ -108,6 +108,74 @@ pub enum TreeWalkSafepointRootWritebackError {
         /// The heap-field slots rewritten by caller-owned buffer validation.
         buffer_heap_field_writebacks: usize,
     },
+    /// The live remembered-set epoch no longer matches the source state
+    /// consumed by a planned safepoint writeback.
+    #[error(
+        "tree-walk safepoint source remembered-set epoch {actual} does not match planned epoch {expected}"
+    )]
+    SourceRememberedSetEpochMismatch {
+        /// The remembered-set epoch captured by the plan.
+        expected: RememberedSetEpoch,
+        /// The current remembered-set epoch.
+        actual: RememberedSetEpoch,
+    },
+    /// The live remembered-set edge count no longer matches the source state
+    /// consumed by a planned safepoint writeback.
+    #[error(
+        "tree-walk safepoint source remembered-set edge count {actual} does not match planned count {expected}"
+    )]
+    SourceRememberedSetLengthMismatch {
+        /// The edge count captured by the plan.
+        expected: usize,
+        /// The current edge count.
+        actual: usize,
+    },
+    /// One live remembered-set edge no longer matches the source state
+    /// consumed by a planned safepoint writeback.
+    #[error(
+        "tree-walk safepoint source remembered-set edge mismatch at index {index}: expected {expected:?}, got {actual:?}"
+    )]
+    SourceRememberedSetEdgeMismatch {
+        /// The mismatched remembered-set edge index.
+        index: usize,
+        /// The edge captured by the plan.
+        expected: RememberedEdge,
+        /// The current edge.
+        actual: RememberedEdge,
+    },
+    /// The live card-table size no longer matches the source state consumed by
+    /// a planned safepoint writeback.
+    #[error("tree-walk safepoint source card size {actual} does not match planned size {expected}")]
+    SourceCardTableCardSizeMismatch {
+        /// The card size captured by the plan.
+        expected: usize,
+        /// The current card size.
+        actual: usize,
+    },
+    /// The live dirty-card count no longer matches the source state consumed by
+    /// a planned safepoint writeback.
+    #[error(
+        "tree-walk safepoint source dirty-card count {actual} does not match planned count {expected}"
+    )]
+    SourceCardTableLengthMismatch {
+        /// The dirty-card count captured by the plan.
+        expected: usize,
+        /// The current dirty-card count.
+        actual: usize,
+    },
+    /// One live dirty-card marker no longer matches the source state consumed
+    /// by a planned safepoint writeback.
+    #[error(
+        "tree-walk safepoint source dirty-card mismatch at index {index}: expected {expected:?}, got {actual:?}"
+    )]
+    SourceCardTableDirtyCardMismatch {
+        /// The mismatched dirty-card index.
+        index: usize,
+        /// The dirty-card marker captured by the plan.
+        expected: GcDirtyCard,
+        /// The current dirty-card marker.
+        actual: GcDirtyCard,
+    },
 }
 
 /// A tree-walk safepoint minor-GC root-writeback summary.
@@ -514,6 +582,8 @@ pub struct TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
     object_body_and_generation_write_report:
         AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     live_heap_field_writebacks: usize,
+    remembered_set_published_edges: usize,
+    card_table_clear_report: GcCardTableClearReport,
 }
 
 impl TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
@@ -522,11 +592,15 @@ impl TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
         object_body_and_generation_write_report:
             AllocationCollectorPollObjectBodyAndGenerationWriteReport,
         live_heap_field_writebacks: usize,
+        remembered_set_published_edges: usize,
+        card_table_clear_report: GcCardTableClearReport,
     ) -> Self {
         Self {
             root_storage,
             object_body_and_generation_write_report,
             live_heap_field_writebacks,
+            remembered_set_published_edges,
+            card_table_clear_report,
         }
     }
 
@@ -561,6 +635,21 @@ impl TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
     /// Returns how many live heap fields were rewritten.
     pub const fn live_heap_field_writebacks(&self) -> usize {
         self.live_heap_field_writebacks
+    }
+
+    /// Returns the number of remembered edges published for the next epoch.
+    pub const fn remembered_set_published_edges(&self) -> usize {
+        self.remembered_set_published_edges
+    }
+
+    /// Returns the report for the live card-table clear.
+    pub const fn card_table_clear_report(&self) -> GcCardTableClearReport {
+        self.card_table_clear_report
+    }
+
+    /// Returns how many dirty-card markers were cleared from live state.
+    pub const fn card_table_dirty_cards_cleared(&self) -> usize {
+        self.card_table_clear_report.dirty_cards()
     }
 
     /// Returns the collector poll used to derive the writebacks.
@@ -992,8 +1081,8 @@ impl TreeWalk {
     /// minor-GC planning, destination materialization, commit-plan derivation,
     /// and reference-writeback extraction without mutating roots, heap fields,
     /// object bytes, forwarding headers, remembered sets, or card tables. It is
-    /// the shared planning bridge for root-only and future full live-reference
-    /// safepoint applicators.
+    /// the shared planning bridge for root-only, existing-destination, and
+    /// future broader live-reference safepoint applicators.
     ///
     /// # Errors
     ///
@@ -1219,20 +1308,23 @@ impl TreeWalk {
     /// This is the read-only companion to
     /// [`Self::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields`].
     /// It validates the complete root+heap-field partition against
-    /// caller-owned typed root slots and live heap-field slots, then stages the
-    /// existing-destination object body/generation writes, live heap-field
-    /// writes, and remembered/card-table barriers without committing any of
-    /// those staged changes to the evaluator.
+    /// caller-owned typed root slots and live heap-field slots, validates that
+    /// the live remembered set and card table still match the source state
+    /// consumed by the plan, then stages the existing-destination object
+    /// body/generation writes, live heap-field writes, and
+    /// remembered/card-table barriers without committing any of those staged
+    /// changes to the evaluator.
     ///
     /// # Errors
     ///
     /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
     /// longer current, if root storage cannot be read, if current root or
-    /// heap-field validation fails, if object-copy request metadata is
-    /// inconsistent, if a destination heap record is missing or rejects paired
-    /// body/generation staging, if a supported live heap-field write cannot be
-    /// staged, or if live-field staging disagrees with the prevalidated buffer
-    /// writeback count.
+    /// heap-field validation fails, if the live remembered set or card table no
+    /// longer matches the plan's source state, if object-copy request metadata
+    /// is inconsistent, if a destination heap record is missing or rejects
+    /// paired body/generation staging, if a supported live heap-field write
+    /// cannot be staged, or if live-field staging disagrees with the
+    /// prevalidated buffer writeback count.
     pub fn validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
         &self,
         plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
@@ -1243,6 +1335,7 @@ impl TreeWalk {
     > {
         let application =
             self.apply_reference_writebacks_to_safepoint_buffers(plan, value_stack)?;
+        self.validate_safepoint_reference_writeback_source_gc_state(plan)?;
         let (copied_writes, direct_writes) = self
             .heap
             .collector_poll_minor_gc_live_heap_field_write_inputs(
@@ -1316,29 +1409,34 @@ impl TreeWalk {
     /// This is a narrow existing-destination live-reference bridge for
     /// tree-walk allocation safepoints. It first runs the read-only
     /// existing-destination live-reference preflight, validating the complete
-    /// root+heap-field partition, paired object body/generation staging, live
-    /// heap-field writes, and remembered/card-table barrier staging. It also
-    /// validates that supported root writeback targets can be written before
-    /// committing heap state. It then binds the plan's paired object
-    /// body/generation writes to already-existing destination records, applies
-    /// supported record-owned heap-field writes with remembered/card-table
-    /// barrier staging, and finally writes the prevalidated root slots back to
-    /// supported tree-walk root storage.
+    /// root+heap-field partition, the plan's source remembered-set/card-table
+    /// state, paired object body/generation staging, live heap-field writes,
+    /// and remembered/card-table barrier staging. It also validates that
+    /// supported root writeback targets can be written and clones the planned
+    /// next remembered set before committing heap state. It then binds the
+    /// plan's paired object body/generation writes to already-existing
+    /// destination records, applies supported record-owned heap-field writes,
+    /// writes the prevalidated root slots back to supported tree-walk root
+    /// storage, publishes the planned next remembered set, and clears the live
+    /// card table.
     ///
     /// This still requires destination heap records to pre-exist and does not
-    /// allocate semispace storage, install forwarding headers, publish a full
-    /// remembered-set refresh, consume JIT stack maps, or dispatch Tier B from
-    /// allocation sites.
+    /// allocate semispace storage, install forwarding headers, consume JIT
+    /// stack maps, or dispatch Tier B from allocation sites. The remembered-set
+    /// and card-table publication is limited to this existing-destination
+    /// tree-walk bridge.
     ///
     /// # Errors
     ///
     /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
     /// longer current, if root storage cannot be read or written, if current
-    /// root or heap-field validation fails, if object-copy request metadata is
-    /// inconsistent, if a destination heap record is missing or rejects paired
-    /// body/generation writes, if a supported live heap-field write cannot be
-    /// staged, or if live-field staging disagrees with the prevalidated buffer
-    /// writeback count.
+    /// root or heap-field validation fails, if the live remembered set or card
+    /// table no longer matches the plan's source state, if object-copy request
+    /// metadata is inconsistent, if a destination heap record is missing or
+    /// rejects paired body/generation writes, if a supported live heap-field
+    /// write cannot be staged, if the next remembered set cannot be cloned
+    /// before mutation, or if live-field staging disagrees with the
+    /// prevalidated buffer writeback count.
     pub fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
         &mut self,
         plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
@@ -1361,6 +1459,11 @@ impl TreeWalk {
             application.root_value_writeback_slots(),
             value_stack,
         )?;
+        let next_remembered_set = plan
+            .next_remembered_set()
+            .try_clone()
+            .map_err(EvalHeapError::from)?;
+        let remembered_set_published_edges = next_remembered_set.len();
         let (copied_writes, direct_writes) = self
             .heap
             .collector_poll_minor_gc_live_heap_field_write_inputs(
@@ -1396,12 +1499,16 @@ impl TreeWalk {
         for slot in application.root_value_writeback_slots() {
             self.write_safepoint_root_writeback_value(slot.source(), slot.value(), value_stack)?;
         }
+        self.thunk_resolve_remembered_set = next_remembered_set;
+        let card_table_clear_report = self.thunk_resolve_card_table.clear_dirty_cards();
 
         Ok(
             TreeWalkSafepointMinorGcLiveReferenceWritebackApplication::new(
                 TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication::new(application),
                 object_body_and_generation_write_report,
                 live_heap_field_writebacks,
+                remembered_set_published_edges,
+                card_table_clear_report,
             ),
         )
     }
@@ -1478,6 +1585,20 @@ impl TreeWalk {
             self.validate_safepoint_root_writeback_target(slot.source(), value_stack)?;
         }
         Ok(())
+    }
+
+    fn validate_safepoint_reference_writeback_source_gc_state(
+        &self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+    ) -> Result<(), TreeWalkSafepointRootWritebackError> {
+        validate_safepoint_source_remembered_set(
+            plan.source_remembered_set(),
+            &self.thunk_resolve_remembered_set,
+        )?;
+        validate_safepoint_source_card_table(
+            plan.source_card_table(),
+            &self.thunk_resolve_card_table,
+        )
     }
 
     fn read_safepoint_root_writeback_value(
@@ -1973,6 +2094,79 @@ fn validate_live_heap_field_writeback_count(
         );
     }
 
+    Ok(())
+}
+
+fn validate_safepoint_source_remembered_set(
+    expected: &RememberedSet,
+    actual: &RememberedSet,
+) -> Result<(), TreeWalkSafepointRootWritebackError> {
+    if expected.epoch() != actual.epoch() {
+        return Err(
+            TreeWalkSafepointRootWritebackError::SourceRememberedSetEpochMismatch {
+                expected: expected.epoch(),
+                actual: actual.epoch(),
+            },
+        );
+    }
+    if expected.len() != actual.len() {
+        return Err(
+            TreeWalkSafepointRootWritebackError::SourceRememberedSetLengthMismatch {
+                expected: expected.len(),
+                actual: actual.len(),
+            },
+        );
+    }
+    for (index, (expected, actual)) in expected.edges().iter().zip(actual.edges()).enumerate() {
+        if expected != actual {
+            return Err(
+                TreeWalkSafepointRootWritebackError::SourceRememberedSetEdgeMismatch {
+                    index,
+                    expected: *expected,
+                    actual: *actual,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_safepoint_source_card_table(
+    expected: &GcCardTable,
+    actual: &GcCardTable,
+) -> Result<(), TreeWalkSafepointRootWritebackError> {
+    if expected.card_size_bytes() != actual.card_size_bytes() {
+        return Err(
+            TreeWalkSafepointRootWritebackError::SourceCardTableCardSizeMismatch {
+                expected: expected.card_size_bytes(),
+                actual: actual.card_size_bytes(),
+            },
+        );
+    }
+    if expected.len() != actual.len() {
+        return Err(
+            TreeWalkSafepointRootWritebackError::SourceCardTableLengthMismatch {
+                expected: expected.len(),
+                actual: actual.len(),
+            },
+        );
+    }
+    for (index, (expected, actual)) in expected
+        .dirty_cards()
+        .iter()
+        .zip(actual.dirty_cards())
+        .enumerate()
+    {
+        if expected != actual {
+            return Err(
+                TreeWalkSafepointRootWritebackError::SourceCardTableDirtyCardMismatch {
+                    index,
+                    expected: *expected,
+                    actual: *actual,
+                },
+            );
+        }
+    }
     Ok(())
 }
 

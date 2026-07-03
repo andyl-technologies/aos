@@ -6805,7 +6805,7 @@ and helps the oracle directly.
       exposes the complete root+heap-field writeback partition with scan,
       survivor and reference-slot counts, the source remembered-set/card-table
       state, remembered-set refresh counts, and the rebuilt next remembered
-      set for the future full live-reference writer.
+      set for existing-destination and future broader live-reference writers.
       `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
       and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
@@ -6819,18 +6819,19 @@ and helps the oracle directly.
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       derives the same complete-partition and object-copy plan, then preflights
       supported tree-walk root slots, existing-destination object
-      body/generation staging, live heap-field writes, and remembered/card-table
-      barrier staging without mutating evaluator roots, heap records, or side
-      tables.
+      body/generation staging, live heap-field writes, source
+      remembered-set/card-table state, and remembered/card-table barrier staging
+      without mutating evaluator roots, heap records, or side tables.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       carries the same current-poll object-copy plan into the
       existing-destination live heap-field writer, runs the read-only
       existing-destination preflight and validates supported mutable root targets
-      before committing heap state, applies paired object-body/generation writes
-      to already-bound destination records, rewrites supported tree-walk root
-      storage and record-owned heap fields, and stages direct
-      old/permanent-to-young write barriers into the evaluator remembered/card
-      side tables. Unit tests cover a real poll rewriting every supported
+      plus the plan's source remembered-set/card-table state before committing
+      heap state, clones the planned next remembered set, applies paired
+      object-body/generation writes to already-bound destination records,
+      rewrites supported tree-walk root storage and record-owned heap fields,
+      publishes the planned next remembered set, and clears the live card table.
+      Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
       typed-root, heap-field metadata, and live heap-field buffer rejection
@@ -6845,12 +6846,15 @@ and helps the oracle directly.
       mutation, synthetic destination rejection in both the preflight and
       applicator before root or field mutation, stale live heap-field rejection
       before root mutation, late suspended-frame root-target borrow rejection
-      before partial root mutation, and a dirty permanent-list remembered edge
-      whose mixed root/field plan is rejected without touching the value stack,
-      active frame root, or ready import-cache root. This is
+      before partial root mutation, stale source remembered-set and source
+      card-table rejection before live mutation, and a dirty permanent-list
+      remembered edge whose mixed root/field plan is rejected without touching
+      the value stack, active frame root, or ready import-cache root. This is
       still not automatic allocation-site dispatch and still does not allocate
       destination records, reserve semispace storage, install forwarding
-      headers, publish a full remembered-set refresh, or consume JIT stack maps.
+      headers, or consume JIT stack maps. The full remembered-set/card-table
+      publication remains limited to this explicit existing-destination
+      tree-walk bridge.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -7186,23 +7190,25 @@ and helps the oracle directly.
       partial live collection. The underlying
       `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
       wrapper preserves the complete root+heap-field writeback partition for the
-      future full live-reference writer, including exact remembered-field
-      writeback metadata. Its buffer applicator applies that partition to
-      caller-owned typed root and live heap-field buffers without mutating
-      evaluator storage, and its root-storage plus heap-field-buffer applicator
-      writes supported tree-walk roots only after the complete partition
-      validates while leaving heap fields in caller-owned buffers.
+      existing-destination and future broader live-reference writers, including
+      exact remembered-field writeback metadata. Its buffer applicator applies
+      that partition to caller-owned typed root and live heap-field buffers
+      without mutating evaluator storage, and its root-storage plus
+      heap-field-buffer applicator writes supported tree-walk roots only after
+      the complete partition validates while leaving heap fields in caller-owned
+      buffers.
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       preflights the same tree-walk root slots, existing-destination
-      body/generation writes, live heap-field writes, and barrier staging without
-      mutating roots, heap records, remembered-set state, or card-table state.
+      body/generation writes, live heap-field writes, source
+      remembered-set/card-table state, and barrier staging without mutating
+      roots, heap records, remembered-set state, or card-table state.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       now carries the current-poll object-copy plan into an existing-destination
       live applicator that first runs the read-only preflight and validates
-      mutable root targets, then binds paired object bodies/generations, rewrites
-      supported tree-walk roots and record-owned heap fields, and stages direct
-      old/permanent-to-young barriers against the evaluator remembered/card side
-      tables.
+      mutable root targets and source remembered-set/card-table state, then
+      binds paired object bodies/generations, rewrites supported tree-walk roots
+      and record-owned heap fields, publishes the planned next remembered set,
+      and clears the live card table.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

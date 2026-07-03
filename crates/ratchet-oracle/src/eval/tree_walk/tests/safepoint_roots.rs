@@ -1787,6 +1787,9 @@ fn reference_writebacks_apply_root_storage_and_live_heap_fields_for_existing_des
     assert_eq!(application.applied_root_writebacks(), 3);
     assert_eq!(application.live_heap_field_writebacks(), 1);
     assert_eq!(application.applied_live_writebacks(), 4);
+    assert_eq!(application.remembered_set_published_edges(), 1);
+    assert_eq!(application.card_table_clear_report().dirty_cards(), 1);
+    assert_eq!(application.card_table_dirty_cards_cleared(), 1);
     let relocated = relocated_value(ValueTag::Lambda, destination_address);
     for slot in application.root_value_writeback_slots() {
         assert_raw_eq(slot.value(), relocated);
@@ -1825,21 +1828,12 @@ fn reference_writebacks_apply_root_storage_and_live_heap_fields_for_existing_des
             .expect("destination remains heap-bound"),
         HeapGeneration::Young
     );
-    assert!(
-        evaluator
-            .thunk_resolve_remembered_set
-            .edges()
-            .contains(&RememberedEdge::new(
-                gc_address(parent),
-                destination_address
-            ))
+    let expected_edges = [RememberedEdge::new(gc_address(parent), destination_address)];
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        expected_edges.as_slice()
     );
-    assert!(
-        evaluator
-            .thunk_resolve_card_table
-            .snapshot()
-            .covers_source(gc_address(parent))
-    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
 }
 
 #[test]
@@ -1928,6 +1922,195 @@ fn reference_writebacks_reject_frame_borrow_before_body_or_field_mutation() {
     assert_eq!(
         evaluator.thunk_resolve_card_table.dirty_cards(),
         original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn reference_writebacks_reject_stale_source_remembered_set_before_live_mutation() {
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let destination_address = gc_address(destination);
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    let original_destination_pattern = destination_lambda.pattern();
+    let original_destination_body = destination_lambda.body();
+    let original_destination_frame = destination_lambda.frame();
+    let original_destination_generation = evaluator
+        .heap()
+        .generation(destination)
+        .expect("destination starts heap-bound");
+    let original_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives for existing destination");
+    let stale_edge = RememberedEdge::new(
+        static_gc_address(0x3000_0000),
+        static_gc_address(0x3000_1000),
+    );
+    evaluator
+        .thunk_resolve_remembered_set
+        .record(stale_edge)
+        .expect("stale remembered edge records");
+    let stale_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("stale source remembered set rejects before live mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::SourceRememberedSetLengthMismatch {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    assert_eq!(destination_lambda.pattern(), original_destination_pattern);
+    assert_eq!(destination_lambda.body(), original_destination_body);
+    assert_eq!(destination_lambda.frame(), original_destination_frame);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        stale_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn reference_writebacks_reject_stale_source_card_table_before_live_mutation() {
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let destination_address = gc_address(destination);
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    let original_destination_pattern = destination_lambda.pattern();
+    let original_destination_body = destination_lambda.body();
+    let original_destination_frame = destination_lambda.frame();
+    let original_destination_generation = evaluator
+        .heap()
+        .generation(destination)
+        .expect("destination starts heap-bound");
+    let original_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives for existing destination");
+    let extra_card_source = next_dirty_card_source(&evaluator.thunk_resolve_card_table);
+    evaluator
+        .thunk_resolve_card_table
+        .mark_source(extra_card_source)
+        .expect("stale card table source marks");
+    let stale_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("stale source card table rejects before live mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::SourceCardTableLengthMismatch {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    assert_eq!(destination_lambda.pattern(), original_destination_pattern);
+    assert_eq!(destination_lambda.body(), original_destination_body);
+    assert_eq!(destination_lambda.frame(), original_destination_frame);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        stale_dirty_cards.as_slice()
     );
 }
 

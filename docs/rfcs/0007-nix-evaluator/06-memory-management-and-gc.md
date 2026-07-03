@@ -2583,7 +2583,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       exposes the complete root+heap-field writeback partition with scan,
       survivor and reference-slot counts, the source remembered-set/card-table
       state, remembered-set refresh counts, and the rebuilt next remembered
-      set for the future full live-reference writer.
+      set for existing-destination and future broader live-reference writers.
       `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
       and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
@@ -2597,17 +2597,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       derives the same complete-partition and object-copy plan, then preflights
       supported tree-walk root slots, existing-destination object
-      body/generation staging, live heap-field writes, and remembered/card-table
-      barrier staging without mutating evaluator roots, heap records, or
-      side tables.
+      body/generation staging, live heap-field writes, source
+      remembered-set/card-table state, and remembered/card-table barrier staging
+      without mutating evaluator roots, heap records, or side tables.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       carries the same current-poll object-copy plan into the existing-destination
       live heap-field writer, runs the read-only existing-destination preflight
-      and validates supported mutable root targets before committing heap state,
-      applies paired object-body/generation writes to already-bound destination
-      records, rewrites supported tree-walk root storage and record-owned heap
-      fields, and stages direct old/permanent-to-young write barriers into the
-      evaluator remembered/card side tables. Tests cover the poll-derived
+      and validates supported mutable root targets plus the plan's source
+      remembered-set/card-table state before committing heap state, clones the
+      planned next remembered set, applies paired object-body/generation writes
+      to already-bound destination records, rewrites supported tree-walk root
+      storage and record-owned heap fields, publishes the planned next
+      remembered set, and clears the live card table. Tests cover the poll-derived
       all-root rewrite, direct stale-poll rejection before mutation in the
       planning wrapper, root-only applicator, buffer applicator, stale typed-root,
       heap-field metadata, and live heap-field buffer rejection before either
@@ -2621,14 +2622,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejection before destination body/generation or field mutation, synthetic
       destination rejection in both the preflight and applicator before root or
       field mutation, late suspended-frame root-target borrow rejection before
-      partial root mutation, stale live heap-field rejection before root
+      partial root mutation, stale source remembered-set and source card-table
+      rejection before live mutation, stale live heap-field rejection before root
       mutation, and dirty permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
       allocate destination records, mutate interned roots, detached primop
-      metadata, or JIT stack-map slots, install forwarding headers, publish a
-      full remembered-set refresh, or wire root writebacks into automatic
-      allocation-safepoint collection.
+      metadata, or JIT stack-map slots, install forwarding headers, or wire root
+      writebacks into automatic allocation-safepoint collection. The full
+      remembered-set/card-table publication remains limited to this explicit
+      existing-destination tree-walk bridge.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;
@@ -2798,22 +2801,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       validates while leaving heap fields in caller-owned buffers.
       `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
       preflights the same tree-walk root slots, existing-destination
-      body/generation writes, live heap-field writes, and barrier staging without
-      mutating roots, heap records, remembered-set state, or card-table state.
+      body/generation writes, live heap-field writes, source
+      remembered-set/card-table state, and barrier staging without mutating
+      roots, heap records, remembered-set state, or card-table state.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       now carries the current-poll object-copy plan into an existing-destination
       live applicator that first runs the read-only preflight and validates
-      mutable root targets, then binds paired object bodies/generations, rewrites
-      supported tree-walk roots and record-owned heap fields, and stages direct
-      old/permanent-to-young barriers against the evaluator remembered/card side
-      tables. The
+      mutable root targets and source remembered-set/card-table state, then
+      binds paired object bodies/generations, rewrites supported tree-walk roots
+      and record-owned heap fields, publishes the planned next remembered set,
+      and clears the live card table. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints beyond this explicit
-      bridge, do not publish a full remembered-set refresh, and do not cover
-      shared lexical frame slots, blackholed thunk deferred-work/capture fields,
-      forced thunk cached-result fields, real ABI object-header forwarding
-      storage, semispace storage, or Tier-B dispatch.
+      bridge, publish remembered-set/card-table state only through this
+      existing-destination bridge, and do not cover shared lexical frame slots,
+      blackholed thunk deferred-work/capture fields, forced thunk cached-result
+      fields, real ABI object-header forwarding storage, semispace storage, or
+      Tier-B dispatch.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
