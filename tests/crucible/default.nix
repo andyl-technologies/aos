@@ -2414,6 +2414,11 @@ in rec {
       attrPath = "checks.crucible.phase7.faultCampaignExample";
       taskIds = ["T-EX-4"];
     };
+    adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.adversarialExampleVerify";
+      taskIds = ["T-EX-5"];
+    };
     reproductionArtifactFormat = import ./phase7-reproduction-artifact-format.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.reproductionArtifactFormat";
