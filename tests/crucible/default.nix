@@ -2490,6 +2490,11 @@ in rec {
       attrPath = "checks.crucible.phase7.reproductionArtifactFormat";
       taskIds = ["T-HARN-24"];
     };
+    reproductionProvenanceTriple = import ./phase7-reproduction-provenance-triple.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.reproductionProvenanceTriple";
+      taskIds = ["T-PKG-20"];
+    };
     machineIndependentReproduction = import ./phase7-machine-independent-reproduction.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.machineIndependentReproduction";
@@ -2516,9 +2521,9 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = ["T-PLAN-3" "T-HARN-23"];
-          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];
+          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
-        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];
+        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

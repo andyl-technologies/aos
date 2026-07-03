@@ -146,13 +146,13 @@
     }
     {
       label = "phase7 e2e waits for perf and package inputs";
-      edge = "gate:perf-bench+package-inputs+release-manifest->gate:e2e-determinism";
-      needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];";
+      edge = "gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
+      needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "phase7 e2e wrapper waits for package inputs";
-      edge = "gate:perf-bench-wrapper+package-inputs+release-manifest->gate:e2e-determinism-wrapper";
-      needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];";
+      edge = "gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
+      needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "fleet equivalence waits for e2e";

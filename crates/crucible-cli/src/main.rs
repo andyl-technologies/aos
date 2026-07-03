@@ -26,15 +26,17 @@ use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
+    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
     RpcControlClient, RpcEndpoint, serve_lifecycle_http2_with_mode_until_shutdown,
 };
+use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::{
     CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
     SessionCommandKind,
     engine::{self as crucible, DagStore},
 };
 
-const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v1";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
@@ -3318,7 +3320,9 @@ impl BackendSelectionPlan {
                     qemu,
                     plugin,
                     qemu_build_id,
+                    qemu_patch_series_hash,
                     plugin_abi,
+                    shmem_abi_version,
                     qemu_source,
                     plugin_source,
                 }),
@@ -3328,7 +3332,9 @@ impl BackendSelectionPlan {
                 !qemu.as_os_str().is_empty()
                     && !plugin.as_os_str().is_empty()
                     && is_content_address(qemu_build_id)
+                    && !qemu_patch_series_hash.is_empty()
                     && plugin_abi == &required_plugin_abi
+                    && shmem_abi_version == &crucible::SHMEM_ABI_VERSION.to_string()
                     && qemu_source.is_hermetic()
                     && plugin_source.is_hermetic()
             }
@@ -3396,7 +3402,9 @@ enum ResolvedLocalBackend {
         qemu: PathBuf,
         plugin: PathBuf,
         qemu_build_id: String,
+        qemu_patch_series_hash: String,
         plugin_abi: String,
+        shmem_abi_version: String,
         qemu_source: QemuDiscoverySource,
         plugin_source: QemuDiscoverySource,
     },
@@ -3425,13 +3433,16 @@ struct QemuDiscoveryCandidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct QemuArtifactIdentity {
     qemu_build_id: String,
+    qemu_patch_series_hash: String,
     plugin_abi: String,
+    shmem_abi_version: String,
 }
 
 #[derive(Debug)]
 struct QemuBuildMarker {
     raw_build_id: String,
     artifact_build_id: String,
+    qemu_patch_series_hash: String,
     shmem_abi_version: String,
     shmem_abi: String,
     shmem_header_hash: String,
@@ -3640,7 +3651,9 @@ fn discover_qemu_artifacts(
         qemu: qemu.path,
         plugin: plugin.path,
         qemu_build_id: identity.qemu_build_id,
+        qemu_patch_series_hash: identity.qemu_patch_series_hash,
         plugin_abi: identity.plugin_abi,
+        shmem_abi_version: identity.shmem_abi_version,
         qemu_source: qemu.source,
         plugin_source: plugin.source,
     }))
@@ -3751,7 +3764,9 @@ fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<QemuArtifactIde
     }
     Ok(QemuArtifactIdentity {
         qemu_build_id: qemu_marker.artifact_build_id,
+        qemu_patch_series_hash: qemu_marker.qemu_patch_series_hash,
         plugin_abi: plugin_marker.plugin_abi,
+        shmem_abi_version: plugin_marker.shmem_abi_version,
     })
 }
 
@@ -3783,6 +3798,18 @@ fn required_qemu_plugin_abi() -> String {
 
 fn shmem_abi_label_for_version(version: &str) -> String {
     format!("{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{version}")
+}
+
+fn current_guest_host_protocol_version() -> String {
+    CONTROL_PROTOCOL_VERSION.to_string()
+}
+
+fn current_rpc_abi_version() -> String {
+    format!("{RPC_PROTOCOL_MAJOR}.{RPC_PROTOCOL_MINOR}.{RPC_PROTOCOL_PATCH}")
+}
+
+fn current_rpc_abi_build() -> String {
+    RPC_PROTOCOL_BUILD.to_string()
 }
 
 fn qemu_discovery_order_help() -> String {
@@ -3826,6 +3853,8 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
         )));
     }
     let raw_build_id = required_metadata_field(&fields, "qemu_build_id", &marker)?;
+    let qemu_patch_series_hash =
+        required_metadata_field(&fields, "qemu_patch_series_hash", &marker)?;
     if raw_build_id.is_empty() {
         return Err(qemu_backend_config_error(format!(
             "QEMU marker `{}` has an empty qemu_build_id; {}",
@@ -3837,13 +3866,14 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
     let shmem_abi = required_metadata_field(&fields, "qemu_shmem_abi", &marker)?;
     let shmem_header = required_metadata_field(&fields, "qemu_shmem_header", &marker)?;
     let shmem_header_hash = required_metadata_field(&fields, "qemu_shmem_header_hash", &marker)?;
-    if shmem_abi_version.is_empty()
+    if qemu_patch_series_hash.is_empty()
+        || shmem_abi_version.is_empty()
         || shmem_abi.is_empty()
         || shmem_header.is_empty()
         || shmem_header_hash.is_empty()
     {
         return Err(qemu_backend_config_error(format!(
-            "QEMU marker `{}` must contain non-empty qemu_shmem_abi_version, qemu_shmem_abi, qemu_shmem_header, and qemu_shmem_header_hash; {}",
+            "QEMU marker `{}` must contain non-empty qemu_patch_series_hash, qemu_shmem_abi_version, qemu_shmem_abi, qemu_shmem_header, and qemu_shmem_header_hash; {}",
             marker.display(),
             qemu_discovery_order_help()
         )));
@@ -3867,6 +3897,7 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
     Ok(QemuBuildMarker {
         raw_build_id,
         artifact_build_id,
+        qemu_patch_series_hash,
         shmem_abi_version,
         shmem_abi,
         shmem_header_hash,
@@ -4319,7 +4350,7 @@ struct VerifyRunWitness {
     fingerprint_samples: Vec<VerifyFingerprintSample>,
     fingerprint_stream: Vec<u8>,
     state_dump: String,
-    artifact: Vec<u8>,
+    artifact: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4500,7 +4531,7 @@ fn finish_run_workflow_outcome(
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     outcome.status = report.status;
     outcome.exit_code = report.status.exit_code();
-    if outcome.status.is_non_passing() {
+    if outcome.status.is_non_passing() && backend_plan.target == BackendExecutionTarget::Local {
         let artifact_seed = ergonomics_plan.map(|plan| plan.seed.value).unwrap_or(0);
         let artifact = mock_failure_reproduction_artifact_bytes_for_backend(
             artifact_seed,
@@ -4652,14 +4683,22 @@ fn finish_verify_workflow_outcome(
             .witnesses
             .get(divergence.right)
             .ok_or_else(|| backend_error("verify divergence right side is out of range"))?;
-        outcome.side_reproduction_artifacts = vec![
-            (String::from("left"), left.artifact.clone()),
-            (String::from("right"), right.artifact.clone()),
-        ];
-        let mut artifact_material = Vec::new();
-        artifact_material.extend_from_slice(&left.artifact);
-        artifact_material.extend_from_slice(&right.artifact);
-        outcome.artifact_digest = content_address_bytes(&artifact_material);
+        if let (Some(left_artifact), Some(right_artifact)) =
+            (left.artifact.as_ref(), right.artifact.as_ref())
+        {
+            outcome.side_reproduction_artifacts = vec![
+                (String::from("left"), left_artifact.clone()),
+                (String::from("right"), right_artifact.clone()),
+            ];
+            let mut artifact_material = Vec::new();
+            artifact_material.extend_from_slice(left_artifact);
+            artifact_material.extend_from_slice(right_artifact);
+            outcome.artifact_digest = content_address_bytes(&artifact_material);
+        } else {
+            outcome.stdout.push(String::from(
+                "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable",
+            ));
+        }
     } else {
         outcome.stdout.push(format!(
             "verify-result\tstatus=passed\treductions={}\tcanonical_log={}\tfingerprint={}",
@@ -4844,13 +4883,17 @@ fn verify_witness_from_run_report(
         .map(|plan| plan.seed.value)
         .unwrap_or_else(|| seed_to_u64(request_seed));
     let state_dump = verify_state_dump(run_plan, report);
-    let artifact = verify_reproduction_artifact_bytes(
-        seed,
-        backend,
-        run_plan.scenario.scenario_def(),
-        &canonical_log,
-        &fingerprint_samples,
-    )?;
+    let artifact = backend
+        .map(|backend| {
+            verify_reproduction_artifact_bytes(
+                seed,
+                Some(backend),
+                run_plan.scenario.scenario_def(),
+                &canonical_log,
+                &fingerprint_samples,
+            )
+        })
+        .transpose()?;
     Ok(VerifyRunWitness {
         reduction,
         canonical_log,
@@ -4879,7 +4922,7 @@ fn verify_witness_from_artifact(
         fingerprint_samples,
         fingerprint_stream,
         state_dump,
-        artifact: bytes,
+        artifact: Some(bytes),
     })
 }
 
@@ -5247,11 +5290,22 @@ fn localize_verify_divergence(
             .map(|entry| entry.node.clone())
             .or_else(|| sample.map(|sample| sample.node.clone())),
         first_different_byte,
-        left_state_digest: content_address_bytes(&left.artifact),
-        right_state_digest: content_address_bytes(&right.artifact),
+        left_state_digest: verify_witness_state_digest(left),
+        right_state_digest: verify_witness_state_digest(right),
         left_state_dump: left.state_dump.clone(),
         right_state_dump: right.state_dump.clone(),
     }
+}
+
+fn verify_witness_state_digest(witness: &VerifyRunWitness) -> String {
+    if let Some(artifact) = witness.artifact.as_ref() {
+        return content_address_bytes(artifact);
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&witness.canonical_log_bytes);
+    bytes.extend_from_slice(&witness.fingerprint_stream);
+    bytes.extend_from_slice(witness.state_dump.as_bytes());
+    content_address_bytes(&bytes)
 }
 
 fn bytes_for_mismatch(mismatch: VerifyMismatchKind, witness: &VerifyRunWitness) -> &[u8] {
@@ -5343,6 +5397,11 @@ fn verify_reproduction_artifact_bytes(
             &identity.engine_abi,
             &identity.artifact_abi,
             &identity.qemu_build_id,
+            &identity.qemu_patch_series_hash,
+            &identity.shmem_abi_version,
+            &identity.guest_host_protocol_version,
+            &identity.rpc_abi_version,
+            &identity.rpc_abi_build,
             &identity.plugin_abi,
         ],
     );
@@ -6817,6 +6876,11 @@ fn mark_mock_failure_outcome(
             "run requires a resolved seed before emitting a reproduction artifact".to_string(),
         ));
     };
+    if backend_plan.target == BackendExecutionTarget::RemoteDaemon {
+        return Err(CliError::Backend(
+            "mock failure reproduction artifacts require local producer provenance; remote daemon provenance is not available".to_string(),
+        ));
+    }
     let artifact = mock_failure_reproduction_artifact_bytes_for_backend(
         plan.seed.value,
         backend_plan.resolved_backend.as_ref(),
@@ -7018,6 +7082,9 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
             }
             return Ok(());
         }
+        if outcome_skipped_reproduction_artifacts(outcome) {
+            return Ok(());
+        }
         let Some(artifact) = &outcome.reproduction_artifact else {
             return Err(CliError::Artifact(format!(
                 "{:?} outcome did not provide a reproduction artifact",
@@ -7044,6 +7111,12 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
         }
     }
     Ok(())
+}
+
+fn outcome_skipped_reproduction_artifacts(outcome: &BackendCommandOutcome) -> bool {
+    outcome.stdout.iter().any(|line| {
+        line == "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable"
+    })
 }
 
 fn should_emit_human_backend_output(format: OutputFormat) -> bool {
@@ -7721,6 +7794,11 @@ struct CliIdentity {
     engine_abi: String,
     artifact_abi: String,
     qemu_build_id: String,
+    qemu_patch_series_hash: String,
+    shmem_abi_version: String,
+    guest_host_protocol_version: String,
+    rpc_abi_version: String,
+    rpc_abi_build: String,
     plugin_abi: String,
 }
 
@@ -7736,16 +7814,26 @@ fn validate_replayable_reproduction_artifact(
 fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Result<(), CliError> {
     if actual != expected {
         return Err(CliError::Identity(format!(
-            "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`",
+            "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
             expected.engine_version,
             expected.engine_abi,
             expected.artifact_abi,
             expected.qemu_build_id,
+            expected.qemu_patch_series_hash,
+            expected.shmem_abi_version,
+            expected.guest_host_protocol_version,
+            expected.rpc_abi_version,
+            expected.rpc_abi_build,
             expected.plugin_abi,
             actual.engine_version,
             actual.engine_abi,
             actual.artifact_abi,
             actual.qemu_build_id,
+            actual.qemu_patch_series_hash,
+            actual.shmem_abi_version,
+            actual.guest_host_protocol_version,
+            actual.rpc_abi_version,
+            actual.rpc_abi_build,
             actual.plugin_abi
         )));
     }
@@ -7754,6 +7842,13 @@ fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Resul
 
 fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
     let backend_plan = plan_backend_selection(cli)?;
+    if let Some(plan) = backend_plan.as_ref() {
+        if plan.target == BackendExecutionTarget::RemoteDaemon {
+            return Err(CliError::Identity(
+                "remote daemon replay cannot validate reproduction artifacts without producer build provenance; run replay without --daemon or select a local backend".to_string(),
+            ));
+        }
+    }
     let resolved_backend = backend_plan
         .as_ref()
         .and_then(|plan| plan.resolved_backend.as_ref());
@@ -7761,14 +7856,23 @@ fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
 }
 
 fn expected_replay_identity_for_backend(backend: Option<&ResolvedLocalBackend>) -> CliIdentity {
-    let (qemu_build_id, plugin_abi) = match backend {
+    let (qemu_build_id, qemu_patch_series_hash, shmem_abi_version, plugin_abi) = match backend {
         Some(ResolvedLocalBackend::Qemu {
             qemu_build_id,
+            qemu_patch_series_hash,
             plugin_abi,
+            shmem_abi_version,
             ..
-        }) => (qemu_build_id.clone(), plugin_abi.clone()),
+        }) => (
+            qemu_build_id.clone(),
+            qemu_patch_series_hash.clone(),
+            shmem_abi_version.clone(),
+            plugin_abi.clone(),
+        ),
         Some(ResolvedLocalBackend::Double) | None => (
             content_address_bytes(b"mock-backend-source-v1"),
+            content_address_bytes(b"mock-qemu-patch-series-v1"),
+            crucible::SHMEM_ABI_VERSION.to_string(),
             String::from("simdouble-mock-plugin-abi"),
         ),
     };
@@ -7777,6 +7881,11 @@ fn expected_replay_identity_for_backend(backend: Option<&ResolvedLocalBackend>) 
         engine_abi: String::from("crucible-harness-e2e-v1"),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id,
+        qemu_patch_series_hash,
+        shmem_abi_version,
+        guest_host_protocol_version: current_guest_host_protocol_version(),
+        rpc_abi_version: current_rpc_abi_version(),
+        rpc_abi_build: current_rpc_abi_build(),
         plugin_abi,
     }
 }
@@ -7850,7 +7959,7 @@ fn decode_reproduction_artifact(bytes: &[u8]) -> Result<CliReproductionArtifact,
                 set_once(&mut seed, line_index, tag, parsed)?;
             }
             "identity" => {
-                require_field_count(line_index, tag, &fields, 6)?;
+                require_field_count(line_index, tag, &fields, 11)?;
                 validate_required_field("identity.engine_version", &fields[1])?;
                 validate_required_field("identity.engine_abi", &fields[2])?;
                 if fields[3] != REPRODUCTION_ARTIFACT_SCHEMA {
@@ -7861,7 +7970,12 @@ fn decode_reproduction_artifact(bytes: &[u8]) -> Result<CliReproductionArtifact,
                     ));
                 }
                 validate_digest("identity.qemu_build_id", &fields[4])?;
-                validate_required_field("identity.plugin_abi", &fields[5])?;
+                validate_required_field("identity.qemu_patch_series_hash", &fields[5])?;
+                validate_required_field("identity.shmem_abi_version", &fields[6])?;
+                validate_required_field("identity.guest_host_protocol_version", &fields[7])?;
+                validate_required_field("identity.rpc_abi_version", &fields[8])?;
+                validate_required_field("identity.rpc_abi_build", &fields[9])?;
+                validate_required_field("identity.plugin_abi", &fields[10])?;
                 set_once(
                     &mut identity,
                     line_index,
@@ -7871,7 +7985,12 @@ fn decode_reproduction_artifact(bytes: &[u8]) -> Result<CliReproductionArtifact,
                         engine_abi: fields[2].clone(),
                         artifact_abi: fields[3].clone(),
                         qemu_build_id: fields[4].clone(),
-                        plugin_abi: fields[5].clone(),
+                        qemu_patch_series_hash: fields[5].clone(),
+                        shmem_abi_version: fields[6].clone(),
+                        guest_host_protocol_version: fields[7].clone(),
+                        rpc_abi_version: fields[8].clone(),
+                        rpc_abi_build: fields[9].clone(),
+                        plugin_abi: fields[10].clone(),
                     },
                 )?;
             }
@@ -8098,6 +8217,11 @@ fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> String {
             &artifact.identity.engine_abi,
             &artifact.identity.artifact_abi,
             &artifact.identity.qemu_build_id,
+            &artifact.identity.qemu_patch_series_hash,
+            &artifact.identity.shmem_abi_version,
+            &artifact.identity.guest_host_protocol_version,
+            &artifact.identity.rpc_abi_version,
+            &artifact.identity.rpc_abi_build,
             &artifact.identity.plugin_abi,
         ],
     );
@@ -8217,6 +8341,11 @@ fn mock_failure_reproduction_artifact_bytes_for_backend(
             &identity.engine_abi,
             &identity.artifact_abi,
             &identity.qemu_build_id,
+            &identity.qemu_patch_series_hash,
+            &identity.shmem_abi_version,
+            &identity.guest_host_protocol_version,
+            &identity.rpc_abi_version,
+            &identity.rpc_abi_build,
             &identity.plugin_abi,
         ],
     );
@@ -9429,7 +9558,7 @@ mod tests {
         fs::write(
             dir.join("qemu-build-identity.env"),
             format!(
-                "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
+                "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
             ),
         )?;
         fs::write(
@@ -10376,7 +10505,7 @@ mod tests {
             temp.path()
                 .join("shmem-mismatch")
                 .join("qemu-build-identity.env"),
-            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
+            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
         )?;
         let mismatch_cli = Cli::parse_from([
             "crucible",
@@ -10409,7 +10538,7 @@ mod tests {
             temp.path()
                 .join("shmem-version-mismatch")
                 .join("qemu-build-identity.env"),
-            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v1\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
+            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v1\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
         )?;
         let mismatch_cli = Cli::parse_from([
             "crucible",
@@ -10504,6 +10633,20 @@ mod tests {
             artifact.identity.qemu_build_id,
             content_address_bytes(b"artifact-qemu-build")
         );
+        assert_eq!(
+            artifact.identity.qemu_patch_series_hash,
+            "sha256-test-qemu-patch-series"
+        );
+        assert_eq!(
+            artifact.identity.shmem_abi_version,
+            crucible::SHMEM_ABI_VERSION.to_string()
+        );
+        assert_eq!(
+            artifact.identity.guest_host_protocol_version,
+            current_guest_host_protocol_version()
+        );
+        assert_eq!(artifact.identity.rpc_abi_version, current_rpc_abi_version());
+        assert_eq!(artifact.identity.rpc_abi_build, current_rpc_abi_build());
         assert_eq!(artifact.identity.plugin_abi, plugin_abi);
         assert!(backend_plan.proves_t_cli_5());
 
@@ -12696,6 +12839,95 @@ mod tests {
     }
 
     #[test]
+    fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without_producer_identity()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            String::from("127.0.0.1:9000"),
+            String::from("--seed"),
+            String::from("12"),
+            String::from("verify"),
+            scenario.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let Commands::Verify(args) = &cli.command else {
+            panic!("expected verify command");
+        };
+        let verify_plan = plan_verify_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("verify should resolve a seed");
+        let backend = plan_backend_selection(&cli)?.expect("verify should require backend");
+        assert_eq!(backend.target, BackendExecutionTarget::RemoteDaemon);
+
+        let left_log = canonical_trace_entries();
+        let mut right_log = left_log.clone();
+        right_log[1].summary.push_str(" diverged");
+        let left_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 12,
+            node: String::from("node-b"),
+            digest: content_address_bytes(b"remote-left-fingerprint"),
+        }];
+        let right_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 12,
+            node: String::from("node-b"),
+            digest: content_address_bytes(b"remote-right-fingerprint"),
+        }];
+        let witnesses = vec![
+            VerifyRunWitness {
+                reduction: verify_plan.reductions[0].clone(),
+                canonical_log: left_log.clone(),
+                canonical_log_bytes: canonical_log_entry_bytes(&left_log),
+                fingerprint_stream: verify_fingerprint_stream_bytes(&left_samples),
+                fingerprint_samples: left_samples,
+                state_dump: String::from("left-state"),
+                artifact: None,
+            },
+            VerifyRunWitness {
+                reduction: verify_plan.reductions[1].clone(),
+                canonical_log: right_log.clone(),
+                canonical_log_bytes: canonical_log_entry_bytes(&right_log),
+                fingerprint_stream: verify_fingerprint_stream_bytes(&right_samples),
+                fingerprint_samples: right_samples,
+                state_dump: String::from("right-state"),
+                artifact: None,
+            },
+        ];
+        let divergence = compare_verify_witnesses(&witnesses).expect("fixture should diverge");
+        let report = VerifyWorkflowReport {
+            witnesses,
+            divergence: Some(divergence),
+        };
+
+        let outcome = finish_verify_workflow_outcome(
+            &plan_cli_invocation(&cli),
+            &backend,
+            Some(&seed_plan),
+            &verify_plan,
+            report,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Failed);
+        assert!(outcome.side_reproduction_artifacts.is_empty());
+        assert!(
+            outcome.stdout.iter().any(|line| line
+                == "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable")
+        );
+        emit_backend_command_output(&cli, &outcome)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_verify_workflow_compares_existing_reproduction_artifacts() -> Result<(), Box<dyn Error>>
     {
         let temp = TempDir::new()?;
@@ -13430,6 +13662,42 @@ mod tests {
     }
 
     #[test]
+    fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
+    -> Result<(), Box<dyn Error>> {
+        let cli = Cli::parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "--seed",
+            "0x55",
+            "run",
+            "--emit-mock-failure-artifact",
+        ]);
+        let mut entropy = FakeSeedEntropySource::new(1);
+        let plan =
+            plan_determinism_ergonomics(&cli, &FakeSeedEnvironment::default(), &mut entropy)?
+                .expect("run should resolve a seed");
+        let thin = plan_cli_invocation(&cli);
+        let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
+        assert_eq!(backend.target, BackendExecutionTarget::RemoteDaemon);
+        let mut runner = RecordingBackendCommandRunner::default();
+        let mut outcome =
+            execute_backend_routed_command(&thin, &backend, Some(&plan), None, None, &mut runner)?;
+
+        let error = match mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan)) {
+            Ok(()) => panic!("remote mock failure artifact must require producer provenance"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("local producer provenance"));
+        assert!(outcome.reproduction_artifact.is_none());
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_determinism_ergonomics_keeps_wall_clock_out_of_canonical_paths() {
         assert!(canonical_state_wall_clock_guard());
     }
@@ -13957,6 +14225,37 @@ mod tests {
         assert!(matches!(error, CliError::Identity(_)));
         assert_eq!(error.exit_code(), 3);
         assert!(error.to_string().contains("QEMU"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_rejects_remote_daemon_without_producer_identity() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("case.crucible");
+        let artifact = mock_e2e_reproduction_artifact()?;
+        fs::write(&artifact_path, artifact.encode()?)?;
+        let artifact_arg = artifact_path.display().to_string();
+        let cli = Cli::parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "replay",
+            &artifact_arg,
+        ]);
+        let Commands::Replay(args) = &cli.command else {
+            panic!("expected replay command");
+        };
+
+        let error = match replay_reproduction_artifact(&cli, args) {
+            Ok(_) => panic!("remote daemon replay must require producer build provenance"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("remote daemon"));
+        assert!(error.to_string().contains("producer build provenance"));
 
         Ok(())
     }

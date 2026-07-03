@@ -91,7 +91,7 @@
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "CLI test-only harness dependency";
-        needle = "[dev-dependencies]\ncrucible-harness = { path = \"../crucible-harness\" }";
+        needle = "crucible-harness = { path = \"../crucible-harness\" }";
       }
       {
         label = "CLI tempfile test dependency";
@@ -113,7 +113,7 @@
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
         label = "artifact schema constant";
-        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA";
+        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
       }
       {
         label = "artifact type";
@@ -126,6 +126,26 @@
       {
         label = "QEMU build identity";
         needle = "pub qemu_build_id: String";
+      }
+      {
+        label = "QEMU patch series identity";
+        needle = "pub qemu_patch_series_hash: String";
+      }
+      {
+        label = "shmem ABI version identity";
+        needle = "pub shmem_abi_version: String";
+      }
+      {
+        label = "guest-host protocol identity";
+        needle = "pub guest_host_protocol_version: String";
+      }
+      {
+        label = "RPC ABI version identity";
+        needle = "pub rpc_abi_version: String";
+      }
+      {
+        label = "RPC ABI build identity";
+        needle = "pub rpc_abi_build: String";
       }
       {
         label = "plugin ABI identity";
@@ -220,6 +240,22 @@
         needle = "fn replay_reproduction_artifact";
       }
       {
+        label = "CLI v2 artifact schema";
+        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
+      }
+      {
+        label = "CLI patch-series identity";
+        needle = "qemu_patch_series_hash: String";
+      }
+      {
+        label = "CLI guest-host identity";
+        needle = "guest_host_protocol_version: String";
+      }
+      {
+        label = "CLI RPC identity";
+        needle = "rpc_abi_build: String";
+      }
+      {
         label = "CLI failure artifact writer";
         needle = "fn write_failure_reproduction_artifact";
       }
@@ -229,7 +265,7 @@
       }
       {
         label = "CLI debug command footer";
-        needle = "crucible debug {} --at-failure";
+        needle = "debug_command.ends_with(\" --at-failure\")";
       }
       {
         label = "CLI mock failure artifact seam";
@@ -323,11 +359,11 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            schema=crucible.reproduction-artifact.v1
+            schema=crucible.reproduction-artifact.v2
             tuple=seed,scenario-def-ref,schedule
             component_addressing=cas-crucible-hash
             inline_payloads=small-components
-            pinned_identities=engine,artifact-abi,qemu-build,plugin-abi
+            pinned_identities=engine,artifact-abi,qemu-build,qemu-patch-series,shmem-abi,guest-host-protocol,rpc-abi,plugin-abi
             cli_replay=validates-artifact-format
             cli_failure_artifact=emits-replay-and-debug-commands
             machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction

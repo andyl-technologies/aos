@@ -68,12 +68,26 @@ pub struct ReplayOracleMaterializedCase {
 /// Build identity pinned into a replay-oracle reproduction artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayOracleBuildIdentity {
+    /// Crucible software version that produced the artifact.
+    pub crucible_version: String,
     /// Harness ABI or artifact schema version.
     pub harness_abi: String,
     /// Backend family that produced the artifact.
     pub backend: String,
     /// Deterministic backend build identifier.
     pub backend_build_id: String,
+    /// Hash of the ordered QEMU patch series applied to the producer backend.
+    pub qemu_patch_series_hash: String,
+    /// Shared-memory ABI version used by the producer backend.
+    pub shmem_abi_version: String,
+    /// Guest-host channel protocol version used by the producer backend.
+    pub guest_host_protocol_version: String,
+    /// Control-plane RPC ABI semantic version used by the producer backend.
+    pub rpc_abi_version: String,
+    /// Control-plane RPC ABI build tag used by the producer backend.
+    pub rpc_abi_build: String,
+    /// Plugin ABI version used by the producer backend.
+    pub plugin_abi: String,
 }
 
 /// Fingerprint and oracle output produced by one artifact replay.
@@ -1132,6 +1146,27 @@ mod tests {
     }
 
     #[test]
+    fn reproduction_artifact_round_trip_rejects_plugin_identity_mismatch() {
+        let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
+        let mut expected = build_identity();
+        expected.plugin_abi = String::from("different-plugin-abi");
+
+        let error = match check_replay_oracle_reproduction_artifact_round_trip(
+            &artifact,
+            &expected,
+            |artifact| Ok::<_, String>(artifact.expected.clone()),
+        ) {
+            Ok(_) => panic!("plugin ABI drift should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ReplayOracleRoundTripError::BuildIdentityMismatch { .. }
+        ));
+    }
+
+    #[test]
     fn reproduction_artifact_round_trip_reports_replay_failure() {
         let artifact = reproduction_artifact(vec![9], materialized_case("cp-artifact"));
         let error = match check_replay_oracle_reproduction_artifact_round_trip(
@@ -1226,9 +1261,18 @@ mod tests {
 
     fn build_identity() -> ReplayOracleBuildIdentity {
         ReplayOracleBuildIdentity {
+            crucible_version: env!("CARGO_PKG_VERSION").to_string(),
             harness_abi: String::from("replay-oracle-artifact-v1"),
             backend: String::from("unit-test"),
             backend_build_id: String::from("unit-test-build"),
+            qemu_patch_series_hash: String::from(
+                "crucible-hash:1dd48f47cea3da029d47aeb44cb8b4ead05dc367833bcddb365e0810253c10ce",
+            ),
+            shmem_abi_version: String::from("1"),
+            guest_host_protocol_version: String::from("1"),
+            rpc_abi_version: String::from("2.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v2"),
+            plugin_abi: String::from("unit-test-plugin-abi"),
         }
     }
 

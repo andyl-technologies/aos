@@ -217,12 +217,26 @@ impl E2eSchedule {
 /// Build identity pinned into a mock e2e reproduction artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct E2eBuildIdentity {
+    /// Crucible software version that produced the artifact.
+    pub crucible_version: String,
     /// Harness ABI or schema version.
     pub harness_abi: String,
     /// Backend family used to produce the run.
     pub backend: String,
     /// Deterministic mock backend build id.
     pub backend_build_id: String,
+    /// Hash of the ordered QEMU patch series applied to the producer backend.
+    pub qemu_patch_series_hash: String,
+    /// Shared-memory ABI version used by the producer backend.
+    pub shmem_abi_version: String,
+    /// Guest-host channel protocol version used by the producer backend.
+    pub guest_host_protocol_version: String,
+    /// Control-plane RPC ABI semantic version used by the producer backend.
+    pub rpc_abi_version: String,
+    /// Control-plane RPC ABI build tag used by the producer backend.
+    pub rpc_abi_build: String,
+    /// Plugin ABI version used by the producer backend.
+    pub plugin_abi: String,
 }
 
 /// A self-contained mock e2e reproduction artifact.
@@ -510,9 +524,18 @@ impl From<AdversarialComparisonError> for E2eGateError {
 #[must_use]
 pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
     E2eBuildIdentity {
+        crucible_version: env!("CARGO_PKG_VERSION").to_string(),
         harness_abi: String::from("crucible-harness-e2e-v1"),
         backend: String::from("simdouble-mock"),
         backend_build_id: String::from("mock-backend-source-v1"),
+        qemu_patch_series_hash: String::from(
+            "crucible-hash:68444481cdcf0b86f376d0dafe6cfd40c39ba1fcecbab2a371a96d864fd3378c",
+        ),
+        shmem_abi_version: String::from("1"),
+        guest_host_protocol_version: String::from("1"),
+        rpc_abi_version: String::from("2.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v2"),
+        plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }
 
@@ -1076,9 +1099,16 @@ impl E2eReproductionArtifact {
         material.record(
             "build",
             &[
+                CanonicalField::Str(&self.build_identity.crucible_version),
                 CanonicalField::Str(&self.build_identity.harness_abi),
                 CanonicalField::Str(&self.build_identity.backend),
                 CanonicalField::Str(&self.build_identity.backend_build_id),
+                CanonicalField::Str(&self.build_identity.qemu_patch_series_hash),
+                CanonicalField::Str(&self.build_identity.shmem_abi_version),
+                CanonicalField::Str(&self.build_identity.guest_host_protocol_version),
+                CanonicalField::Str(&self.build_identity.rpc_abi_version),
+                CanonicalField::Str(&self.build_identity.rpc_abi_build),
+                CanonicalField::Str(&self.build_identity.plugin_abi),
             ],
         );
         material.record("scenario", &[CanonicalField::Str(&self.scenario.name)]);

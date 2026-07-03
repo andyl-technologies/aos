@@ -166,6 +166,14 @@
         needle = "qemu_build_id: String";
       }
       {
+        label = "resolved backend carries QEMU patch series";
+        needle = "qemu_patch_series_hash: String";
+      }
+      {
+        label = "QEMU marker carries patch series";
+        needle = "required_metadata_field(&fields, \"qemu_patch_series_hash\", &marker)";
+      }
+      {
         label = "resolved backend carries plugin ABI";
         needle = "plugin_abi: String";
       }
@@ -196,8 +204,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
       {
-        label = "CLI depends on shmem ABI source";
-        needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
+        label = "CLI depends on guest-host protocol ABI source";
+        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -334,6 +342,7 @@ in
             printf 'qemu_plugins_enabled=true\n'
             printf 'qemu_crucible_patches_applied=true\n'
             printf 'qemu_sim_capability=qemu-crucible\n'
+            printf 'qemu_patch_series_hash=sha256-test-qemu-patch-series\n'
             printf 'qemu_shmem_abi_version=1\n'
             printf 'qemu_shmem_abi=crucible-shmem-abi-v1\n'
             printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'

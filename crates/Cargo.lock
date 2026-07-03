@@ -1586,6 +1586,7 @@ dependencies = [
  "crucible",
  "crucible-api",
  "crucible-harness",
+ "crucible-protocol",
  "crucible-session",
  "libc",
  "tempfile",

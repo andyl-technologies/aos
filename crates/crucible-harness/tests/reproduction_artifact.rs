@@ -8,8 +8,8 @@ use crucible_harness::adversarial::{HostAdversaryProfile, canonical_host_adversa
 use crucible_harness::reproduction::{
     ComponentKind, ComponentPayload, ContentAddressedComponent,
     PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME, PRODUCER_CANONICAL_LOG_COMPONENT_NAME,
-    PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME, PinnedBuildIdentity, RecordedDecision,
-    ReproductionArtifact, ReproductionArtifactError, ReproductionSchedule,
+    PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME, PinnedBuildIdentity, REPRODUCTION_ARTIFACT_SCHEMA,
+    RecordedDecision, ReproductionArtifact, ReproductionArtifactError, ReproductionSchedule,
     mock_e2e_reproduction_artifact, mock_reproduction_build_identity,
     verify_mock_machine_independent_reproduction,
     verify_mock_machine_independent_reproduction_bytes,
@@ -51,6 +51,11 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
             .qemu_build_id
             .starts_with("crucible-hash:")
     );
+    assert!(!decoded.build_identity.qemu_patch_series_hash.is_empty());
+    assert_eq!(decoded.build_identity.shmem_abi_version, "1");
+    assert_eq!(decoded.build_identity.guest_host_protocol_version, "1");
+    assert_eq!(decoded.build_identity.rpc_abi_version, "2.0.0");
+    assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v2");
     assert!(!decoded.fingerprint_tail.is_empty());
     assert!(!decoded.sampling_config.regions.is_empty());
     assert!(
@@ -178,8 +183,15 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
         PinnedBuildIdentity {
             engine_version: String::from("0.1.0"),
             engine_abi: String::from("engine-abi:v1"),
-            artifact_abi: String::from("crucible.reproduction-artifact.v1"),
+            artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
             qemu_build_id: crucible_harness::reproduction::content_address_bytes(b"qemu"),
+            qemu_patch_series_hash: String::from(
+                "crucible-hash:e1e3694e392946298e90eb185ad349906d47acc81ad934cb631fe9438b4bfc5d",
+            ),
+            shmem_abi_version: String::from("1"),
+            guest_host_protocol_version: String::from("1"),
+            rpc_abi_version: String::from("2.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v2"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario.clone(),
@@ -260,8 +272,15 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
         PinnedBuildIdentity {
             engine_version: String::from("0.1.0"),
             engine_abi: String::from("engine-abi:v1"),
-            artifact_abi: String::from("crucible.reproduction-artifact.v1"),
+            artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
             qemu_build_id: crucible_harness::reproduction::content_address_bytes(b"qemu"),
+            qemu_patch_series_hash: String::from(
+                "crucible-hash:e1e3694e392946298e90eb185ad349906d47acc81ad934cb631fe9438b4bfc5d",
+            ),
+            shmem_abi_version: String::from("1"),
+            guest_host_protocol_version: String::from("1"),
+            rpc_abi_version: String::from("2.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v2"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario.clone(),
@@ -327,6 +346,30 @@ fn reproduction_artifact_machine_verification_rejects_build_identity_drift()
         &expected,
     ) {
         Ok(_) => panic!("machine reproduction must reject QEMU identity drift"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReproductionArtifactError::BuildIdentityMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_rejects_plugin_abi_drift()
+-> Result<(), Box<dyn Error>> {
+    let artifact = mock_e2e_reproduction_artifact()?;
+    let mut expected = mock_reproduction_build_identity();
+    expected.plugin_abi = String::from("different-plugin-abi");
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        canonical_host_adversary_matrix(),
+        &expected,
+    ) {
+        Ok(_) => panic!("machine reproduction must reject plugin ABI drift"),
         Err(error) => error,
     };
 
