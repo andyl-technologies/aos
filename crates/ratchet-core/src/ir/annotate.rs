@@ -12,11 +12,12 @@ use crate::analysis::{
     StrictnessAnalysisError, StrictnessAnalysisReport, annotate_cardinality, annotate_escape,
     annotate_strictness,
 };
+use crate::scope::{FrameId, Upvalue};
 
-use super::{Ir, IrFacts};
+use super::{Ir, IrFacts, IrId, Strictness};
 
 /// Summary of one complete IR fact annotation run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IrAnalysisReport {
     /// Report returned by the strictness analysis pass.
     pub strictness: StrictnessAnalysisReport,
@@ -24,6 +25,91 @@ pub struct IrAnalysisReport {
     pub cardinality: CardinalityAnalysisReport,
     /// Report returned by the escape analysis pass.
     pub escape: EscapeAnalysisReport,
+    /// Deterministic dependency-footprint material derived from analyzed facts.
+    pub dependency_footprint: IrDependencyFootprint,
+}
+
+/// Deterministic dependency material produced by IR annotation.
+///
+/// This footprint is a cache-key precursor. It exposes current strictness facts
+/// and resolver capture sets in canonical storage order, but it does not compute
+/// value hashes or decide which cache nodes are memoized.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IrDependencyFootprint {
+    strict_nodes: Box<[IrId]>,
+    frame_captures: Box<[IrFrameCaptureFootprint]>,
+}
+
+impl IrDependencyFootprint {
+    fn from_ir(ir: &Ir) -> Self {
+        let strict_nodes = ir
+            .facts
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, facts)| {
+                (facts.strictness == Strictness::Strict).then(|| IrId::new(index as u32))
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let frame_captures = ir
+            .frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| {
+                let mut captures = frame.captures.to_vec();
+                captures.sort_unstable();
+                captures.dedup();
+                if captures.is_empty() {
+                    None
+                } else {
+                    Some(IrFrameCaptureFootprint {
+                        frame: FrameId::new(index as u32),
+                        captures: captures.into_boxed_slice(),
+                    })
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self {
+            strict_nodes,
+            frame_captures,
+        }
+    }
+
+    /// Returns strict IR node ids in arena order.
+    pub fn strict_nodes(&self) -> &[IrId] {
+        &self.strict_nodes
+    }
+
+    /// Returns frame capture sets in resolver frame-table order.
+    pub fn frame_captures(&self) -> &[IrFrameCaptureFootprint] {
+        &self.frame_captures
+    }
+
+    /// Returns whether the footprint has no strict nodes or captured upvalues.
+    pub fn is_empty(&self) -> bool {
+        self.strict_nodes.is_empty() && self.frame_captures.is_empty()
+    }
+}
+
+/// Captured upvalues for one resolver frame in the dependency footprint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrFrameCaptureFootprint {
+    frame: FrameId,
+    captures: Box<[Upvalue]>,
+}
+
+impl IrFrameCaptureFootprint {
+    /// Returns the frame that owns these captured upvalues.
+    pub const fn frame(&self) -> FrameId {
+        self.frame
+    }
+
+    /// Returns captured upvalues in canonical `(depth, slot)` order.
+    pub fn captures(&self) -> &[Upvalue] {
+        &self.captures
+    }
 }
 
 /// Errors returned by the IR fact annotation pipeline.
@@ -68,9 +154,11 @@ fn run_analyses(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
     let strictness = annotate_strictness(ir)?;
     let cardinality = annotate_cardinality(ir)?;
     let escape = annotate_escape(ir)?;
+    let dependency_footprint = IrDependencyFootprint::from_ir(ir);
     Ok(IrAnalysisReport {
         strictness,
         cardinality,
         escape,
+        dependency_footprint,
     })
 }

@@ -44,9 +44,10 @@ pub use analysis::{
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrAnalysisError,
     IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
-    IrChildSlice, IrData, IrDialectOp, IrError, IrErrorKind, IrFacts, IrId, IrInlineCacheSiteId,
-    IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, IrWithChain, Strictness, ThunkSharing,
-    all_pure, all_pure_builtin, annotate_ir, lower, lower_with_options,
+    IrChildSlice, IrData, IrDependencyFootprint, IrDialectOp, IrError, IrErrorKind, IrFacts,
+    IrFrameCaptureFootprint, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape,
+    IrShapeId, IrWithChain, Strictness, ThunkSharing, all_pure, all_pure_builtin, annotate_ir,
+    lower, lower_with_options,
 };
 pub use runtime_abi::{
     BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, MAX_RUNTIME_PRIMOP_ABI_ARITY,

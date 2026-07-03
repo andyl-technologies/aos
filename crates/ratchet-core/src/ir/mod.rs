@@ -21,7 +21,9 @@ use crate::syntax::{
 mod annotate;
 mod facts;
 
-pub use annotate::{IrAnalysisError, IrAnalysisReport, annotate_ir};
+pub use annotate::{
+    IrAnalysisError, IrAnalysisReport, IrDependencyFootprint, IrFrameCaptureFootprint, annotate_ir,
+};
 pub use facts::{
     BindingLowering, Cardinality, Escape, ExprFacts, IrFacts, Strictness, ThunkSharing,
 };

@@ -6988,6 +6988,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       records source-thunk allocation-site region-plan sampling in `EvalStats`,
       but cache-key reuse, closed-world fixpoints, allocation-site placement,
       and JIT consumers remain open.
+- [x] Current annotation dependency-footprint precursor:
+      `IrAnalysisReport` now carries an `IrDependencyFootprint` exposing strict
+      IR node ids in arena order and resolver frame capture coordinates in
+      frame-table order. This gives future demand-cache key construction a
+      deterministic strictness/capture input surface without teaching
+      `ratchet-core` about value hashes, memoization grain, or persistent cache
+      keys. It does not yet compute per-expression free-variable minimization,
+      fold value hashes into cache keys, or decide whether the baseline
+      strictness/escape FV set is precise enough for `C-2`.
 - [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the
       conservative `ExprFacts` lattice (`Unknown` strictness, `Many`
       cardinality, `Escapes` allocation behavior) plus an `IrFacts` table

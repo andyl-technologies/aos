@@ -69,6 +69,119 @@ fn annotate_ir_runs_current_fact_producers() {
             escape: Escape::NoEscape,
         })
     );
+    assert_eq!(report.dependency_footprint.strict_nodes(), &[ir.root]);
+    assert!(report.dependency_footprint.frame_captures().is_empty());
+}
+
+#[test]
+fn annotate_ir_reports_dependency_footprint_in_canonical_order() {
+    let mut branch_ir = lowered("if true then 1 else null");
+    let IrData::Triple {
+        first: condition, ..
+    } = node(&branch_ir, branch_ir.root).data
+    else {
+        panic!("if payload expected");
+    };
+    let branch_root = branch_ir.root;
+
+    let branch_report = annotate_ir(&mut branch_ir).expect("IR annotation succeeds");
+    let mut expected_strict_nodes = vec![branch_root, condition];
+    expected_strict_nodes.sort_by_key(|id| id.as_u32());
+
+    assert_eq!(
+        branch_report.dependency_footprint.strict_nodes(),
+        expected_strict_nodes.as_slice()
+    );
+    assert!(
+        branch_report
+            .dependency_footprint
+            .strict_nodes()
+            .windows(2)
+            .all(|window| window[0].as_u32() < window[1].as_u32())
+    );
+
+    let mut ir = lowered("let x = 1; f = y: x + y; in f 41");
+    let report = annotate_ir(&mut ir).expect("IR annotation succeeds");
+    assert_eq!(report.dependency_footprint.frame_captures().len(), 1);
+    assert_eq!(
+        report.dependency_footprint.frame_captures()[0].frame(),
+        crate::FrameId::new(1)
+    );
+    assert_eq!(
+        report.dependency_footprint.frame_captures()[0].captures(),
+        &[crate::Upvalue { depth: 1, slot: 0 }]
+    );
+}
+
+#[test]
+fn annotate_ir_canonicalizes_raw_dependency_footprint_captures() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Int(1),
+        )],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root: IrId::new(0),
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([
+            crate::FrameInfo {
+                slot_count: 0,
+                captures: Box::new([]),
+                rec: false,
+                has_with: false,
+            },
+            crate::FrameInfo {
+                slot_count: 2,
+                captures: Box::new([
+                    crate::Upvalue { depth: 2, slot: 1 },
+                    crate::Upvalue { depth: 1, slot: 0 },
+                    crate::Upvalue { depth: 1, slot: 0 },
+                ]),
+                rec: false,
+                has_with: false,
+            },
+            crate::FrameInfo {
+                slot_count: 1,
+                captures: Box::new([
+                    crate::Upvalue { depth: 3, slot: 0 },
+                    crate::Upvalue { depth: 2, slot: 7 },
+                ]),
+                rec: false,
+                has_with: false,
+            },
+        ]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let report = annotate_ir(&mut ir).expect("IR annotation succeeds");
+    let frame_captures = report.dependency_footprint.frame_captures();
+
+    assert_eq!(frame_captures.len(), 2);
+    assert_eq!(frame_captures[0].frame(), crate::FrameId::new(1));
+    assert_eq!(
+        frame_captures[0].captures(),
+        &[
+            crate::Upvalue { depth: 1, slot: 0 },
+            crate::Upvalue { depth: 2, slot: 1 }
+        ]
+    );
+    assert_eq!(frame_captures[1].frame(), crate::FrameId::new(2));
+    assert_eq!(
+        frame_captures[1].captures(),
+        &[
+            crate::Upvalue { depth: 2, slot: 7 },
+            crate::Upvalue { depth: 3, slot: 0 }
+        ]
+    );
 }
 
 #[test]
