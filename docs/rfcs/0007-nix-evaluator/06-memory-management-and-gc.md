@@ -2093,6 +2093,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       remembered-set buffers. Boundary preflights expose per-generation
       object-payload byte totals, and the dry-run summary reports those totals
       alongside rewritten root/heap-field counts and lower-level commit counts.
+      Root-backed reference slots and derived root writebacks now carry the
+      copied heap `ValueTag`, so a later live root-slot writer has the tag needed
+      to reconstruct typed relocated `Value` handles from address/generation
+      metadata.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;

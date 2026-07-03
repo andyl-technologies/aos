@@ -826,6 +826,17 @@ pub enum EvalHeapError {
         /// The caller-supplied root writeback slot count.
         actual: usize,
     },
+    /// A root-backed writeback was derived from a copied slot without the
+    /// heap-value tag needed to reconstruct a typed replacement value later.
+    #[error(
+        "collector-poll minor-GC root writeback slot {index} for {root_source:?} is missing its copied value tag"
+    )]
+    CollectorPollRootWritebackMissingValueTag {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The copied root source missing tag metadata.
+        root_source: EvalRootSource,
+    },
     /// A live reference buffer cannot be derived for copied root-only slots yet.
     #[error(
         "collector-poll minor-GC reference slot {index} is not heap-field-backed: {root_source:?}"

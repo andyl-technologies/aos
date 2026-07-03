@@ -1051,11 +1051,20 @@ pub enum AllocationCollectorPollReferenceSource {
 pub struct AllocationCollectorPollReferenceSlot {
     source: AllocationCollectorPollReferenceSource,
     value: ResolvedValueGeneration,
+    value_tag: Option<ValueTag>,
 }
 
 impl AllocationCollectorPollReferenceSlot {
-    fn new(source: AllocationCollectorPollReferenceSource, value: ResolvedValueGeneration) -> Self {
-        Self { source, value }
+    fn new(
+        source: AllocationCollectorPollReferenceSource,
+        value: ResolvedValueGeneration,
+        value_tag: Option<ValueTag>,
+    ) -> Self {
+        Self {
+            source,
+            value,
+            value_tag,
+        }
     }
 
     /// Returns the copied root or field location represented by this slot.
@@ -1073,6 +1082,16 @@ impl AllocationCollectorPollReferenceSlot {
     /// Returns the reference value copied from the slot.
     pub const fn value(&self) -> ResolvedValueGeneration {
         self.value
+    }
+
+    /// Returns the heap value tag copied from the slot, when available.
+    ///
+    /// Root-backed slots are copied from live [`Value`] roots and carry their
+    /// original tag so later live-root writeback code can reconstruct a typed
+    /// replacement value. Field-backed slots currently carry generation metadata
+    /// only; live field mutation remains a later collector integration step.
+    pub const fn value_tag(&self) -> Option<ValueTag> {
+        self.value_tag
     }
 }
 
@@ -1552,7 +1571,9 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     ///
     /// Returns [`EvalHeapError`] if writeback storage cannot be reserved, if a
     /// lower-level rewrite slot is out of bounds for the copied reference labels,
-    /// or if a copied root slot no longer matches its lower-level rewrite source.
+    /// if a copied root slot no longer matches its lower-level rewrite source,
+    /// or if a root-backed copied slot is missing the value tag needed for later
+    /// typed `Value` reconstruction.
     pub fn root_writeback_plan(
         &self,
     ) -> Result<AllocationCollectorPollRootWritebackPlan, EvalHeapError> {
@@ -1567,6 +1588,12 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
                 continue;
             };
             let expected = validate_reference_slot_matches_rewrite(slot_index, slot, *rewrite)?;
+            let value_tag = slot.value_tag().ok_or(
+                EvalHeapError::CollectorPollRootWritebackMissingValueTag {
+                    index: slot_index,
+                    root_source: source.clone(),
+                },
+            )?;
             let entries =
                 writebacks
                     .len()
@@ -1584,7 +1611,9 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
                 slot_index,
                 source.clone(),
                 expected,
+                value_tag,
                 rewrite.replacement(),
+                value_tag,
             ));
         }
 
@@ -1847,7 +1876,9 @@ pub struct AllocationCollectorPollRootWriteback {
     slot: usize,
     source: EvalRootSource,
     expected: ResolvedValueGeneration,
+    expected_tag: ValueTag,
     replacement: ResolvedValueGeneration,
+    replacement_tag: ValueTag,
 }
 
 impl AllocationCollectorPollRootWriteback {
@@ -1855,13 +1886,17 @@ impl AllocationCollectorPollRootWriteback {
         slot: usize,
         source: EvalRootSource,
         expected: ResolvedValueGeneration,
+        expected_tag: ValueTag,
         replacement: ResolvedValueGeneration,
+        replacement_tag: ValueTag,
     ) -> Self {
         Self {
             slot,
             source,
             expected,
+            expected_tag,
             replacement,
+            replacement_tag,
         }
     }
 
@@ -1880,9 +1915,24 @@ impl AllocationCollectorPollRootWriteback {
         self.expected
     }
 
+    /// Returns the heap tag expected in the root slot.
+    pub const fn expected_tag(&self) -> ValueTag {
+        self.expected_tag
+    }
+
     /// Returns the relocated value that must replace [`Self::expected`].
     pub const fn replacement(&self) -> ResolvedValueGeneration {
         self.replacement
+    }
+
+    /// Returns the heap tag for [`Self::replacement`].
+    ///
+    /// Minor-GC relocation preserves the object type, so this tag matches
+    /// [`Self::expected_tag`]. It is carried explicitly for future live
+    /// tree-walk/JIT root-slot mutation, where address plus generation is not
+    /// enough to reconstruct a typed [`Value`].
+    pub const fn replacement_tag(&self) -> ValueTag {
+        self.replacement_tag
     }
 }
 
@@ -3602,6 +3652,7 @@ impl EvalHeap {
                     source: root.source().clone(),
                 },
                 self.resolved_generation_for_value(root.value())?,
+                Some(root.value().tag()),
             )?;
         }
 
@@ -3630,6 +3681,7 @@ impl EvalHeap {
                         source: field.source().clone(),
                     },
                     field.value(),
+                    None,
                 )?;
             }
         }
@@ -3670,6 +3722,7 @@ impl EvalHeap {
                     address,
                     generation: HeapGeneration::Young,
                 },
+                None,
             )?;
         }
 
@@ -4019,6 +4072,7 @@ fn push_dirty_old_field_reference_slots(
                     source: field.source().clone(),
                 },
                 field.value(),
+                None,
             )?;
         }
     }
@@ -4124,6 +4178,7 @@ fn push_reference_slot(
     slots: &mut Vec<AllocationCollectorPollReferenceSlot>,
     source: AllocationCollectorPollReferenceSource,
     value: ResolvedValueGeneration,
+    value_tag: Option<ValueTag>,
 ) -> Result<(), EvalHeapError> {
     let entries = slots
         .len()
@@ -4137,7 +4192,9 @@ fn push_reference_slot(
             table: MINOR_GC_REFERENCE_SLOTS_TABLE,
             entries,
         })?;
-    slots.push(AllocationCollectorPollReferenceSlot::new(source, value));
+    slots.push(AllocationCollectorPollReferenceSlot::new(
+        source, value, value_tag,
+    ));
     Ok(())
 }
 

@@ -6421,6 +6421,10 @@ and helps the oracle directly.
       slots. `EvalHeap::collector_poll_minor_gc_reference_buffer`
       merges external root
       values with live heap-field reads into one caller-owned reference buffer.
+      Root-backed reference slots and derived root writebacks now carry the
+      copied heap `ValueTag`, so a later live root-slot writer has the tag needed
+      to reconstruct typed relocated `Value` handles from address/generation
+      metadata.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live heap-object byte slices, semispace
       destination storage, tree-walk root writeback, live object-field mutation,

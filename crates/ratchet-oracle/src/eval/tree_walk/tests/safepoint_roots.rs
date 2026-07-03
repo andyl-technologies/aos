@@ -553,11 +553,20 @@ fn owned_eval_plans_gc_stress_boundary_worker_commit_metadata() {
         1
     );
     assert_eq!(
-        commit
-            .root_writeback_plan()
-            .expect("root writeback metadata builds")
-            .len(),
-        1
+        commit.reference_slots()[0].value_tag(),
+        Some(ValueTag::Lambda)
+    );
+    let root_writebacks = commit
+        .root_writeback_plan()
+        .expect("root writeback metadata builds");
+    assert_eq!(root_writebacks.len(), 1);
+    assert_eq!(
+        root_writebacks.writebacks()[0].expected_tag(),
+        ValueTag::Lambda
+    );
+    assert_eq!(
+        root_writebacks.writebacks()[0].replacement_tag(),
+        ValueTag::Lambda
     );
 }
 
@@ -653,6 +662,22 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
     assert_eq!(
         preflight.reference_writeback_plan().root_writebacks().len(),
         1
+    );
+    assert_eq!(
+        preflight
+            .reference_writeback_plan()
+            .root_writebacks()
+            .writebacks()[0]
+            .expected_tag(),
+        ValueTag::Lambda
+    );
+    assert_eq!(
+        preflight
+            .reference_writeback_plan()
+            .root_writebacks()
+            .writebacks()[0]
+            .replacement_tag(),
+        ValueTag::Lambda
     );
     assert!(
         preflight

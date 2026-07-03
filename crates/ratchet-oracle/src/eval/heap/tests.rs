@@ -5804,6 +5804,10 @@ fn collector_poll_minor_gc_root_writeback_plan_filters_stack_map_roots() {
         root_writeback_plan.writebacks()[2].source(),
         &EvalRootSource::ValueStack { slot: 9 }
     );
+    for writeback in root_writeback_plan.writebacks() {
+        assert_eq!(writeback.expected_tag(), ValueTag::Thunk);
+        assert_eq!(writeback.replacement_tag(), ValueTag::Thunk);
+    }
 
     let mut slots = root_writeback_plan
         .writebacks()
