@@ -8,20 +8,24 @@
 
 use thiserror::Error;
 
-use crate::ir::{Escape, Ir, IrData, IrId, IrKind, Strictness};
+use crate::analysis::{PrimOpEscapeSignature, primop_escape_signature};
+use crate::builtins::direct_builtin;
+use crate::ir::{Escape, Ir, IrChildSlice, IrData, IrId, IrKind, Strictness};
+use crate::syntax::Symbol;
 
 /// Builds a scalar replacement plan for the current IR facts.
 ///
-/// Immediate scalar nodes are admitted only when their facts prove both
-/// [`Strictness::Strict`] and [`Escape::NoEscape`]. Scalar nodes with missing
-/// proofs are retained with their current facts, while non-scalar nodes carrying
-/// the same proof pair are retained as unsupported by this precursor.
+/// Immediate scalar literals and direct primops are admitted only when their
+/// facts prove both [`Strictness::Strict`] and [`Escape::NoEscape`]. Scalar
+/// candidates with missing proofs are retained with their current facts, while
+/// non-scalar nodes carrying the same proof pair are retained as unsupported by
+/// this precursor.
 ///
 /// # Errors
 ///
 /// Returns [`ScalarReplacementError`] if the fact table is missing an arena
-/// entry or if an immediate scalar node carries a payload that does not match
-/// its kind.
+/// entry, if an immediate scalar node carries a payload that does not match its
+/// kind, or if a scalar-returning primop references malformed side tables.
 pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarReplacementError> {
     let mut plan = ScalarReplacementPlan {
         node_count: ir.arena.nodes().len(),
@@ -35,7 +39,7 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
             .get(id)
             .ok_or(ScalarReplacementError::MissingFact { id })?;
 
-        if let Some(kind) = scalar_kind(id, node.kind, node.data)? {
+        if let Some(kind) = scalar_kind(ir, id, node.kind, node.data)? {
             plan.scalar_candidate_count += 1;
             if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
                 plan.replacements.push(ScalarReplacement { node: id, kind });
@@ -63,6 +67,7 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
 }
 
 fn scalar_kind(
+    ir: &Ir,
     id: IrId,
     kind: IrKind,
     data: IrData,
@@ -84,8 +89,62 @@ fn scalar_kind(
             IrData::None => Ok(Some(ScalarReplacementKind::Null)),
             _ => Err(invalid_payload(id, kind, "empty payload")),
         },
+        IrKind::PrimOp => primop_scalar_kind(ir, id, data),
         _ => Ok(None),
     }
+}
+
+fn primop_scalar_kind(
+    ir: &Ir,
+    id: IrId,
+    data: IrData,
+) -> Result<Option<ScalarReplacementKind>, ScalarReplacementError> {
+    let IrData::PrimOp { symbol, args } = data else {
+        return match data {
+            IrData::DialectNode { .. } | IrData::DialectScopeVar { .. } => Ok(None),
+            _ => Err(invalid_payload(id, IrKind::PrimOp, "primop payload")),
+        };
+    };
+    let actual_arity = validate_child_slice(ir, id, args)?;
+    let name = ir
+        .symbols
+        .resolve(symbol)
+        .ok_or(ScalarReplacementError::InvalidSymbol { id, symbol })?;
+    let Some(direct) = direct_builtin(name) else {
+        return Ok(None);
+    };
+    let expected = direct.arity();
+    if actual_arity != expected {
+        return Err(ScalarReplacementError::InvalidPrimOpArity {
+            id,
+            symbol,
+            expected,
+            actual: actual_arity,
+        });
+    }
+    match primop_escape_signature(name) {
+        PrimOpEscapeSignature::ImmediateScalar => {
+            Ok(Some(ScalarReplacementKind::PrimOpImmediateScalar))
+        }
+        PrimOpEscapeSignature::Conservative => Ok(None),
+    }
+}
+
+fn validate_child_slice(
+    ir: &Ir,
+    id: IrId,
+    slice: IrChildSlice,
+) -> Result<usize, ScalarReplacementError> {
+    let children = ir
+        .arena
+        .child_slice(slice)
+        .ok_or(ScalarReplacementError::InvalidChildSlice { id, slice })?;
+    for child in children {
+        ir.arena
+            .node(*child)
+            .ok_or(ScalarReplacementError::InvalidNode { id: *child })?;
+    }
+    Ok(children.len())
 }
 
 fn invalid_payload(id: IrId, kind: IrKind, expected: &'static str) -> ScalarReplacementError {
@@ -107,7 +166,7 @@ impl ScalarReplacementPlan {
         self.node_count
     }
 
-    /// Returns the number of immediate scalar nodes considered.
+    /// Returns the number of immediate scalar candidates considered.
     pub const fn scalar_candidate_count(&self) -> usize {
         self.scalar_candidate_count
     }
@@ -158,6 +217,8 @@ pub enum ScalarReplacementKind {
     Bool,
     /// The null singleton.
     Null,
+    /// A direct primitive operation whose result is an immediate scalar.
+    PrimOpImmediateScalar,
 }
 
 /// One node retained by the scalar replacement planner.
@@ -214,5 +275,41 @@ pub enum ScalarReplacementError {
         kind: IrKind,
         /// The expected payload shape.
         expected: &'static str,
+    },
+    /// A child slice did not resolve through the child pool.
+    #[error("invalid child slice {slice:?} at IR node {id:?}")]
+    InvalidChildSlice {
+        /// The node that referenced the invalid child slice.
+        id: IrId,
+        /// The invalid child slice.
+        slice: IrChildSlice,
+    },
+    /// A child id did not resolve through the arena.
+    #[error("invalid IR node id {id:?}")]
+    InvalidNode {
+        /// The invalid child node id.
+        id: IrId,
+    },
+    /// A primop symbol did not resolve through the symbol table.
+    #[error("invalid primop symbol {symbol:?} at IR node {id:?}")]
+    InvalidSymbol {
+        /// The primop node.
+        id: IrId,
+        /// The unresolved symbol.
+        symbol: Symbol,
+    },
+    /// A direct primop node carried the wrong number of arguments.
+    #[error(
+        "invalid direct primop arity for symbol {symbol:?} at IR node {id:?}: expected {expected}, got {actual}"
+    )]
+    InvalidPrimOpArity {
+        /// The primop node.
+        id: IrId,
+        /// The direct primop symbol.
+        symbol: Symbol,
+        /// The expected direct-primop argument count.
+        expected: usize,
+        /// The actual lowered argument count.
+        actual: usize,
     },
 }

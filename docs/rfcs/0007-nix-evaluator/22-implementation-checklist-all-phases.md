@@ -6879,12 +6879,14 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `ratchet-core::analysis::scalar_replacement` consumes strictness and
       escape facts and returns the immediate scalar nodes whose current facts
       license non-heap representation. The planner admits only `int`, `float`,
-      `bool`, and `null` nodes with both `Strict` and `NoEscape`, retains scalar
-      nodes with missing proofs, retains non-scalar `Strict + NoEscape` facts as
-      unsupported by this precursor, and rejects missing facts or malformed
-      scalar payloads. This is a planning precursor only: optimized storage
-      lowering, aggregate scalar replacement, the full primop escape surface,
-      and frame-local thunk/attrset escape integration remain open.
+      `bool`, `null`, and immediate-scalar direct primop nodes with both
+      `Strict` and `NoEscape`, retains scalar nodes with missing proofs, retains
+      non-scalar `Strict + NoEscape` facts as unsupported by this precursor, and
+      rejects missing facts, malformed scalar payloads, or malformed primop side
+      tables before admitting a primop. This is a planning precursor only:
+      optimized storage lowering, aggregate scalar replacement, the full primop
+      escape surface, and frame-local thunk/attrset escape integration remain
+      open.
 - [x] Current primop escape-signature precursor:
       `ratchet-core::analysis::escape_signature` classifies only direct primops
       whose result is guaranteed to be an immediate scalar, and `annotate_escape`

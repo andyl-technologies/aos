@@ -120,6 +120,44 @@ fn scalar_replacement_plan_retains_unsupported_strict_no_escape_nodes() {
 }
 
 #[test]
+fn scalar_replacement_plan_admits_strict_no_escape_primop_scalars() {
+    let mut ir = annotate_allocations("builtins.isInt 1");
+    let root = ir.root;
+    assert_eq!(node(&ir, root).kind, IrKind::PrimOp);
+    ir.facts.get_mut(root).expect("root fact exists").strictness = Strictness::Strict;
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(plan.scalar_candidate_count(), 2);
+    assert_eq!(plan.replacements().len(), 1);
+    assert_eq!(plan.replacements()[0].node(), root);
+    assert_eq!(
+        plan.replacements()[0].kind(),
+        ScalarReplacementKind::PrimOpImmediateScalar
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_retains_conservative_primops_despite_facts() {
+    let mut ir = lowered("builtins.toString 1");
+    let root = ir.root;
+    assert_eq!(node(&ir, root).kind, IrKind::PrimOp);
+    set_facts(&mut ir, root, strict_no_escape());
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert!(plan.is_empty());
+    assert_eq!(plan.scalar_candidate_count(), 1);
+    assert!(plan.retained().iter().any(|retention| {
+        retention.node() == root
+            && retention.reason()
+                == ScalarReplacementRetentionReason::UnsupportedNodeKind {
+                    kind: IrKind::PrimOp,
+                }
+    }));
+}
+
+#[test]
 fn scalar_replacement_plan_rejects_missing_facts() {
     let ir = Ir {
         root: IrId::new(0),
@@ -146,6 +184,49 @@ fn scalar_replacement_plan_rejects_missing_facts() {
     assert_eq!(
         error,
         ScalarReplacementError::MissingFact { id: IrId::new(0) }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_wrong_arity_primop_scalars() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"isInt").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::PrimOp,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::PrimOp {
+                symbol,
+                args: IrChildSlice::new(0, 0),
+            },
+        )],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root: IrId::new(0),
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    let root = ir.root;
+    set_facts(&mut ir, root, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir).expect_err("wrong primop arity rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidPrimOpArity {
+            id: root,
+            symbol,
+            expected: 1,
+            actual: 0
+        }
     );
 }
 
