@@ -6135,6 +6135,22 @@ and helps the oracle directly.
       copied-only
       `apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks` method now
       delegates to the broader applicator.
+- [x] Current boundary live heap-field writeback bridge:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
+      consumes the same installed live heap-field writeback metadata and
+      writeback-destination bindings, prevalidates current record-owned source
+      fields plus staged heap-field/barrier writes before destination mutation,
+      applies paired object-body/generation writes for replacement requests and
+      copied writeback-object requests named by the heap-field write plan, and
+      then rewrites supported record-owned heap fields through the already-bound
+      applicator. Unit tests cover a
+      permanent-shared direct list field whose existing scratch replacement is
+      copied to young with remembered-set/card-table publication, and stale
+      direct-field rejection before the original destination body or generation
+      is changed. This still requires destination records to already exist as
+      unaliased collector-owned scratch records, does not allocate synthetic
+      destinations, and does not cover shared lexical frame slots, thunk fields,
+      ABI object headers, semispace storage, or Tier-B dispatch.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6849,8 +6865,19 @@ and helps the oracle directly.
       then validates that installed live heap-field writebacks and installed
       heap-field writeback-destination binding metadata are exact mirrors before
       producing the immutable validation/writeback object, field-source,
-      replacement metadata, request, and payload records for a future live
-      object-field writer.
+      replacement metadata, request, and payload records consumed by the live
+      heap-field bridge and future broader live object-field writers.
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
+      then prevalidates current record-owned source fields, applies paired
+      object-body/generation writes for the replacement and copied
+      writeback-object requests named by that field plan, and delegates to the
+      already-bound heap-field applicator. It also preflights the field and
+      remembered-set/card-table staging path before writing destination
+      body/generation state. The live root and heap-field bridges
+      still require destination heap records to pre-exist, do not allocate
+      synthetic destinations, do not rewrite active evaluator root storage, and
+      do not cover shared lexical frame slots, thunk fields, real ABI
+      object-header forwarding storage, semispace storage, or Tier-B dispatch.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
