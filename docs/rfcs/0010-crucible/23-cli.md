@@ -1137,6 +1137,17 @@ branch on the verdict without parsing output:
   (`--policy`/`--minimize`/`--report`/`--format`/`--recompute-signatures`/`--compare`),
   with no clustering/minimization policy in the CLI. — satisfies [CLI-26]; spec
   §16; cross-ref 34.
+  Work in progress under `checks.crucible.phase5.cliTriageWorkflow`: the CLI now
+  parses and plans the thin `triage <FINDINGS>` driver, loads empty stored/path
+  findings ledgers through the local DagStore, writes deterministic reports,
+  stores triage result artifacts, supports `--policy`, `--minimize`, `--report`,
+  global `--format`, `--recompute-signatures`, and `--compare`, rejects live
+  daemon routing, and fails non-empty artifact-only ledgers with an artifact
+  error instead of fabricating missing discovery-time signature evidence. Full
+  closure remains blocked on a representable non-empty findings ledger carrying
+  discovery-time signatures and replayable/minimizable representatives so the
+  CLI can drive clustering, representative election, minimization, and
+  per-cluster replay/debug artifacts end to end.
 - [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate

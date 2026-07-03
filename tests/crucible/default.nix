@@ -1556,6 +1556,16 @@ in rec {
         phase4.gates.e2eDeterminism.rawGate
       ];
     };
+    cliTriageWorkflow = import ./phase5-cli-triage-workflow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliTriageWorkflow";
+      taskIds = ["T-CLI-17"];
+      dependencies = [
+        phase5.cliSearchFuzzWorkflow
+        phase6.triageThinDriver
+        phase6.triageCliSurface
+      ];
+    };
     cliServeReadOnly = import ./phase5-cli-serve-read-only.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeReadOnly";

@@ -13029,6 +13029,29 @@ mod tests {
         assert_eq!(baseline.ledger.artifact_count(), 0);
         assert!(baseline.report_path.exists());
         assert_eq!(baseline.stored_result.key, baseline.result.content_hash());
+        let stored_findings = format_content_hash_ref(baseline.stored_ledger.key);
+
+        let stored_cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store.to_str().unwrap_or("."),
+            "triage",
+            &stored_findings,
+            "--report",
+            reports.to_str().unwrap_or("."),
+        ]);
+        let Commands::Triage(stored_args) = &stored_cli.command else {
+            panic!("expected triage command");
+        };
+        let stored_plan = plan_triage_invocation(&stored_cli, stored_args)?;
+        assert!(matches!(
+            stored_plan.findings,
+            TriageFindingsSource::StoredLedger(_)
+        ));
+        let stored_report = run_triage_invocation(&stored_cli, stored_args)?;
+        assert_eq!(stored_report.ledger.artifact_count(), 0);
+        assert!(stored_report.stored_ledger.cache_hit);
+
         let prior = format_content_hash_ref(baseline.stored_result.key);
 
         let cli = Cli::parse_from([
@@ -13097,6 +13120,41 @@ mod tests {
         dispatch(&cli)?;
 
         Ok(())
+    }
+
+    #[test]
+    fn cli_triage_rejects_artifact_only_findings_until_signatures_exist() {
+        let temp = TempDir::new().expect("tempdir must be created");
+        let findings = temp.path().join("findings");
+        fs::create_dir_all(&findings).expect("findings dir must be created");
+        fs::write(
+            findings.join("failure.artifact"),
+            b"opaque failure artifact",
+        )
+        .expect("opaque finding artifact must be written");
+        let cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            temp.path().join("store").to_str().unwrap_or("."),
+            "triage",
+            findings.to_str().unwrap_or("."),
+        ]);
+        let Commands::Triage(args) = &cli.command else {
+            panic!("expected triage command");
+        };
+
+        let error = match run_triage_invocation(&cli, args) {
+            Ok(_) => panic!("artifact-only findings ledgers must not be silently triaged"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert_eq!(error.exit_code(), 5);
+        assert!(
+            error
+                .to_string()
+                .contains("discovery-time signature evidence")
+        );
     }
 
     #[test]
