@@ -2450,6 +2450,11 @@ in rec {
         taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
       };
     };
+    crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleReleaseManifest";
+      taskIds = ["T-PKG-19"];
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";
@@ -2511,9 +2516,9 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = ["T-PLAN-3" "T-HARN-23"];
-          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring];
+          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];
         };
-        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring];
+        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

@@ -138,16 +138,16 @@ in
       build_system=mkCargoPackage
       cargo_deps=fetchCargoDeps
       qemu_package=qemu-crucible
-      qemu_build_id=${qemu-crucible.qemuBuildIdentity}
+      qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env
       qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
       qemu_plugin_api_version=$qemu_plugin_api_version
       qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
       shmem_abi_version=$shmem_abi_version
       shmem_abi=crucible-shmem-abi-v$shmem_abi_version
-      qemu_shmem_abi=${qemu-crucible.shmemAbi}
+      qemu_shmem_abi=${qemu-crucible.passthru.shmemAbi}
       shmem_generated_header=${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
-      shmem_generated_header_hash=${qemu-crucible.shmemHeaderHash}
+      shmem_generated_header_hash=${qemu-crucible.passthru.shmemHeaderHash}
       plugin_abi=crucible-shmem-abi-v$shmem_abi_version
       INFO
     '';

@@ -83,8 +83,12 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "pinned vendored dependency hash";
-        needle = "hash = \"sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=\";";
+        label = "pinned vendored dependency hash binding";
+        needle = "cargoDepsHash = \"sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=\";";
+      }
+      {
+        label = "vendored dependency hash consumed by cargo deps";
+        needle = "hash = cargoDepsHash;";
       }
       {
         label = "non-Crucible workspace excludes";
