@@ -1216,7 +1216,7 @@ in rec {
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionSimDoubleSuite";
-      taskIds = ["T-SESS-12"];
+      taskIds = ["T-SESS-12" "T-PAT-6"];
       dependencies = [
         phase5.sessionSimulationBackend
         phase3.gates.schedulerLiveness.rawGate
