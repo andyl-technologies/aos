@@ -230,6 +230,7 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 
     if let Commands::NixFuzzCorpus {
+        attr,
         file,
         output_dir,
         clean,
@@ -239,6 +240,7 @@ async fn run(cli: &Cli) -> Result<()> {
             printer,
             cli.verbose,
             eval_config,
+            attr.clone(),
             file.clone(),
             output_dir.clone(),
             *clean,
@@ -491,6 +493,7 @@ fn run_nix_fuzz_corpus_threaded(
     printer: Printer,
     verbose: u8,
     eval_config: NixEvalConfig,
+    attrs: Vec<String>,
     file: Option<PathBuf>,
     output_dir: Option<PathBuf>,
     clean: bool,
@@ -505,6 +508,7 @@ fn run_nix_fuzz_corpus_threaded(
                 &printer,
                 verbose,
                 eval_config,
+                &attrs,
                 file.as_deref(),
                 output_dir.as_deref(),
                 clean,

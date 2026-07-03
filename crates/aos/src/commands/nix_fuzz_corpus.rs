@@ -11,7 +11,9 @@ use aos_core::error::AosError;
 use aos_core::nix::{NixCli, NixEvalConfig, NixEvalMode, NixRunner};
 use aos_core::output::Printer;
 
-use super::nix_diff::{FuzzSourceFileKind, FuzzSourceSeed, fuzz_source_seeds};
+use super::nix_diff::{
+    FuzzSourceFileKind, FuzzSourceSeed, fuzz_source_seeds, fuzz_source_seeds_for_attrs,
+};
 
 const SOURCE_SEED_PREFIX: &str = "# aos-nix-fuzz-source\n";
 const DEFAULT_FUZZ_SYSTEM: &str = "x86_64-linux";
@@ -37,22 +39,39 @@ pub fn run(
     printer: &Printer,
     verbose: u8,
     eval_config: NixEvalConfig,
+    attrs: &[String],
     file: Option<&Path>,
     output_dir: Option<&Path>,
     clean: bool,
 ) -> Result<()> {
     NixRunner::ensure_nix_instantiate_available()?;
-    let root = NixRunner::find_root()?;
-    let file = file
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| root.join("default.nix"));
-    let output_dir = output_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_output_dir(&root));
+    let root = if file.is_none() || output_dir.is_none() {
+        Some(NixRunner::find_root()?)
+    } else {
+        None
+    };
+    let file = match file {
+        Some(file) => file.to_path_buf(),
+        None => root
+            .as_ref()
+            .context("repository root is required for the default nix-fuzz-corpus file")?
+            .join("default.nix"),
+    };
+    let output_dir = match output_dir {
+        Some(output_dir) => output_dir.to_path_buf(),
+        None => default_output_dir(
+            root.as_deref()
+                .context("repository root is required for the default fuzz corpus output")?,
+        ),
+    };
 
     let eval_config = effective_fuzz_eval_config(eval_config)?;
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
-    let seeds = fuzz_source_seeds(&oracle, &file, true, true, &eval_config)?;
+    let seeds = if attrs.is_empty() {
+        fuzz_source_seeds(&oracle, &file, true, true, &eval_config)?
+    } else {
+        fuzz_source_seeds_for_attrs(&file, attrs, &eval_config)?
+    };
     if seeds.is_empty() {
         return Err(AosError::InvalidArgument {
             message: "nix-fuzz-corpus generated no source seeds".to_string(),

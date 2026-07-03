@@ -224,6 +224,81 @@ in {
     echo "PASS" > "$out/result"
   '';
 
+  eval-json-generated-corpus-smoke = pkgs.runCommand "aos-eval-json-generated-corpus-smoke" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-eval-json-generated-corpus-smoke"
+    nix_conf="$work/nix-conf"
+    fixture="$work/generated-corpus-root.nix"
+    generated="$work/generated"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE" \
+      "$generated"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    cat > "$fixture" <<'EOF'
+    { system ? builtins.currentSystem }:
+    {
+      pkgs = {
+        generatedEvalJsonPackage = {
+          a = [ true null "pkg" ];
+          z = system;
+        };
+      };
+      conformance = {
+        evalOkayGeneratedSmoke = {
+          b = 2;
+          a = [ "conformance" system ];
+        };
+      };
+    }
+    EOF
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-fuzz-corpus \
+      --file "$fixture" \
+      --output-dir "$generated" \
+      --clean \
+      --attr pkgs.generatedEvalJsonPackage \
+      --attr conformance.evalOkayGeneratedSmoke
+
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-diff \
+      --eval-json \
+      --eval-json-corpus \
+      "$generated"
+
+    echo "PASS" > "$out/result"
+  '';
+
   host-apr-apm-command-surface = let
     hostAprApmCommandSurfaceDeps = [
       self

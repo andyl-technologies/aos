@@ -20,9 +20,14 @@ pub(super) fn ensure_native_json_subset(
             if let IrKind::PrimOp = node.kind
                 && let IrData::PrimOp { symbol, .. } = node.data
                 && let Some(name) = ir.symbols.resolve(symbol)
-                && let Some(feature) = builtin_native_cli_fallback_feature(name)
+                && let Some(builtin) = lookup_builtin(name)
             {
-                return Err(unsupported_native_node(feature, node.span, expr_len));
+                if builtin_allowed_for_native_json_effect(builtin) {
+                    continue;
+                }
+                if let Some(feature) = builtin_native_json_fallback_feature(builtin, options) {
+                    return Err(unsupported_native_node(feature, node.span, expr_len));
+                }
             }
             return Err(unsupported_native_node(
                 "effectful expression evaluation",
@@ -54,7 +59,8 @@ pub(super) fn ensure_native_json_subset(
                 continue;
             }
             if is_unshadowable_global_name(name)
-                && let Some(feature) = builtin_native_cli_fallback_feature(name)
+                && let Some(builtin) = lookup_builtin(name)
+                && let Some(feature) = builtin_native_json_fallback_feature(builtin, options)
             {
                 return Err(unsupported_native_node(feature, node.span, expr_len));
             }
@@ -141,10 +147,25 @@ fn builtin_native_json_fallback_feature(
     builtin: Builtin,
     options: &TreeWalkOptions,
 ) -> Option<&'static str> {
+    if builtin_allowed_for_native_json_effect(builtin) {
+        return None;
+    }
     if ambient_builtin_constant_available_for_native_json(builtin, options) {
         return None;
     }
     builtin.native_cli_fallback_feature()
+}
+
+fn builtin_allowed_for_native_json_effect(builtin: Builtin) -> bool {
+    matches!(
+        builtin.execution(),
+        BuiltinExecution::Import
+            | BuiltinExecution::ScopedImport
+            | BuiltinExecution::StrictUnary {
+                primop: StrictUnaryPrimOp::ToPath,
+                ..
+            }
+    )
 }
 
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {

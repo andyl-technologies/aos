@@ -232,10 +232,12 @@ hold invariant.
       the real workspace `.nix` source tree with package, toolchain, module, and
       system sentinels; `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
       seeds from the full §2.7 package/toolchain/system corpus and configured
-      generated conformance corpus. The configured pinned C++ oracle recursion
-      semantics check now runs on a fixed 32 MiB worker stack, so recursive
-      fixed-point regressions report as semantic test failures instead of
-      aborting the `ratchet-oracle cpp_nix` harness process. Covered by
+      generated conformance corpus, while repeatable `--attr` renders focused
+      package/conformance-shaped source seeds for generated-corpus smoke checks
+      without enumerating the full package set. The configured pinned C++ oracle
+      recursion semantics check now runs on a fixed 32 MiB worker stack, so
+      recursive fixed-point regressions report as semantic test failures instead
+      of aborting the `ratchet-oracle cpp_nix` harness process. Covered by
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus`,
       `parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds`,
       `parser_acceptance_matches_rnix_oracle_on_workspace_nix_sources`,
@@ -7120,6 +7122,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       but it still does not generate or run the ignored package/conformance
       source corpus, consume a fuzz time budget, run scheduled CI, or close
       `C-4`.
+- [x] Current `--eval --json` generated source-corpus smoke check precursor:
+      `aos nix-fuzz-corpus` now accepts repeatable `--attr` selectors for
+      rendering explicit source seeds without requiring automatic package-set
+      enumeration, and the AOS package integration checks expose
+      `checks.integration.aos-eval-json-generated-corpus-smoke` (flake:
+      `integration-aos-eval-json-generated-corpus-smoke`). The check writes a
+      local package/conformance-shaped Nix fixture under `$TMPDIR`, generates a
+      package-style seed plus a conformance-style seed into a temporary ignored
+      corpus directory, and replays that generated directory through
+      `aos nix-diff --eval-json --eval-json-corpus`. This verifies the
+      generate-then-replay path in the Linux check graph, but it is still a
+      bounded smoke check: it does not enumerate or run the full automatic
+      package/toolchain/system/conformance corpus, consume the configured fuzz
+      time budget, run scheduled CI, or close `C-4`.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with

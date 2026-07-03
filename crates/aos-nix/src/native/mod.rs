@@ -36,8 +36,8 @@ use crate::eval::{
     eval_whnf_owned_with_options_realizer_and_eval_cache,
 };
 use crate::runtime::builtins::{
-    Builtin, BuiltinAvailability, NativeCliFallbackFeature, is_unshadowable_global_name,
-    lookup_builtin,
+    Builtin, BuiltinAvailability, BuiltinExecution, NativeCliFallbackFeature, StrictUnaryPrimOp,
+    is_unshadowable_global_name, lookup_builtin,
 };
 use crate::syntax::{Span, parse_bytes};
 use crate::value::{Value, ValueTag};

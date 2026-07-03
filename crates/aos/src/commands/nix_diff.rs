@@ -1385,9 +1385,54 @@ pub(crate) fn fuzz_source_seeds(
         .collect()
 }
 
+/// Renders source seeds for explicit attribute paths.
+///
+/// # Errors
+///
+/// Returns an error if an attribute path is empty, contains an empty segment, or
+/// the selected Nix file path is not valid UTF-8.
+pub(crate) fn fuzz_source_seeds_for_attrs(
+    file: &Path,
+    attrs: &[String],
+    eval_config: &NixEvalConfig,
+) -> Result<Vec<FuzzSourceSeed>> {
+    attrs
+        .iter()
+        .map(|attr| {
+            validate_fuzz_source_attr(attr)?;
+            render_fuzz_source_seed_with_kind(
+                &CorpusEntry {
+                    file: file.to_path_buf(),
+                    attr: attr.clone(),
+                },
+                eval_config,
+                FuzzSourceFileKind::Direct,
+            )
+        })
+        .collect()
+}
+
+fn validate_fuzz_source_attr(attr: &str) -> Result<()> {
+    if attr.is_empty() || attr.split('.').any(str::is_empty) {
+        return Err(AosError::InvalidArgument {
+            message: format!("nix-fuzz-corpus attribute path must not be empty: {attr:?}"),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn render_fuzz_source_seed(
     entry: &CorpusEntry,
     eval_config: &NixEvalConfig,
+) -> Result<FuzzSourceSeed> {
+    render_fuzz_source_seed_with_kind(entry, eval_config, fuzz_source_file_kind(entry))
+}
+
+fn render_fuzz_source_seed_with_kind(
+    entry: &CorpusEntry,
+    eval_config: &NixEvalConfig,
+    source_file_kind: FuzzSourceFileKind,
 ) -> Result<FuzzSourceSeed> {
     let root_args = render_fuzz_root_args(eval_config);
     let source = render_fuzz_source_expr(&entry.file, &entry.attr, &root_args)?;
@@ -1395,7 +1440,7 @@ fn render_fuzz_source_seed(
         name: entry.attr.clone(),
         source,
         source_file: absolute_path_for_nix(&entry.file)?,
-        source_file_kind: fuzz_source_file_kind(entry),
+        source_file_kind,
         root_args,
     })
 }
@@ -5576,6 +5621,56 @@ mod tests {
                 .contains("builtins.foldl' (value: name: builtins.getAttr name value) root path")
         );
         Ok(())
+    }
+
+    #[test]
+    fn explicit_fuzz_source_seeds_render_requested_attrs() -> Result<()> {
+        let config = NixEvalConfig::with_current_system("x86_64-linux")?;
+        let attrs = vec![
+            "pkgs.generated-json-smoke".to_string(),
+            "conformance.eval-okay-number".to_string(),
+        ];
+
+        let seeds = fuzz_source_seeds_for_attrs(Path::new("/repo/default.nix"), &attrs, &config)?;
+
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].name, "pkgs.generated-json-smoke");
+        assert_eq!(seeds[0].source_file_kind, FuzzSourceFileKind::Direct);
+        assert!(
+            seeds[0]
+                .source
+                .contains("path = [ \"pkgs\" \"generated-json-smoke\" ];")
+        );
+        assert_eq!(seeds[1].name, "conformance.eval-okay-number");
+        assert_eq!(seeds[1].source_file_kind, FuzzSourceFileKind::Direct);
+        assert!(
+            seeds[1]
+                .source
+                .contains("path = [ \"conformance\" \"eval-okay-number\" ];")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_fuzz_source_seeds_reject_empty_attr_segments() {
+        for attrs in [
+            vec!["".to_string()],
+            vec!["pkgs.".to_string()],
+            vec!["pkgs..zlib".to_string()],
+        ] {
+            let error = fuzz_source_seeds_for_attrs(
+                Path::new("/repo/default.nix"),
+                &attrs,
+                &repro_config(),
+            )
+            .expect_err("empty attr segments should be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("attribute path must not be empty"),
+                "{error}"
+            );
+        }
     }
 
     fn fixture_lang_dir() -> PathBuf {

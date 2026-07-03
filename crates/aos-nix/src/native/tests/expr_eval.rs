@@ -55,6 +55,98 @@ fn native_expression_eval_forces_empty_foldl_initial_for_attrs_consumers() -> Re
 }
 
 #[test]
+fn native_expression_eval_replays_generated_import_source_seed() -> Result<()> {
+    let root = unique_temp_dir("native-expression-generated-seed");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let source_file = root.join("corpus-root.nix");
+    fs::write(
+        &source_file,
+        "{ system ? builtins.currentSystem }: { pkgs.generated = { z = system; a = [ true null \"pkg\" ]; }; }\n",
+    )?;
+    let native = NixNative::new(0)?;
+    let source = format!(
+        "let
+           loaded = import (builtins.toPath {});
+           root = if builtins.isFunction loaded then loaded {{ system = \"x86_64-linux\"; }} else loaded;
+           path = [ \"pkgs\" \"generated\" ];
+         in
+           builtins.foldl' (value: name: builtins.getAttr name value) root path",
+        nix_string_literal(&path_bytes(&source_file)?)?
+    );
+
+    assert_eq!(
+        native.eval_expr(&source)?,
+        r#"{"a":[true,null,"pkg"],"z":"x86_64-linux"}"#
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_restricted_import_obeys_allowed_paths() -> Result<()> {
+    let root = unique_temp_dir("native-expression-restricted-import");
+    let allowed = root.join("allowed");
+    let denied = root.join("denied");
+    fs::create_dir_all(&allowed)?;
+    fs::create_dir_all(&denied)?;
+    let allowed = fs::canonicalize(allowed)?;
+    let denied = fs::canonicalize(denied)?;
+    let allowed_file = allowed.join("value.nix");
+    let denied_file = denied.join("value.nix");
+    fs::write(&allowed_file, "{ ok = true; }")?;
+    fs::write(&denied_file, "{ ok = false; }")?;
+    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+    options.add_allowed_path(path_bytes(&allowed)?)?;
+    let native = NixNative::with_options(0, options)?;
+
+    assert_eq!(
+        native.eval_expr(&format!(
+            "import (builtins.toPath {})",
+            nix_string_literal(&path_bytes(&allowed_file)?)?
+        ))?,
+        r#"{"ok":true}"#
+    );
+    let error = native
+        .eval_expr(&format!(
+            "import (builtins.toPath {})",
+            nix_string_literal(&path_bytes(&denied_file)?)?
+        ))
+        .expect_err("restricted eval-json import must reject unallowed paths");
+    assert!(matches!(
+        error.downcast_ref::<NativeEvalError>(),
+        Some(NativeEvalError::EvalError { message }) if message.contains("forbids filesystem access")
+    ));
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_restricted_scoped_import_obeys_allowed_paths() -> Result<()> {
+    let root = unique_temp_dir("native-expression-restricted-scoped-import");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let source_file = root.join("scoped.nix");
+    fs::write(&source_file, "{ y = x + 1; }")?;
+    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+    options.add_allowed_path(path_bytes(&root)?)?;
+    let native = NixNative::with_options(0, options)?;
+
+    assert_eq!(
+        native.eval_expr(&format!(
+            "builtins.scopedImport {{ x = 2; }} (builtins.toPath {})",
+            nix_string_literal(&path_bytes(&source_file)?)?
+        ))?,
+        r#"{"y":3}"#
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
     let root = unique_temp_dir("native-expression-parse-cache");
     fs::create_dir_all(&root)?;
@@ -1039,18 +1131,15 @@ fn native_expression_eval_keeps_non_functor_attrset_application_fallback_eligibl
 }
 
 #[test]
-fn native_expression_eval_keeps_missing_features_fallback_eligible() -> Result<()> {
+fn native_expression_eval_reports_missing_import_as_eval_error() -> Result<()> {
     let native = NixNative::new(0)?;
     let err = native
-        .eval_expr(r#"builtins.import "/tmp/aos-nix-native-missing-import.nix""#)
-        .expect_err("unsupported features are still reported as unsupported");
+        .eval_expr(r#"import "/tmp/aos-nix-native-missing-import.nix""#)
+        .expect_err("missing imports should report native eval errors");
 
     assert!(matches!(
         err.downcast_ref::<NativeEvalError>(),
-        Some(NativeEvalError::Unsupported { feature, span: Some(_) })
-            if feature.contains("effectful expression evaluation")
-                || feature.contains("CLI-sensitive builtin evaluation")
-                || feature.contains("unsupported tree-walk primop")
+        Some(NativeEvalError::EvalError { .. })
     ));
     assert_eq!(native.name(), "aos-nix");
     Ok(())

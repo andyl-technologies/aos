@@ -328,6 +328,9 @@ pub enum Commands {
     },
     /// Generate cargo-fuzz source seeds
     NixFuzzCorpus {
+        /// Attribute path to render as a source seed
+        #[arg(short = 'A', long)]
+        attr: Vec<String>,
         /// Nix file to import (default: repository default.nix)
         #[arg(long)]
         file: Option<std::path::PathBuf>,
@@ -992,10 +995,12 @@ mod tests {
 
         match cli.command {
             Commands::NixFuzzCorpus {
+                attr,
                 file,
                 output_dir,
                 clean,
             } => {
+                assert!(attr.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(output_dir, None);
                 assert!(!clean);
@@ -1009,6 +1014,10 @@ mod tests {
         let cli = parse_cli([
             "aos",
             "nix-fuzz-corpus",
+            "--attr",
+            "pkgs.zlib",
+            "-A",
+            "conformance.eval-okay-number",
             "--file",
             "default.nix",
             "--output-dir",
@@ -1018,10 +1027,18 @@ mod tests {
 
         match cli.command {
             Commands::NixFuzzCorpus {
+                attr,
                 file,
                 output_dir,
                 clean,
             } => {
+                assert_eq!(
+                    attr,
+                    [
+                        "pkgs.zlib".to_string(),
+                        "conformance.eval-okay-number".to_string()
+                    ]
+                );
                 assert_eq!(file, Some(std::path::PathBuf::from("default.nix")));
                 assert_eq!(
                     output_dir,

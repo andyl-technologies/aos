@@ -605,9 +605,12 @@ AOS package set. Build it in this order.
       the real workspace `.nix` source tree with package, toolchain, module, and
       system sentinels; `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
       seeds from the full §2.7 package/toolchain/system corpus and configured
-      generated conformance corpus. Covered by the parser rnix-acceptance tests,
-      `nix_fuzz_corpus` command/CLI tests, and the `nix_diff` corpus rendering
-      tests for package/system/toolchain/conformance roots.
+      generated conformance corpus, while repeatable `--attr` renders focused
+      package/conformance-shaped source seeds for generated-corpus smoke checks
+      without enumerating the full package set. Covered by the parser
+      rnix-acceptance tests, `nix_fuzz_corpus` command/CLI tests, and the
+      `nix_diff` corpus rendering tests for package/system/toolchain/conformance
+      roots.
 - [ ] Full parity-fuzzer budget/quiescence and full conformance diff-green
       remain acceptance gates: after the last evaluator-affecting change, run
       the configured fuzz budget to zero new divergences and keep the full
