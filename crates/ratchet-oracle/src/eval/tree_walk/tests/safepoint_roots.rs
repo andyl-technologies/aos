@@ -1111,6 +1111,147 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
 }
 
 #[test]
+fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
+    let ir = lower("x: x");
+    let mut outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live metadata");
+    let original_value = outcome.value();
+    let original_address = gc_address(original_value);
+    let nursery_base = static_gc_address(0x1000_0000);
+    let old_base = static_gc_address(0x2000_0000);
+
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell is readable"),
+        None
+    );
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect("single-tier worker dry-run installs live metadata");
+    let summary = live_metadata.dry_run().summary();
+    assert_eq!(live_metadata.forwarding_pointers_installed(), 1);
+    assert_eq!(
+        live_metadata.forwarding_pointers_installed(),
+        summary.forwarding_pointers()
+    );
+    assert_eq!(live_metadata.object_copies_installed(), 1);
+    assert_eq!(
+        live_metadata.object_copies_installed(),
+        summary.object_copies()
+    );
+    assert_eq!(live_metadata.reference_writebacks_installed(), 1);
+    assert_eq!(
+        live_metadata.reference_writebacks_installed(),
+        summary.reference_writebacks()
+    );
+    assert!(live_metadata.remembered_set_published());
+    assert_eq!(live_metadata.card_table_dirty_cards_cleared(), 0);
+    assert!(outcome.value().raw_eq(original_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        Some(ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+
+    let live_destination_storage = outcome.gc_stress_boundary_minor_gc_destination_storage();
+    let live_object_copy = live_metadata
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("worker live metadata commit records")
+        .object_byte_copies()
+        .first()
+        .expect("worker copied one object");
+    assert_eq!(live_destination_storage.len(), 1);
+    assert_eq!(
+        live_destination_storage.install_report().object_copies(),
+        summary.object_copies()
+    );
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+
+    let live_writebacks = outcome.gc_stress_boundary_minor_gc_reference_writebacks();
+    let live_worker_writebacks = live_writebacks
+        .worker()
+        .expect("worker live metadata writebacks install");
+    assert_eq!(live_writebacks.install_report().writebacks(), 1);
+    assert_eq!(
+        live_worker_writebacks.root_writeback_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert!(
+        live_worker_writebacks.root_value_writeback_slots()[0]
+            .value()
+            .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
+    );
+
+    let destination_storage_before_repeat = live_destination_storage.clone();
+    let writebacks_before_repeat = live_writebacks.clone();
+    let repeat_error = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect_err("occupied live metadata rejects repeat install before mutation");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveDestinationStorageAlreadyInstalled { existing: 1 }
+    );
+    assert!(outcome.value().raw_eq(original_value));
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_destination_storage(),
+        &destination_storage_before_repeat
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
+        &writebacks_before_repeat
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        Some(ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+}
+
+#[test]
 fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
     let ir = lower("x: x");
     let mut outcome = eval_whnf_owned_with_options(

@@ -2119,10 +2119,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       run; and
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       installs deduplicated outcome-owned destination-byte snapshots from the
-      same validated commit applications. These helpers still do not bind those
-      bytes to live heap-object bodies, live root/field storage, real ABI
-      object-header forwarding storage, object-generation metadata, or semispace
-      storage, and they do not commit those live mutations.
+      same validated commit applications.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
+      now stages those live metadata projections from one dry run, validating
+      forwarding, destination-byte, reference-writeback, and remembered-set
+      payloads before installing outcome-owned side tables and clearing the
+      outcome card table together.
+      These helpers still do not bind those bytes to live heap-object bodies,
+      live root/field storage, real ABI object-header forwarding storage,
+      object-generation metadata, or semispace storage, and they do not commit
+      those live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and

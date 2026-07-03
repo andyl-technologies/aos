@@ -6489,10 +6489,16 @@ and helps the oracle directly.
       run; and
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       installs deduplicated outcome-owned destination-byte snapshots from the
-      same validated commit applications. These helpers still do not bind those
-      bytes to live heap-object bodies, live root/field storage, real ABI
-      object-header forwarding storage, object-generation metadata, or semispace
-      storage, and they do not commit those live mutations.
+      same validated commit applications.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
+      stages forwarding, destination-byte, reference-writeback, remembered-set,
+      and card-table-clear projections from one owned dry run, validates every
+      installable side-table payload before the first live metadata mutation,
+      and then installs the outcome-owned side tables and clears the outcome
+      card table together. These helpers still do not bind those bytes to live
+      heap-object bodies, live root/field storage, real ABI object-header
+      forwarding storage, object-generation metadata, or semispace storage, and
+      they do not commit those live mutations.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

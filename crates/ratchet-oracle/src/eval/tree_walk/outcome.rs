@@ -588,6 +588,20 @@ pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
 }
 
 impl EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+    fn can_install(
+        &self,
+        install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    ) -> Result<(), EvalHeapError> {
+        if install_report.writebacks() != 0 && !self.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveReferenceWritebacksAlreadyInstalled {
+                    existing: self.install_report.writebacks(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn install(
         &mut self,
         applications: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
@@ -596,17 +610,24 @@ impl EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
         if install_report.writebacks() == 0 {
             return Ok(EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport::default());
         }
-        if !self.is_empty() {
-            return Err(
-                EvalHeapError::BoundaryMinorGcLiveReferenceWritebacksAlreadyInstalled {
-                    existing: self.install_report.writebacks(),
-                },
-            );
-        }
+        self.can_install(install_report)?;
 
         self.install_report = install_report;
         self.applications = applications;
         Ok(install_report)
+    }
+
+    fn install_prevalidated(
+        &mut self,
+        applications: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+        install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    ) {
+        if install_report.writebacks() == 0 {
+            return;
+        }
+
+        self.install_report = install_report;
+        self.applications = applications;
     }
 
     /// Returns whether no writeback metadata has been installed.
@@ -843,6 +864,20 @@ pub struct EvalGcStressBoundaryMinorGcLiveDestinationStorage {
 }
 
 impl EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+    fn can_install(
+        &self,
+        install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    ) -> Result<(), EvalHeapError> {
+        if install_report.object_copies() != 0 && !self.object_bytes.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveDestinationStorageAlreadyInstalled {
+                    existing: self.object_bytes.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn install(
         &mut self,
         object_bytes: Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
@@ -850,18 +885,24 @@ impl EvalGcStressBoundaryMinorGcLiveDestinationStorage {
         if object_bytes.is_empty() {
             return Ok(EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport::default());
         }
-        if !self.object_bytes.is_empty() {
-            return Err(
-                EvalHeapError::BoundaryMinorGcLiveDestinationStorageAlreadyInstalled {
-                    existing: self.object_bytes.len(),
-                },
-            );
-        }
-
         let install_report = live_destination_storage_install_report(&object_bytes);
+        self.can_install(install_report)?;
         self.object_bytes = object_bytes;
         self.install_report = install_report;
         Ok(install_report)
+    }
+
+    fn install_prevalidated(
+        &mut self,
+        object_bytes: Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
+        install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    ) {
+        if install_report.object_copies() == 0 {
+            return;
+        }
+
+        self.object_bytes = object_bytes;
+        self.install_report = install_report;
     }
 
     /// Returns whether no destination byte snapshots are installed.
@@ -2150,6 +2191,103 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus staged outcome-owned GC metadata installation.
+///
+/// This report preserves the owned dry-run artifacts and records the live
+/// metadata installed into [`EvalOutcome`] after all derived side-table payloads
+/// validated against the same dry run. It installs evaluator forwarding
+/// side-table values, destination-byte snapshots, reference-writeback metadata,
+/// the merged next remembered set, and the daemon card-table clear together. It
+/// still does not mutate live root variables, heap fields, object bytes, ABI
+/// forwarding headers, object generations, or semispace pages.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+    destination_storage_install_report:
+        EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    reference_writeback_install_report:
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    remembered_set_published: bool,
+    card_table_clear_report: GcCardTableClearReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+        destination_storage_install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+        reference_writeback_install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+        remembered_set_published: bool,
+        card_table_clear_report: GcCardTableClearReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            forwarding_install_report,
+            destination_storage_install_report,
+            reference_writeback_install_report,
+            remembered_set_published,
+            card_table_clear_report,
+        }
+    }
+
+    /// Returns the owned dry-run application that gated metadata installation.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live side-table forwarding installation report.
+    pub const fn forwarding_install_report(
+        &self,
+    ) -> AllocationCollectorPollForwardingInstallReport {
+        self.forwarding_install_report
+    }
+
+    /// Returns how many live side-table forwarding values were installed.
+    pub const fn forwarding_pointers_installed(&self) -> usize {
+        self.forwarding_install_report.forwarding_pointers()
+    }
+
+    /// Returns the live destination-byte installation report.
+    pub const fn destination_storage_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport {
+        self.destination_storage_install_report
+    }
+
+    /// Returns how many destination object payload snapshots were installed.
+    pub const fn object_copies_installed(&self) -> usize {
+        self.destination_storage_install_report.object_copies()
+    }
+
+    /// Returns the live reference-writeback installation report.
+    pub const fn reference_writeback_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport {
+        self.reference_writeback_install_report
+    }
+
+    /// Returns how many copied reference writeback slots were installed.
+    pub const fn reference_writebacks_installed(&self) -> usize {
+        self.reference_writeback_install_report.writebacks()
+    }
+
+    /// Returns whether the outcome-owned remembered set was replaced.
+    pub const fn remembered_set_published(&self) -> bool {
+        self.remembered_set_published
+    }
+
+    /// Returns the report for the outcome-owned daemon-card-table clear.
+    pub const fn card_table_clear_report(&self) -> GcCardTableClearReport {
+        self.card_table_clear_report
+    }
+
+    /// Returns how many dirty-card markers were cleared from live outcome state.
+    pub const fn card_table_dirty_cards_cleared(&self) -> usize {
+        self.card_table_clear_report.dirty_cards()
+    }
+}
+
 /// Aggregate counts and payload bytes from owned boundary minor-GC dry runs.
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
@@ -3058,6 +3196,84 @@ impl EvalOutcome {
                 reference_writeback_install_report,
             ),
         )
+    }
+
+    /// Runs a boundary dry run and installs all outcome-owned GC metadata.
+    ///
+    /// The method derives one owned commit dry run, then validates every live
+    /// metadata payload derived from it before mutating the outcome: sibling
+    /// survivor relocations, destination-byte snapshots, reference-writeback
+    /// metadata, remembered-set publication, and live forwarding slots. After
+    /// those checks pass, it installs evaluator side-table forwarding values,
+    /// destination-byte snapshots, reference-writeback metadata, the merged next
+    /// remembered set, and clears the daemon card table. Empty boundaries leave
+    /// the outcome unchanged.
+    ///
+    /// This is a staged live-metadata bridge for GC-stress experiments, not a
+    /// full collector commit. It does not mutate live root variables, heap
+    /// fields, object bytes, ABI forwarding headers, object generations,
+    /// reserve semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling applications do not form one
+    /// coherent survivor relocation map, if destination-byte snapshots or
+    /// reference-writeback metadata have already been installed, if remembered
+    /// set publication cannot be merged, or if forwarding installation fails.
+    /// All installable side-table payloads are validated before the first live
+    /// mutation; if forwarding installation fails, destination storage,
+    /// reference-writeback metadata, remembered-set state, and card-table state
+    /// are left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun, EvalHeapError> {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        let forwarding_slots =
+            boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let object_bytes =
+            boundary_minor_gc_merged_destination_object_bytes(dry_run.commit_applications())?;
+        let destination_storage_install_report =
+            live_destination_storage_install_report(&object_bytes);
+        self.gc_stress_boundary_minor_gc_destination_storage
+            .can_install(destination_storage_install_report)?;
+        let writebacks =
+            clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;
+        let reference_writeback_install_report =
+            live_reference_writeback_install_report(&writebacks);
+        self.gc_stress_boundary_minor_gc_reference_writebacks
+            .can_install(reference_writeback_install_report)?;
+        let remembered_set = boundary_minor_gc_merged_remembered_set(
+            dry_run.commit_applications(),
+            self.thunk_resolve_remembered_set.epoch(),
+        )?;
+
+        let forwarding_install_report = self
+            .heap
+            .install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)?;
+
+        self.gc_stress_boundary_minor_gc_destination_storage
+            .install_prevalidated(object_bytes, destination_storage_install_report);
+        self.gc_stress_boundary_minor_gc_reference_writebacks
+            .install_prevalidated(writebacks, reference_writeback_install_report);
+        let remembered_set_published = remembered_set.is_some();
+        let card_table_clear_report = if let Some(remembered_set) = remembered_set {
+            self.thunk_resolve_remembered_set = remembered_set;
+            self.thunk_resolve_card_table.clear_dirty_cards()
+        } else {
+            GcCardTableClearReport::default()
+        };
+
+        Ok(EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun::new(
+            dry_run,
+            forwarding_install_report,
+            destination_storage_install_report,
+            reference_writeback_install_report,
+            remembered_set_published,
+            card_table_clear_report,
+        ))
     }
 
     /// Runs a boundary minor-GC dry run and clears the outcome-owned card table.

@@ -344,6 +344,7 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcLiveDestinationStorage,
     EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun,
     EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
+    EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun,
     EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun,
     EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
     EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
