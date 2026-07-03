@@ -1497,6 +1497,87 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
 }
 
 #[test]
+fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_metadata() {
+    let ir = lower("x: x");
+    let mut outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for empty-boundary validation");
+    let original_value = outcome.value();
+    let original_address = gc_address(original_value);
+    let nursery_base = static_gc_address(0x1000_0000);
+    let old_base = static_gc_address(0x2000_0000);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect("initial metadata install succeeds");
+    let destination_storage_before = outcome
+        .gc_stress_boundary_minor_gc_destination_storage()
+        .clone();
+    let writebacks_before = outcome
+        .gc_stress_boundary_minor_gc_reference_writebacks()
+        .clone();
+    let remembered_epoch_before = outcome.thunk_resolve_remembered_set().epoch();
+    let remembered_edges_before = outcome.thunk_resolve_remembered_set().len();
+    let card_table_dirty_before = outcome.thunk_resolve_card_table().len();
+    outcome.gc_stress_boundary_scans = EvalGcStressBoundaryScans::default();
+
+    let empty_live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect("empty boundary validates existing coherent metadata");
+
+    assert_eq!(empty_live_metadata.forwarding_pointers_installed(), 0);
+    assert_eq!(empty_live_metadata.object_copies_installed(), 0);
+    assert_eq!(empty_live_metadata.reference_writebacks_installed(), 0);
+    assert!(!empty_live_metadata.remembered_set_published());
+    assert_eq!(empty_live_metadata.card_table_dirty_cards_cleared(), 0);
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_destination_storage(),
+        &destination_storage_before
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
+        &writebacks_before
+    );
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().epoch(),
+        remembered_epoch_before
+    );
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().len(),
+        remembered_edges_before
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().len(),
+        card_table_dirty_before
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("existing forwarding source remains known"),
+        Some(ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_bindings()
+            .expect("retained forwarding destination bindings still validate")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
     let ir = lower("x: x");
     let mut outcome = eval_whnf_owned_with_options(

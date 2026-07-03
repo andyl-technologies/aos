@@ -2124,7 +2124,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       now stages those live metadata projections from one dry run, validating
       forwarding, destination-byte, destination object-generation,
       forwarding-destination binding over the combined installed and planned
-      forwarding cells, reference-writeback, root/heap-field
+      forwarding cells against the final destination snapshot view,
+      reference-writeback, root/heap-field
       destination-binding, and remembered-set payloads before installing
       outcome-owned side tables and clearing the outcome card table together.
       `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`

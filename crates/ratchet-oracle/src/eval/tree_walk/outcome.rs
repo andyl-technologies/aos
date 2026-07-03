@@ -5354,7 +5354,7 @@ impl EvalOutcome {
     /// set publication cannot be merged, if destination generation or writeback
     /// destination bindings do not match the dry-run destination snapshots, if
     /// the combined installed and planned forwarding cells do not match the
-    /// dry-run destination snapshots, or if forwarding installation fails.
+    /// final destination snapshot view, or if forwarding installation fails.
     /// All installable side-table payloads are validated before the first live
     /// mutation; if forwarding installation fails, destination storage,
     /// reference-writeback metadata, remembered-set state, and card-table state
@@ -5375,11 +5375,17 @@ impl EvalOutcome {
             .can_install(destination_storage_install_report)?;
         let _destination_object_generation_bindings =
             boundary_minor_gc_destination_object_generation_bindings_from_objects(&object_bytes)?;
+        let forwarding_destination_objects = if object_bytes.is_empty() {
+            self.gc_stress_boundary_minor_gc_destination_storage
+                .object_bytes()
+        } else {
+            object_bytes.as_slice()
+        };
         let _forwarding_destination_bindings =
             boundary_minor_gc_forwarding_destination_bindings_from_heap_and_slots(
                 &self.heap,
                 &forwarding_slots,
-                &object_bytes,
+                forwarding_destination_objects,
             )?;
         let writebacks =
             clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;

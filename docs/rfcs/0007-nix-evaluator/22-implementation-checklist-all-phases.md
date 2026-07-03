@@ -6493,9 +6493,10 @@ and helps the oracle directly.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       stages forwarding, destination-byte, destination object-generation,
       forwarding-destination binding over the combined installed and planned
-      forwarding cells, reference-writeback, remembered-set, card-table-clear,
-      and root/heap-field destination-binding projections from one owned dry
-      run, validates every installable side-table payload and
+      forwarding cells against the final destination snapshot view,
+      reference-writeback, remembered-set, card-table-clear, and root/heap-field
+      destination-binding projections from one owned dry run, validates every
+      installable side-table payload and
       destination-binding report before the first live metadata mutation, and
       then installs the outcome-owned side tables and clears the outcome card
       table together.
