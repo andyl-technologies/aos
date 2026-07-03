@@ -2591,6 +2591,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       then uses that same complete-partition prevalidation before writing the
       supported tree-walk root storage while leaving heap-field rewrites in
       caller-owned buffers.
+      `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
+      derives the same complete-partition and object-copy plan, then preflights
+      supported tree-walk root slots, existing-destination object
+      body/generation staging, live heap-field writes, and remembered/card-table
+      barrier staging without mutating evaluator roots, heap records, or
+      side tables.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       carries the same current-poll object-copy plan into the existing-destination
       live heap-field writer, prevalidates typed roots and live heap-field slots,
@@ -2605,8 +2611,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       reporting down to the remembered list-field owner/source/replacement,
       mixed root/heap-field buffer application, mixed root-storage plus
       heap-field-buffer application, mixed root-storage plus live heap-field
+      preflight without mutating roots, destination body/generation, or
+      remembered/card side tables, mixed root-storage plus live heap-field
       application through a pre-existing scratch destination, synthetic
-      destination rejection before root or field mutation, stale live heap-field
+      destination rejection in both the preflight and applicator before root or
+      field mutation, stale live heap-field
       rejection before root mutation, and dirty permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
@@ -2781,6 +2790,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
       writes supported tree-walk roots only after the complete partition
       validates while leaving heap fields in caller-owned buffers.
+      `TreeWalk::validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields`
+      preflights the same tree-walk root slots, existing-destination
+      body/generation writes, live heap-field writes, and barrier staging without
+      mutating roots, heap records, remembered-set state, or card-table state.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       now carries the current-poll object-copy plan into an existing-destination
       live applicator that binds paired object bodies/generations, rewrites
