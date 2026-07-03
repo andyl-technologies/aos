@@ -1067,6 +1067,7 @@ struct FailureArtifactRule {
 }
 
 const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 = crucible_api::STREAMING_COMMAND_MAX_ACTOR_YIELDS;
+const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunInvocationPlan {
@@ -4380,12 +4381,32 @@ where
         signal = &mut shutdown => {
             signal?;
             let _ = shutdown_sender.send(());
-            server.await.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
+            match tokio::time::timeout(SERVE_SHUTDOWN_DRAIN_TIMEOUT, server).await {
+                Ok(result) => {
+                    result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
+                }
+                Err(_) => {}
+            }
             Ok(())
         }
     }
 }
 
+#[cfg(unix)]
+async fn serve_shutdown_signal() -> Result<(), CliError> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut interrupt = signal(SignalKind::interrupt())
+        .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
+    let mut terminate = signal(SignalKind::terminate())
+        .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
+    tokio::select! {
+        _ = interrupt.recv() => Ok(()),
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
 async fn serve_shutdown_signal() -> Result<(), CliError> {
     tokio::signal::ctrl_c()
         .await

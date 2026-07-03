@@ -1579,6 +1579,7 @@ dependencies = [
  "crucible-harness",
  "crucible-session",
  "crucible-shmem",
+ "libc",
  "tempfile",
  "tokio",
 ]

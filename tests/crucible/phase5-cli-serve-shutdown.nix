@@ -16,7 +16,9 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
+  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  serveProcessTest = builtins.readFile ../../crates/crucible-cli/tests/serve_process.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -46,22 +48,22 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 remains open";
-        needle = "- [ ] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 marked complete";
+        needle = "- [x] **T-CLI-14** Implement `serve`";
       }
       {
-        label = "T-CLI-14 shutdown progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliServeShutdown`";
+        label = "T-CLI-14 shutdown completion note";
+        needle = "`checks.crucible.phase5.cliServeShutdown`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI serve shutdown progress note";
-        needle = "`checks.crucible.phase5.cliServeShutdown` covers";
+        label = "phase5 CLI serve shutdown completion note";
+        needle = "`checks.crucible.phase5.cliServeShutdown`: the CLI advertises";
       }
       {
-        label = "phase5 CLI serve shutdown remaining harness wording";
-        needle = "external signal-process harness";
+        label = "phase5 CLI serve process signal evidence";
+        needle = "real process exits 0 after an external shutdown signal";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
@@ -112,6 +114,18 @@
         needle = "serve_shutdown_signal()";
       }
       {
+        label = "unix interrupt shutdown signal";
+        needle = "SignalKind::interrupt()";
+      }
+      {
+        label = "unix terminate shutdown signal";
+        needle = "SignalKind::terminate()";
+      }
+      {
+        label = "bounded post-signal drain timeout";
+        needle = "SERVE_SHUTDOWN_DRAIN_TIMEOUT";
+      }
+      {
         label = "graceful shutdown channel";
         needle = "tokio::sync::oneshot::channel";
       }
@@ -130,6 +144,34 @@
       {
         label = "serve bind error mapping";
         needle = "serve bind error";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+      {
+        label = "libc dev dependency for signal harness";
+        needle = "libc = { workspace = true }";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/serve_process.rs" serveProcessTest [
+      {
+        label = "external serve signal-process harness";
+        needle = "serve_process_exits_zero_on_sigterm";
+      }
+      {
+        label = "serve binary execution";
+        needle = "CARGO_BIN_EXE_crucible";
+      }
+      {
+        label = "serve process probes HTTP2 endpoint";
+        needle = "RpcControlClient::new";
+      }
+      {
+        label = "serve process sends terminate signal";
+        needle = "libc::SIGTERM";
+      }
+      {
+        label = "serve process asserts zero exit";
+        needle = "serve should exit 0 after SIGTERM";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -205,6 +247,13 @@ in
               --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
               -p crucible-api \
               production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
+              -p crucible-cli \
+              --test serve_process \
               -- --test-threads=1
           '';
         }

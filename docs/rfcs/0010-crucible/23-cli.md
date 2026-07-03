@@ -1042,32 +1042,21 @@ branch on the verdict without parsing output:
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
   satisfies [CLI-23]; spec §13.
-- [ ] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
+- [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
-  Work in progress under `checks.crucible.phase5.cliServeReadOnly`: the CLI now
-  accepts and advertises `serve --read-only`, threads it into the HTTP/2 daemon
-  transport, and the daemon rejects session creation/destruction, control attach,
-  and mutating send commands while allowing read-only query sends through the
-  normal transport path. Full closure remains blocked on the external
-  signal-process harness.
-  Work in progress under `checks.crucible.phase5.cliServeMaxSessions`: the CLI
-  now accepts and advertises `serve --max-sessions <n>`, rejects zero before
-  binding, threads the nonzero cap into the lifecycle control plane, and the
-  daemon returns a typed session-limit error without creating an extra session
-  when the live-session cap is reached. Full closure remains blocked on
-  the external signal-process harness.
-  Work in progress under `checks.crucible.phase5.cliServeMultiClient`: the
-  production HTTP/2 server now admits concurrent read-only Watch and Query
-  clients while a Control client drives the same session, and both Watch clients
-  observe the live running update. Full closure remains blocked on the external
-  signal-process harness.
-  Work in progress under `checks.crucible.phase5.cliServeShutdown`: the API
-  exposes a graceful-shutdown server helper, production `serve` waits on the
-  `ctrl-c` shutdown signal, Control/Watch streams terminate on server shutdown,
-  tests inject a shutdown future to prove clean exit with an active Watch stream,
-  and bind/backend serve errors map to exit 3. Full closure remains blocked on
-  an external signal-process harness.
+  Completed under `checks.crucible.phase5.cliServeReadOnly`,
+  `checks.crucible.phase5.cliServeMaxSessions`,
+  `checks.crucible.phase5.cliServeMultiClient`, and
+  `checks.crucible.phase5.cliServeShutdown`: the CLI accepts and advertises
+  `serve --read-only` and `serve --max-sessions <n>`, rejects invalid
+  max-session caps before binding, runs the production HTTP/2 daemon with the
+  same lifecycle/session actor path used by the in-process API, enforces
+  read-only mode against state-mutating lifecycle/control/send calls, admits
+  concurrent Watch and Query clients while Control drives the same session,
+  propagates server shutdown to active Control/Watch streams, maps serve
+  bind/backend failures to exit 3, and the process-level harness proves an
+  external shutdown signal exits with code 0.
 - [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
@@ -1078,7 +1067,7 @@ branch on the verdict without parsing output:
   now generates shell completions, renders `--version`, regression-tests the
   current non-overclaiming help surface, and rejects future flags whose command
   behavior is not implemented yet. Full closure remains blocked on the
-  command-behavior gates (`T-CLI-7 … T-CLI-14`) so the final help text can be
+  command-behavior gates (`T-CLI-7 … T-CLI-13`) so the final help text can be
   certified in sync with behavior.
 - [ ] **T-CLI-17** Implement `triage` as a thin driver over the triage engine (34):
   cluster findings by signature, elect + optionally minimize a representative per

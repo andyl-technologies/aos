@@ -46,18 +46,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 remains open";
-        needle = "- [ ] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 marked complete";
+        needle = "- [x] **T-CLI-14** Implement `serve`";
       }
       {
-        label = "T-CLI-14 max-sessions progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliServeMaxSessions`";
+        label = "T-CLI-14 max-sessions completion note";
+        needle = "`checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI serve max-sessions progress note";
-        needle = "`T-CLI-14` remains open. `checks.crucible.phase5.cliServeMaxSessions`";
+        label = "phase5 CLI serve max-sessions completion note";
+        needle = "`checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
