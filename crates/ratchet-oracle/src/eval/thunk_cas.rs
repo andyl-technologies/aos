@@ -32,8 +32,184 @@ const FAILED_TAG: u64 = 2;
 const PENDING_TAG: u64 = 3;
 const AWAITED_TAG: u64 = 4;
 
+/// Ordering used when observing the thunk state word.
+pub const PARALLEL_THUNK_STATE_LOAD_ORDERING: Ordering = Ordering::Acquire;
+/// Success ordering for `Suspended -> Pending(owner)` claim CAS.
+pub const PARALLEL_THUNK_CLAIM_SUCCESS_ORDERING: Ordering = Ordering::AcqRel;
+/// Failure ordering for `Suspended -> Pending(owner)` claim CAS.
+pub const PARALLEL_THUNK_CLAIM_FAILURE_ORDERING: Ordering = Ordering::Acquire;
+/// Success ordering for `Pending(owner) -> Awaited(owner)` waiter-marker CAS.
+pub const PARALLEL_THUNK_AWAIT_MARK_SUCCESS_ORDERING: Ordering = Ordering::AcqRel;
+/// Failure ordering for `Pending(owner) -> Awaited(owner)` waiter-marker CAS.
+pub const PARALLEL_THUNK_AWAIT_MARK_FAILURE_ORDERING: Ordering = Ordering::Acquire;
+/// Success ordering for owner publication to a terminal state.
+pub const PARALLEL_THUNK_TERMINAL_PUBLISH_SUCCESS_ORDERING: Ordering = Ordering::Release;
+/// Failure ordering for owner publication to a terminal state.
+pub const PARALLEL_THUNK_TERMINAL_PUBLISH_FAILURE_ORDERING: Ordering = Ordering::Acquire;
+
+const PARALLEL_THUNK_MEMORY_ORDERING_REQUIREMENTS: [ParallelThunkMemoryOrderingRequirement; 7] = [
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::StateLoad,
+        Ordering::Acquire,
+        PARALLEL_THUNK_STATE_LOAD_ORDERING,
+        "state loads must acquire terminal payloads published before release terminal stores",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::ClaimSuccess,
+        Ordering::AcqRel,
+        PARALLEL_THUNK_CLAIM_SUCCESS_ORDERING,
+        "claim CAS must acquire prior state and release ownership before body evaluation",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::ClaimFailure,
+        Ordering::Acquire,
+        PARALLEL_THUNK_CLAIM_FAILURE_ORDERING,
+        "failed claim CAS must acquire the observed owner or terminal state",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::AwaitMarkSuccess,
+        Ordering::AcqRel,
+        PARALLEL_THUNK_AWAIT_MARK_SUCCESS_ORDERING,
+        "await marker CAS must acquire owner state and release waiter visibility",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::AwaitMarkFailure,
+        Ordering::Acquire,
+        PARALLEL_THUNK_AWAIT_MARK_FAILURE_ORDERING,
+        "failed await marker CAS must acquire the observed terminal or owner state",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::TerminalPublishSuccess,
+        Ordering::Release,
+        PARALLEL_THUNK_TERMINAL_PUBLISH_SUCCESS_ORDERING,
+        "terminal publication must release the forced value or captured failure payload",
+    ),
+    ParallelThunkMemoryOrderingRequirement::new(
+        ParallelThunkMemoryOrderingRole::TerminalPublishFailure,
+        Ordering::Acquire,
+        PARALLEL_THUNK_TERMINAL_PUBLISH_FAILURE_ORDERING,
+        "failed terminal publication must acquire the state that defeated the owner",
+    ),
+];
+
+/// Validates and returns the current parallel thunk memory-ordering contract.
+///
+/// This audit is intentionally narrower than the final loom/Miri gate. It pins
+/// the atomic orderings used by the safe state-word precursor so future loom
+/// models and evaluator integration have a concrete contract to check.
+///
+/// # Errors
+///
+/// Returns [`ParallelThunkMemoryOrderingError`] if one of the named ordering
+/// constants no longer matches the required RFC-0007 acquire/release contract.
+pub fn validate_parallel_thunk_memory_ordering()
+-> Result<ParallelThunkMemoryOrderingAudit, ParallelThunkMemoryOrderingError> {
+    for requirement in PARALLEL_THUNK_MEMORY_ORDERING_REQUIREMENTS {
+        if requirement.actual_ordering != requirement.expected_ordering {
+            return Err(ParallelThunkMemoryOrderingError::Mismatch {
+                role: requirement.role,
+                expected_ordering: requirement.expected_ordering,
+                actual_ordering: requirement.actual_ordering,
+            });
+        }
+    }
+    Ok(ParallelThunkMemoryOrderingAudit {
+        requirements: &PARALLEL_THUNK_MEMORY_ORDERING_REQUIREMENTS,
+    })
+}
+
 /// The largest worker id that can be encoded in a thunk state word.
 pub const PARALLEL_THUNK_MAX_WORKER_ID: u64 = u64::MAX >> TAG_BITS;
+
+/// One atomic operation role covered by the parallel thunk ordering audit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParallelThunkMemoryOrderingRole {
+    /// The acquire load used to observe the state word.
+    StateLoad,
+    /// The success ordering for a suspended-to-pending claim CAS.
+    ClaimSuccess,
+    /// The failure ordering for a suspended-to-pending claim CAS.
+    ClaimFailure,
+    /// The success ordering for a pending-to-awaited marker CAS.
+    AwaitMarkSuccess,
+    /// The failure ordering for a pending-to-awaited marker CAS.
+    AwaitMarkFailure,
+    /// The success ordering for publishing a terminal state.
+    TerminalPublishSuccess,
+    /// The failure ordering for publishing a terminal state.
+    TerminalPublishFailure,
+}
+
+/// One expected-versus-actual memory-ordering requirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelThunkMemoryOrderingRequirement {
+    role: ParallelThunkMemoryOrderingRole,
+    expected_ordering: Ordering,
+    actual_ordering: Ordering,
+    rationale: &'static str,
+}
+
+impl ParallelThunkMemoryOrderingRequirement {
+    const fn new(
+        role: ParallelThunkMemoryOrderingRole,
+        expected_ordering: Ordering,
+        actual_ordering: Ordering,
+        rationale: &'static str,
+    ) -> Self {
+        Self {
+            role,
+            expected_ordering,
+            actual_ordering,
+            rationale,
+        }
+    }
+
+    /// Returns the atomic operation role.
+    pub const fn role(self) -> ParallelThunkMemoryOrderingRole {
+        self.role
+    }
+
+    /// Returns the required ordering for this role.
+    pub const fn expected_ordering(self) -> Ordering {
+        self.expected_ordering
+    }
+
+    /// Returns the ordering currently used by the implementation.
+    pub const fn actual_ordering(self) -> Ordering {
+        self.actual_ordering
+    }
+
+    /// Returns why this ordering is required.
+    pub const fn rationale(self) -> &'static str {
+        self.rationale
+    }
+}
+
+/// A successful memory-ordering audit report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelThunkMemoryOrderingAudit {
+    requirements: &'static [ParallelThunkMemoryOrderingRequirement],
+}
+
+impl ParallelThunkMemoryOrderingAudit {
+    /// Returns all validated requirements.
+    pub const fn requirements(self) -> &'static [ParallelThunkMemoryOrderingRequirement] {
+        self.requirements
+    }
+
+    /// Returns the number of validated requirements.
+    pub const fn requirement_count(self) -> usize {
+        self.requirements.len()
+    }
+
+    /// Returns the actual ordering for `role`, if it is audited.
+    pub fn ordering_for(self, role: ParallelThunkMemoryOrderingRole) -> Option<Ordering> {
+        self.requirements
+            .iter()
+            .find(|requirement| requirement.role == role)
+            .map(|requirement| requirement.actual_ordering)
+    }
+}
 
 /// A non-zero worker or fiber id encoded in a parallel thunk state word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -164,7 +340,7 @@ impl ParallelThunkStateWord {
     /// Returns [`ParallelThunkStateError::InvalidStateWord`] if the private
     /// atomic word contains an unsupported encoding.
     pub fn state(&self) -> Result<ParallelThunkState, ParallelThunkStateError> {
-        ParallelThunkState::from_raw(self.state.load(Ordering::Acquire))
+        ParallelThunkState::from_raw(self.state.load(PARALLEL_THUNK_STATE_LOAD_ORDERING))
     }
 
     /// Attempts to claim the thunk for `worker`.
@@ -192,8 +368,8 @@ impl ParallelThunkStateWord {
                         .compare_exchange(
                             SUSPENDED_TAG,
                             claimed,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
+                            PARALLEL_THUNK_CLAIM_SUCCESS_ORDERING,
+                            PARALLEL_THUNK_CLAIM_FAILURE_ORDERING,
                         )
                         .is_ok()
                     {
@@ -251,7 +427,12 @@ impl ParallelThunkStateWord {
                     let awaited = ParallelThunkState::Awaited { owner }.as_raw();
                     if self
                         .state
-                        .compare_exchange(pending, awaited, Ordering::AcqRel, Ordering::Acquire)
+                        .compare_exchange(
+                            pending,
+                            awaited,
+                            PARALLEL_THUNK_AWAIT_MARK_SUCCESS_ORDERING,
+                            PARALLEL_THUNK_AWAIT_MARK_FAILURE_ORDERING,
+                        )
                         .is_ok()
                     {
                         return self.observe_awaited_after_mark(owner);
@@ -333,8 +514,8 @@ impl ParallelThunkStateWord {
                 .compare_exchange(
                     actual.as_raw(),
                     terminal_state.as_state().as_raw(),
-                    Ordering::Release,
-                    Ordering::Acquire,
+                    PARALLEL_THUNK_TERMINAL_PUBLISH_SUCCESS_ORDERING,
+                    PARALLEL_THUNK_TERMINAL_PUBLISH_FAILURE_ORDERING,
                 )
                 .is_ok()
             {
@@ -531,6 +712,23 @@ pub enum ParallelThunkStateError {
     },
 }
 
+/// A failure while validating the parallel thunk memory-ordering contract.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ParallelThunkMemoryOrderingError {
+    /// A named operation no longer uses the required ordering.
+    #[error(
+        "parallel thunk memory ordering for {role:?} is {actual_ordering:?}, expected {expected_ordering:?}"
+    )]
+    Mismatch {
+        /// The atomic operation role that failed validation.
+        role: ParallelThunkMemoryOrderingRole,
+        /// The ordering required by the audit contract.
+        expected_ordering: Ordering,
+        /// The ordering currently configured for the operation.
+        actual_ordering: Ordering,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -545,6 +743,50 @@ mod tests {
 
     fn worker(raw: u64) -> ParallelThunkWorkerId {
         ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+    }
+
+    #[test]
+    fn memory_ordering_audit_pins_state_word_orderings() {
+        let audit =
+            validate_parallel_thunk_memory_ordering().expect("memory ordering audit succeeds");
+
+        assert_eq!(audit.requirement_count(), 7);
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::StateLoad),
+            Some(Ordering::Acquire)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::ClaimSuccess),
+            Some(Ordering::AcqRel)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::ClaimFailure),
+            Some(Ordering::Acquire)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::AwaitMarkSuccess),
+            Some(Ordering::AcqRel)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::AwaitMarkFailure),
+            Some(Ordering::Acquire)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::TerminalPublishSuccess),
+            Some(Ordering::Release)
+        );
+        assert_eq!(
+            audit.ordering_for(ParallelThunkMemoryOrderingRole::TerminalPublishFailure),
+            Some(Ordering::Acquire)
+        );
+        assert!(
+            audit
+                .requirements()
+                .iter()
+                .all(|requirement| requirement.expected_ordering()
+                    == requirement.actual_ordering()
+                    && !requirement.rationale().is_empty())
+        );
     }
 
     #[test]

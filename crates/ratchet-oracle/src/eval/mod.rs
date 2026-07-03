@@ -58,9 +58,15 @@ pub use thunk::{
     ThunkResolveBarrier, ThunkState,
 };
 pub use thunk_cas::{
-    PARALLEL_THUNK_MAX_WORKER_ID, ParallelThunkAwait, ParallelThunkClaim, ParallelThunkClaimGuard,
-    ParallelThunkPublish, ParallelThunkState, ParallelThunkStateError, ParallelThunkStateWord,
-    ParallelThunkTerminalState, ParallelThunkWorkerId,
+    PARALLEL_THUNK_AWAIT_MARK_FAILURE_ORDERING, PARALLEL_THUNK_AWAIT_MARK_SUCCESS_ORDERING,
+    PARALLEL_THUNK_CLAIM_FAILURE_ORDERING, PARALLEL_THUNK_CLAIM_SUCCESS_ORDERING,
+    PARALLEL_THUNK_MAX_WORKER_ID, PARALLEL_THUNK_STATE_LOAD_ORDERING,
+    PARALLEL_THUNK_TERMINAL_PUBLISH_FAILURE_ORDERING,
+    PARALLEL_THUNK_TERMINAL_PUBLISH_SUCCESS_ORDERING, ParallelThunkAwait, ParallelThunkClaim,
+    ParallelThunkClaimGuard, ParallelThunkMemoryOrderingAudit, ParallelThunkMemoryOrderingError,
+    ParallelThunkMemoryOrderingRequirement, ParallelThunkMemoryOrderingRole, ParallelThunkPublish,
+    ParallelThunkState, ParallelThunkStateError, ParallelThunkStateWord,
+    ParallelThunkTerminalState, ParallelThunkWorkerId, validate_parallel_thunk_memory_ordering,
 };
 pub use thunk_lowering::{
     TreeWalkOmittedThunk, TreeWalkThunkAllocationContext, TreeWalkThunkAllocationError,

@@ -6785,6 +6785,20 @@ nurseries build on the bump arena.
       gate.
 - [ ] **`loom`/Miri memory-ordering audit (R-4) is green** before the parallel
       tier is trusted. *No data races, ever.*
+- [x] Current CAS memory-ordering audit precursor:
+      `ratchet-oracle::eval::validate_parallel_thunk_memory_ordering` exposes a
+      machine-checkable manifest for the safe L2 CAS state-word precursor and
+      the state-word implementation now uses the same named ordering constants.
+      The manifest pins acquire state loads, acquire-release claim CAS success,
+      acquire claim CAS failure, acquire-release awaited-marker CAS success,
+      acquire awaited-marker CAS failure, release terminal publication success,
+      and acquire terminal publication failure. Tests validate every audited
+      role, keep rationale text present, and continue to cover payload visibility
+      through the release-publish/acquire-load pairing. This is a CAS ordering
+      contract precursor only: it does not run loom, Miri, TSan, or ASan, model
+      all interleavings, replace the blocking wait-cell precursor with a
+      lock-free waiter list, verify scheduler park-token interactions, or
+      certify the parallel tier for production.
 
 **Decisions closed/measured.**
 
