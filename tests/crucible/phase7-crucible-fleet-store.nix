@@ -1,0 +1,304 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase7.crucibleFleetStore",
+  taskIds ? ["T-PKG-21"],
+  dependencies ? [],
+}: let
+  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
+  fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
+  rootDefault = builtins.readFile ../../default.nix;
+  defaultChecks = builtins.readFile ./default.nix;
+  gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+      {
+        label = "T-PKG-21 checklist complete";
+        needle = "- [x] **T-PKG-21**";
+      }
+      {
+        label = "T-PKG-21 completion note";
+        needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
+      }
+      {
+        label = "fleet store package name";
+        needle = "`pkgs.crucible-fleet-store`";
+      }
+      {
+        label = "distributed fleet surface name";
+        needle = "`checks.fleet.crucible-distributed-continuous-exploration`";
+      }
+    ]
+    ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+      {
+        label = "stale T-PKG-21 placeholder";
+        needle = "- [ ] **T-PKG-21**";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+      {
+        label = "shared store public type";
+        needle = "pub struct SharedDagStore";
+      }
+      {
+        label = "shared store dag implementation";
+        needle = "impl DagStore for SharedDagStore";
+      }
+      {
+        label = "shared store atomic publish";
+        needle = "fs::hard_link(&temp_path, &path)";
+      }
+      {
+        label = "shared store exclusive temp creation";
+        needle = ".create_new(true)";
+      }
+      {
+        label = "shared store idempotent publish conflict";
+        needle = "io::ErrorKind::AlreadyExists";
+      }
+      {
+        label = "shared store mismatch protection";
+        needle = "CasError::ContentMismatch";
+      }
+      {
+        label = "shared store identity test";
+        needle = "shared_store_identity_is_location_independent";
+      }
+      {
+        label = "shared store concurrent put test";
+        needle = "shared_store_concurrent_put_is_idempotent";
+      }
+      {
+        label = "shared store temp collision test";
+        needle = "shared_store_temp_creation_skips_existing_collision";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cas/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+      {
+        label = "fleet store binary name";
+        needle = "crucible-fleet-store";
+      }
+      {
+        label = "probe command";
+        needle = "\"probe\"";
+      }
+      {
+        label = "shared store backend";
+        needle = "SharedDagStore";
+      }
+      {
+        label = "DagStore interface output";
+        needle = "interface=DagStore::put,DagStore::get,DagStore::has";
+      }
+      {
+        label = "shared backend output";
+        needle = "backend=SharedDagStore";
+      }
+      {
+        label = "concurrent put output";
+        needle = "concurrent_put=idempotent";
+      }
+    ]
+    ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStorePackage [
+      {
+        label = "AOS package name";
+        needle = ''pname = "crucible-fleet-store";'';
+      }
+      {
+        label = "Cargo package builder";
+        needle = "mkCargoPackage";
+      }
+      {
+        label = "vendored Cargo dependencies";
+        needle = "fetchCargoDeps";
+      }
+      {
+        label = "crucible-cas binary build";
+        needle = ''cargoFlags = "-p crucible-cas --bin crucible-fleet-store";'';
+      }
+      {
+        label = "crucible-cas package tests";
+        needle = ''cargoTestFlags = "-p crucible-cas";'';
+      }
+      {
+        label = "explicit AOS grep dependency";
+        needle = "buildDeps = [grep];";
+      }
+      {
+        label = "source build marker";
+        needle = "aos_from_source=true";
+      }
+      {
+        label = "fleet visibility marker";
+        needle = "fleet_visible=true";
+      }
+    ]
+    ++ forbiddenFor "pkgs/tools/crucible-fleet-store.nix" fleetStorePackage [
+      {
+        label = "host tool pattern";
+        needle = "hostTools";
+      }
+      {
+        label = "nixpkgs import";
+        needle = "<nixpkgs>";
+      }
+      {
+        label = "env shebang";
+        needle = "/usr/bin/env";
+      }
+      {
+        label = "host shell path";
+        needle = "/bin/sh";
+      }
+      {
+        label = "host bash path";
+        needle = "/bin/bash";
+      }
+    ]
+    ++ failuresFor "default.nix" rootDefault [
+      {
+        label = "fleet store check surface";
+        needle = "crucible-distributed-continuous-exploration = let";
+      }
+      {
+        label = "fleet store package input";
+        needle = "fleetStore = pkgs.crucible-fleet-store;";
+      }
+      {
+        label = "explorer package input";
+        needle = "explorer = pkgs.crucible;";
+      }
+      {
+        label = "source check input";
+        needle = "fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;";
+      }
+      {
+        label = "fleet store probe";
+        needle = ''"''${fleetStore}/bin/crucible-fleet-store" probe "$probe_root"'';
+      }
+      {
+        label = "distributed search marker";
+        needle = "distributed_search_surface=enabled";
+      }
+      {
+        label = "continuous campaign marker";
+        needle = "continuous_campaign_surface=enabled";
+      }
+      {
+        label = "TCG-only marker";
+        needle = "tcg_only=true";
+      }
+      {
+        label = "no required system features marker";
+        needle = "required_system_features=none";
+      }
+      {
+        label = "no KVM marker";
+        needle = "kvm_required=false";
+      }
+    ]
+    ++ forbiddenFor "default.nix" rootDefault [
+      {
+        label = "KVM requirement on T-PKG-21 fleet surface";
+        needle = ''requiredSystemFeatures = [ "kvm" ]'';
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase7 fleet store check imported";
+        needle = "crucibleFleetStore = import ./phase7-crucible-fleet-store.nix";
+      }
+      {
+        label = "fleet equivalence raw gate waits for fleet store package";
+        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore];";
+      }
+      {
+        label = "fleet equivalence wrapper waits for fleet store package";
+        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore];";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase7-crucible-gate-ci-wiring.nix" gateCiWiring [
+      {
+        label = "CI wiring expects distributed fleet surface";
+        needle = "checks.fleet.crucible-distributed-continuous-exploration";
+      }
+      {
+        label = "CI wiring expects fleet store package";
+        needle = "pkgs.crucible-fleet-store";
+      }
+      {
+        label = "CI wiring expects TCG-only fleet store";
+        needle = "tcg_only=true";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase7 fleet store check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase7-fleet-store";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.coreutils] ++ dependencies;
+
+      phases = [
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<RESULT
+            PASS
+            check=${attrPath}
+            tasks=${builtins.concatStringsSep "," taskIds}
+            package=pkgs.crucible-fleet-store
+            fleet_check_surface=checks.fleet.crucible-distributed-continuous-exploration
+            dag_store_backend=SharedDagStore
+            explorer_closure=pkgs.crucible
+            distributed_search_surface=enabled
+            continuous_campaign_surface=enabled
+            tcg_only=true
+            required_system_features=none
+            kvm_required=false
+            RESULT
+          '';
+        }
+      ];
+    }

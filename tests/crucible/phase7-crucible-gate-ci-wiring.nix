@@ -155,9 +155,14 @@
       needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "fleet equivalence waits for e2e";
-      edge = "gate:e2e-determinism->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate];";
+      label = "fleet equivalence waits for e2e and fleet store";
+      edge = "gate:e2e-determinism+fleet-store->gate:fleet-equivalence";
+      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore];";
+    }
+    {
+      label = "fleet equivalence wrapper waits for e2e and fleet store";
+      edge = "gate:e2e-determinism-wrapper+fleet-store->gate:fleet-equivalence-wrapper";
+      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore];";
     }
     {
       label = "campaign continuity waits for fleet equivalence";
@@ -378,6 +383,42 @@
         label = "fleet checks exposed with Crucible e2e surface";
         needle = "fleet = discoverFleetTests // crucibleFleetChecks;";
       }
+      {
+        label = "distributed continuous exploration fleet wrapper defined";
+        needle = "crucible-distributed-continuous-exploration = let";
+      }
+      {
+        label = "distributed fleet wrapper consumes fleet store package";
+        needle = "fleetStore = pkgs.crucible-fleet-store;";
+      }
+      {
+        label = "distributed fleet wrapper consumes explorer package";
+        needle = "explorer = pkgs.crucible;";
+      }
+      {
+        label = "distributed fleet wrapper consumes source gate";
+        needle = "fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;";
+      }
+      {
+        label = "distributed fleet wrapper records TCG-only execution";
+        needle = "tcg_only=true";
+      }
+      {
+        label = "distributed fleet wrapper records no required system features";
+        needle = "required_system_features=none";
+      }
+      {
+        label = "distributed fleet wrapper records no KVM dependency";
+        needle = "kvm_required=false";
+      }
+      {
+        label = "distributed fleet wrapper records distributed search";
+        needle = "distributed_search_surface=enabled";
+      }
+      {
+        label = "distributed fleet wrapper records continuous campaign";
+        needle = "continuous_campaign_surface=enabled";
+      }
     ]
     ++ failuresFor "flake.nix" flake [
       {
@@ -389,6 +430,10 @@
       {
         label = "T-PKG-14 wiring guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleGateCiWiring";'';
+      }
+      {
+        label = "T-PKG-21 fleet store guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleFleetStore";'';
       }
       {
         label = "phase7 e2e gate import";
@@ -436,6 +481,14 @@
         label = "T-PKG-14 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleGateCiWiring`";
       }
+      {
+        label = "T-PKG-21 checklist complete";
+        needle = "- [x] **T-PKG-21**";
+      }
+      {
+        label = "T-PKG-21 completion note";
+        needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
+      }
     ];
 
   failures =
@@ -475,7 +528,7 @@ in
             ordering_edges=${builtins.concatStringsSep "," (map (edge: edge.edge) expectedOrderingEdges)}
             ci_ordering=green-before-advance
             qemu_package_checks=${builtins.concatStringsSep "," (map (gate: gate.packagePath) packageClassGates)}
-            fleet_check_surface=checks.fleet.crucible-e2e-determinism
+            fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';
         }

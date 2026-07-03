@@ -778,11 +778,25 @@ carries findings across an incompatible build.
     provenance fields and makes
     `checks.crucible.phase7.gates.e2eDeterminism` depend on the provenance check
     alongside the release manifest check.
-- [ ] **T-PKG-21** Build the fleet-visible content-addressed `DagStore` backend as
+- [x] **T-PKG-21** Build the fleet-visible content-addressed `DagStore` backend as
   an AOS from-source component and wire the distributed-search / continuous-campaign
   capability as a TCG-only AOS VM/fleet check (no `kvm` feature), building the
   fleet-store + explorer closure hermetically. — satisfies [PKG-43]; spec §26.11;
   cross-ref [`35-distributed-exploration.md`](35-distributed-exploration.md).
+  - Completed by `checks.crucible.phase7.crucibleFleetStore`: `crucible-cas`
+    now exports the fleet-visible `SharedDagStore` behind the existing
+    `DagStore::put`/`DagStore::get`/`DagStore::has` interface with
+    location-independent identities, exclusive temp creation, and idempotent
+    concurrent publish tests.
+    `pkgs.crucible-fleet-store` builds the probe binary from source with
+    `mkCargoPackage`/`fetchCargoDeps`, records `fleet_visible=true` and
+    `aos_from_source=true` in package metadata, and exercises the shared store in
+    `postInstall`. `checks.fleet.crucible-distributed-continuous-exploration`
+    builds both `pkgs.crucible-fleet-store` and the `pkgs.crucible` explorer
+    closure as hermetic inputs, runs the shared-store probe, and records
+    `tcg_only=true`, `required_system_features=none`, and `kvm_required=false`.
+    Campaign provenance lineage and cross-provenance corpus refusal remain
+    covered by T-PKG-22.
 - [ ] **T-PKG-22** Key campaigns to the provenance triple and refuse cross-provenance
   corpus reuse (a QEMU/patch-series/ABI bump starts a fresh campaign lineage,
   recorded as a baseline event), loudly rather than silently merging. — satisfies
