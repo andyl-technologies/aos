@@ -231,6 +231,12 @@ read_rr_cursor_snapshot(
     uint64_t *rr_cursor_position,
     uint64_t *rr_switch_quantum)
 {
+  /*
+   * qemu_plugin_rr_cursor() is the formal export consumed here. The QEMU patch
+   * stack backs it with qemu_plugin_crucible_rr_current_vcpu,
+   * qemu_plugin_crucible_rr_cursor_position, and
+   * qemu_plugin_crucible_rr_switch_quantum.
+   */
   struct qemu_plugin_rr_cursor cursor;
 
   if (qemu_plugin_rr_cursor(&cursor) != 0) {
