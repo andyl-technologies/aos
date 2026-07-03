@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use crucible_cas::{DagStore, SharedDagStore};
+use crucible_cas::{
+    ContentHash, DagStore, FrontierClaimRequest, SharedDagStore, SharedFrontier, SoftHashAffinity,
+};
 
 const PROBE_PAYLOAD: &[u8] = b"crucible-fleet-store-probe-v1";
 const CONCURRENT_WRITERS: usize = 16;
@@ -73,6 +75,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
             "shared store probe created duplicate concurrent objects",
         ));
     }
+    prove_frontier_claim_leases(&root.join("leases"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -85,6 +88,16 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("concurrent_put=idempotent");
     println!("concurrent_writers={CONCURRENT_WRITERS}");
     println!("object_file_count={object_file_count}");
+    println!("claim_lease=ttl-hint");
+    println!("claim_key=content-addressed");
+    println!("claim_path_excludes_host=true");
+    println!("expired_lease=reclaimable");
+    println!("stale_claim_lock=reclaimable");
+    println!("reclaimed_node_byte_identical=true");
+    println!("hash_affinity=priority-only");
+    println!("affinity_filters_frontier=false");
+    println!("static_partitioning=false");
+    println!("lease_ttl_ticks=5");
     Ok(())
 }
 
@@ -158,6 +171,120 @@ fn prove_concurrent_put_idempotent(
         ));
     }
     Ok(key)
+}
+
+fn prove_frontier_claim_leases(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let store = SharedDagStore::new(root.join("objects"));
+    let frontier = SharedFrontier::new(root.join("frontier"));
+    let node_a = store.put(b"frontier-lease-a")?;
+    let node_b = store.put(b"frontier-lease-b")?;
+    frontier.admit(&node_a)?;
+    frontier.admit(&node_b)?;
+
+    let without_affinity = frontier.ordered_claimable_nodes(100, &SoftHashAffinity::off())?;
+    let with_affinity =
+        frontier.ordered_claimable_nodes(100, &SoftHashAffinity::prefer([node_b]))?;
+    let mut without_set = without_affinity.clone();
+    without_set.sort();
+    let mut with_set = with_affinity.clone();
+    with_set.sort();
+    if with_set != without_set {
+        return Err(input_error("soft hash affinity filtered the frontier"));
+    }
+    if with_affinity.first().copied() != Some(node_b) {
+        return Err(input_error(
+            "soft hash affinity did not prioritize the preferred node",
+        ));
+    }
+
+    let preferred_lease = frontier
+        .claim_next(
+            &FrontierClaimRequest::new("host-a", 100, 5)
+                .with_affinity(SoftHashAffinity::prefer([node_b])),
+        )?
+        .ok_or_else(|| input_error("frontier lease probe did not claim preferred node"))?;
+    if preferred_lease.node != node_b {
+        return Err(input_error("frontier lease probe claimed the wrong node"));
+    }
+    let claim_path = frontier.claim_path(&node_b);
+    let claim_path_text = claim_path.to_string_lossy();
+    if claim_path_text.contains("host-a") || claim_path_text.contains("host-b") {
+        return Err(input_error("frontier claim path contains host metadata"));
+    }
+
+    let fallback_lease = frontier
+        .claim_next(
+            &FrontierClaimRequest::new("host-b", 101, 5)
+                .with_affinity(SoftHashAffinity::prefer([node_b])),
+        )?
+        .ok_or_else(|| input_error("affinity filtered non-preferred claimable node"))?;
+    if fallback_lease.node == node_b {
+        return Err(input_error("unexpired lease was treated as claimable"));
+    }
+
+    let reclaimed = frontier
+        .claim_next(
+            &FrontierClaimRequest::new("host-b", 105, 5)
+                .with_affinity(SoftHashAffinity::prefer([node_b])),
+        )?
+        .ok_or_else(|| input_error("expired frontier lease did not become claimable"))?;
+    if reclaimed.node != node_b {
+        return Err(input_error("expired lease did not reclaim the same node"));
+    }
+    if store.put(b"frontier-lease-b")? != node_b {
+        return Err(input_error(
+            "re-expanded frontier node did not dedup to the same content address",
+        ));
+    }
+
+    let node_c = store.put(b"frontier-lease-stale-lock")?;
+    let stale_frontier = SharedFrontier::new(root.join("stale-lock-frontier"));
+    stale_frontier.admit(&node_c)?;
+    let stale_lock_path = probe_content_path(&stale_frontier.root().join("claim-locks"), &node_c);
+    if let Some(parent) = stale_lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &stale_lock_path,
+        probe_claim_lock_record_material(&node_c, 200, 205),
+    )?;
+    if stale_frontier
+        .claim_next(&FrontierClaimRequest::new("host-c", 204, 5))?
+        .is_some()
+    {
+        return Err(input_error("unexpired claim lock was treated as stale"));
+    }
+    let stale_lock_reclaimed = stale_frontier
+        .claim_next(&FrontierClaimRequest::new("host-c", 205, 5))?
+        .ok_or_else(|| input_error("expired claim lock did not become reclaimable"))?;
+    if stale_lock_reclaimed.node != node_c {
+        return Err(input_error(
+            "expired claim lock reclaimed a different frontier node",
+        ));
+    }
+
+    Ok(())
+}
+
+fn probe_content_path(root: &Path, node: &ContentHash) -> PathBuf {
+    let hex = node.to_hex();
+    root.join(&hex[0..2]).join(hex)
+}
+
+fn probe_claim_lock_record_material(
+    node: &ContentHash,
+    acquired_at_tick: u64,
+    expires_at_tick: u64,
+) -> String {
+    format!(
+        "format=crucible.frontier-claim-lock.v1\nnode={}\nacquired_at_tick={acquired_at_tick}\nexpires_at_tick={expires_at_tick}\n",
+        node.to_hex()
+    )
 }
 
 fn count_regular_files_named(root: &Path, file_name: &str) -> Result<usize, io::Error> {

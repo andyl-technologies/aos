@@ -155,14 +155,14 @@
       needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "fleet equivalence waits for e2e, fleet store, shared DagStore, and seam proof";
-      edge = "gate:e2e-determinism+fleet-store+shared-dag-store+same-seam->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
+      edge = "gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence";
+      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, and seam proof";
-      edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+same-seam->gate:fleet-equivalence-wrapper";
-      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
+      edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence-wrapper";
+      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "campaign continuity waits for fleet equivalence and campaign provenance";
@@ -413,6 +413,10 @@
         needle = "sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;";
       }
       {
+        label = "distributed fleet wrapper consumes frontier lease gate";
+        needle = "frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;";
+      }
+      {
         label = "distributed fleet wrapper records TCG-only execution";
         needle = "tcg_only=true";
       }
@@ -574,6 +578,7 @@ in
             ci_ordering=green-before-advance
             qemu_package_checks=${builtins.concatStringsSep "," (map (gate: gate.packagePath) packageClassGates)}
             shared_dag_store_source=checks.crucible.phase7.crucibleSharedDagStore
+            frontier_lease_source=checks.crucible.phase7.crucibleFrontierLeases
             fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';

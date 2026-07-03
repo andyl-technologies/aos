@@ -963,13 +963,24 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     publication from 16 concurrent writers with a single final object. The
     TCG-only `checks.fleet.crucible-distributed-continuous-exploration` surface
     consumes this source proof plus the AOS-built `pkgs.crucible-fleet-store`
-    package; CLAIM/LEASE scheduling, four-layer dedup, and full
-    `gate:fleet-equivalence` execution remain T-DCE-2, T-DCE-3, and T-DCE-8.
-- [ ] **T-DCE-2** Implement content-addressed CLAIM/LEASE work-stealing over the
+    package; four-layer dedup and full `gate:fleet-equivalence` execution remain
+    T-DCE-3 and T-DCE-8.
+- [x] **T-DCE-2** Implement content-addressed CLAIM/LEASE work-stealing over the
   shared frontier (TTL leases, not static partitioning; lost/expired claim
   re-expands to a byte-identical deduped node), with soft hash-affinity as a
   cache-warmth hint only. — satisfies [DCE-5], [DCE-6], [DCE-7]; spec §35.2.2,
   §35.2.3; cross-ref 22 §22.5, 07 §9.
+  - Completed by `checks.crucible.phase7.crucibleFrontierLeases`: `crucible-cas`
+    now exposes `SharedFrontier`, `FrontierClaimRequest`, `FrontierLease`, and
+    `SoftHashAffinity`. Frontier membership and claim paths are keyed only by the
+    frontier node content address; host id and expiry live only inside TTL claim
+    records. The packaged `crucible-fleet-store probe` admits shared frontier
+    nodes, proves affinity reorders the claimable set without filtering it,
+    records a TTL lease, falls back to another claimable node instead of static
+    partitioning, reclaims both an expired node lease and an abandoned claim-lock
+    sidecar, then re-puts the same bytes through `SharedDagStore` to prove
+    byte-identical dedup. Full fleet search equivalence and divergence localization
+    remain T-DCE-8.
 - [ ] **T-DCE-3** Implement the four dedup layers (exists()-gated expansion, shared
   coverage-map compare-and-merge admission, symmetry/partial-order reduction over
   shared fingerprints, claim-set anti-redundancy). — satisfies [DCE-8]; spec
