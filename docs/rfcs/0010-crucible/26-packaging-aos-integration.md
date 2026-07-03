@@ -593,10 +593,22 @@ carries findings across an incompatible build.
     `qemu-crucible-dev` variant is present yet, and the diagnostic surface stays
     absent unless a future explicit dev-only package adds an opt-in `diag=`
     guard and its own inertness evidence.
-- [ ] **T-PKG-7** Package `crucible-qemu-plugin` as an AOS `mkCargoPackage`
+- [x] **T-PKG-7** Package `crucible-qemu-plugin` as an AOS `mkCargoPackage`
   cdylib built against the same pinned plugin-API headers, co-located with
   `qemu-crucible`, embedding plugin-ABI + shmem-ABI versions. — satisfies [PKG-17],
   [PKG-18]; spec §26.4.
+  - Completed by `checks.crucible.phase7.crucibleQemuPluginPackage`: the phase7
+    gate statically verifies that `pkgs.crucible-qemu-plugin` is defined with
+    AOS `mkCargoPackage`/`fetchCargoDeps`, builds the `crucible-qemu-plugin`
+    cdylib against `qemu-crucible`, probes the matched `qemu-plugin.h` header
+    and QEMU plugin API version during the package build, installs both the
+    canonical library and QEMU plugin search-path entry, and emits
+    `nix-support/crucible-qemu-plugin-build-info` with the matched QEMU build
+    identity, QEMU plugin API version/ABI label, shmem ABI version/label, and
+    CLI compatibility plugin ABI marker. It also verifies that `pkgs.crucible`
+    carries matched AOS QEMU/plugin runtime hints and that
+    `checks.crucible.phase1.aosWorkspaceBuild` is the package-output smoke
+    verifier for the built `.so`, QEMU plugin path, and ABI metadata.
 - [x] **T-PKG-8** Package the `crucible` workspace + CLI with `mkCargoPackage` /
   `fetchCargoDeps`, vendored deps, `--workspace` tests (L0/L1 + double tests). —
   satisfies [PKG-19]; spec §26.5.
