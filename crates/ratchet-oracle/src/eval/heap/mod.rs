@@ -1648,7 +1648,7 @@ pub enum EvalHeapError {
     },
     /// A copied heap-field write targets a field kind that is not record-owned.
     #[error(
-        "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not a record-owned list or attrset field",
+        "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not a record-owned list, attrset, or primop-argument field",
         writeback_object = writeback_object.address_bits()
     )]
     CollectorPollCopiedHeapFieldWriteUnsupportedSource {
@@ -1661,7 +1661,7 @@ pub enum EvalHeapError {
     },
     /// A direct heap-field write targets a field kind that is not record-owned.
     #[error(
-        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not an old-generation record-owned list or attrset field",
+        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not an old-generation record-owned list, attrset, or primop-argument field",
         writeback_object = writeback_object.address_bits()
     )]
     CollectorPollDirectHeapFieldWriteUnsupportedSource {

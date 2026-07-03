@@ -15,6 +15,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use super::*;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
@@ -3221,8 +3222,8 @@ impl AllocationCollectorPollCopiedHeapFieldWrite {
 /// direct writer accepts only promoted-old replacement destinations; the
 /// combined card-table-aware writer additionally accepts copied-young
 /// replacement destinations after staging a remembered-set/card-table update.
-/// Permanent shared records, captured environment fields, primop fields, and
-/// thunk fields remain outside this direct writer.
+/// Permanent shared records, captured environment fields, and thunk fields
+/// remain outside this direct writer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationCollectorPollDirectHeapFieldWrite {
     allocation_domain: HeapAllocationDomain,
@@ -6149,6 +6150,11 @@ fn validate_copied_heap_field_write_object_source(
                 ..
             },
         ) if shape == expected_shape => Ok(()),
+        (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
+            if *index < primop.args().len() =>
+        {
+            Ok(())
+        }
         _ => Err(
             EvalHeapError::CollectorPollCopiedHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6172,6 +6178,11 @@ fn validate_direct_heap_field_write_object_source(
                 ..
             },
         ) if shape == expected_shape => Ok(()),
+        (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
+            if *index < primop.args().len() =>
+        {
+            Ok(())
+        }
         _ => Err(
             EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6242,6 +6253,18 @@ fn record_owned_heap_field_write_object(
                 attrs,
             })
             .map_err(RecordOwnedHeapFieldWriteObjectError::Attr),
+        (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index }) => {
+            let mut args = primop.args().to_vec();
+            let Some(arg) = args.get_mut(*index) else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            *arg = EvalPrimOpArg::new_in_module(arg.module(), arg.id(), arg.span(), replacement);
+            Ok(HeapObjectValue::Primop(Rc::new(EvalPrimOp {
+                builtin: primop.builtin(),
+                symbol: primop.symbol(),
+                args,
+            })))
+        }
         _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
     }
 }

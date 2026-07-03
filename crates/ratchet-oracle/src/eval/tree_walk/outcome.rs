@@ -9294,15 +9294,15 @@ impl EvalOutcome {
     /// [`EvalHeap::apply_collector_poll_minor_gc_object_body_writes`], and their
     /// destination generations must already be installed. It revalidates the
     /// combined copied/direct object-copy request set before staging any record
-    /// mutation. The applicator rewrites only record-owned list elements and
-    /// attrset bindings. Direct old-to-young write barriers are staged against
-    /// cloned outcome-owned remembered/card side tables before live side-table
-    /// publication and heap mutation. Copied destinations still assume unaliased
+    /// mutation. The applicator rewrites only record-owned list elements,
+    /// attrset bindings, and primop arguments. Direct old-to-young write
+    /// barriers are staged against cloned outcome-owned remembered/card side
+    /// tables before live side-table publication and heap mutation. Copied
+    /// destinations still assume unaliased
     /// collector-owned scratch records because the side table cannot prove
     /// semispace ownership yet. Permanent shared in-place writes, direct
-    /// permanent-to-young writes, captured environment fields, primop fields,
-    /// thunk fields, ABI headers, semispace storage, and Tier-B dispatch remain
-    /// unsupported.
+    /// permanent-to-young writes, captured environment fields, thunk fields, ABI
+    /// headers, semispace storage, and Tier-B dispatch remain unsupported.
     ///
     /// # Errors
     ///
@@ -9312,7 +9312,7 @@ impl EvalOutcome {
     /// old-to-young replacement, if a copied writeback or replacement
     /// body/generation is not already bound, if the field no longer contains
     /// the expected from-space value, or if the field source is not a
-    /// record-owned list element or attrset binding.
+    /// record-owned list element, attrset binding, or primop argument.
     pub fn apply_gc_stress_boundary_minor_gc_heap_field_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {

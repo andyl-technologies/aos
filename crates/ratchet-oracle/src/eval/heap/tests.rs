@@ -5042,6 +5042,93 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() 
 }
 
 #[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![EvalPrimOpArg::new(IrId::new(7), Span::new(9, 12), child)],
+        ))
+        .expect("parent primop allocates");
+    let parent_destination = heap
+        .alloc_primop(EvalPrimOp::new(symbol))
+        .expect("parent destination primop allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        child_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        gc_address(parent_destination),
+        0,
+        HeapEdgeSource::PrimopArgument { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+        parent_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
+        .expect("copied primop argument write applies");
+
+    assert_eq!(report.fields(), 1);
+    let primop = heap
+        .get_primop(parent_destination)
+        .expect("destination primop remains typed");
+    assert_eq!(primop.builtin(), Some(builtin));
+    assert_eq!(primop.symbol(), symbol);
+    assert_eq!(primop.args().len(), 1);
+    assert_eq!(primop.args()[0].id(), IrId::new(7));
+    assert_eq!(primop.args()[0].span(), Span::new(9, 12));
+    assert!(primop.args()[0].value().raw_eq(child_destination));
+}
+
+#[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let child = heap
@@ -5179,6 +5266,82 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_attr_fields() {
             .expect("rewritten binding exists")
             .raw_eq(child_destination)
     );
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![EvalPrimOpArg::new(IrId::new(7), Span::new(9, 12), child)],
+        ))
+        .expect("parent primop allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::PrimopArgument { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct old primop argument write applies");
+
+    assert_eq!(report.fields(), 1);
+    let primop = heap
+        .get_primop(parent)
+        .expect("parent primop remains typed");
+    assert_eq!(primop.builtin(), Some(builtin));
+    assert_eq!(primop.symbol(), symbol);
+    assert_eq!(primop.args().len(), 1);
+    assert_eq!(primop.args()[0].id(), IrId::new(7));
+    assert_eq!(primop.args()[0].span(), Span::new(9, 12));
+    assert!(primop.args()[0].value().raw_eq(child_destination));
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
 }
 
 #[test]
