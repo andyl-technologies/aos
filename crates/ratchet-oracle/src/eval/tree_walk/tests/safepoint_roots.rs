@@ -1226,6 +1226,69 @@ fn typed_reference_writeback_plan_rejects_stale_heap_field_before_root_buffer_mu
 }
 
 #[test]
+fn reference_writebacks_to_safepoint_buffers_reject_stale_live_heap_field() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (mut evaluator, child, parent, poll, value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(child, HeapAllocationDomain::PermanentShared)
+        .expect("test can stale the live field generation");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_buffers(&plan, &value_stack)
+        .expect_err("stale live heap-field slot rejects buffer application");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Heap(
+            EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                index: 4,
+                expected: ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Young,
+                },
+                actual: ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Permanent,
+                },
+            },
+        )
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     let nursery_base = static_gc_address(0x1000_0000);
     let (evaluator, child, parent, poll, value_stack) =

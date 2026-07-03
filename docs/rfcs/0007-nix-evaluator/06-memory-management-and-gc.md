@@ -2427,11 +2427,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
       now prevalidate and apply the complete root+heap-field partition to
-      caller-owned typed root buffers plus heap-field metadata buffers before a
-      future live writer binds those buffers to evaluator storage. Tests cover
-      the poll-derived all-root rewrite, direct stale-poll rejection before
-      mutation in the planning wrapper, root-only applicator, and buffer
-      applicator, stale typed-root and heap-field buffer rejection before either
+      caller-owned typed root buffers plus live heap-field buffers read from
+      current typed heap fields before a future live writer binds those buffers
+      to evaluator storage. Tests cover the poll-derived all-root rewrite,
+      direct stale-poll rejection before mutation in the planning wrapper,
+      root-only applicator, and buffer applicator, stale typed-root,
+      heap-field metadata, and live heap-field buffer rejection before either
       buffer partition is rewritten, complete mixed root/field partition
       reporting down to the remembered list-field
       owner/source/replacement, mixed root/heap-field buffer application, and

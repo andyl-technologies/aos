@@ -5632,6 +5632,50 @@ impl EvalHeap {
         ))
     }
 
+    /// Reads current heap-field values for a derived writeback plan.
+    ///
+    /// The returned slots preserve the plan's writeback order and copied field
+    /// labels, but their values come from the current typed heap side table. This
+    /// lets higher-level safepoint bridges validate caller-owned heap-field
+    /// buffers immediately before applying reference writebacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if slot storage cannot be reserved, if a saved
+    /// field object no longer belongs to the heap, if a saved field index or
+    /// label is stale, or if the current field value cannot be classified.
+    pub fn collector_poll_minor_gc_heap_field_writeback_slots(
+        &self,
+        plan: &AllocationCollectorPollHeapFieldWritebackPlan,
+    ) -> Result<Vec<AllocationCollectorPollHeapFieldWritebackSlot>, EvalHeapError> {
+        let writebacks = plan.writebacks();
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(writebacks.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                entries: writebacks.len(),
+            }
+        })?;
+
+        for writeback in writebacks {
+            let value = self.current_heap_field_reference_value_at(
+                writeback.slot(),
+                writeback.validation_object(),
+                writeback.field_index(),
+                writeback.source(),
+            )?;
+            slots.push(AllocationCollectorPollHeapFieldWritebackSlot::new(
+                writeback.validation_object(),
+                writeback.writeback_object(),
+                writeback.field_index(),
+                writeback.source().clone(),
+                value,
+            ));
+        }
+
+        Ok(slots)
+    }
+
     /// Derives all root-backed and heap-field-backed reference writebacks.
     ///
     /// This composes [`AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan`]
