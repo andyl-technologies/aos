@@ -5918,6 +5918,23 @@ and helps the oracle directly.
       mutation, live heap-object byte binding, real ABI object-header forwarding
       writes, remembered-source field mutation, and Tier-B dispatch remain
       open.
+- [x] Current boundary live object-generation write-plan bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_object_generation_write_plan`
+      validates installed live object-generation metadata against installed
+      destination-byte snapshots, rejects object-generation records without
+      destination snapshots, rejects destination snapshots without
+      object-generation records, rejects stale request/generation/action
+      metadata, rejects duplicate source/destination identities, and returns
+      immutable source/destination/action/generation/request/payload records
+      that a later heap-record generation writer would consume. Empty
+      boundaries return an empty plan. Unit tests cover coherent all-in-one live
+      metadata, direct copied/promoted plan generation, empty plans,
+      missing-side rejection in both directions, stale destination metadata,
+      duplicate source/destination rejection, malformed request metadata, and
+      malformed destination payload rejection. This remains write planning only:
+      it does not mutate heap-record generations, bind destination bytes to
+      heap-object bodies, manage semispaces, mutate roots/fields, write ABI
+      object headers, or invoke Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -6620,6 +6637,11 @@ and helps the oracle directly.
       destination-to-generation binding metadata for the outcome-owned live
       object-generation side-table bridge without mutating evaluator heap
       records.
+      `EvalOutcome::gc_stress_boundary_minor_gc_object_generation_write_plan`
+      then validates that installed live object-generation metadata and
+      installed destination-byte snapshots are exact mirrors before producing
+      immutable source/destination/action/generation/request/payload records
+      for a future heap-record generation writer.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without

@@ -32,6 +32,10 @@ const BOUNDARY_MINOR_GC_LIVE_OBJECT_GENERATIONS_TABLE: &str =
     "boundary minor-GC live object generations";
 const BOUNDARY_MINOR_GC_DESTINATION_OBJECT_GENERATION_BINDINGS_TABLE: &str =
     "boundary minor-GC destination object-generation bindings";
+const BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITES_TABLE: &str =
+    "boundary minor-GC object-generation writes";
+const BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITE_BYTES_TABLE: &str =
+    "boundary minor-GC object-generation write bytes";
 const BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE: &str =
     "boundary minor-GC forwarding destination bindings";
 const BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITES_TABLE: &str =
@@ -1416,6 +1420,160 @@ impl EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding {
     }
 }
 
+/// Counts for a live object-generation write plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcObjectGenerationWritePlanReport {
+    objects: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    payload_bytes: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcObjectGenerationWritePlanReport {
+    fn record(&mut self, write: &EvalGcStressBoundaryMinorGcObjectGenerationWrite) {
+        self.objects = self.objects.saturating_add(1);
+        self.payload_bytes = self
+            .payload_bytes
+            .saturating_add(write.destination_bytes().len());
+        match write.action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns how many object-generation fields would be written.
+    pub const fn objects(self) -> usize {
+        self.objects
+    }
+
+    /// Returns how many planned generation writes target next-nursery objects.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many planned generation writes target old objects.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the total destination payload bytes covered by the plan.
+    pub const fn payload_bytes(self) -> usize {
+        self.payload_bytes
+    }
+}
+
+/// One validated live object-generation write input.
+///
+/// This is an immutable write plan for a future heap-record generation writer.
+/// It proves that installed live object-generation metadata still matches an
+/// installed destination-byte snapshot and carries the payload metadata needed
+/// by the eventual writer, but it does not mutate heap records or semispace
+/// ownership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcObjectGenerationWrite {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    action: MinorGcSurvivorAction,
+    generation: HeapGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcObjectGenerationWrite {
+    fn from_generation_and_binding(
+        generation: &EvalGcStressBoundaryMinorGcLiveObjectGeneration,
+        binding: &EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding,
+    ) -> Result<Self, EvalHeapError> {
+        Ok(Self {
+            source: generation.source(),
+            destination: generation.destination(),
+            action: generation.action(),
+            generation: generation.generation(),
+            request: generation.request(),
+            destination_bytes: clone_boundary_destination_storage_bytes(
+                BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITE_BYTES_TABLE,
+                binding.destination_bytes(),
+            )?,
+        })
+    }
+
+    /// Returns the from-space survivor source object.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object address whose generation would be written.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns whether this destination keeps the object young or promotes it.
+    pub const fn action(&self) -> MinorGcSurvivorAction {
+        self.action
+    }
+
+    /// Returns the generation that would be written to the destination object.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the object-copy request associated with this generation write.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the installed destination payload bytes covered by this write.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
+/// A validated live object-generation write plan.
+///
+/// The plan is derived from installed live object-generation metadata and
+/// installed destination-byte snapshots. It is a checked input set for a future
+/// heap-record generation writer; creating it does not write heap records, copy
+/// object bodies, or change semispace ownership.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcObjectGenerationWritePlan {
+    report: EvalGcStressBoundaryMinorGcObjectGenerationWritePlanReport,
+    writes: Vec<EvalGcStressBoundaryMinorGcObjectGenerationWrite>,
+}
+
+impl EvalGcStressBoundaryMinorGcObjectGenerationWritePlan {
+    fn new(writes: Vec<EvalGcStressBoundaryMinorGcObjectGenerationWrite>) -> Self {
+        let mut report = EvalGcStressBoundaryMinorGcObjectGenerationWritePlanReport::default();
+        for write in &writes {
+            report.record(write);
+        }
+        Self { report, writes }
+    }
+
+    /// Returns whether this plan has no object-generation writes.
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+    }
+
+    /// Returns how many object-generation writes are planned.
+    pub fn len(&self) -> usize {
+        self.writes.len()
+    }
+
+    /// Returns aggregate counts for the plan.
+    pub const fn report(&self) -> EvalGcStressBoundaryMinorGcObjectGenerationWritePlanReport {
+        self.report
+    }
+
+    /// Returns the planned live object-generation writes.
+    pub fn writes(&self) -> &[EvalGcStressBoundaryMinorGcObjectGenerationWrite] {
+        &self.writes
+    }
+}
+
 /// A forwarding value matched to an installed destination-byte snapshot.
 ///
 /// The binding is validation metadata for a future ABI object-header writer. It
@@ -2599,6 +2757,195 @@ fn boundary_minor_gc_destination_object_generation_bindings_from_objects(
     }
 
     Ok(bindings)
+}
+
+fn boundary_minor_gc_object_generation_write_plan(
+    destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
+    live_object_generations: &EvalGcStressBoundaryMinorGcLiveObjectGenerations,
+) -> Result<EvalGcStressBoundaryMinorGcObjectGenerationWritePlan, EvalHeapError> {
+    let bindings = boundary_minor_gc_destination_object_generation_bindings(destination_storage)?;
+    let generations = live_object_generations.object_generations();
+    validate_boundary_minor_gc_object_generation_write_generations(generations)?;
+    validate_boundary_minor_gc_object_generation_write_bindings(&bindings)?;
+
+    let mut writes = Vec::new();
+    writes.try_reserve_exact(generations.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITES_TABLE,
+            entries: generations.len(),
+        }
+    })?;
+
+    for generation in generations {
+        let Some(binding) = bindings
+            .iter()
+            .find(|binding| binding.source() == generation.source())
+        else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteMissingDestination {
+                    source_address: generation.source(),
+                    destination: generation.destination(),
+                    action: generation.action(),
+                    generation: generation.generation(),
+                },
+            );
+        };
+
+        if !object_generation_write_generation_matches_binding(generation, binding) {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteBindingMismatch {
+                    source_address: generation.source(),
+                    expected: generation.request(),
+                    expected_generation: generation.generation(),
+                    actual: binding.request(),
+                    actual_generation: binding.generation(),
+                },
+            );
+        }
+
+        writes.push(
+            EvalGcStressBoundaryMinorGcObjectGenerationWrite::from_generation_and_binding(
+                generation, binding,
+            )?,
+        );
+    }
+
+    for binding in &bindings {
+        if !writes
+            .iter()
+            .any(|write| object_generation_write_matches_binding(write, binding))
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteUnboundDestination {
+                    source_address: binding.source(),
+                    destination: binding.destination(),
+                    action: binding.action(),
+                    generation: binding.generation(),
+                },
+            );
+        }
+    }
+
+    Ok(EvalGcStressBoundaryMinorGcObjectGenerationWritePlan::new(
+        writes,
+    ))
+}
+
+fn validate_boundary_minor_gc_object_generation_write_generations(
+    generations: &[EvalGcStressBoundaryMinorGcLiveObjectGeneration],
+) -> Result<(), EvalHeapError> {
+    for (index, generation) in generations.iter().enumerate() {
+        if generations[..index]
+            .iter()
+            .any(|existing| existing.source() == generation.source())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateSource {
+                    index,
+                    source_address: generation.source(),
+                },
+            );
+        }
+        if let Some(existing) = generations[..index]
+            .iter()
+            .find(|existing| existing.destination() == generation.destination())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateDestination {
+                    index,
+                    source_address: generation.source(),
+                    existing_source_address: existing.source(),
+                    destination: generation.destination(),
+                },
+            );
+        }
+
+        let request = generation.request();
+        if request.source() != generation.source() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestSourceMismatch {
+                    source_address: generation.source(),
+                    request_source: request.source(),
+                },
+            );
+        }
+        if request.destination() != generation.destination() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestDestinationMismatch {
+                    source_address: generation.source(),
+                    generation_destination: generation.destination(),
+                    request_destination: request.destination(),
+                },
+            );
+        }
+        if request.action() != generation.action() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestActionMismatch {
+                    source_address: generation.source(),
+                    destination: generation.destination(),
+                    generation_action: generation.action(),
+                    request_action: request.action(),
+                },
+            );
+        }
+
+        let expected_generation = validated_destination_request_generation(request)?;
+        if generation.generation() != expected_generation {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteGenerationMismatch {
+                    source_address: generation.source(),
+                    destination: generation.destination(),
+                    expected: expected_generation,
+                    actual: generation.generation(),
+                    action: request.action(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_boundary_minor_gc_object_generation_write_bindings(
+    bindings: &[EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding],
+) -> Result<(), EvalHeapError> {
+    for (index, binding) in bindings.iter().enumerate() {
+        if bindings[..index]
+            .iter()
+            .any(|existing| existing.source() == binding.source())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateDestinationSource {
+                    index,
+                    source_address: binding.source(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn object_generation_write_generation_matches_binding(
+    generation: &EvalGcStressBoundaryMinorGcLiveObjectGeneration,
+    binding: &EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding,
+) -> bool {
+    generation.source() == binding.source()
+        && generation.destination() == binding.destination()
+        && generation.action() == binding.action()
+        && generation.generation() == binding.generation()
+        && generation.request() == binding.request()
+}
+
+fn object_generation_write_matches_binding(
+    write: &EvalGcStressBoundaryMinorGcObjectGenerationWrite,
+    binding: &EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding,
+) -> bool {
+    write.source() == binding.source()
+        && write.destination() == binding.destination()
+        && write.action() == binding.action()
+        && write.generation() == binding.generation()
+        && write.request() == binding.request()
 }
 
 fn validate_boundary_minor_gc_destination_generation_objects(
@@ -4574,6 +4921,576 @@ mod destination_object_generation_binding_tests {
             } if destination == request.destination()
         ));
         assert!(destination_storage.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod object_generation_write_plan_tests {
+    use super::*;
+
+    fn address(bits: usize) -> GcHeapAddress {
+        GcHeapAddress::new(bits).expect("test address is non-zero")
+    }
+
+    fn request(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+    ) -> AllocationCollectorPollObjectByteCopyRequest {
+        request_with_parts(
+            source,
+            destination,
+            action,
+            generation_for_destination_action(action),
+            4,
+        )
+    }
+
+    fn request_with_parts(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+        destination_generation: HeapGeneration,
+        size_bytes: usize,
+    ) -> AllocationCollectorPollObjectByteCopyRequest {
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            source,
+            destination,
+            action,
+            destination_generation,
+            size_bytes,
+            8,
+        )
+    }
+
+    fn object_bytes(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes {
+        EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes::new(request, destination_bytes)
+    }
+
+    fn destination_storage(
+        object_bytes: Vec<EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes>,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+        let install_report = live_destination_storage_install_report(&object_bytes);
+        EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+            install_report,
+            object_bytes,
+        }
+    }
+
+    fn object_generation(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGeneration {
+        EvalGcStressBoundaryMinorGcLiveObjectGeneration::new(
+            request.source(),
+            request.destination(),
+            request.action(),
+            generation_for_destination_action(request.action()),
+            request,
+        )
+    }
+
+    fn object_generation_with_parts(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+        generation: HeapGeneration,
+        request: AllocationCollectorPollObjectByteCopyRequest,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGeneration {
+        EvalGcStressBoundaryMinorGcLiveObjectGeneration::new(
+            source,
+            destination,
+            action,
+            generation,
+            request,
+        )
+    }
+
+    fn live_object_generations(
+        object_generations: Vec<EvalGcStressBoundaryMinorGcLiveObjectGeneration>,
+    ) -> EvalGcStressBoundaryMinorGcLiveObjectGenerations {
+        let install_report = live_object_generation_install_report(&object_generations);
+        EvalGcStressBoundaryMinorGcLiveObjectGenerations {
+            install_report,
+            object_generations,
+        }
+    }
+
+    #[test]
+    fn plans_object_generation_writes_from_installed_live_metadata() {
+        let copied_request = request(
+            address(0x1000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let promoted_request = request(
+            address(0x3000),
+            address(0x4000),
+            MinorGcSurvivorAction::PromoteToOld,
+        );
+        let copied_bytes = vec![1, 2, 3, 4];
+        let promoted_bytes = vec![5, 6, 7, 8];
+        let destination_storage = destination_storage(vec![
+            object_bytes(copied_request, copied_bytes.clone()),
+            object_bytes(promoted_request, promoted_bytes.clone()),
+        ]);
+        let object_generations = live_object_generations(vec![
+            object_generation(copied_request),
+            object_generation(promoted_request),
+        ]);
+
+        let write_plan = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect("object-generation write plan validates");
+
+        assert_eq!(write_plan.len(), 2);
+        assert_eq!(write_plan.report().objects(), 2);
+        assert_eq!(write_plan.report().copied_to_nursery(), 1);
+        assert_eq!(write_plan.report().promoted_to_old(), 1);
+        assert_eq!(write_plan.report().payload_bytes(), 8);
+        assert_eq!(write_plan.writes()[0].source(), copied_request.source());
+        assert_eq!(
+            write_plan.writes()[0].destination(),
+            copied_request.destination()
+        );
+        assert_eq!(
+            write_plan.writes()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(write_plan.writes()[0].generation(), HeapGeneration::Young);
+        assert_eq!(write_plan.writes()[0].request(), copied_request);
+        assert_eq!(write_plan.writes()[0].destination_bytes(), copied_bytes);
+        assert_eq!(write_plan.writes()[1].source(), promoted_request.source());
+        assert_eq!(
+            write_plan.writes()[1].destination(),
+            promoted_request.destination()
+        );
+        assert_eq!(
+            write_plan.writes()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(write_plan.writes()[1].generation(), HeapGeneration::Old);
+        assert_eq!(write_plan.writes()[1].request(), promoted_request);
+        assert_eq!(write_plan.writes()[1].destination_bytes(), promoted_bytes);
+    }
+
+    #[test]
+    fn plans_empty_object_generation_writes_when_no_metadata_is_installed() {
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(Vec::new());
+
+        let write_plan = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect("empty object-generation write plan validates");
+
+        assert!(write_plan.is_empty());
+        assert_eq!(write_plan.report().objects(), 0);
+        assert_eq!(write_plan.report().payload_bytes(), 0);
+    }
+
+    #[test]
+    fn rejects_object_generation_without_destination_snapshot() {
+        let copied_request = request(
+            address(0x1000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(vec![object_generation(copied_request)]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("object generation without destination bytes is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteMissingDestination {
+                source_address,
+                destination,
+                action: MinorGcSurvivorAction::CopyToNursery,
+                generation: HeapGeneration::Young,
+            } if source_address == copied_request.source()
+                && destination == copied_request.destination()
+        ));
+    }
+
+    #[test]
+    fn rejects_destination_snapshot_without_object_generation() {
+        let copied_request = request(
+            address(0x1000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage =
+            destination_storage(vec![object_bytes(copied_request, vec![1, 2, 3, 4])]);
+        let object_generations = live_object_generations(Vec::new());
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("destination bytes without object generation are rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteUnboundDestination {
+                source_address,
+                destination,
+                action: MinorGcSurvivorAction::CopyToNursery,
+                generation: HeapGeneration::Young,
+            } if source_address == copied_request.source()
+                && destination == copied_request.destination()
+        ));
+    }
+
+    #[test]
+    fn rejects_stale_destination_snapshot_for_object_generation() {
+        let source = address(0x1000);
+        let installed_request = request(
+            source,
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let current_request = request(
+            source,
+            address(0x3000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage =
+            destination_storage(vec![object_bytes(installed_request, vec![1, 2, 3, 4])]);
+        let object_generations = live_object_generations(vec![object_generation(current_request)]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("stale destination snapshot is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteBindingMismatch {
+                source_address,
+                expected,
+                expected_generation: HeapGeneration::Young,
+                actual,
+                actual_generation: HeapGeneration::Young,
+            } if source_address == source
+                && expected == current_request
+                && actual == installed_request
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_object_generation_source() {
+        let source = address(0x1000);
+        let first = request(
+            source,
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let second = request(
+            source,
+            address(0x3000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations =
+            live_object_generations(vec![object_generation(first), object_generation(second)]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("duplicate object-generation source is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateSource {
+                index: 1,
+                source_address,
+            } if source_address == source
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_object_generation_destination() {
+        let destination = address(0x2000);
+        let first = request(
+            address(0x1000),
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let second = request(
+            address(0x3000),
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations =
+            live_object_generations(vec![object_generation(first), object_generation(second)]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("duplicate object-generation destination is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateDestination {
+                index: 1,
+                source_address,
+                existing_source_address,
+                destination: duplicate_destination,
+            } if source_address == second.source()
+                && existing_source_address == first.source()
+                && duplicate_destination == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_destination_snapshot_source() {
+        let source = address(0x1000);
+        let first = request(
+            source,
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let second = request(
+            source,
+            address(0x3000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage = destination_storage(vec![
+            object_bytes(first, vec![1, 2, 3, 4]),
+            object_bytes(second, vec![5, 6, 7, 8]),
+        ]);
+        let object_generations = live_object_generations(Vec::new());
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("duplicate destination snapshot source is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteDuplicateDestinationSource {
+                index: 1,
+                source_address,
+            } if source_address == source
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_destination_snapshot_destination() {
+        let destination = address(0x2000);
+        let first = request(
+            address(0x1000),
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let second = request(
+            address(0x3000),
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let destination_storage = destination_storage(vec![
+            object_bytes(first, vec![1, 2, 3, 4]),
+            object_bytes(second, vec![5, 6, 7, 8]),
+        ]);
+        let object_generations = live_object_generations(Vec::new());
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("duplicate destination snapshot address is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcLiveDestinationStorageDestinationCollision {
+                source_address,
+                existing_source_address,
+                destination_address,
+            } if source_address == second.source()
+                && existing_source_address == first.source()
+                && destination_address == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_object_generation_request_source_mismatch() {
+        let source = address(0x1000);
+        let request = request(
+            address(0x3000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let generation = object_generation_with_parts(
+            source,
+            request.destination(),
+            request.action(),
+            HeapGeneration::Young,
+            request,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(vec![generation]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("request source mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestSourceMismatch {
+                source_address,
+                request_source,
+            } if source_address == source && request_source == request.source()
+        ));
+    }
+
+    #[test]
+    fn rejects_object_generation_request_destination_mismatch() {
+        let source = address(0x1000);
+        let generation_destination = address(0x2000);
+        let request = request(
+            source,
+            address(0x3000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let generation = object_generation_with_parts(
+            source,
+            generation_destination,
+            request.action(),
+            HeapGeneration::Young,
+            request,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(vec![generation]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("request destination mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestDestinationMismatch {
+                source_address,
+                generation_destination: actual_generation_destination,
+                request_destination,
+            } if source_address == source
+                && actual_generation_destination == generation_destination
+                && request_destination == request.destination()
+        ));
+    }
+
+    #[test]
+    fn rejects_object_generation_request_action_mismatch() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let request = request(source, destination, MinorGcSurvivorAction::PromoteToOld);
+        let generation = object_generation_with_parts(
+            source,
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Old,
+            request,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(vec![generation]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("request action mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteRequestActionMismatch {
+                source_address,
+                destination: actual_destination,
+                generation_action: MinorGcSurvivorAction::CopyToNursery,
+                request_action: MinorGcSurvivorAction::PromoteToOld,
+            } if source_address == source && actual_destination == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_object_generation_generation_mismatch() {
+        let request = request(
+            address(0x1000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let generation = object_generation_with_parts(
+            request.source(),
+            request.destination(),
+            request.action(),
+            HeapGeneration::Old,
+            request,
+        );
+        let destination_storage = destination_storage(Vec::new());
+        let object_generations = live_object_generations(vec![generation]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("generation mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcObjectGenerationWriteGenerationMismatch {
+                source_address,
+                destination,
+                expected: HeapGeneration::Young,
+                actual: HeapGeneration::Old,
+                action: MinorGcSurvivorAction::CopyToNursery,
+            } if source_address == request.source()
+                && destination == request.destination()
+        ));
+    }
+
+    #[test]
+    fn rejects_destination_payload_size_mismatch_for_write_plan() {
+        let request = request_with_parts(
+            address(0x1000),
+            address(0x2000),
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            4,
+        );
+        let destination_storage = destination_storage(vec![object_bytes(request, vec![1, 2, 3])]);
+        let object_generations = live_object_generations(vec![object_generation(request)]);
+
+        let err = boundary_minor_gc_object_generation_write_plan(
+            &destination_storage,
+            &object_generations,
+        )
+        .expect_err("destination payload length mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcDestinationPayloadSizeMismatch {
+                destination,
+                expected: 4,
+                actual: 3,
+            } if destination == request.destination()
+        ));
     }
 }
 
@@ -7912,6 +8829,31 @@ impl EvalOutcome {
     {
         boundary_minor_gc_destination_object_generation_bindings(
             &self.gc_stress_boundary_minor_gc_destination_storage,
+        )
+    }
+
+    /// Plans live object-generation writes from installed live metadata.
+    ///
+    /// This validates installed live object-generation metadata against
+    /// installed destination-byte snapshots. The returned plan is an immutable
+    /// input set for a future heap-record generation writer; it does not mutate
+    /// heap records, bind destination bytes to heap-object storage, validate
+    /// semispace ownership, or publish old-generation metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if an installed object-generation record has
+    /// no installed destination snapshot, if an installed destination snapshot
+    /// has no installed object-generation record, if object-generation metadata
+    /// disagrees with its byte-copy request or destination snapshot, if either
+    /// installed table contains duplicate identities, if destination generation
+    /// or payload-size validation fails, or if the plan cannot reserve storage.
+    pub fn gc_stress_boundary_minor_gc_object_generation_write_plan(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcObjectGenerationWritePlan, EvalHeapError> {
+        boundary_minor_gc_object_generation_write_plan(
+            &self.gc_stress_boundary_minor_gc_destination_storage,
+            &self.gc_stress_boundary_minor_gc_object_generations,
         )
     }
 

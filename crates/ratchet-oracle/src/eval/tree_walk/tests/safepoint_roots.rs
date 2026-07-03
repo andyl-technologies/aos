@@ -1470,6 +1470,12 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert!(
         outcome
+            .gc_stress_boundary_minor_gc_object_generation_write_plan()
+            .expect("empty object-generation write plan builds")
+            .is_empty()
+    );
+    assert!(
+        outcome
             .gc_stress_boundary_minor_gc_forwarding_destination_bindings()
             .expect("empty forwarding destination binding report builds")
             .is_empty()
@@ -1621,6 +1627,47 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert_eq!(
         object_generation_bindings[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+    let object_generation_write_plan = outcome
+        .gc_stress_boundary_minor_gc_object_generation_write_plan()
+        .expect("object-generation write plan validates installed live metadata");
+    assert_eq!(object_generation_write_plan.len(), 1);
+    assert_eq!(
+        object_generation_write_plan.report().objects(),
+        summary.object_copies()
+    );
+    assert_eq!(
+        object_generation_write_plan.report().copied_to_nursery(),
+        summary.object_copies()
+    );
+    assert_eq!(object_generation_write_plan.report().promoted_to_old(), 0);
+    assert_eq!(
+        object_generation_write_plan.report().payload_bytes(),
+        live_object_copy.destination_bytes().len()
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].source(),
+        live_object_copy.request().source()
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].action(),
+        MinorGcSurvivorAction::CopyToNursery
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        object_generation_write_plan.writes()[0].destination_bytes(),
         live_object_copy.destination_bytes()
     );
     let forwarding_destination_bindings = outcome

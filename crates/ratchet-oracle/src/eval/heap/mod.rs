@@ -793,6 +793,155 @@ pub enum EvalHeapError {
         /// The duplicate destination object address.
         destination_address: GcHeapAddress,
     },
+    /// An object-generation write plan has no installed destination-byte snapshot.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} -> 0x{destination:x}/{generation:?}/{action:?} has no installed destination snapshot",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteMissingDestination {
+        /// The from-space survivor source object.
+        source_address: GcHeapAddress,
+        /// The destination address carried by the object-generation record.
+        destination: GcHeapAddress,
+        /// The copy or promotion action carried by the object-generation record.
+        action: MinorGcSurvivorAction,
+        /// The generation carried by the object-generation record.
+        generation: HeapGeneration,
+    },
+    /// An object-generation write plan found stale destination-byte metadata.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} expected {expected:?}/{expected_generation:?}, found {actual:?}/{actual_generation:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteBindingMismatch {
+        /// The from-space survivor whose metadata disagreed.
+        source_address: GcHeapAddress,
+        /// The byte-copy request carried by the object-generation record.
+        expected: AllocationCollectorPollObjectByteCopyRequest,
+        /// The generation carried by the object-generation record.
+        expected_generation: HeapGeneration,
+        /// The byte-copy request carried by the installed destination snapshot.
+        actual: AllocationCollectorPollObjectByteCopyRequest,
+        /// The generation implied by the installed destination snapshot.
+        actual_generation: HeapGeneration,
+    },
+    /// An object-generation write plan found duplicated generation metadata.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} appears more than once at index {index}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteDuplicateSource {
+        /// The duplicated generation-record index.
+        index: usize,
+        /// The duplicated from-space survivor source object.
+        source_address: GcHeapAddress,
+    },
+    /// An object-generation write plan found duplicated destination metadata.
+    #[error(
+        "boundary minor-GC object-generation write destination 0x{destination:x} for source 0x{source_address:x} conflicts with source 0x{existing_source_address:x} at index {index}",
+        destination = destination.address_bits(),
+        source_address = source_address.address_bits(),
+        existing_source_address = existing_source_address.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteDuplicateDestination {
+        /// The duplicated generation-record index.
+        index: usize,
+        /// The from-space survivor currently being validated.
+        source_address: GcHeapAddress,
+        /// The earlier from-space survivor that uses the same destination.
+        existing_source_address: GcHeapAddress,
+        /// The duplicated destination object address.
+        destination: GcHeapAddress,
+    },
+    /// An object-generation write plan found duplicated destination snapshot metadata.
+    #[error(
+        "boundary minor-GC object-generation destination snapshot for source 0x{source_address:x} appears more than once at index {index}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteDuplicateDestinationSource {
+        /// The duplicated destination snapshot index.
+        index: usize,
+        /// The duplicated from-space survivor source object.
+        source_address: GcHeapAddress,
+    },
+    /// An object-generation record's request belongs to another source.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} carries request source 0x{request_source:x}",
+        source_address = source_address.address_bits(),
+        request_source = request_source.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteRequestSourceMismatch {
+        /// The source carried by the object-generation record.
+        source_address: GcHeapAddress,
+        /// The source carried by the byte-copy request.
+        request_source: GcHeapAddress,
+    },
+    /// An object-generation record's request points at another destination.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} expected request destination 0x{generation_destination:x}, found 0x{request_destination:x}",
+        source_address = source_address.address_bits(),
+        generation_destination = generation_destination.address_bits(),
+        request_destination = request_destination.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteRequestDestinationMismatch {
+        /// The source carried by the object-generation record.
+        source_address: GcHeapAddress,
+        /// The destination carried by the object-generation record.
+        generation_destination: GcHeapAddress,
+        /// The destination carried by the byte-copy request.
+        request_destination: GcHeapAddress,
+    },
+    /// An object-generation record's action disagrees with its request.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} -> 0x{destination:x} has action {generation_action:?}, request has {request_action:?}",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteRequestActionMismatch {
+        /// The source carried by the object-generation record.
+        source_address: GcHeapAddress,
+        /// The destination carried by the object-generation record.
+        destination: GcHeapAddress,
+        /// The action carried by the object-generation record.
+        generation_action: MinorGcSurvivorAction,
+        /// The action carried by the byte-copy request.
+        request_action: MinorGcSurvivorAction,
+    },
+    /// An object-generation record's generation disagrees with its action.
+    #[error(
+        "boundary minor-GC object-generation write for 0x{source_address:x} -> 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteGenerationMismatch {
+        /// The source carried by the object-generation record.
+        source_address: GcHeapAddress,
+        /// The destination carried by the object-generation record.
+        destination: GcHeapAddress,
+        /// The generation implied by the destination action.
+        expected: HeapGeneration,
+        /// The generation carried by the object-generation record.
+        actual: HeapGeneration,
+        /// The object-copy action that implied the expected generation.
+        action: MinorGcSurvivorAction,
+    },
+    /// A destination-byte snapshot has no installed object-generation record.
+    #[error(
+        "boundary minor-GC destination snapshot for 0x{source_address:x} -> 0x{destination:x}/{generation:?}/{action:?} has no installed object-generation record",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcObjectGenerationWriteUnboundDestination {
+        /// The from-space survivor source object.
+        source_address: GcHeapAddress,
+        /// The destination address carried by the destination snapshot.
+        destination: GcHeapAddress,
+        /// The copy or promotion action carried by the destination snapshot.
+        action: MinorGcSurvivorAction,
+        /// The generation implied by the destination snapshot.
+        generation: HeapGeneration,
+    },
     /// A live root writeback points at no installed destination-byte snapshot.
     #[error(
         "boundary minor-GC root writeback for {root_source:?} points at missing destination 0x{destination:x}",
