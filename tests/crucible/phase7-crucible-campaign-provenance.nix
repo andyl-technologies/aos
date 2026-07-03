@@ -195,11 +195,11 @@
       }
       {
         label = "campaign continuity raw gate waits for provenance check";
-        needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];";
+        needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
       }
       {
         label = "campaign continuity wrapper waits for provenance check";
-        needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];";
+        needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
       }
       {
         label = "campaign continuity remains red gate";
@@ -213,7 +213,7 @@
       }
       {
         label = "CI wiring expects campaign provenance dependency";
-        needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];";
+        needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
       }
     ];
 in

@@ -278,6 +278,7 @@
       fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;
       campaignManifestGate = crucibleChecks.phase7.crucibleCampaignManifest;
       campaignSeedingGate = crucibleChecks.phase7.crucibleCampaignSeeding;
+      campaignStorageBoundingGate = crucibleChecks.phase7.crucibleCampaignStorageBounding;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -296,6 +297,7 @@
           fourLayerDedupGate
           campaignManifestGate
           campaignSeedingGate
+          campaignStorageBoundingGate
         ];
 
         phases = [
@@ -360,6 +362,19 @@
               grep -q '^findings_ledger_dedup=content-addressed$' "$campaign_seeding_result"
               grep -q '^finding_replay=bit-identical-from-ledger$' "$campaign_seeding_result"
 
+              campaign_storage_bounding_result="${campaignStorageBoundingGate}/result"
+              grep -q '^PASS$' "$campaign_storage_bounding_result"
+              grep -q '^tasks=T-DCE-6$' "$campaign_storage_bounding_result"
+              grep -q '^campaign_gc_roots=manifest-roots$' "$campaign_storage_bounding_result"
+              grep -q '^campaign_gc_unpinned=swept-candidate$' "$campaign_storage_bounding_result"
+              grep -q '^campaign_gc_value=cache-only$' "$campaign_storage_bounding_result"
+              grep -q '^fat_to_thin_eviction=value-preserved$' "$campaign_storage_bounding_result"
+              grep -q '^thin_checkpoint_source=parent-schedule-delta$' "$campaign_storage_bounding_result"
+              grep -q '^corpus_retention=deterministic-seeded-cap$' "$campaign_storage_bounding_result"
+              grep -q '^corpus_retention_authorized=explicit-policy$' "$campaign_storage_bounding_result"
+              grep -q '^corpus_retention_reproducible=true$' "$campaign_storage_bounding_result"
+              grep -q '^findings_ledger_retention=never-evict$' "$campaign_storage_bounding_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -406,6 +421,17 @@
               grep -q '^findings_ledger=cross-run-grow-only$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^findings_ledger_dedup=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^finding_replay=bit-identical-from-ledger$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_gc_roots=manifest-roots$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_gc_scope=corpus,coverage,findings,genesis$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_gc_unpinned=swept-candidate$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_gc_value=cache-only$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^fat_to_thin_eviction=value-preserved$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^thin_checkpoint_source=parent-schedule-delta$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^corpus_retention=deterministic-seeded-cap$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^corpus_retention_authorized=explicit-policy$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^corpus_retention_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^corpus_retention_root=source-cap-seed-proof$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^findings_ledger_retention=never-evict$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -421,6 +447,7 @@
               four_layer_dedup_gate_result=${fourLayerDedupGate}/result
               campaign_manifest_gate_result=${campaignManifestGate}/result
               campaign_seeding_gate_result=${campaignSeedingGate}/result
+              campaign_storage_bounding_gate_result=${campaignStorageBoundingGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -472,6 +499,17 @@
               findings_ledger=cross-run-grow-only
               findings_ledger_dedup=content-addressed
               finding_replay=bit-identical-from-ledger
+              campaign_gc_roots=manifest-roots
+              campaign_gc_scope=corpus,coverage,findings,genesis
+              campaign_gc_unpinned=swept-candidate
+              campaign_gc_value=cache-only
+              fat_to_thin_eviction=value-preserved
+              thin_checkpoint_source=parent-schedule-delta
+              corpus_retention=deterministic-seeded-cap
+              corpus_retention_authorized=explicit-policy
+              corpus_retention_reproducible=true
+              corpus_retention_root=source-cap-seed-proof
+              findings_ledger_retention=never-evict
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

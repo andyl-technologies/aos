@@ -18,9 +18,10 @@ use std::sync::Barrier;
 use std::thread;
 
 use crucible_cas::{
-    CampaignCasOutcome, CampaignFinding, CampaignManifest, CampaignProvenance,
-    CampaignReplayArtifact, ContentHash, DagStore, ExpansionDedupDecision, FrontierClaimRequest,
-    SharedCampaignStore, SharedDagStore, SharedDedupIndex, SharedFrontier, SoftHashAffinity,
+    CampaignCasOutcome, CampaignCheckpointMaterialization, CampaignCorpusRetentionPolicy,
+    CampaignFinding, CampaignManifest, CampaignProvenance, CampaignReplayArtifact, ContentHash,
+    DagStore, ExpansionDedupDecision, FrontierClaimRequest, SharedCampaignStore, SharedDagStore,
+    SharedDedupIndex, SharedFrontier, SoftHashAffinity,
 };
 
 const PROBE_PAYLOAD: &[u8] = b"crucible-fleet-store-probe-v1";
@@ -81,6 +82,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     prove_four_layer_dedup(&root.join("dedup"))?;
     prove_campaign_manifest_store(&root.join("campaign"))?;
     prove_campaign_seed_coverage_findings(&root.join("campaign-continuity-substrate"))?;
+    prove_campaign_storage_bounding(&root.join("campaign-storage-bounding"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -133,6 +135,17 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("findings_ledger=cross-run-grow-only");
     println!("findings_ledger_dedup=content-addressed");
     println!("finding_replay=bit-identical-from-ledger");
+    println!("campaign_gc_roots=manifest-roots");
+    println!("campaign_gc_scope=corpus,coverage,findings,genesis");
+    println!("campaign_gc_unpinned=swept-candidate");
+    println!("campaign_gc_value=cache-only");
+    println!("fat_to_thin_eviction=value-preserved");
+    println!("thin_checkpoint_source=parent-schedule-delta");
+    println!("corpus_retention=deterministic-seeded-cap");
+    println!("corpus_retention_authorized=explicit-policy");
+    println!("corpus_retention_reproducible=true");
+    println!("corpus_retention_root=source-cap-seed-proof");
+    println!("findings_ledger_retention=never-evict");
     Ok(())
 }
 
@@ -641,6 +654,175 @@ fn prove_campaign_seed_coverage_findings(root: &Path) -> Result<(), Box<dyn Erro
                 "campaign ledger finding did not replay bit-identically",
             ));
         }
+    }
+
+    Ok(())
+}
+
+fn prove_campaign_storage_bounding(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let campaign = SharedCampaignStore::new(root);
+    let artifacts = [
+        CampaignReplayArtifact::new(
+            b"definition:storage-a".to_vec(),
+            b"seed:a".to_vec(),
+            b"schedule:a".to_vec(),
+        ),
+        CampaignReplayArtifact::new(
+            b"definition:storage-b".to_vec(),
+            b"seed:b".to_vec(),
+            b"schedule:b".to_vec(),
+        ),
+        CampaignReplayArtifact::new(
+            b"definition:storage-c".to_vec(),
+            b"seed:c".to_vec(),
+            b"schedule:c".to_vec(),
+        ),
+    ];
+    let corpus_root = campaign.persist_campaign_corpus(artifacts.iter().cloned())?;
+    let coverage_edge = campaign.manifest_store().put(b"storage-coverage-edge")?;
+    let coverage_map_root = campaign.persist_accumulated_coverage_map([coverage_edge])?;
+    let findings_root = campaign.persist_findings_ledger([CampaignFinding::new(
+        ContentHash::from_bytes(b"storage-finding"),
+        artifacts[0].clone(),
+    )])?;
+    let genesis_pin = campaign.manifest_store().put(b"storage-genesis-pin")?;
+    let provenance =
+        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1");
+    let manifest = CampaignManifest::new(
+        corpus_root,
+        coverage_map_root,
+        findings_root,
+        genesis_pin,
+        provenance.clone(),
+    );
+    let finding_entry = campaign
+        .findings_ledger_entries(findings_root)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| input_error("storage bounding probe did not persist a finding"))?;
+    let abandoned = campaign.manifest_store().put(b"storage-abandoned-object")?;
+    let seed_artifact_hashes = campaign
+        .seed_next_run(&manifest)?
+        .into_iter()
+        .map(|seed| seed.artifact_hash)
+        .collect::<Vec<_>>();
+    let mut candidates = vec![
+        corpus_root,
+        coverage_map_root,
+        findings_root,
+        genesis_pin,
+        coverage_edge,
+        finding_entry.artifact_hash,
+        finding_entry.finding_hash,
+        abandoned,
+    ];
+    candidates.extend(seed_artifact_hashes.iter().copied());
+
+    let plan = campaign.campaign_gc_plan(&manifest, candidates.iter().copied())?;
+    if !plan.roots.root_set().contains(&corpus_root)
+        || !plan.roots.root_set().contains(&coverage_map_root)
+        || !plan.roots.root_set().contains(&findings_root)
+        || !plan.roots.root_set().contains(&genesis_pin)
+        || !plan.retained_objects.contains(&finding_entry.artifact_hash)
+        || !plan.retained_objects.contains(&finding_entry.finding_hash)
+        || seed_artifact_hashes
+            .iter()
+            .any(|artifact_hash| !plan.retained_objects.contains(artifact_hash))
+        || !plan.sweep_candidates.contains(&abandoned)
+    {
+        return Err(input_error(
+            "campaign GC was not rooted at the manifest roots",
+        ));
+    }
+    let gc_report =
+        campaign.garbage_collect_campaign_candidates(&manifest, candidates.iter().copied())?;
+    if !gc_report.swept_objects.contains(&abandoned)
+        || campaign.manifest_store().has(&abandoned)?
+        || !campaign.manifest_store().has(&findings_root)?
+    {
+        return Err(input_error(
+            "campaign GC did not sweep only the unpinned candidate",
+        ));
+    }
+
+    let fat_checkpoint = CampaignCheckpointMaterialization::fat(
+        ContentHash::from_bytes(b"storage-checkpoint"),
+        ContentHash::from_bytes(b"storage-parent"),
+        ContentHash::from_bytes(b"storage-schedule-delta"),
+        ContentHash::from_bytes(b"storage-materialization"),
+    );
+    let eviction = fat_checkpoint.evict_to_thin();
+    if !eviction.preserves_value()
+        || eviction.evicted_materialization.is_none()
+        || eviction.after.materialization.is_some()
+    {
+        return Err(input_error(
+            "fat-to-thin eviction did not preserve checkpoint value",
+        ));
+    }
+
+    let policy =
+        CampaignCorpusRetentionPolicy::new(2, ContentHash::from_bytes(b"storage-retention-seed"));
+    let retention = campaign.retain_campaign_corpus_under_cap(corpus_root, policy)?;
+    let repeat = campaign.retain_campaign_corpus_under_cap(corpus_root, policy)?;
+    if retention != repeat
+        || retention.retained_artifacts.len() != 2
+        || retention.evicted_artifacts.len() != 1
+    {
+        return Err(input_error(
+            "campaign corpus retention was not deterministic under cap",
+        ));
+    }
+    let retained_manifest = CampaignManifest::new(
+        retention.retained_root,
+        coverage_map_root,
+        findings_root,
+        genesis_pin,
+        provenance,
+    );
+    let head = match campaign.compare_and_swap_head(None, &manifest)? {
+        CampaignCasOutcome::Advanced(head) => head,
+        CampaignCasOutcome::LostUpdate { .. } => {
+            return Err(input_error("initial storage-bounding campaign CAS lost"));
+        }
+    };
+    match campaign.compare_and_swap_head(Some(head.manifest_hash), &retained_manifest) {
+        Err(crucible_cas::CasError::InvalidCampaignRecord {
+            reason: "campaign corpus advance would drop a prior seed artifact",
+            ..
+        }) => {}
+        Ok(_) => {
+            return Err(input_error(
+                "raw campaign CAS accepted retention without explicit policy",
+            ));
+        }
+        Err(error) => return Err(Box::new(error)),
+    }
+    match campaign.compare_and_swap_head_with_retention(
+        Some(head.manifest_hash),
+        &retained_manifest,
+        policy,
+    )? {
+        CampaignCasOutcome::Advanced(retained_head) => {
+            if retained_head.manifest.findings_root != findings_root {
+                return Err(input_error(
+                    "campaign corpus retention changed the findings ledger root",
+                ));
+            }
+        }
+        CampaignCasOutcome::LostUpdate { .. } => {
+            return Err(input_error("retention storage-bounding campaign CAS lost"));
+        }
+    }
+    if campaign.findings_ledger_entries(findings_root)?.len() != 1 {
+        return Err(input_error(
+            "campaign storage bounding evicted a finding ledger entry",
+        ));
     }
 
     Ok(())

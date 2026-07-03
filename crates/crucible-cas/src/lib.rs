@@ -27,8 +27,9 @@
 //! [`SoftHashAffinity`], [`SharedDedupIndex`], [`ExpansionDedupDecision`],
 //! [`CoverageAdmission`], [`ReductionAdmission`], [`SharedCampaignStore`],
 //! [`CampaignReplayArtifact`], [`CampaignCorpusSeed`], [`CampaignCoverageDelta`],
-//! [`CampaignFinding`], [`CampaignManifest`], [`CampaignProvenance`], and the
-//! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
+//! [`CampaignFinding`], [`CampaignCorpusRetentionPolicy`], [`CampaignGcRoots`],
+//! [`CampaignManifest`], [`CampaignProvenance`], and the invalidation types
+//! [`DependencySnapshot`], [`InvalidationQuery`], and
 //! [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
@@ -1436,6 +1437,37 @@ impl SharedCampaignStore {
         expected: Option<ContentHash>,
         manifest: &CampaignManifest,
     ) -> Result<CampaignCasOutcome, CasError> {
+        self.compare_and_swap_head_with_storage_policy(expected, manifest, None)
+    }
+
+    /// Compares and swaps the campaign head through an explicit retention policy.
+    ///
+    /// This is the storage-bounding form of [`Self::compare_and_swap_head`].
+    /// Ordinary head advancement remains grow-only for corpus roots; bounded
+    /// corpus pruning is accepted only when the proposed retained root proves the
+    /// supplied nonzero policy against the current head's corpus root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the current or proposed manifest cannot be read,
+    /// parsed, stored, or written to the head, or when the proposed retained
+    /// corpus root does not match `policy`.
+    pub fn compare_and_swap_head_with_retention(
+        &self,
+        expected: Option<ContentHash>,
+        manifest: &CampaignManifest,
+        policy: CampaignCorpusRetentionPolicy,
+    ) -> Result<CampaignCasOutcome, CasError> {
+        validate_campaign_corpus_retention_policy(&policy, self.head_path())?;
+        self.compare_and_swap_head_with_storage_policy(expected, manifest, Some(policy))
+    }
+
+    fn compare_and_swap_head_with_storage_policy(
+        &self,
+        expected: Option<ContentHash>,
+        manifest: &CampaignManifest,
+        retention_policy: Option<CampaignCorpusRetentionPolicy>,
+    ) -> Result<CampaignCasOutcome, CasError> {
         let proposed_manifest_hash = self.persist_manifest(manifest)?;
         let mut guard = self.acquire_head_lock(FlockOperation::LockExclusive)?;
         let current_pointer = self.read_head_pointer()?;
@@ -1449,7 +1481,11 @@ impl SharedCampaignStore {
         }
         if let Some(current_manifest_hash) = current {
             let current_manifest = self.read_manifest_object(current_manifest_hash)?;
-            self.validate_monotone_manifest_advance(&current_manifest, manifest)?;
+            self.validate_monotone_manifest_advance(
+                &current_manifest,
+                manifest,
+                retention_policy.as_ref(),
+            )?;
         }
         self.write_head(&mut guard, current_pointer, proposed_manifest_hash)?;
         let head = self
@@ -1722,6 +1758,139 @@ impl SharedCampaignStore {
         self.persist_findings_entries(&entries)
     }
 
+    /// Returns the campaign garbage-collection roots named by `manifest`.
+    ///
+    /// The roots are exactly the manifest's corpus, coverage-map, findings, and
+    /// genesis pins. The manifest object itself is owned by the mutable head log;
+    /// this root set describes the storage graph below that manifest.
+    #[must_use]
+    pub fn campaign_gc_roots(&self, manifest: &CampaignManifest) -> CampaignGcRoots {
+        CampaignGcRoots {
+            corpus_root: manifest.corpus_root,
+            coverage_map_root: manifest.coverage_map_root,
+            findings_root: manifest.findings_root,
+            genesis_pin: manifest.genesis_pin,
+        }
+    }
+
+    /// Plans campaign object garbage collection for a candidate object set.
+    ///
+    /// Reachability starts at the manifest's corpus, coverage-map, findings, and
+    /// genesis roots. Retained corpus replay artifacts and all finding replay
+    /// artifacts stay live; candidates outside that closure are returned as
+    /// sweep candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when any manifest root is missing, malformed, or
+    /// refers to malformed campaign objects.
+    pub fn campaign_gc_plan<I>(
+        &self,
+        manifest: &CampaignManifest,
+        candidates: I,
+    ) -> Result<CampaignGcPlan, CasError>
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let roots = self.campaign_gc_roots(manifest);
+        let retained_objects = self.campaign_reachable_objects(&roots)?;
+        let sweep_candidates = candidates
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .difference(&retained_objects)
+            .copied()
+            .collect();
+        Ok(CampaignGcPlan {
+            roots,
+            retained_objects,
+            sweep_candidates,
+        })
+    }
+
+    /// Sweeps unpinned campaign object candidates outside the manifest root closure.
+    ///
+    /// The caller supplies the candidate set, typically from a store inventory.
+    /// This method deletes only candidates that are not reachable from the
+    /// manifest roots; retained roots, retained corpus artifacts, and findings
+    /// ledger entries are never deleted by this pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the reachability plan cannot be computed or a
+    /// sweep candidate cannot be removed from the filesystem-backed store.
+    pub fn garbage_collect_campaign_candidates<I>(
+        &self,
+        manifest: &CampaignManifest,
+        candidates: I,
+    ) -> Result<CampaignGcReport, CasError>
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let plan = self.campaign_gc_plan(manifest, candidates)?;
+        let mut swept_objects = BTreeSet::new();
+        let mut missing_objects = BTreeSet::new();
+        for candidate in &plan.sweep_candidates {
+            let path = self.store.object_path(candidate);
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    swept_objects.insert(*candidate);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    missing_objects.insert(*candidate);
+                }
+                Err(source) => {
+                    return Err(CasError::Io {
+                        operation: "remove",
+                        path,
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(CampaignGcReport {
+            plan,
+            swept_objects,
+            missing_objects,
+        })
+    }
+
+    /// Persists a deterministic retained corpus root under `policy`.
+    ///
+    /// The retained corpus is selected by a stable seeded ordering over the
+    /// source corpus entries. The resulting root records the source, cap, seed,
+    /// and retained entries so campaign-head advancement can distinguish
+    /// authorized pruning from an unproven corpus regression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the source corpus cannot be read or the retained
+    /// root cannot be persisted.
+    pub fn retain_campaign_corpus_under_cap(
+        &self,
+        corpus_root: ContentHash,
+        policy: CampaignCorpusRetentionPolicy,
+    ) -> Result<CampaignCorpusRetentionReport, CasError> {
+        validate_campaign_corpus_retention_policy(&policy, self.store.object_path(&corpus_root))?;
+        let source_entries = self.corpus_entry_hashes(corpus_root)?;
+        let retained_entries = retain_campaign_corpus_entries(&source_entries, &policy);
+        let retained_root =
+            self.persist_campaign_corpus_retention(corpus_root, &policy, &retained_entries)?;
+        let retained_artifacts = retained_entries.keys().copied().collect::<Vec<_>>();
+        let evicted_artifacts = source_entries
+            .keys()
+            .filter(|artifact_hash| !retained_entries.contains_key(artifact_hash))
+            .copied()
+            .collect();
+        Ok(CampaignCorpusRetentionReport {
+            source_root: corpus_root,
+            retained_root,
+            cap: policy.cap,
+            seed: policy.seed,
+            retained_artifacts,
+            evicted_artifacts,
+        })
+    }
+
     fn validate_manifest_roots(&self, manifest: &CampaignManifest) -> Result<(), CasError> {
         self.require_manifest_root("corpus_root", manifest.corpus_root)?;
         self.require_manifest_root("coverage_map_root", manifest.coverage_map_root)?;
@@ -1748,15 +1917,27 @@ impl SharedCampaignStore {
         &self,
         current: &CampaignManifest,
         proposed: &CampaignManifest,
+        retention_policy: Option<&CampaignCorpusRetentionPolicy>,
     ) -> Result<(), CasError> {
         validate_campaign_lineage(current, proposed)?;
-        self.validate_monotone_root("corpus", current.corpus_root, proposed.corpus_root)?;
+        self.validate_monotone_root(
+            "corpus",
+            current.corpus_root,
+            proposed.corpus_root,
+            retention_policy,
+        )?;
         self.validate_monotone_root(
             "coverage-map",
             current.coverage_map_root,
             proposed.coverage_map_root,
+            None,
         )?;
-        self.validate_monotone_root("findings", current.findings_root, proposed.findings_root)?;
+        self.validate_monotone_root(
+            "findings",
+            current.findings_root,
+            proposed.findings_root,
+            None,
+        )?;
         Ok(())
     }
 
@@ -1765,7 +1946,11 @@ impl SharedCampaignStore {
         label: &'static str,
         current: ContentHash,
         proposed: ContentHash,
+        retention_policy: Option<&CampaignCorpusRetentionPolicy>,
     ) -> Result<(), CasError> {
+        if current == proposed {
+            return Ok(());
+        }
         if !self.supports_typed_campaign_root(label, current)? {
             return Ok(());
         }
@@ -1776,7 +1961,7 @@ impl SharedCampaignStore {
             });
         }
         match label {
-            "corpus" => self.validate_campaign_corpus_superset(current, proposed),
+            "corpus" => self.validate_campaign_corpus_superset(current, proposed, retention_policy),
             "coverage-map" => self.validate_coverage_superset(current, proposed),
             "findings" => self.validate_findings_superset(current, proposed),
             _ => Ok(()),
@@ -1787,16 +1972,70 @@ impl SharedCampaignStore {
         &self,
         current: ContentHash,
         proposed: ContentHash,
+        retention_policy: Option<&CampaignCorpusRetentionPolicy>,
     ) -> Result<(), CasError> {
+        if self.corpus_retention_record(current)?.is_some() {
+            let Some(policy) = retention_policy else {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&proposed),
+                    reason: "campaign corpus retention roots require explicit retention policy",
+                });
+            };
+            return self.validate_campaign_corpus_retention_advance(current, proposed, policy);
+        }
         let current_entries = self.corpus_entry_hashes(current)?;
         let proposed_entries = self.corpus_entry_hashes(proposed)?;
+        let mut dropped_prior_seed = false;
         for (artifact_hash, replay_hash) in current_entries {
             if proposed_entries.get(&artifact_hash) != Some(&replay_hash) {
+                dropped_prior_seed = true;
+                break;
+            }
+        }
+        if dropped_prior_seed {
+            let Some(policy) = retention_policy else {
                 return Err(CasError::InvalidCampaignRecord {
                     path: self.store.object_path(&proposed),
                     reason: "campaign corpus advance would drop a prior seed artifact",
                 });
-            }
+            };
+            return self.validate_campaign_corpus_retention_advance(current, proposed, policy);
+        }
+        Ok(())
+    }
+
+    fn validate_campaign_corpus_retention_advance(
+        &self,
+        current: ContentHash,
+        proposed: ContentHash,
+        policy: &CampaignCorpusRetentionPolicy,
+    ) -> Result<(), CasError> {
+        validate_campaign_corpus_retention_policy(policy, self.store.object_path(&proposed))?;
+        let Some(retention) = self.corpus_retention_record(proposed)? else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: "campaign corpus advance would drop a prior seed artifact",
+            });
+        };
+        if retention.policy != *policy {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: "campaign corpus retention policy does not match authorized retention policy",
+            });
+        }
+        if retention.source_root != current {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: "campaign corpus retention source does not match current root",
+            });
+        }
+        let current_entries = self.corpus_entry_hashes(current)?;
+        let expected_entries = retain_campaign_corpus_entries(&current_entries, &retention.policy);
+        if retention.entries != expected_entries {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: "campaign corpus retention root does not match deterministic seeded cap",
+            });
         }
         Ok(())
     }
@@ -1916,6 +2155,14 @@ impl SharedCampaignStore {
         }
         let merged = match label {
             "corpus" => {
+                if self.corpus_retention_record(left)?.is_some()
+                    || self.corpus_retention_record(right)?.is_some()
+                {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path: self.store.object_path(&right),
+                        reason: "campaign corpus retention roots require explicit retention policy",
+                    });
+                }
                 let mut entries = self.corpus_entry_hashes(left)?;
                 entries.extend(self.corpus_entry_hashes(right)?);
                 self.persist_campaign_corpus_entries(&entries)?
@@ -1934,7 +2181,7 @@ impl SharedCampaignStore {
     ) -> Result<bool, CasError> {
         let material = self.read_campaign_object_text(root)?;
         let format = record_format(&material);
-        if format == Some(campaign_typed_root_format(label)) {
+        if matches!(format, Some(format) if is_typed_campaign_root_format(label, format)) {
             return Ok(true);
         }
         if format != Some("crucible.campaign-root-merge.v1") {
@@ -1948,12 +2195,82 @@ impl SharedCampaignStore {
             && self.supports_typed_campaign_root(label, merge.right)?)
     }
 
+    fn campaign_reachable_objects(
+        &self,
+        roots: &CampaignGcRoots,
+    ) -> Result<BTreeSet<ContentHash>, CasError> {
+        let mut retained = BTreeSet::from([roots.genesis_pin]);
+        self.collect_campaign_root_closure("corpus", roots.corpus_root, &mut retained)?;
+        self.collect_campaign_root_closure("coverage-map", roots.coverage_map_root, &mut retained)?;
+        self.collect_campaign_root_closure("findings", roots.findings_root, &mut retained)?;
+        Ok(retained)
+    }
+
+    fn collect_campaign_root_closure(
+        &self,
+        label: &'static str,
+        root: ContentHash,
+        retained: &mut BTreeSet<ContentHash>,
+    ) -> Result<(), CasError> {
+        if !retained.insert(root) {
+            return Ok(());
+        }
+        let material = self.read_campaign_object_text(root)?;
+        let path = self.store.object_path(&root);
+        match record_format(&material) {
+            Some("crucible.campaign-root-merge.v1") => {
+                let merge = parse_campaign_root_merge_record(&path, &material)?;
+                if merge.label != label {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path,
+                        reason: "campaign root merge label does not match manifest field",
+                    });
+                }
+                self.collect_campaign_root_closure(label, merge.left, retained)?;
+                self.collect_campaign_root_closure(label, merge.right, retained)
+            }
+            Some("crucible.campaign-corpus.v1") | Some("crucible.campaign-corpus-retention.v1")
+                if label == "corpus" =>
+            {
+                for artifact_hash in self.corpus_entry_hashes(root)?.keys() {
+                    retained.insert(*artifact_hash);
+                }
+                Ok(())
+            }
+            Some("crucible.campaign-coverage-map.v1") if label == "coverage-map" => {
+                retained.extend(self.coverage_edge_set(root)?);
+                Ok(())
+            }
+            Some("crucible.campaign-findings-ledger.v1") if label == "findings" => {
+                for (artifact_hash, finding_hash) in self.finding_entry_hashes(root)? {
+                    retained.insert(artifact_hash);
+                    retained.insert(finding_hash);
+                }
+                Ok(())
+            }
+            _ => Err(CasError::InvalidCampaignRecord {
+                path,
+                reason: "campaign manifest root format is unsupported for GC",
+            }),
+        }
+    }
+
     fn persist_campaign_corpus_entries(
         &self,
         entries: &BTreeMap<ContentHash, ContentHash>,
     ) -> Result<ContentHash, CasError> {
         self.store
             .put(campaign_corpus_record_material(entries).as_bytes())
+    }
+
+    fn persist_campaign_corpus_retention(
+        &self,
+        source_root: ContentHash,
+        policy: &CampaignCorpusRetentionPolicy,
+        entries: &BTreeMap<ContentHash, ContentHash>,
+    ) -> Result<ContentHash, CasError> {
+        self.store
+            .put(campaign_corpus_retention_record_material(source_root, policy, entries).as_bytes())
     }
 
     fn persist_coverage_edges(
@@ -2018,6 +2335,10 @@ impl SharedCampaignStore {
         let path = self.store.object_path(&root);
         match record_format(&material) {
             Some("crucible.campaign-corpus.v1") => parse_campaign_corpus_record(&path, &material),
+            Some("crucible.campaign-corpus-retention.v1") => {
+                parse_campaign_corpus_retention_record(&path, &material)
+                    .map(|retention| retention.entries)
+            }
             Some("crucible.campaign-root-merge.v1") => {
                 let merge = parse_campaign_root_merge_record(&path, &material)?;
                 if merge.label != "corpus" {
@@ -2035,6 +2356,17 @@ impl SharedCampaignStore {
                 reason: "campaign corpus root format is unsupported",
             }),
         }
+    }
+
+    fn corpus_retention_record(
+        &self,
+        root: ContentHash,
+    ) -> Result<Option<CampaignCorpusRetentionRecord>, CasError> {
+        let material = self.read_campaign_object_text(root)?;
+        if record_format(&material) != Some("crucible.campaign-corpus-retention.v1") {
+            return Ok(None);
+        }
+        parse_campaign_corpus_retention_record(&self.store.object_path(&root), &material).map(Some)
     }
 
     fn coverage_edge_set(&self, root: ContentHash) -> Result<BTreeSet<ContentHash>, CasError> {
@@ -2497,6 +2829,172 @@ impl PersistedCampaignFinding {
     }
 }
 
+/// Root set for campaign object garbage collection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignGcRoots {
+    /// Root of the retained campaign corpus.
+    pub corpus_root: ContentHash,
+    /// Root of the accumulated campaign coverage map.
+    pub coverage_map_root: ContentHash,
+    /// Root of the grow-only findings ledger.
+    pub findings_root: ContentHash,
+    /// Genesis checkpoint pin for this campaign lineage.
+    pub genesis_pin: ContentHash,
+}
+
+impl CampaignGcRoots {
+    /// Returns the manifest root hashes as a sorted set.
+    #[must_use]
+    pub fn root_set(&self) -> BTreeSet<ContentHash> {
+        BTreeSet::from([
+            self.corpus_root,
+            self.coverage_map_root,
+            self.findings_root,
+            self.genesis_pin,
+        ])
+    }
+}
+
+/// Planned campaign garbage-collection result before deletion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignGcPlan {
+    /// Manifest roots used for reachability.
+    pub roots: CampaignGcRoots,
+    /// Objects retained by root-to-object reachability.
+    pub retained_objects: BTreeSet<ContentHash>,
+    /// Candidate objects outside the retained closure.
+    pub sweep_candidates: BTreeSet<ContentHash>,
+}
+
+/// Report from sweeping unpinned campaign object candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignGcReport {
+    /// Reachability plan used by the sweep.
+    pub plan: CampaignGcPlan,
+    /// Candidate objects removed from the object store.
+    pub swept_objects: BTreeSet<ContentHash>,
+    /// Sweep candidates that were already absent.
+    pub missing_objects: BTreeSet<ContentHash>,
+}
+
+/// Deterministic seeded retention policy for a campaign corpus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignCorpusRetentionPolicy {
+    /// Maximum number of replay artifacts to retain.
+    pub cap: usize,
+    /// Seed controlling the deterministic artifact ordering.
+    pub seed: ContentHash,
+}
+
+impl CampaignCorpusRetentionPolicy {
+    /// Builds a retention policy from a maximum retained artifact count and seed.
+    #[must_use]
+    pub fn new(cap: usize, seed: ContentHash) -> Self {
+        Self { cap, seed }
+    }
+}
+
+/// Result of applying deterministic seeded retention to a campaign corpus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignCorpusRetentionReport {
+    /// Source corpus root that was pruned.
+    pub source_root: ContentHash,
+    /// New retained corpus root containing source, cap, seed, and retained entries.
+    pub retained_root: ContentHash,
+    /// Maximum number of artifacts retained.
+    pub cap: usize,
+    /// Seed used for deterministic pruning.
+    pub seed: ContentHash,
+    /// Artifact hashes retained in the bounded corpus.
+    pub retained_artifacts: Vec<ContentHash>,
+    /// Artifact hashes evicted from the bounded corpus.
+    pub evicted_artifacts: Vec<ContentHash>,
+}
+
+/// Campaign checkpoint cache state used to model fat-to-thin eviction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignCheckpointMaterialization {
+    /// Content-addressed checkpoint identity and denoted state.
+    pub checkpoint: ContentHash,
+    /// Thin-source parent checkpoint.
+    pub parent: ContentHash,
+    /// Thin-source schedule delta from the parent.
+    pub schedule_delta: ContentHash,
+    /// Optional cache-only exact materialization for a fat checkpoint.
+    pub materialization: Option<ContentHash>,
+}
+
+impl CampaignCheckpointMaterialization {
+    /// Builds a fat checkpoint cache entry.
+    #[must_use]
+    pub fn fat(
+        checkpoint: ContentHash,
+        parent: ContentHash,
+        schedule_delta: ContentHash,
+        materialization: ContentHash,
+    ) -> Self {
+        Self {
+            checkpoint,
+            parent,
+            schedule_delta,
+            materialization: Some(materialization),
+        }
+    }
+
+    /// Builds a thin checkpoint source entry.
+    #[must_use]
+    pub fn thin(checkpoint: ContentHash, parent: ContentHash, schedule_delta: ContentHash) -> Self {
+        Self {
+            checkpoint,
+            parent,
+            schedule_delta,
+            materialization: None,
+        }
+    }
+
+    /// Evicts a fat checkpoint cache entry to its thin source.
+    ///
+    /// The checkpoint identity, parent, and schedule delta are preserved. Only
+    /// the optional materialization cache is removed.
+    #[must_use]
+    pub fn evict_to_thin(&self) -> CampaignCheckpointEviction {
+        CampaignCheckpointEviction {
+            before: self.clone(),
+            after: Self::thin(self.checkpoint, self.parent, self.schedule_delta),
+            evicted_materialization: self.materialization,
+        }
+    }
+}
+
+/// Before/after record for one campaign fat-to-thin eviction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignCheckpointEviction {
+    /// Checkpoint cache entry before eviction.
+    pub before: CampaignCheckpointMaterialization,
+    /// Thin checkpoint source after eviction.
+    pub after: CampaignCheckpointMaterialization,
+    /// Cache-only materialization removed by eviction.
+    pub evicted_materialization: Option<ContentHash>,
+}
+
+impl CampaignCheckpointEviction {
+    /// Returns whether the eviction preserved checkpoint value and thin source.
+    #[must_use]
+    pub fn preserves_value(&self) -> bool {
+        self.before.checkpoint == self.after.checkpoint
+            && self.before.parent == self.after.parent
+            && self.before.schedule_delta == self.after.schedule_delta
+            && self.after.materialization.is_none()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CampaignCorpusRetentionRecord {
+    source_root: ContentHash,
+    policy: CampaignCorpusRetentionPolicy,
+    entries: BTreeMap<ContentHash, ContentHash>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CampaignRootMerge {
     label: &'static str,
@@ -2637,6 +3135,27 @@ fn campaign_replay_artifact_material(artifact: &CampaignReplayArtifact) -> Strin
 
 fn campaign_corpus_record_material(entries: &BTreeMap<ContentHash, ContentHash>) -> String {
     let mut material = String::from("format=crucible.campaign-corpus.v1\n");
+    for (artifact_hash, replay_hash) in entries {
+        material.push_str(&format!(
+            "entry artifact={} replay={}\n",
+            artifact_hash.to_hex(),
+            replay_hash.to_hex()
+        ));
+    }
+    material
+}
+
+fn campaign_corpus_retention_record_material(
+    source_root: ContentHash,
+    policy: &CampaignCorpusRetentionPolicy,
+    entries: &BTreeMap<ContentHash, ContentHash>,
+) -> String {
+    let mut material = format!(
+        "format=crucible.campaign-corpus-retention.v1\nsource={}\ncap={}\nseed={}\n",
+        source_root.to_hex(),
+        policy.cap,
+        policy.seed.to_hex()
+    );
     for (artifact_hash, replay_hash) in entries {
         material.push_str(&format!(
             "entry artifact={} replay={}\n",
@@ -2898,6 +3417,98 @@ fn parse_campaign_corpus_record(
         entries.insert(artifact, replay);
     }
     Ok(entries)
+}
+
+fn parse_campaign_corpus_retention_record(
+    path: &Path,
+    material: &str,
+) -> Result<CampaignCorpusRetentionRecord, CasError> {
+    let mut lines = material.lines();
+    if lines.next() != Some("format=crucible.campaign-corpus-retention.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention format is unsupported",
+        });
+    }
+    let source_line = lines
+        .next()
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention source is missing",
+        })?;
+    let Some(source_hex) = source_line.strip_prefix("source=") else {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention source is missing",
+        });
+    };
+    let source_root =
+        ContentHash::from_hex(source_hex).ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention source hash is invalid",
+        })?;
+
+    let cap_line = lines
+        .next()
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention cap is missing",
+        })?;
+    let Some(cap_value) = cap_line.strip_prefix("cap=") else {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention cap is missing",
+        });
+    };
+    let cap = cap_value
+        .parse::<usize>()
+        .map_err(|_| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention cap is invalid",
+        })?;
+    if cap == 0 {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention cap must be greater than zero",
+        });
+    }
+
+    let seed_line = lines
+        .next()
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention seed is missing",
+        })?;
+    let Some(seed_hex) = seed_line.strip_prefix("seed=") else {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus retention seed is missing",
+        });
+    };
+    let seed = ContentHash::from_hex(seed_hex).ok_or_else(|| CasError::InvalidCampaignRecord {
+        path: path.to_path_buf(),
+        reason: "campaign corpus retention seed hash is invalid",
+    })?;
+
+    let mut entries = BTreeMap::new();
+    for line in lines {
+        let Some(fields_material) = line.strip_prefix("entry ") else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign corpus retention entry line is unsupported",
+            });
+        };
+        let fields = parse_space_fields(path, fields_material, "campaign corpus entry")?;
+        let artifact = parse_required_campaign_hash(path, &fields, "artifact")?;
+        let replay = parse_required_campaign_hash(path, &fields, "replay")?;
+        entries.insert(artifact, replay);
+    }
+
+    Ok(CampaignCorpusRetentionRecord {
+        source_root,
+        policy: CampaignCorpusRetentionPolicy { cap, seed },
+        entries,
+    })
 }
 
 fn parse_campaign_coverage_map_record(
@@ -3283,6 +3894,19 @@ fn validate_campaign_lineage(
     Ok(())
 }
 
+fn validate_campaign_corpus_retention_policy(
+    policy: &CampaignCorpusRetentionPolicy,
+    path: PathBuf,
+) -> Result<(), CasError> {
+    if policy.cap == 0 {
+        return Err(CasError::InvalidCampaignRecord {
+            path,
+            reason: "campaign corpus retention cap must be greater than zero",
+        });
+    }
+    Ok(())
+}
+
 fn campaign_root_field(label: &str) -> &'static str {
     match label {
         "corpus" => "corpus_root",
@@ -3301,17 +3925,60 @@ fn campaign_root_regression_reason(label: &str) -> &'static str {
     }
 }
 
-fn campaign_typed_root_format(label: &str) -> &'static str {
+fn is_typed_campaign_root_format(label: &str, format: &str) -> bool {
     match label {
-        "corpus" => "crucible.campaign-corpus.v1",
-        "coverage-map" => "crucible.campaign-coverage-map.v1",
-        "findings" => "crucible.campaign-findings-ledger.v1",
-        _ => "",
+        "corpus" => {
+            matches!(
+                format,
+                "crucible.campaign-corpus.v1" | "crucible.campaign-corpus-retention.v1"
+            )
+        }
+        "coverage-map" => format == "crucible.campaign-coverage-map.v1",
+        "findings" => format == "crucible.campaign-findings-ledger.v1",
+        _ => false,
     }
 }
 
 fn record_format(material: &str) -> Option<&str> {
     material.lines().next()?.strip_prefix("format=")
+}
+
+fn retain_campaign_corpus_entries(
+    entries: &BTreeMap<ContentHash, ContentHash>,
+    policy: &CampaignCorpusRetentionPolicy,
+) -> BTreeMap<ContentHash, ContentHash> {
+    let mut scored_entries = entries
+        .iter()
+        .map(|(artifact_hash, replay_hash)| {
+            (
+                campaign_corpus_retention_score(policy.seed, *artifact_hash, *replay_hash),
+                *artifact_hash,
+                *replay_hash,
+            )
+        })
+        .collect::<Vec<_>>();
+    scored_entries.sort();
+    scored_entries
+        .into_iter()
+        .take(policy.cap)
+        .map(|(_, artifact_hash, replay_hash)| (artifact_hash, replay_hash))
+        .collect()
+}
+
+fn campaign_corpus_retention_score(
+    seed: ContentHash,
+    artifact_hash: ContentHash,
+    replay_hash: ContentHash,
+) -> ContentHash {
+    ContentHash::from_bytes(
+        format!(
+            "crucible.campaign-corpus-retention-score.v1\nseed={}\nartifact={}\nreplay={}\n",
+            seed.to_hex(),
+            artifact_hash.to_hex(),
+            replay_hash.to_hex()
+        )
+        .as_bytes(),
+    )
 }
 
 fn campaign_root_merge_hash(label: &str, left: ContentHash, right: ContentHash) -> ContentHash {
@@ -4057,6 +4724,339 @@ mod tests {
             let artifact = campaign.read_replay_artifact(entry.artifact_hash)?;
             assert!(entry.reproduces_bit_identically(&artifact));
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_gc_is_rooted_at_manifest_roots_and_sweeps_unpinned_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let corpus_artifact = CampaignReplayArtifact::new(
+            b"definition:gc-corpus".to_vec(),
+            b"seed:gc-corpus".to_vec(),
+            b"schedule:gc-corpus".to_vec(),
+        );
+        let finding_artifact = CampaignReplayArtifact::new(
+            b"definition:gc-finding".to_vec(),
+            b"seed:gc-finding".to_vec(),
+            b"schedule:gc-finding".to_vec(),
+        );
+        let corpus_artifact_hash = campaign.persist_replay_artifact(&corpus_artifact)?;
+        let finding_artifact_hash = campaign.persist_replay_artifact(&finding_artifact)?;
+        let coverage_edge = campaign.manifest_store().put(b"coverage-edge-object")?;
+        let abandoned = campaign
+            .manifest_store()
+            .put(b"abandoned-unpinned-campaign-object")?;
+        let genesis_pin = campaign.manifest_store().put(b"campaign-genesis-pin")?;
+        let corpus_root = campaign.persist_campaign_corpus([corpus_artifact])?;
+        let coverage_map_root = campaign.persist_accumulated_coverage_map([coverage_edge])?;
+        let findings_root = campaign.persist_findings_ledger([CampaignFinding::new(
+            ContentHash::from_bytes(b"gc-finding-fingerprint"),
+            finding_artifact,
+        )])?;
+        let finding_entry = campaign
+            .findings_ledger_entries(findings_root)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| std::io::Error::other("finding ledger did not persist an entry"))?;
+        let manifest = CampaignManifest::new(
+            corpus_root,
+            coverage_map_root,
+            findings_root,
+            genesis_pin,
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+        );
+
+        let candidates = [
+            corpus_root,
+            coverage_map_root,
+            findings_root,
+            genesis_pin,
+            corpus_artifact_hash,
+            coverage_edge,
+            finding_artifact_hash,
+            finding_entry.finding_hash,
+            abandoned,
+        ];
+        let plan = campaign.campaign_gc_plan(&manifest, candidates)?;
+
+        assert_eq!(
+            plan.roots.root_set(),
+            BTreeSet::from([corpus_root, coverage_map_root, findings_root, genesis_pin])
+        );
+        assert!(plan.retained_objects.contains(&corpus_artifact_hash));
+        assert!(plan.retained_objects.contains(&coverage_edge));
+        assert!(plan.retained_objects.contains(&finding_artifact_hash));
+        assert!(plan.retained_objects.contains(&finding_entry.finding_hash));
+        assert_eq!(plan.sweep_candidates, BTreeSet::from([abandoned]));
+
+        let report = campaign.garbage_collect_campaign_candidates(&manifest, candidates)?;
+        assert_eq!(report.swept_objects, BTreeSet::from([abandoned]));
+        assert!(!campaign.manifest_store().has(&abandoned)?);
+        assert!(campaign.manifest_store().has(&corpus_root)?);
+        assert!(campaign.manifest_store().has(&findings_root)?);
+        assert_eq!(campaign.seed_next_run(&manifest)?.len(), 1);
+        assert_eq!(campaign.findings_ledger_entries(findings_root)?.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_fat_to_thin_eviction_preserves_checkpoint_value() {
+        let checkpoint = ContentHash::from_bytes(b"checkpoint-value");
+        let parent = ContentHash::from_bytes(b"checkpoint-parent");
+        let schedule_delta = ContentHash::from_bytes(b"checkpoint-schedule-delta");
+        let materialization = ContentHash::from_bytes(b"cache-only-materialization");
+        let fat = CampaignCheckpointMaterialization::fat(
+            checkpoint,
+            parent,
+            schedule_delta,
+            materialization,
+        );
+
+        let eviction = fat.evict_to_thin();
+
+        assert!(eviction.preserves_value());
+        assert_eq!(eviction.evicted_materialization, Some(materialization));
+        assert_eq!(eviction.after.checkpoint, checkpoint);
+        assert_eq!(eviction.after.parent, parent);
+        assert_eq!(eviction.after.schedule_delta, schedule_delta);
+        assert!(eviction.after.materialization.is_none());
+    }
+
+    #[test]
+    fn campaign_corpus_retention_is_deterministic_seeded_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let left_temp = tempfile::tempdir()?;
+        let right_temp = tempfile::tempdir()?;
+        let left_campaign = SharedCampaignStore::new(left_temp.path());
+        let right_campaign = SharedCampaignStore::new(right_temp.path());
+        let artifacts = [
+            CampaignReplayArtifact::new(
+                b"definition:retention-a".to_vec(),
+                b"seed:a".to_vec(),
+                b"schedule:a".to_vec(),
+            ),
+            CampaignReplayArtifact::new(
+                b"definition:retention-b".to_vec(),
+                b"seed:b".to_vec(),
+                b"schedule:b".to_vec(),
+            ),
+            CampaignReplayArtifact::new(
+                b"definition:retention-c".to_vec(),
+                b"seed:c".to_vec(),
+                b"schedule:c".to_vec(),
+            ),
+            CampaignReplayArtifact::new(
+                b"definition:retention-d".to_vec(),
+                b"seed:d".to_vec(),
+                b"schedule:d".to_vec(),
+            ),
+        ];
+        let left_corpus = left_campaign.persist_campaign_corpus(artifacts.iter().cloned())?;
+        let right_corpus =
+            right_campaign.persist_campaign_corpus(artifacts.iter().rev().cloned())?;
+        let policy =
+            CampaignCorpusRetentionPolicy::new(2, ContentHash::from_bytes(b"retention-seed"));
+        let zero_cap_policy =
+            CampaignCorpusRetentionPolicy::new(0, ContentHash::from_bytes(b"retention-seed"));
+
+        let left_retention = left_campaign.retain_campaign_corpus_under_cap(left_corpus, policy)?;
+        let left_retention_repeat =
+            left_campaign.retain_campaign_corpus_under_cap(left_corpus, policy)?;
+        let right_retention =
+            right_campaign.retain_campaign_corpus_under_cap(right_corpus, policy)?;
+        assert!(matches!(
+            left_campaign.retain_campaign_corpus_under_cap(left_corpus, zero_cap_policy),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus retention cap must be greater than zero",
+                ..
+            })
+        ));
+
+        assert_eq!(left_corpus, right_corpus);
+        assert_eq!(left_retention, left_retention_repeat);
+        assert_eq!(left_retention.retained_root, right_retention.retained_root);
+        assert_eq!(left_retention.retained_artifacts.len(), 2);
+        assert_eq!(left_retention.evicted_artifacts.len(), 2);
+        assert_eq!(
+            left_campaign
+                .seed_next_run_from_prior_corpus(left_retention.retained_root)?
+                .len(),
+            2
+        );
+
+        let coverage_root = left_campaign.persist_accumulated_coverage_map([])?;
+        let finding_artifact = artifacts
+            .first()
+            .cloned()
+            .ok_or_else(|| std::io::Error::other("missing retention artifact"))?;
+        let findings_root = left_campaign.persist_findings_ledger([CampaignFinding::new(
+            ContentHash::from_bytes(b"retention-finding"),
+            finding_artifact,
+        )])?;
+        let genesis_pin = left_campaign
+            .manifest_store()
+            .put(b"retention-genesis-pin")?;
+        let provenance =
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+        let full_manifest = CampaignManifest::new(
+            left_corpus,
+            coverage_root,
+            findings_root,
+            genesis_pin,
+            provenance.clone(),
+        );
+        let retained_manifest = CampaignManifest::new(
+            left_retention.retained_root,
+            coverage_root,
+            findings_root,
+            genesis_pin,
+            provenance.clone(),
+        );
+        let first_head = match left_campaign.compare_and_swap_head(None, &full_manifest)? {
+            CampaignCasOutcome::Advanced(head) => head,
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        };
+
+        assert!(matches!(
+            left_campaign.compare_and_swap_head(Some(first_head.manifest_hash), &retained_manifest),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus advance would drop a prior seed artifact",
+                ..
+            })
+        ));
+        assert!(matches!(
+            left_campaign.compare_and_swap_head_with_retention(
+                Some(first_head.manifest_hash),
+                &retained_manifest,
+                CampaignCorpusRetentionPolicy::new(
+                    1,
+                    ContentHash::from_bytes(b"retention-seed-mismatch")
+                ),
+            ),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus retention policy does not match authorized retention policy",
+                ..
+            })
+        ));
+
+        let retained_head = match left_campaign.compare_and_swap_head_with_retention(
+            Some(first_head.manifest_hash),
+            &retained_manifest,
+            policy,
+        )? {
+            CampaignCasOutcome::Advanced(head) => {
+                assert_eq!(head.manifest.corpus_root, left_retention.retained_root);
+                assert_eq!(head.manifest.findings_root, findings_root);
+                head
+            }
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("retention campaign CAS lost").into());
+            }
+        };
+        assert!(matches!(
+            left_campaign.compare_and_swap_head(Some(retained_head.manifest_hash), &full_manifest),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus retention roots require explicit retention policy",
+                ..
+            })
+        ));
+        assert_eq!(
+            left_campaign.findings_ledger_entries(findings_root)?.len(),
+            1
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_retention_merge_retry_does_not_expand_over_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let artifact_a = CampaignReplayArtifact::new(
+            b"definition:merge-retention-a".to_vec(),
+            b"seed:a".to_vec(),
+            b"schedule:a".to_vec(),
+        );
+        let artifact_b = CampaignReplayArtifact::new(
+            b"definition:merge-retention-b".to_vec(),
+            b"seed:b".to_vec(),
+            b"schedule:b".to_vec(),
+        );
+        let artifact_c = CampaignReplayArtifact::new(
+            b"definition:merge-retention-c".to_vec(),
+            b"seed:c".to_vec(),
+            b"schedule:c".to_vec(),
+        );
+        let edge = ContentHash::from_bytes(b"merge-retention-edge");
+        let coverage_root = campaign.persist_accumulated_coverage_map([edge])?;
+        let findings_root = campaign.persist_findings_ledger([])?;
+        let genesis_pin = campaign.manifest_store().put(b"merge-retention-genesis")?;
+        let provenance =
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+        let corpus_root =
+            campaign.persist_campaign_corpus([artifact_a.clone(), artifact_b.clone()])?;
+        let retention = campaign.retain_campaign_corpus_under_cap(
+            corpus_root,
+            CampaignCorpusRetentionPolicy::new(1, ContentHash::from_bytes(b"merge-retention-seed")),
+        )?;
+        let full_manifest = CampaignManifest::new(
+            corpus_root,
+            coverage_root,
+            findings_root,
+            genesis_pin,
+            provenance.clone(),
+        );
+        let retained_manifest = CampaignManifest::new(
+            retention.retained_root,
+            coverage_root,
+            findings_root,
+            genesis_pin,
+            provenance.clone(),
+        );
+        let head = match campaign.compare_and_swap_head(None, &full_manifest)? {
+            CampaignCasOutcome::Advanced(head) => head,
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        };
+        match campaign.compare_and_swap_head_with_retention(
+            Some(head.manifest_hash),
+            &retained_manifest,
+            CampaignCorpusRetentionPolicy::new(1, ContentHash::from_bytes(b"merge-retention-seed")),
+        )? {
+            CampaignCasOutcome::Advanced(_) => {}
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("retention campaign CAS lost").into());
+            }
+        }
+        let competing_manifest = CampaignManifest::new(
+            campaign.persist_campaign_corpus([artifact_c])?,
+            coverage_root,
+            findings_root,
+            genesis_pin,
+            provenance,
+        );
+
+        assert!(matches!(
+            campaign.advance_head_with_merge(&competing_manifest, 1),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus retention roots require explicit retention policy",
+                ..
+            })
+        ));
+        assert_eq!(
+            campaign
+                .seed_next_run_from_prior_corpus(retention.retained_root)?
+                .len(),
+            1
+        );
 
         Ok(())
     }

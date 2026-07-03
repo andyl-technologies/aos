@@ -165,14 +165,14 @@
       needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "campaign continuity waits for fleet equivalence, campaign manifest, campaign seeding, and campaign provenance";
-      edge = "gate:fleet-equivalence+campaign-manifest+campaign-seeding+campaign-provenance->gate:campaign-continuity";
-      needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];";
+      label = "campaign continuity waits for fleet equivalence, campaign manifest, campaign seeding, storage bounding, and campaign provenance";
+      edge = "gate:fleet-equivalence+campaign-manifest+campaign-seeding+campaign-storage-bounding+campaign-provenance->gate:campaign-continuity";
+      needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
     }
     {
-      label = "campaign continuity wrapper waits for fleet equivalence, campaign manifest, campaign seeding, and campaign provenance";
-      edge = "gate:fleet-equivalence-wrapper+campaign-manifest+campaign-seeding+campaign-provenance->gate:campaign-continuity-wrapper";
-      needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];";
+      label = "campaign continuity wrapper waits for fleet equivalence, campaign manifest, campaign seeding, storage bounding, and campaign provenance";
+      edge = "gate:fleet-equivalence-wrapper+campaign-manifest+campaign-seeding+campaign-storage-bounding+campaign-provenance->gate:campaign-continuity-wrapper";
+      needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
     }
   ];
 
@@ -469,6 +469,10 @@
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignSeeding";'';
       }
       {
+        label = "T-DCE-6 campaign storage bounding guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignStorageBounding";'';
+      }
+      {
         label = "T-PKG-22 campaign provenance guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";'';
       }
@@ -594,6 +598,7 @@ in
             four_layer_dedup_source=checks.crucible.phase7.crucibleFourLayerDedup
             campaign_manifest_source=checks.crucible.phase7.crucibleCampaignManifest
             campaign_seeding_source=checks.crucible.phase7.crucibleCampaignSeeding
+            campaign_storage_bounding_source=checks.crucible.phase7.crucibleCampaignStorageBounding
             fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';
