@@ -859,6 +859,60 @@ impl RegionAllocation {
             .and_then(|index| self.slots.get(index))
     }
 
+    /// Serializes the allocation into setup-region bytes for a host memfd.
+    ///
+    /// The returned byte vector has length [`RegionLayout::region_size`] and
+    /// uses the exact `#[repr(C)]` offsets exported by this crate. It exists for
+    /// host setup paths that must initialize a shared-memory descriptor before
+    /// handing it to the QEMU plugin through the control protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionSerializationError`] when the region size or a computed
+    /// segment offset cannot be represented on this host.
+    pub fn setup_region_bytes(&self) -> Result<Vec<u8>, RegionSerializationError> {
+        let region_len = usize::try_from(self.layout.region_size).map_err(|_error| {
+            RegionSerializationError::RegionSizeTooLarge {
+                region_size: self.layout.region_size,
+            }
+        })?;
+        let mut bytes = vec![0; region_len];
+
+        write_region_header_bytes(&mut bytes, self.header.snapshot())?;
+        for (index, slot) in self.slots.iter().enumerate() {
+            let base = checked_segment_offset(
+                "node slot",
+                index,
+                self.layout.node_slots_off,
+                NODE_SLOT_SIZE,
+                region_len,
+            )?;
+            write_node_slot_bytes(&mut bytes[base..base + NODE_SLOT_SIZE], slot.snapshot());
+        }
+        for (index, ring_header) in self.ring_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "ring header",
+                index,
+                self.layout.ring_hdr_off,
+                RING_HEADER_SIZE,
+                region_len,
+            )?;
+            write_ring_header_bytes(&mut bytes[base..base + RING_HEADER_SIZE], ring_header);
+        }
+        for (index, frame_entry) in self.frame_entries.iter().enumerate() {
+            let base = checked_segment_offset(
+                "frame entry",
+                index,
+                self.layout.ring_data_off,
+                FRAME_ENTRY_SIZE,
+                region_len,
+            )?;
+            write_frame_entry_bytes(&mut bytes[base..base + FRAME_ENTRY_SIZE], frame_entry);
+        }
+
+        Ok(bytes)
+    }
+
     /// Enqueues a frame into the directed ring from `src_slot` to `dst_slot`.
     ///
     /// # Errors
@@ -1285,6 +1339,170 @@ fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
 
 fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
     u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
+}
+
+fn checked_segment_offset(
+    segment: &'static str,
+    index: usize,
+    base: u64,
+    len: usize,
+    region_len: usize,
+) -> Result<usize, RegionSerializationError> {
+    let offset = u64::try_from(index)
+        .ok()
+        .and_then(|index| index.checked_mul(u64::try_from(len).ok()?))
+        .and_then(|offset| base.checked_add(offset))
+        .ok_or(RegionSerializationError::SegmentOffsetOverflow { segment, index })?;
+    let offset = usize::try_from(offset)
+        .map_err(|_error| RegionSerializationError::SegmentOffsetOverflow { segment, index })?;
+    let end = offset
+        .checked_add(len)
+        .ok_or(RegionSerializationError::SegmentOffsetOverflow { segment, index })?;
+    if end > region_len {
+        return Err(RegionSerializationError::SegmentOutOfBounds {
+            segment,
+            index,
+            offset,
+            len,
+            region_len,
+        });
+    }
+    Ok(offset)
+}
+
+fn write_region_header_bytes(
+    bytes: &mut [u8],
+    snapshot: RegionHeaderSnapshot,
+) -> Result<(), RegionSerializationError> {
+    let region_len = bytes.len();
+    let header_len = REGION_HEADER_SIZE;
+    if header_len > region_len {
+        return Err(RegionSerializationError::SegmentOutOfBounds {
+            segment: "region header",
+            index: 0,
+            offset: 0,
+            len: header_len,
+            region_len,
+        });
+    }
+    let header = &mut bytes[..header_len];
+    write_u64_at(header, REGION_HEADER_MAGIC_OFFSET, snapshot.magic);
+    write_u32_at(
+        header,
+        REGION_HEADER_ABI_VERSION_OFFSET,
+        snapshot.abi_version,
+    );
+    write_u32_at(header, REGION_HEADER_NODE_COUNT_OFFSET, snapshot.node_count);
+    write_u32_at(
+        header,
+        REGION_HEADER_QUEUE_CAPACITY_OFFSET,
+        snapshot.queue_capacity,
+    );
+    write_u32_at(header, REGION_HEADER_RING_COUNT_OFFSET, snapshot.ring_count);
+    write_u64_at(
+        header,
+        REGION_HEADER_RING_HDR_OFF_OFFSET,
+        snapshot.ring_hdr_off,
+    );
+    write_u64_at(
+        header,
+        REGION_HEADER_RING_DATA_OFF_OFFSET,
+        snapshot.ring_data_off,
+    );
+    write_u64_at(
+        header,
+        REGION_HEADER_ENTRY_STRIDE_OFFSET,
+        snapshot.entry_stride,
+    );
+    write_u64_at(
+        header,
+        REGION_HEADER_REGION_SIZE_OFFSET,
+        snapshot.region_size,
+    );
+    write_u32_at(
+        header,
+        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+        snapshot.icount_shift,
+    );
+    write_u8_at(
+        header,
+        REGION_HEADER_PAUSE_REQUESTED_OFFSET,
+        snapshot.pause_requested,
+    );
+    write_u8_at(
+        header,
+        REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET,
+        snapshot.shutdown_requested,
+    );
+    Ok(())
+}
+
+fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot) {
+    write_u64_at(
+        bytes,
+        NODE_SLOT_CURRENT_ICOUNT_OFFSET,
+        snapshot.current_icount,
+    );
+    write_u64_at(bytes, NODE_SLOT_CURRENT_NS_OFFSET, snapshot.current_ns);
+    write_u64_at(
+        bytes,
+        NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
+        snapshot.max_advance_icount,
+    );
+    write_u64_at(
+        bytes,
+        NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET,
+        snapshot.idle_wake_icount,
+    );
+    write_u32_at(bytes, NODE_SLOT_WAKE_SIGNAL_OFFSET, snapshot.wake_signal);
+    write_u8_at(bytes, NODE_SLOT_STATUS_OFFSET, snapshot.status);
+    write_u8_at(bytes, NODE_SLOT_KIND_OFFSET, snapshot.kind);
+    write_u8_at(
+        bytes,
+        NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
+        snapshot.device_io_active,
+    );
+    write_u32_at(bytes, NODE_SLOT_PUBLISH_GEN_OFFSET, snapshot.publish_gen);
+}
+
+fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {
+    write_u64_at(bytes, RING_HEADER_READ_IDX_OFFSET, ring_header.read_index());
+    write_u64_at(
+        bytes,
+        RING_HEADER_WRITE_IDX_OFFSET,
+        ring_header.write_index(),
+    );
+}
+
+fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {
+    write_u64_at(
+        bytes,
+        FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+        frame.delivery_icount,
+    );
+    write_u32_at(bytes, FRAME_ENTRY_SRC_NODE_OFFSET, frame.src_node);
+    write_u32_at(bytes, FRAME_ENTRY_SEQ_OFFSET, frame.seq);
+    write_u16_at(bytes, FRAME_ENTRY_LEN_OFFSET, frame.len);
+    bytes[FRAME_ENTRY_PAD_OFFSET..FRAME_ENTRY_PAD_OFFSET + frame._pad.len()]
+        .copy_from_slice(&frame._pad);
+    bytes[FRAME_ENTRY_DATA_OFFSET..FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA]
+        .copy_from_slice(&frame.data);
+}
+
+fn write_u8_at(bytes: &mut [u8], offset: usize, value: u8) {
+    bytes[offset] = value;
+}
+
+fn write_u16_at(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 fn validate_pending_input_source(
@@ -2880,6 +3098,41 @@ pub enum RegionLayoutError {
     /// The computed region byte geometry overflowed an integer.
     #[error("computed shared-memory region geometry overflowed")]
     GeometryOverflow,
+}
+
+/// An error produced while serializing an initialized region for setup handoff.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RegionSerializationError {
+    /// The region size cannot fit in a process-local byte vector.
+    #[error("shared-memory region size {region_size} cannot fit in usize")]
+    RegionSizeTooLarge {
+        /// Computed region size in bytes.
+        region_size: u64,
+    },
+    /// A segment offset overflowed while serializing the region.
+    #[error("shared-memory {segment} index {index} offset overflowed")]
+    SegmentOffsetOverflow {
+        /// Segment kind being serialized.
+        segment: &'static str,
+        /// Segment index within its array.
+        index: usize,
+    },
+    /// A segment would extend beyond the computed region length.
+    #[error(
+        "shared-memory {segment} index {index} at byte {offset} with length {len} extends past region length {region_len}"
+    )]
+    SegmentOutOfBounds {
+        /// Segment kind being serialized.
+        segment: &'static str,
+        /// Segment index within its array.
+        index: usize,
+        /// Computed byte offset.
+        offset: usize,
+        /// Segment length in bytes.
+        len: usize,
+        /// Total region length in bytes.
+        region_len: usize,
+    },
 }
 
 /// An error produced by SPSC ring operations.

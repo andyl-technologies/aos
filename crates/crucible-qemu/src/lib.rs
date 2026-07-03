@@ -12,7 +12,8 @@
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `coverage`
-//! owns host-side plugin coverage observation bridging; `inertness`
+//! owns host-side plugin coverage observation bridging; `host_setup` owns the
+//! real Linux descriptor handoff and setup lifecycle driver; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
 //! boundary assertion; `gdbstub_proxy` owns the mediated debug gdbstub bridge
@@ -39,6 +40,8 @@ mod coverage;
 mod crash_detection;
 mod determinism_boundary;
 mod gdbstub_proxy;
+#[cfg(target_os = "linux")]
+mod host_setup;
 mod inertness;
 mod launch;
 mod node;
@@ -80,6 +83,10 @@ pub use determinism_boundary::{
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
     QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,
+};
+#[cfg(target_os = "linux")]
+pub use host_setup::{
+    QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
@@ -155,5 +162,6 @@ pub use single_vm_fingerprint::{
 };
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuSpawnError, QemuSpawnHostResources, QemuSpawnedChild, spawn_qemu_child_with_fds,
+    QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
+    spawn_qemu_child_with_fds,
 };
