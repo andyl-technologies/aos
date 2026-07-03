@@ -182,6 +182,160 @@ fn region_plan_decision_telemetry_counts_policy_outcomes() {
 }
 
 #[test]
+fn discard_worker_region_scope_pops_when_plan_permits() {
+    let ir = lower("1 + 2");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    );
+
+    let report = evaluator
+        .discard_worker_region_if_plan_permits(plan, |eval| {
+            let value = eval
+                .alloc_thunk_for_node(ir.root, ir.root, span)
+                .expect("discarded worker thunk allocates");
+            assert_eq!(value.tag(), ValueTag::Thunk);
+        })
+        .expect("lexical worker region scope retires")
+        .expect("lexical no-escape plan permits pop");
+
+    assert_eq!(report.reclaimed_records(), 1);
+    assert_eq!(report.records_after(), 0);
+    assert!(report.arena_report().used_bytes_released() > 0);
+    assert_eq!(evaluator.heap().len(), 0);
+    assert_eq!(evaluator.stats().thunks_allocated(), 1);
+    assert_eq!(evaluator.stats().source_thunk_region_plan_decisions(), 0);
+}
+
+#[test]
+fn discard_worker_region_scope_cancels_when_plan_is_conservative() {
+    let ir = lower("1 + 2");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::conservative(),
+    );
+
+    let report = evaluator
+        .discard_worker_region_if_plan_permits(plan, |eval| {
+            let value = eval
+                .alloc_thunk_for_node(ir.root, ir.root, span)
+                .expect("retained worker thunk allocates");
+            assert_eq!(value.tag(), ValueTag::Thunk);
+        })
+        .expect("conservative worker region scope retires");
+
+    assert_eq!(report, None);
+    assert_eq!(evaluator.heap().len(), 1);
+    assert_eq!(evaluator.stats().thunks_allocated(), 1);
+}
+
+#[test]
+fn discard_worker_region_scope_retires_mark_after_pop_error() {
+    let ir = lower("1 + 2");
+    let mut evaluator = TreeWalk::new(&ir);
+    let plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    );
+
+    let error = evaluator
+        .discard_worker_region_if_plan_permits(plan, |eval| {
+            let value = eval
+                .heap
+                .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+                .expect("permanent string allocates");
+            assert_eq!(value.tag(), ValueTag::String);
+        })
+        .expect_err("permanent suffix rejects lexical worker-region pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopNonWorkerRecords { records: 1 }
+    );
+    assert_eq!(evaluator.heap.active_worker_region_marks_for_test(), 0);
+    assert_eq!(evaluator.heap().len(), 1);
+}
+
+#[test]
+fn discard_worker_region_scope_retires_mark_after_retained_edge_error() {
+    let ir = lower("1 + 2");
+    let mut evaluator = TreeWalk::new(&ir);
+    let retained = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(10)))
+        .expect("retained thunk allocates before marker");
+    let plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    );
+
+    let error = evaluator
+        .discard_worker_region_if_plan_permits(plan, |eval| {
+            let forced = eval
+                .heap
+                .alloc_lambda(EvalLambda::new(
+                    IrId::new(20),
+                    IrId::new(21),
+                    FrameId::new(0),
+                    EvalEnv::default(),
+                ))
+                .expect("worker lambda allocates above marker");
+            let retained_thunk = eval
+                .heap
+                .clone_thunk(retained)
+                .expect("retained thunk exists");
+            let crate::eval::ForceClaim::Claimed(guard) = retained_thunk
+                .cell()
+                .begin_force()
+                .expect("retained thunk claim succeeds")
+            else {
+                panic!("retained thunk should be claimable");
+            };
+            guard
+                .finish(forced)
+                .expect("forced value publishes into retained thunk");
+        })
+        .expect_err("retained edge rejects lexical worker-region pop");
+
+    assert!(matches!(
+        error,
+        EvalHeapError::WorkerRegionPopRetainedEdge { .. }
+    ));
+    assert_eq!(evaluator.heap.active_worker_region_marks_for_test(), 0);
+    assert_eq!(evaluator.heap().len(), 2);
+    assert!(evaluator.heap().get_thunk(retained).is_ok());
+}
+
+#[test]
+fn discard_worker_region_scope_retires_mark_after_panic() {
+    let ir = lower("1 + 2");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    );
+
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = evaluator.discard_worker_region_if_plan_permits(plan, |eval| {
+            let value = eval
+                .alloc_thunk_for_node(ir.root, ir.root, span)
+                .expect("worker thunk allocates before panic");
+            assert_eq!(value.tag(), ValueTag::Thunk);
+            panic!("scope panic");
+        });
+    }));
+
+    assert!(panic_result.is_err());
+    assert_eq!(evaluator.heap.active_worker_region_marks_for_test(), 0);
+    assert_eq!(evaluator.heap().len(), 1);
+}
+
+#[test]
 fn allocated_thunks_record_conservative_region_plan_telemetry() {
     let outcome = eval_whnf_owned(&lower("[ (1 + 6) ]")).expect("thunked list evaluates");
 

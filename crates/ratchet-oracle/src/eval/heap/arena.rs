@@ -561,6 +561,11 @@ impl EvalHeap {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_worker_region_marks_for_test(&self) -> usize {
+        self.worker_region_mark_stack.len()
+    }
+
     /// Reclaims worker-domain allocations above `mark` when no retained record
     /// points into that region.
     ///

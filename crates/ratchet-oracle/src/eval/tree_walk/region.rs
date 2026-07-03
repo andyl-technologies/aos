@@ -3,6 +3,57 @@
 use super::*;
 
 impl TreeWalk {
+    /// Runs discardable crate-internal work inside a worker-region mark.
+    ///
+    /// The marker is retired through [`EvalHeap::pop_worker_region_if_plan_permits`]
+    /// after `run` returns. Plans that do not permit early pop leave the work's
+    /// allocations in the heap and return `Ok(None)`. Plans that permit early
+    /// pop reclaim the suffix only if the typed heap side-table validation can
+    /// prove that the suffix contains only worker-domain records and no retained
+    /// edge points into the marked region.
+    ///
+    /// The closure is deliberately discard-only. This helper does not return
+    /// heap handles, but `Value` handles are copyable and the type system cannot
+    /// prevent a closure from publishing one through captured state. Internal
+    /// callers must use this only for already-proven no-escape scratch work:
+    /// handles to worker-domain values allocated above the marker become invalid
+    /// after a successful pop, and later bump allocation may reuse the same raw
+    /// address for a different typed record. Callers must also not manipulate
+    /// worker-region markers directly or leave nested markers active inside the
+    /// closure; this helper owns the innermost worker marker during cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the worker marker cannot be created, if the
+    /// marker cannot be retired, or if a pop-permitting plan fails the typed
+    /// heap reclamation gate.
+    ///
+    /// # Panics
+    ///
+    /// Attempts to retire the worker marker before re-panicking if `run` panics.
+    /// When `plan` permits early pop, also panics if the heap exhausts all
+    /// region-owner ids while rotating an overflowed worker-region epoch.
+    // Production allocation-site wiring is a later region-inference slice.
+    #[allow(dead_code)]
+    pub(crate) fn discard_worker_region_if_plan_permits(
+        &mut self,
+        plan: RegionPlan,
+        run: impl FnOnce(&mut Self),
+    ) -> Result<Option<EvalHeapWorkerRegionPopReport>, EvalHeapError> {
+        let mark = self.heap.worker_region_mark()?;
+        let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self)));
+        if let Err(payload) = run_result {
+            let _ = self.heap.cancel_worker_region_mark(mark);
+            std::panic::resume_unwind(payload);
+        }
+
+        let pop_result = self.heap.pop_worker_region_if_plan_permits(mark, plan);
+        if pop_result.is_err() && plan.permits_early_pop() {
+            self.heap.cancel_worker_region_mark(mark)?;
+        }
+        pop_result
+    }
+
     /// Classifies one current-module allocation candidate for region placement.
     ///
     /// This is a policy adapter only. It does not change allocation behavior or

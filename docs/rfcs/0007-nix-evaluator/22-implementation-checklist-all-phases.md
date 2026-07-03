@@ -6290,6 +6290,13 @@ and helps the oracle directly.
       non-pop plans retire the marker without reclaiming heap records, and
       lexical no-escape plans route through the same typed validation before
       reclaiming a suffix.
+      The internal `TreeWalk::discard_worker_region_if_plan_permits` helper adds
+      a currently test-covered scoped tree-walk admission point for discardable
+      work: it brackets the closure with a worker marker, retires the marker
+      through the same plan gate, and returns no heap handles. This is still a
+      caller-contract precursor, not a type-level no-escape proof or
+      allocation-site wiring; internal callers must not publish copied `Value`
+      handles from the closure or disturb the worker-region marker stack.
       Automatic tree-walk allocation placement and IR escape-analysis wiring
       remain open.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
