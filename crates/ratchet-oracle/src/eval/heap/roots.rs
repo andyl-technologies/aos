@@ -49,6 +49,7 @@ const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 const MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE: &str = "minor-GC object byte-copy requests";
 const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot buffer";
+const MINOR_GC_FORWARDING_VALUES_TABLE: &str = "minor-GC forwarding values";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
@@ -1890,6 +1891,32 @@ impl AllocationCollectorPollForwardingInstallReport {
     }
 }
 
+/// One live side-table forwarding value installed on an evaluator heap record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollForwardingValue {
+    source: GcHeapAddress,
+    forwarded_value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollForwardingValue {
+    const fn new(source: GcHeapAddress, forwarded_value: ResolvedValueGeneration) -> Self {
+        Self {
+            source,
+            forwarded_value,
+        }
+    }
+
+    /// Returns the from-space object that owns the forwarding cell.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the forwarding metadata installed for the source object.
+    pub const fn forwarded_value(self) -> ResolvedValueGeneration {
+        self.forwarded_value
+    }
+}
+
 /// One root-backed reference that must be rewritten after minor GC.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollRootWriteback {
@@ -3092,6 +3119,46 @@ impl EvalHeap {
             .record_for_gc_address(address, "forwarding source")?
             .minor_gc_forwarding
             .get())
+    }
+
+    /// Returns every installed live side-table forwarding value.
+    ///
+    /// This exposes evaluator-owned forwarding metadata used by the tree-walk
+    /// GC-stress bridge. It snapshots occupied side-table cells in heap-record
+    /// order, and does not read ABI object headers, prove destination storage
+    /// exists, or validate destination generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if forwarding value storage cannot be reserved
+    /// or a heap record cannot be converted back into a GC address.
+    pub fn minor_gc_forwarding_values(
+        &self,
+    ) -> Result<Vec<AllocationCollectorPollForwardingValue>, EvalHeapError> {
+        let forwarding_value_count = self
+            .records
+            .iter()
+            .filter(|record| record.minor_gc_forwarding.get().is_some())
+            .count();
+        let mut forwarding_values = Vec::new();
+        forwarding_values
+            .try_reserve_exact(forwarding_value_count)
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_FORWARDING_VALUES_TABLE,
+                entries: forwarding_value_count,
+            })?;
+
+        for record in &self.records {
+            let Some(forwarded_value) = record.minor_gc_forwarding.get() else {
+                continue;
+            };
+            forwarding_values.push(AllocationCollectorPollForwardingValue::new(
+                gc_address_for_record(record)?,
+                forwarded_value,
+            ));
+        }
+
+        Ok(forwarding_values)
     }
 
     /// Installs live side-table forwarding values for a minor-GC commit.

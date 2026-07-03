@@ -3505,8 +3505,16 @@ fn collector_poll_minor_gc_forwarding_install_writes_valid_slots() {
     let report = heap
         .install_collector_poll_minor_gc_forwarding_slots(&forwarding_slots)
         .expect("forwarding slots install");
+    let forwarding_values = heap
+        .minor_gc_forwarding_values()
+        .expect("forwarding values snapshot builds");
 
     assert_eq!(report.forwarding_pointers(), 2);
+    assert_eq!(forwarding_values.len(), 2);
+    assert_eq!(forwarding_values[0].source(), gc_address(first));
+    assert_eq!(forwarding_values[0].forwarded_value(), first_forwarded);
+    assert_eq!(forwarding_values[1].source(), gc_address(second));
+    assert_eq!(forwarding_values[1].forwarded_value(), second_forwarded);
     assert_eq!(
         heap.minor_gc_forwarding_value_at(gc_address(first))
             .expect("first forwarding source remains known"),

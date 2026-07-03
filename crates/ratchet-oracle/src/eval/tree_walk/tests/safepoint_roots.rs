@@ -1,13 +1,15 @@
 //! Tree-walk safepoint root-set tests.
 
 use super::*;
+use crate::compile::IrId;
 use crate::eval::heap::{
     AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollScan, EvalRoot,
-    EvalRootSource, HeapAllocationDomain, InternedRootTable,
+    EvalRootSource, EvalThunk, HeapAllocationDomain, InternedRootTable,
 };
 use crate::heap::{
     GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
-    MinorGcPromotionPolicy, MinorGcSurvivorAction, RememberedSet, ResolvedValueGeneration,
+    MinorGcForwardingSlot, MinorGcPromotionPolicy, MinorGcSurvivorAction, RememberedSet,
+    ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
@@ -1340,6 +1342,155 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
             .expect("source forwarding cell remains readable"),
         Some(ResolvedValueGeneration::Heap {
             address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+}
+
+#[test]
+fn forwarding_destination_bindings_reject_extra_installed_forwarding_cell() {
+    let ir = lower("x: x");
+    let mut outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for forwarding binding validation");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let old_base = static_gc_address(0x2000_0000);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect("single-tier worker dry-run installs coherent live metadata");
+    let extra_source = outcome
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(99)))
+        .expect("extra young source allocates");
+    let extra_source_address = gc_address(extra_source);
+    outcome
+        .heap
+        .install_collector_poll_minor_gc_forwarding_slots(&[
+            MinorGcForwardingSlot::with_forwarded_value(
+                extra_source_address,
+                ResolvedValueGeneration::Heap {
+                    address: static_gc_address(0x3000_0000),
+                    generation: HeapGeneration::Young,
+                },
+            ),
+        ])
+        .expect("extra forwarding cell installs");
+
+    let err = outcome
+        .gc_stress_boundary_minor_gc_forwarding_destination_bindings()
+        .expect_err("extra forwarding cell without destination storage is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::BoundaryMinorGcForwardingDestinationMissing { source_address }
+            if source_address == extra_source_address
+    ));
+}
+
+#[test]
+fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let root = evaluator.eval_root().expect("lambda evaluates");
+    let root_address = gc_address(root);
+    let extra_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(99)))
+        .expect("extra young source allocates before boundary scan");
+    let extra_source_address = gc_address(extra_source);
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(root)
+        .expect("boundary scan captures post-extra-allocation heap state");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    let mut outcome = EvalOutcome {
+        value: root,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+        memory_budget_action: None,
+        cheap_memory_budget_plan: None,
+        cheap_memory_advice_report: None,
+        cold_hash_consed_value_materialization: None,
+        gc_stress_boundary_scans,
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_destination_storage:
+            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+    };
+    outcome
+        .heap
+        .install_collector_poll_minor_gc_forwarding_slots(&[
+            MinorGcForwardingSlot::with_forwarded_value(
+                extra_source_address,
+                ResolvedValueGeneration::Heap {
+                    address: static_gc_address(0x3000_0000),
+                    generation: HeapGeneration::Young,
+                },
+            ),
+        ])
+        .expect("preexisting extra forwarding cell installs");
+
+    let err = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect_err("extra forwarding cell rejects all-in-one metadata preflight");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::BoundaryMinorGcForwardingDestinationMissing { source_address }
+            if source_address == extra_source_address
+    ));
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 0);
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 0);
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(root_address)
+            .expect("planned forwarding source remains known"),
+        None
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(extra_source_address)
+            .expect("extra forwarding source remains known"),
+        Some(ResolvedValueGeneration::Heap {
+            address: static_gc_address(0x3000_0000),
             generation: HeapGeneration::Young,
         })
     );

@@ -2123,7 +2123,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       now stages those live metadata projections from one dry run, validating
       forwarding, destination-byte, destination object-generation,
-      forwarding-destination binding, reference-writeback, root/heap-field
+      forwarding-destination binding over the combined installed and planned
+      forwarding cells, reference-writeback, root/heap-field
       destination-binding, and remembered-set payloads before installing
       outcome-owned side tables and clearing the outcome card table together.
       `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
@@ -2133,9 +2134,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       generation writer without mutating evaluator heap records.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
-      source forwarding value, producing forwarding-to-destination binding
-      metadata for a later ABI object-header writer without enumerating
-      unrelated forwarding cells or mutating object headers.
+      source forwarding value and rejects installed forwarding cells without
+      destination snapshots, producing forwarding-to-destination binding
+      metadata for a later ABI object-header writer without mutating object
+      headers.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can

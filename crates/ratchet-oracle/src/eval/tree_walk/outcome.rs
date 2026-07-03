@@ -1601,30 +1601,43 @@ fn boundary_minor_gc_forwarding_destination_bindings(
     heap: &EvalHeap,
     destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
 ) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
-    let destination_objects = destination_storage.object_bytes();
-    let mut forwarding_slots = Vec::new();
-    forwarding_slots
-        .try_reserve_exact(destination_objects.len())
+    boundary_minor_gc_forwarding_destination_bindings_from_heap_and_slots(
+        heap,
+        &[],
+        destination_storage.object_bytes(),
+    )
+}
+
+fn boundary_minor_gc_forwarding_destination_bindings_from_heap_and_slots(
+    heap: &EvalHeap,
+    forwarding_slots: &[MinorGcForwardingSlot],
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
+    let forwarding_values = heap.minor_gc_forwarding_values()?;
+    let combined_len = forwarding_values
+        .len()
+        .checked_add(forwarding_slots.len())
+        .ok_or(EvalHeapError::RootScanLengthOverflow {
+            table: BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE,
+        })?;
+    let mut combined_slots = Vec::new();
+    combined_slots
+        .try_reserve_exact(combined_len)
         .map_err(|_| EvalHeapError::RootScanAllocationFailed {
             table: BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE,
-            entries: destination_objects.len(),
+            entries: combined_len,
         })?;
 
-    for object in destination_objects {
-        let Some(forwarded) = heap.minor_gc_forwarding_value_at(object.source())? else {
-            return Err(EvalHeapError::BoundaryMinorGcDestinationForwardingMissing {
-                source_address: object.source(),
-                destination: object.destination(),
-            });
-        };
-        forwarding_slots.push(MinorGcForwardingSlot::with_forwarded_value(
-            object.source(),
-            forwarded,
+    for forwarding_value in forwarding_values {
+        combined_slots.push(MinorGcForwardingSlot::with_forwarded_value(
+            forwarding_value.source(),
+            forwarding_value.forwarded_value(),
         ));
     }
+    combined_slots.extend_from_slice(forwarding_slots);
 
     boundary_minor_gc_forwarding_destination_bindings_from_slots(
-        &forwarding_slots,
+        &combined_slots,
         destination_objects,
     )
 }
@@ -1645,6 +1658,8 @@ fn boundary_minor_gc_forwarding_destination_bindings_from_slots(
             });
         }
     }
+
+    validate_boundary_minor_gc_forwarding_slot_sources(forwarding_slots, destination_objects)?;
 
     let mut bindings = Vec::new();
     bindings
@@ -1722,6 +1737,39 @@ fn boundary_minor_gc_forwarding_destination_bindings_from_slots(
     }
 
     Ok(bindings)
+}
+
+fn validate_boundary_minor_gc_forwarding_slot_sources(
+    forwarding_slots: &[MinorGcForwardingSlot],
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<(), EvalHeapError> {
+    for (index, slot) in forwarding_slots.iter().enumerate() {
+        if forwarding_slots[..index]
+            .iter()
+            .any(|existing| existing.source() == slot.source())
+        {
+            return Err(EvalHeapError::CollectorPollForwardingSlotDuplicateSource {
+                index,
+                address: slot.source(),
+            });
+        }
+        if slot.forwarded_value().is_none() {
+            return Err(EvalHeapError::CollectorPollForwardingSlotEmpty {
+                index,
+                address: slot.source(),
+            });
+        }
+        if !destination_objects
+            .iter()
+            .any(|object| object.source() == slot.source())
+        {
+            return Err(EvalHeapError::BoundaryMinorGcForwardingDestinationMissing {
+                source_address: slot.source(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn boundary_minor_gc_root_writeback_destination_bindings(
@@ -4886,12 +4934,11 @@ impl EvalOutcome {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if an installed destination snapshot has no
-    /// matching forwarding value, if forwarding metadata is not heap-backed, if
-    /// the forwarding destination or generation disagrees with its destination
+    /// matching forwarding value, if an installed forwarding value has no
+    /// destination snapshot, if forwarding metadata is not heap-backed, if the
+    /// forwarding destination or generation disagrees with its destination
     /// snapshot, if destination generation or payload-size validation fails, or
-    /// if the binding report cannot reserve storage. This installed-state view
-    /// is driven by destination snapshots; it does not enumerate unrelated
-    /// forwarding cells that may have been installed by another GC-stress bridge.
+    /// if the binding report cannot reserve storage.
     pub fn gc_stress_boundary_minor_gc_forwarding_destination_bindings(
         &self,
     ) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
@@ -5284,9 +5331,10 @@ impl EvalOutcome {
     /// The method derives one owned commit dry run, then validates every live
     /// metadata payload derived from it before mutating the outcome: sibling
     /// survivor relocations, destination-byte snapshots, destination
-    /// object-generation bindings, forwarding-destination bindings,
-    /// reference-writeback metadata, root/heap-field destination bindings,
-    /// remembered-set publication, and live forwarding slots. After those checks pass, it
+    /// object-generation bindings, forwarding-destination bindings over the
+    /// combined installed and planned forwarding cells, reference-writeback
+    /// metadata, root/heap-field destination bindings, remembered-set
+    /// publication, and live forwarding slots. After those checks pass, it
     /// installs evaluator side-table forwarding values, destination-byte
     /// snapshots, reference-writeback metadata, the merged next remembered set,
     /// and clears the daemon card table. Empty boundaries leave the outcome
@@ -5303,9 +5351,10 @@ impl EvalOutcome {
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
     /// reference-writeback metadata have already been installed, if remembered
-    /// set publication cannot be merged, if destination generation,
-    /// forwarding-destination, or writeback destination bindings do not match
-    /// the dry-run destination snapshots, or if forwarding installation fails.
+    /// set publication cannot be merged, if destination generation or writeback
+    /// destination bindings do not match the dry-run destination snapshots, if
+    /// the combined installed and planned forwarding cells do not match the
+    /// dry-run destination snapshots, or if forwarding installation fails.
     /// All installable side-table payloads are validated before the first live
     /// mutation; if forwarding installation fails, destination storage,
     /// reference-writeback metadata, remembered-set state, and card-table state
@@ -5327,7 +5376,8 @@ impl EvalOutcome {
         let _destination_object_generation_bindings =
             boundary_minor_gc_destination_object_generation_bindings_from_objects(&object_bytes)?;
         let _forwarding_destination_bindings =
-            boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            boundary_minor_gc_forwarding_destination_bindings_from_heap_and_slots(
+                &self.heap,
                 &forwarding_slots,
                 &object_bytes,
             )?;

@@ -6492,12 +6492,13 @@ and helps the oracle directly.
       same validated commit applications.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       stages forwarding, destination-byte, destination object-generation,
-      forwarding-destination binding, reference-writeback, remembered-set,
-      card-table-clear, and root/heap-field destination-binding projections
-      from one owned dry run, validates every installable side-table payload
-      and destination-binding report before the first live metadata mutation,
-      and then installs the outcome-owned side tables and clears the outcome
-      card table together.
+      forwarding-destination binding over the combined installed and planned
+      forwarding cells, reference-writeback, remembered-set, card-table-clear,
+      and root/heap-field destination-binding projections from one owned dry
+      run, validates every installable side-table payload and
+      destination-binding report before the first live metadata mutation, and
+      then installs the outcome-owned side tables and clears the outcome card
+      table together.
       These helpers still do not bind those bytes to live
       heap-object bodies, live root/field storage, real ABI object-header
       forwarding storage, live object-generation state, or semispace storage,
@@ -6509,9 +6510,10 @@ and helps the oracle directly.
       generation writer without mutating evaluator heap records.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
-      source forwarding value, producing forwarding-to-destination binding
-      metadata for a later ABI object-header writer without enumerating
-      unrelated forwarding cells or mutating object headers.
+      source forwarding value and rejects installed forwarding cells without
+      destination snapshots, producing forwarding-to-destination binding
+      metadata for a later ABI object-header writer without mutating object
+      headers.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       then validates installed typed/generation root writebacks against
       installed destination-byte snapshots, producing root-to-destination binding
