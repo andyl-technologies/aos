@@ -41,24 +41,49 @@
     )
     requirements;
 
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-7 remains open";
+        label = "T-CLI-7 checklist complete";
+        needle = "- [x] **T-CLI-7** Implement `verify`";
+      }
+      {
+        label = "T-CLI-7 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliVerifyWorkflow`";
+      }
+    ]
+    ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
+      {
+        label = "stale T-CLI-7 placeholder";
         needle = "- [ ] **T-CLI-7** Implement `verify`";
       }
       {
-        label = "T-CLI-7 verify progress note";
+        label = "stale T-CLI-7 work-in-progress note";
         needle = "Work in progress under `checks.crucible.phase5.cliVerifyWorkflow`";
       }
       {
-        label = "T-CLI-7 qemu fingerprint blocker";
-        needle = "real-QEMU execution-fingerprint runner";
+        label = "stale T-CLI-7 real-QEMU blocker";
+        needle = "Full closure remains blocked on\n  the real-QEMU execution-fingerprint runner";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-7 progress note";
+        label = "phase5 T-CLI-7 completion note";
+        needle = "`T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`";
+      }
+    ]
+    ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
+      {
+        label = "stale phase5 T-CLI-7 open note";
         needle = "`T-CLI-7` remains open. `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
@@ -136,8 +161,12 @@
         needle = "fn verify_reproduction_artifact_bytes";
       }
       {
-        label = "qemu verify blocker";
-        needle = "verify with local QEMU requires an RFC-0010 execution-fingerprint runner";
+        label = "local QEMU verify workflow";
+        needle = "fn run_local_qemu_verify_workflow";
+      }
+      {
+        label = "local QEMU verify identity line";
+        needle = "verify-qemu-runner";
       }
       {
         label = "adversarial planning test";
@@ -160,7 +189,17 @@
         needle = "cli_verify_workflow_compares_existing_reproduction_artifacts";
       }
       {
-        label = "qemu blocker test";
+        label = "local qemu verify test";
+        needle = "cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "old qemu verify blocker";
+        needle = "verify with local QEMU requires an RFC-0010 execution-fingerprint runner";
+      }
+      {
+        label = "old qemu blocker test";
         needle = "cli_verify_workflow_rejects_local_qemu_without_rfc_fingerprint_runner";
       }
     ]

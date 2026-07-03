@@ -399,13 +399,13 @@ long-held locks.
   savepoint handles for `--save-on`, incremental stdin acknowledgements for
   interactive commands, and non-passing outcome exit propagation with a
   reproduction artifact.
-  `T-CLI-7` remains open. `checks.crucible.phase5.cliVerifyWorkflow` currently
-  covers fresh local-double and remote-daemon verify reductions, canonical-log
-  byte comparison, execution-fingerprint stream comparison, adversarial hostile
-  profiles, divergence localization with first decision/sample/byte reporting,
-  both-side reproduction artifacts, `verify --compare <a> <b>`, and exit 0/1
-  deterministic/divergent outcomes; full closure waits for the real-QEMU
-  execution-fingerprint runner required by `gate:single-vm-fingerprint`.
+  `T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`, which
+  covers fresh local-double, local-QEMU, and remote-daemon verify reductions,
+  canonical-log byte comparison, execution-fingerprint stream comparison,
+  adversarial hostile profiles, divergence localization with first
+  decision/sample/byte reporting, both-side reproduction artifacts,
+  `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
+  local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
   `T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently
   covers shell completion generation, `--version`, the current non-overclaiming
   help surface, and rejection of future flags whose command behavior is not

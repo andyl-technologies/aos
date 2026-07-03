@@ -1005,18 +1005,17 @@ branch on the verdict without parsing output:
   status, materializes real terminal savepoint handles for `--save-on`, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
-- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+- [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.
-  Work in progress under `checks.crucible.phase5.cliVerifyWorkflow`: the CLI now
-  plans and executes fresh local-double and remote-daemon verify reductions,
+  Completed by `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
+  executes fresh local-double, local-QEMU, and remote-daemon verify reductions,
   compares canonical log bytes and execution-fingerprint streams, applies the
   hostile-profile matrix for `--adversarial`, localizes the first differing
   decision/sample/byte with a bisection report, emits both-side reproduction
-  artifacts on divergence, supports `verify --compare <a> <b>`, and maps
-  deterministic/divergent outcomes to exit 0/1. Full closure remains blocked on
-  the real-QEMU execution-fingerprint runner needed before local QEMU verify can
-  satisfy `gate:single-vm-fingerprint` end to end.
+  artifacts on divergence, supports `verify --compare <a> <b>`, maps
+  deterministic/divergent outcomes to exit 0/1, and records the resolved
+  QEMU/plugin build identity for local-QEMU verify runs.
 - [ ] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
   catalog against a built-in corpus, double-backed by default, real-QEMU under
   `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
