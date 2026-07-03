@@ -110,6 +110,7 @@ in
       fakeroot
       util-linux
     ];
+    runtimeDeps = [];
 
     exportReferencesGraph = graphPairs;
 

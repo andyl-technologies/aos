@@ -2389,6 +2389,11 @@ in rec {
     };
   };
   phase7 = {
+    cruciblePackageInventory = import ./phase7-crucible-package-inventory.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.cruciblePackageInventory";
+      taskIds = ["T-PKG-1"];
+    };
     crucibleQemuPackage = import ./phase7-crucible-qemu-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleQemuPackage";

@@ -60,6 +60,10 @@
   shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
+  qemuSimCapability =
+    if applyCruciblePatches
+    then "qemu-crucible"
+    else "none";
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in
@@ -131,7 +135,7 @@
     qemu_patch_branch_material_hash=${patchBranchMaterialHash}
     qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
     qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
-    qemu_sim_capability=qemu-crucible
+    qemu_sim_capability=${qemuSimCapability}
     qemu_shmem_abi_version=${shmemAbiVersion}
     qemu_shmem_abi=${shmemAbi}
     qemu_shmem_header=${shmemHeaderInstallPath}
@@ -305,7 +309,7 @@ in
           qemu_patch_branch_material_hash=${patchBranchMaterialHash}
           qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
           qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
-          qemu_sim_capability=qemu-crucible
+          qemu_sim_capability=${qemuSimCapability}
           qemu_shmem_abi_version=${shmemAbiVersion}
           qemu_shmem_abi=${shmemAbi}
           qemu_shmem_header=${shmemHeaderInstallPath}
@@ -320,6 +324,7 @@ in
       inherit
         qemuBuildIdentity
         qemuBuildIdentityMaterial
+        qemuSimCapability
         qemuConfigureFlags
         qemuConfigureFlagsHash
         qemuConfigureFlagsMaterial
