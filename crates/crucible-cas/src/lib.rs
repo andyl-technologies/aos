@@ -7,6 +7,15 @@
 //! future shared substrate must adapt behind this crate's public interface and
 //! pass `gate:content-address` and `gate:replay-oracle` unchanged.
 //!
+//! Future RFC-0007 integration marker: RFC-0007 is the future home for a shared
+//! content-addressed store plus dependency-gated invalidation substrate. The
+//! narrow interface is exactly [`DagStore::put`], [`DagStore::get`],
+//! [`DagStore::has`], and [`InvalidationQuery::evaluate`]. The future-merge plan
+//! is a thin adapter behind that unchanged interface; no Crucible ABI or determinism
+//! contract may change, and the adapter replaces these internals only after
+//! `gate:content-address`, `gate:replay-oracle`, and `gate:e2e-determinism` pass
+//! unchanged. Until then, no RFC-0007 dependency exists.
+//!
 //! Module map: the crate root owns [`ContentHash`], [`DagStore`],
 //! [`MemoryDagStore`], [`LocalDagStore`], and the invalidation types
 //! [`DependencySnapshot`], [`InvalidationQuery`], and [`InvalidationDecision`].
@@ -23,6 +32,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use thiserror::Error;
+
+/// Marks the future RFC-0007 merge seam for the standalone CAS substrate.
+///
+/// The value names the stable boundary a future shared substrate must adapt
+/// behind; it is a documentation and conformance marker, not a dependency.
+pub const FUTURE_RATCHET_INTEGRATION_SEAM: &str = "crucible-cas::dag-store";
+
+/// Lists the gates a future shared substrate must pass without behavior change.
+pub const FUTURE_RATCHET_MERGE_BAR: &str =
+    "gate:content-address,gate:replay-oracle,gate:e2e-determinism";
+
+/// States the ABI and determinism stability rule for a future shared substrate.
+pub const FUTURE_RATCHET_STABILITY_RULE: &str =
+    "no Crucible ABI or determinism contract may change";
 
 /// A BLAKE3 content address for raw store bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

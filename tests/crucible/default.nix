@@ -2435,6 +2435,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleCas";
       taskIds = ["T-PKG-17"];
     };
+    crucibleCasRatchetSeam = import ./phase7-crucible-cas-ratchet-seam.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleCasRatchetSeam";
+      taskIds = ["T-PKG-18"];
+    };
     cruciblePackagingConformance = import ./phase7-crucible-packaging-conformance.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.cruciblePackagingConformance";

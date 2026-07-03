@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 const FORBIDDEN_DEPENDENCY_PREFIXES: [&str; 2] = ["ratchet-", "aos-nix-"];
+const FORBIDDEN_DEPENDENCY_NAMES: [&str; 2] = ["ratchet", "aos-nix"];
 const SEAM_MARKER: &str = "FUTURE_RATCHET_INTEGRATION_SEAM";
 const SEAM_VALUE: &str = "crucible-sim::content-addressing";
 
@@ -67,7 +68,7 @@ fn standalone_dependency_rules_reject_direct_workspace_and_target_edges()
         edition = "2024"
 
         [dependencies]
-        ratchet-store = "0.1"
+        ratchet = "0.1"
     "#
     .parse()?;
     let direct_findings = forbidden_dependency_findings(
@@ -75,8 +76,8 @@ fn standalone_dependency_rules_reject_direct_workspace_and_target_edges()
         &toml::map::Map::new(),
     );
     assert!(
-        contains_finding(&direct_findings, "ratchet-store"),
-        "direct ratchet dependency should be rejected: {direct_findings:?}"
+        contains_finding(&direct_findings, "ratchet"),
+        "direct exact ratchet dependency should be rejected: {direct_findings:?}"
     );
 
     let alias_aos_nix: Value = r#"
@@ -172,9 +173,10 @@ fn forbidden_dependency_findings(
 }
 
 fn forbidden_dependency_name(name: &str) -> bool {
-    FORBIDDEN_DEPENDENCY_PREFIXES
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
+    FORBIDDEN_DEPENDENCY_NAMES.contains(&name)
+        || FORBIDDEN_DEPENDENCY_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 fn dependency_specs(
