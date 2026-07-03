@@ -1033,14 +1033,31 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     bit-identically without live process state, accumulated coverage novelty is
     evaluated against the campaign-lifetime map, coverage-root merge is
     commutative/idempotent grow-only union, and findings ledger entries replay from
-    their stored artifacts while rediscovery deduplicates by content. Storage
-    bounding remains T-DCE-6, determinism guardrails remain T-DCE-7, fleet
-    equivalence remains T-DCE-8, and the full campaign-continuity gate remains
-    T-DCE-9.
-- [ ] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
+    their stored artifacts while rediscovery deduplicates by content. Determinism
+    guardrails remain T-DCE-7, fleet equivalence remains T-DCE-8, and the full
+    campaign-continuity gate remains T-DCE-9.
+- [x] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
   roots, fat→thin eviction (value preserved), and deterministic seeded corpus
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies
   [DCE-14], [DCE-15]; spec §35.3.4; cross-ref 07 §8, 22 §22.7.2.
+  - Completed by `checks.crucible.phase7.crucibleCampaignStorageBounding`:
+    `crucible-cas` now exposes manifest-root campaign GC planning and candidate
+    sweeping, a typed source/cap/seed corpus-retention root accepted only through
+    an explicit retention-policy CAS path, and a cache-only fat→thin eviction
+    proof surface. Raw CAS still rejects corpus shrink, zero-cap retention, policy
+    mismatch, and direct unbounding of an already-retained corpus. The packaged
+    `crucible-fleet-store probe` proves abandoned
+    unpinned campaign objects sweep outside the manifest root closure, retained
+    corpus artifacts and all findings ledger artifacts remain reachable, fat
+    checkpoint eviction preserves the denoted value through the parent/schedule
+    delta thin source, and the retained corpus root is reproducible across hosts
+    and reruns from the same campaign history. The temporal graph remains the
+    authoritative implementation for checkpoint GC and value-preserving
+    fat→thin realization through `TemporalGraph::garbage_collect`,
+    `TemporalGraph::garbage_collect_store`, and
+    `TemporalGraph::evict_fat_checkpoint_to_thin`. Determinism guardrails remain
+    T-DCE-7, fleet equivalence remains T-DCE-8, and the full
+    campaign-continuity gate remains T-DCE-9.
 - [ ] **T-DCE-7** Enforce the determinism distinction guardrail: distribution
   metadata MUST NOT flow into reduce/Decision/identity/artifact; extend
   `gate:harness-lint` to ban host id / lease timestamps / fleet size / peer count on

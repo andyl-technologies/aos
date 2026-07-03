@@ -75,6 +75,17 @@ in
       grep -q '^findings_ledger=cross-run-grow-only$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^findings_ledger_dedup=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^finding_replay=bit-identical-from-ledger$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_gc_roots=manifest-roots$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_gc_scope=corpus,coverage,findings,genesis$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_gc_unpinned=swept-candidate$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_gc_value=cache-only$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^fat_to_thin_eviction=value-preserved$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^thin_checkpoint_source=parent-schedule-delta$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^corpus_retention=deterministic-seeded-cap$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^corpus_retention_authorized=explicit-policy$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^corpus_retention_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^corpus_retention_root=source-cap-seed-proof$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^findings_ledger_retention=never-evict$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -94,6 +105,7 @@ in
       dce_four_layer_dedup_task=T-DCE-3
       dce_campaign_manifest_task=T-DCE-4
       dce_campaign_seed_task=T-DCE-5
+      dce_campaign_storage_bounding_task=T-DCE-6
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable
@@ -111,6 +123,13 @@ in
       campaign_seed_replay=bit-identical
       coverage_ratchet=grow-only-union-crdt
       findings_ledger=cross-run-grow-only
+      campaign_gc_roots=manifest-roots
+      campaign_gc_unpinned=swept-candidate
+      fat_to_thin_eviction=value-preserved
+      corpus_retention=deterministic-seeded-cap
+      corpus_retention_authorized=explicit-policy
+      corpus_retention_reproducible=true
+      findings_ledger_retention=never-evict
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"
