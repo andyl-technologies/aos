@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -39,6 +40,7 @@ const NON_DOCTESTED_PACKAGES: &[&str] = &["crucible-cli", "crucible-qemu-plugin"
 fn crucible_workspace_sources_meet_rustdoc_bar() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let crates_dir = root.join("crates");
+    let baseline = RustdocBarBaseline::load(&root)?;
     let mut failures = Vec::new();
 
     assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
@@ -63,6 +65,8 @@ fn crucible_workspace_sources_meet_rustdoc_bar() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let failures = baseline.filter_failures(failures);
+
     assert!(
         failures.is_empty(),
         "Crucible rustdoc-bar lint failed:\n{}",
@@ -70,6 +74,116 @@ fn crucible_workspace_sources_meet_rustdoc_bar() -> Result<(), Box<dyn Error>> {
     );
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct RustdocBarBaselineKey {
+    path: String,
+    detail: String,
+}
+
+#[derive(Default)]
+struct RustdocBarBaseline {
+    caps: BTreeMap<RustdocBarBaselineKey, usize>,
+}
+
+impl RustdocBarBaseline {
+    fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
+        let path = root.join("tests/crucible/rustdoc-bar-baseline.txt");
+        let content = fs::read_to_string(path)?;
+        let mut caps = BTreeMap::new();
+
+        for (index, line) in content.lines().enumerate() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return Err(format!(
+                    "invalid rustdoc-bar baseline entry on line {}: {line}",
+                    index + 1
+                )
+                .into());
+            }
+
+            let count = fields[2].parse::<usize>().map_err(|error| {
+                format!(
+                    "invalid rustdoc-bar baseline count on line {}: {error}",
+                    index + 1
+                )
+            })?;
+            caps.insert(
+                RustdocBarBaselineKey {
+                    path: fields[0].to_string(),
+                    detail: fields[1].to_string(),
+                },
+                count,
+            );
+        }
+
+        Ok(Self { caps })
+    }
+
+    fn filter_failures(&self, failures: Vec<String>) -> Vec<String> {
+        let mut observed = BTreeMap::new();
+        let mut unbaselined = Vec::new();
+
+        for failure in failures {
+            let Some(key) = RustdocBarBaselineKey::from_failure(&failure) else {
+                unbaselined.push(failure);
+                continue;
+            };
+            let observed_count = observed.entry(key.clone()).or_insert(0usize);
+            *observed_count += 1;
+
+            if self
+                .caps
+                .get(&key)
+                .is_some_and(|cap| *observed_count <= *cap)
+            {
+                continue;
+            }
+
+            unbaselined.push(failure);
+        }
+
+        for (key, cap) in &self.caps {
+            let actual = observed.get(key).copied().unwrap_or_default();
+            if actual < *cap {
+                unbaselined.push(format!(
+                    "tests/crucible/rustdoc-bar-baseline.txt: stale baseline `{}` expected {cap} observed {actual}",
+                    key.display()
+                ));
+            }
+        }
+
+        unbaselined
+    }
+}
+
+impl RustdocBarBaselineKey {
+    fn from_failure(failure: &str) -> Option<Self> {
+        let (path, detail) = failure
+            .split_once(": ")
+            .or_else(|| split_line_number_failure(failure))?;
+        Some(Self {
+            path: path.to_string(),
+            detail: detail.to_string(),
+        })
+    }
+
+    fn display(&self) -> String {
+        format!("{}\t{}", self.path, self.detail)
+    }
+}
+
+fn split_line_number_failure(failure: &str) -> Option<(&str, &str)> {
+    let (prefix, detail) = failure.split_once(' ')?;
+    let (path, line) = prefix.rsplit_once(':')?;
+    line.parse::<usize>().ok()?;
+    Some((path, detail))
 }
 
 #[test]

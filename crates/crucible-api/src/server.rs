@@ -1010,6 +1010,7 @@ fn control_event_body(
             if *shutdown.borrow() {
                 return None;
             }
+            // crucible-lint: allow unordered-select -- stream delivery may race with shutdown without affecting engine state.
             let frame = tokio::select! {
                 frame = control.recv_frame() => match frame {
                     Ok(Some(frame)) => frame,
@@ -1044,6 +1045,7 @@ fn watch_event_body(
             if *shutdown.borrow() {
                 return None;
             }
+            // crucible-lint: allow unordered-select -- watch delivery may race with shutdown without affecting engine state.
             let frame = tokio::select! {
                 frame = watch.recv_frame() => match frame {
                     Ok(Some(frame)) => frame,

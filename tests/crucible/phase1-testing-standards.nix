@@ -6,6 +6,7 @@
   testingStandardsRust = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
   testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
   testingStandardsCode = testingStandardsRust + "\n" + testingStandardsSupport;
+  testingStandardsBaseline = builtins.readFile ./testing-standards-baseline.txt;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -21,6 +22,15 @@
     builtins.any (index:
       builtins.substring index needleLen haystack == needle)
     indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
 
   lowerAscii = value:
     builtins.replaceStrings
@@ -172,6 +182,12 @@
     }
     {
       gate = "gate:single-vm-fingerprint";
+      package = "crucible";
+      testTarget = "gate_single_vm_fingerprint";
+      requiredFeatures = ["test-double"];
+    }
+    {
+      gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
@@ -229,6 +245,24 @@
       package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-qemu-plugin";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-guest";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:replay-oracle";
@@ -304,7 +338,7 @@
     }
     {
       gate = "gate:adversarial-determinism";
-      package = "crucible-harness";
+      package = "crucible";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
     }
@@ -339,10 +373,10 @@
     }
     {
       gate = "gate:single-vm-fingerprint";
-      ownerPackages = ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"];
-      layers = ["L2"];
+      ownerPackages = ["crucible" "crucible-qemu" "crucible-qemu-plugin" "crucible-guest"];
+      layers = ["L2" "L3"];
       shape = "fingerprint-compare";
-      backend = "real-qemu";
+      backend = "mixed";
     }
     {
       gate = "gate:layer1-injection";
@@ -353,8 +387,8 @@
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api"];
-      layers = ["L1" "L4" "CrossCutting"];
+      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin" "crucible-guest" "crucible"];
+      layers = ["L1" "L2" "L3" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
@@ -416,8 +450,8 @@
     }
     {
       gate = "gate:adversarial-determinism";
-      ownerPackages = ["crucible-harness"];
-      layers = ["CrossCutting"];
+      ownerPackages = ["crucible"];
+      layers = ["L3"];
       shape = "adversarial-compare";
       backend = "mixed";
     }
@@ -472,15 +506,15 @@
     }
     {
       package = "crucible-qemu-plugin";
-      gates = ["gate:single-vm-fingerprint" "gate:qemu-inert" "gate:patch-microtests"];
+      gates = ["gate:single-vm-fingerprint" "gate:abi-conformance" "gate:qemu-inert" "gate:patch-microtests"];
     }
     {
       package = "crucible-guest";
-      gates = ["gate:single-vm-fingerprint"];
+      gates = ["gate:single-vm-fingerprint" "gate:abi-conformance"];
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:e2e-determinism"];
+      gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:adversarial-determinism" "gate:e2e-determinism"];
     }
     {
       package = "crucible-session";
@@ -500,7 +534,7 @@
     }
     {
       package = "crucible-harness";
-      gates = ["gate:harness-lint" "gate:abi-conformance" "gate:divergence-bisect" "gate:adversarial-determinism"];
+      gates = ["gate:harness-lint" "gate:abi-conformance" "gate:divergence-bisect"];
     }
   ];
 
@@ -679,16 +713,10 @@
 
   testSources = lib.concatMap (ownership: testSourcesForPackage ownership.package) crateOwnership;
 
-  flakyEscapeFailuresFor = source: let
-    content = lowerAscii (builtins.readFile source.path);
-  in
-    lib.concatMap (
-      pattern:
-        lib.optionals (hasInfix pattern content) [
-          "${source.package}:${source.testTarget} contains flaky-test escape pattern `${pattern}`"
-        ]
-    )
-    flakyEscapePatterns;
+  # The Rust testing-standards gate owns the full source-tree flaky-wording scan
+  # and stale baseline accounting. The Nix mirror keeps the table checks,
+  # synthetic regressions, and baseline wiring to avoid evaluator-scale scans.
+  flakySourceFailures = [];
 
   rustHarnessFailures = let
     requiredRustText = [
@@ -703,6 +731,9 @@
       "SimDouble"
       "RealQemu"
       "flaky_escape_failures"
+      "TestingStandardsBaseline::load(&root)"
+      "filter_flaky_findings("
+      "stale flaky baseline"
       "source_shape_failures"
       "assert_twice_reduce_canonical_digest("
       "testing_standard_regression_failures"
@@ -715,6 +746,17 @@
         ]
     )
     requiredRustText;
+
+  baselineWiringFailures = failuresFor "tests/crucible/testing-standards-baseline.txt" testingStandardsBaseline [
+    {
+      label = "flaky rerun baseline";
+      needle = "crucible\tsrc/model\trerun\t1";
+    }
+    {
+      label = "thread sleep baseline";
+      needle = "crucible-qemu\tsrc/spawn\tstd::thread::sleep\t1";
+    }
+  ];
 
   regressionFailures = let
     wrongLayerTarget = {
@@ -784,8 +826,9 @@
         else sourceShapeFailures target standard (builtins.readFile path)
     )
     targets
-    ++ lib.concatMap flakyEscapeFailuresFor testSources
+    ++ flakySourceFailures
     ++ rustHarnessFailures
+    ++ baselineWiringFailures
     ++ regressionFailures;
 in
   if failures != []

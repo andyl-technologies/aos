@@ -18,7 +18,7 @@ Reviewers must block merge on any unchecked applicable item.
 Ordering
 
 - [ ] Every collection on an ordering-significant path is ordered (BTree*/IndexMap/ sorted Vec) or carries a justified [STD-13] allow. No HashMap/HashSet iteration leaks order into State / Schedule / canonical log / a hash.
-- [ ] Any sort uses a TOTAL, stable key - the cross-node order key is (virtual_time, node_id, sequence) [INV-3]; ties cannot resolve by address, pointer, allocation order, or insertion-into-a-hash order.
+- [ ] Any sort uses a TOTAL, stable key - the cross-node order key is (virtual_time, consumer node_id, producer node_id, sequence) [INV-3]; ties cannot resolve by address, pointer, allocation order, or insertion-into-a-hash order.
 - [ ] Any select/poll over simultaneous readiness is biased/priority-ordered; the branch taken on a tie is a pure function of declared priority.
 
 Time, randomness, numerics

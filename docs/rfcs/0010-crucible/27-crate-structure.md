@@ -121,11 +121,10 @@ One-line responsibilities:
 The two L2 in-VM crates (`crucible-qemu-plugin`, `crucible-guest`) deliberately
 depend **only on L1** (the ABI + protocol), never on the engine: they run inside
 a different address space (or process) and must share *only* the wire/memory
-contract. The host-side `crucible-qemu` is likewise limited to L1/L2 dependencies
-in the Cargo graph. Higher-layer wiring may wrap its concrete host driver in the
-engine's `Backend` trait, but this MUST NOT introduce a `crucible-qemu` →
-`crucible` Cargo dependency; the layer lint deliberately rejects that upward edge
-(see `CRATE-6`).
+contract. The host-side `crucible-qemu` is the sole L2 exception: it may depend
+on `crucible` to implement the concrete host adapter for the engine `Backend`
+trait and QEMU realization flow, but no in-VM crate may do so and no other
+upward edge is allowed. The layer lint encodes this named exception.
 
 - **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
   exactly the thirteen runtime crates above, partitioned into the five layers
@@ -254,10 +253,11 @@ shift=N`, `-plugin`, `-smp 1`, sealed-entropy flags), launching and supervising
 the process, mapping the shmem region, and exposing a concrete host-driver API
 that can advance a VM, read its fingerprint, snapshot, and restore it. The
 engine-facing `Backend` trait remains in `crucible` (`CRATE-6`) and is adapted by
-higher-layer wiring that may depend on both crates; `crucible-qemu` itself MUST
-NOT depend on `crucible`. *Not in it:* the scheduler, the temporal graph, any
-decision-making about *which* node to advance (all L3); the in-VM time-control
-logic (that is the plugin).
+higher-layer wiring that may depend on both crates; the current host driver crate
+is allowed to carry that `crucible-qemu` → `crucible` adapter edge, but the
+exception is confined to host-side QEMU and never applies to the in-VM crates.
+*Not in it:* scheduler policy, decision-making about *which* node to advance
+(all L3); the in-VM time-control logic (that is the plugin).
 
 **`crucible-qemu-plugin`** owns the **in-VM `cdylib`**
 ([`12-qemu-plugin.md`](12-qemu-plugin.md)): the QEMU TCG plugin `extern "C"`
@@ -357,8 +357,9 @@ Feature layout:
 [features]
 default = []
 # Compile the in-process deterministic backend (SimBackend) used by the
-# layer-0/engine determinism gates. Pure SAFE Rust; no QEMU.
-test-double = []
+# layer-0/engine determinism gates. Enables the shared protocol/shmem crates
+# needed by the in-process plugin-side test double. Pure SAFE Rust; no QEMU.
+test-double = ["dep:crucible-protocol", "dep:crucible-shmem"]
 # Compile the engine-side hooks used by higher-layer QEMU adapter wiring.
 # The concrete driver lives in crucible-qemu; this only flips engine glue.
 qemu-backend = []
@@ -454,7 +455,7 @@ contract and which crate realizes a file.
 | `crucible-sim` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
 | `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:layer0-determinism`, `gate:harness-lint` |
 | `crucible-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance` |
-| `crucible-protocol` | [`14`](14-protocol.md) | `gate:abi-conformance`, `gate:harness-lint` |
+| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md) | `gate:abi-conformance`, `gate:harness-lint` |
 | `crucible-device` | [`15`](15-io-subnodes.md) | `gate:layer1-injection`, `gate:harness-lint` |
 | `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert` |
 | `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests` |
@@ -555,7 +556,7 @@ enters a release build.
 | `gate:layer0-determinism` | `crucible-sim` `tests/`, `crucible-assert` `tests/`, `crucible` `tests/` (`--features test-double`) | reduce-twice equality |
 | `gate:single-vm-fingerprint` | `crucible-qemu` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
 | `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
-| `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` | frozen golden vectors |
+| `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
 | `gate:replay-oracle` | `crucible` `tests/` (`--features test-double`) | fat-hash == thin-hash |
 | `gate:content-address` | `crucible` + `crucible-sim` `tests/` | hash equality/collision |
 | `gate:scheduler-liveness` | `crucible` `tests/` (`--features test-double`) | reaches quiescence/limit |
@@ -626,8 +627,9 @@ Crucible needs and marks the seam.
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
 - [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
-  each crate's `[dependencies]` and rejects any upward edge or cycle, including
-  the L2-in-VM-crates-depend-only-on-L1 rule. — satisfies [CRATE-2], [CRATE-3];
+  each crate's `[dependencies]` and rejects upward edges or cycles, with the
+  named host-side `crucible-qemu` → `crucible` adapter exception and the
+  L2-in-VM-crates-depend-only-on-L1 rule. — satisfies [CRATE-2], [CRATE-3];
   spec §1.
 - [x] **T-CRATE-4** Declare the `Backend` trait in `crucible` (advance-to-horizon,
   fingerprint, deliver-input, snapshot, restore, shutdown), object-safe or single

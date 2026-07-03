@@ -40,7 +40,7 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
     CrateSpecIndexEntry {
         package: "crucible-protocol",
         root: "src/lib.rs",
-        spec_files: &["14"],
+        spec_files: &["14", "16"],
         section_6_row: true,
     },
     CrateSpecIndexEntry {

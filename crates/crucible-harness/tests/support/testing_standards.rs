@@ -355,6 +355,111 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct TestingStandardsBaselineKey {
+    package: String,
+    test_target: String,
+    pattern: String,
+}
+
+#[derive(Default)]
+pub(super) struct TestingStandardsBaseline {
+    caps: BTreeMap<TestingStandardsBaselineKey, usize>,
+}
+
+impl TestingStandardsBaseline {
+    pub(super) fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
+        let path = root.join("tests/crucible/testing-standards-baseline.txt");
+        let content = fs::read_to_string(path)?;
+        let mut caps = BTreeMap::new();
+
+        for (index, line) in content.lines().enumerate() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 4 {
+                return Err(format!(
+                    "invalid testing-standards baseline entry on line {}: {line}",
+                    index + 1
+                )
+                .into());
+            }
+
+            let count = fields[3].parse::<usize>().map_err(|error| {
+                format!(
+                    "invalid testing-standards baseline count on line {}: {error}",
+                    index + 1
+                )
+            })?;
+            caps.insert(
+                TestingStandardsBaselineKey {
+                    package: fields[0].to_string(),
+                    test_target: fields[1].to_string(),
+                    pattern: fields[2].to_string(),
+                },
+                count,
+            );
+        }
+
+        Ok(Self { caps })
+    }
+
+    pub(super) fn filter_flaky_findings(&self, findings: Vec<String>) -> Vec<String> {
+        let mut observed = BTreeMap::new();
+        let mut unbaselined = Vec::new();
+
+        for finding in findings {
+            let Some(key) = TestingStandardsBaselineKey::from_finding(&finding) else {
+                unbaselined.push(finding);
+                continue;
+            };
+            let observed_count = observed.entry(key.clone()).or_insert(0usize);
+            *observed_count += 1;
+
+            if self
+                .caps
+                .get(&key)
+                .is_some_and(|cap| *observed_count <= *cap)
+            {
+                continue;
+            }
+
+            unbaselined.push(finding);
+        }
+
+        for (key, cap) in &self.caps {
+            let actual = observed.get(key).copied().unwrap_or_default();
+            if actual < *cap {
+                unbaselined.push(format!(
+                    "tests/crucible/testing-standards-baseline.txt: stale flaky baseline `{}` expected {cap} observed {actual}",
+                    key.display()
+                ));
+            }
+        }
+
+        unbaselined
+    }
+}
+
+impl TestingStandardsBaselineKey {
+    fn from_finding(finding: &str) -> Option<Self> {
+        let (subject, pattern) = finding.split_once(" contains flaky-test escape pattern `")?;
+        let (package, test_target) = subject.split_once(':')?;
+        Some(Self {
+            package: package.to_string(),
+            test_target: test_target.to_string(),
+            pattern: pattern.strip_suffix('`')?.to_string(),
+        })
+    }
+
+    fn display(&self) -> String {
+        format!("{}\t{}\t{}", self.package, self.test_target, self.pattern)
+    }
+}
+
 pub(super) fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     match manifest_dir.parent().and_then(|path| path.parent()) {

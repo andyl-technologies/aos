@@ -55,6 +55,7 @@ fn assert_frozen_golden_vectors(boundary_abis: &[BoundaryAbi]) {
             ("crucible-protocol", "gate_abi_conformance", false),
             ("crucible-api", "gate_abi_conformance", false),
             ("crucible-qemu-plugin", "gate_abi_conformance", false),
+            ("crucible-guest", "gate_abi_conformance", false),
             ("crucible", "gate_abi_conformance", false),
         ],
     );

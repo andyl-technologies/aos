@@ -12,6 +12,7 @@ use toml::Value;
 fn engine_owns_quantum_loop_and_session_is_only_driver() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let engine_lib = read_repo_file(&root, "crates/crucible/src/lib.rs")?;
+    let engine_model = read_repo_file(&root, "crates/crucible/src/model.rs")?;
     let scheduler = read_repo_file(&root, "crates/crucible/src/scheduler.rs")?;
     let session = read_repo_file(&root, "crates/crucible-session/src/lib.rs")?;
     let session_manifest: Value =
@@ -43,9 +44,9 @@ fn engine_owns_quantum_loop_and_session_is_only_driver() -> Result<(), Box<dyn E
         &mut failures,
     );
     require_contains(
-        &scheduler,
+        &engine_model,
         "pub enum SchedulingNodeKind",
-        "crucible scheduler module must model VM and I/O scheduler nodes",
+        "crucible engine model must model VM and I/O scheduler nodes",
         &mut failures,
     );
     require_contains(
@@ -195,6 +196,7 @@ fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 }
 
 fn source_scheduler_ownership_findings(package: &str, source: &str) -> Vec<String> {
+    let source = source_without_cfg_test_regions(source);
     let mut findings = Vec::new();
     if source.contains("pub trait QuantumLoop") {
         findings.push(format!(
@@ -212,4 +214,72 @@ fn source_scheduler_ownership_findings(package: &str, source: &str) -> Vec<Strin
         ));
     }
     findings
+}
+
+fn source_without_cfg_test_regions(source: &str) -> String {
+    let lines = source.lines().collect::<Vec<_>>();
+    let ranges = cfg_test_line_ranges(&lines);
+
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let line_number = index + 1;
+            if ranges.iter().any(|range| range.contains(&line_number)) {
+                ""
+            } else {
+                *line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn cfg_test_line_ranges(lines: &[&str]) -> Vec<std::ops::RangeInclusive<usize>> {
+    let mut ranges = Vec::new();
+    for index in 0..lines.len() {
+        if line_is_cfg_test(lines[index])
+            && let Some(range) = braced_item_line_range_after(lines, index + 1)
+        {
+            ranges.push(range);
+        }
+    }
+    ranges
+}
+
+fn line_is_cfg_test(line: &str) -> bool {
+    line.chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        == "#[cfg(test)]"
+}
+
+fn braced_item_line_range_after(
+    lines: &[&str],
+    start: usize,
+) -> Option<std::ops::RangeInclusive<usize>> {
+    let mut depth = 0usize;
+    let mut first_brace_line = None;
+
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    if depth == 0 {
+                        first_brace_line = Some(index + 1);
+                    }
+                    depth += 1;
+                }
+                '}' if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return first_brace_line.map(|line| line..=index + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    None
 }

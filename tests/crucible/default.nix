@@ -2389,6 +2389,11 @@ in rec {
     };
   };
   phase7 = {
+    crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";
+      taskIds = ["T-PKG-8"];
+    };
     happyPathExample = import ./phase7-happy-path-example.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.happyPathExample";

@@ -1,9 +1,10 @@
 //! Checks the Crucible crate artifact-type contract.
 //!
 //! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
-//! implementation detail: only the QEMU plugin builds a `cdylib`, only the CLI
-//! builds the public `crucible` binary, and every other Crucible package remains
-//! a library crate.
+//! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
+//! builds the public `crucible` binary, `crucible-guest` builds its optional
+//! in-guest emitter binary, and every other Crucible package remains a library
+//! crate.
 
 #![forbid(unsafe_code)]
 
@@ -18,6 +19,7 @@ use toml::Value;
 enum ExpectedArtifact {
     CdylibPlugin,
     CliBinary,
+    GuestEmitter,
     Library,
 }
 
@@ -58,7 +60,7 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     },
     ArtifactSpec {
         package: "crucible-guest",
-        expected: ExpectedArtifact::Library,
+        expected: ExpectedArtifact::GuestEmitter,
     },
     ArtifactSpec {
         package: "crucible",
@@ -148,6 +150,21 @@ fn artifact_type_rules_reject_extra_or_missing_outputs() -> Result<(), Box<dyn E
         path = "src/bin/debug.rs"
     "#
     .parse()?;
+    let guest_with_extra_bin: Value = r#"
+        [package]
+        name = "crucible-guest"
+        version = "0.1.0"
+        edition = "2024"
+
+        [[bin]]
+        name = "crucible-guest"
+        path = "src/main.rs"
+
+        [[bin]]
+        name = "crucible-guest-debug"
+        path = "src/bin/debug.rs"
+    "#
+    .parse()?;
     let library_manifest: Value = r#"
         [package]
         name = "crucible-api"
@@ -193,6 +210,19 @@ fn artifact_type_rules_reject_extra_or_missing_outputs() -> Result<(), Box<dyn E
     assert!(
         contains_finding(&cli_findings, "exactly one [[bin]]"),
         "extra CLI binary target should be rejected: {cli_findings:?}"
+    );
+
+    let guest_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-guest",
+            expected: ExpectedArtifact::GuestEmitter,
+        },
+        &guest_with_extra_bin,
+        &PackageLayout::guest_emitter(),
+    );
+    assert!(
+        contains_finding(&guest_findings, "exactly one [[bin]]"),
+        "extra guest emitter binary target should be rejected: {guest_findings:?}"
     );
 
     let implicit_bin_findings = artifact_type_failures(
@@ -243,6 +273,14 @@ impl PackageLayout {
     fn cli() -> Self {
         Self {
             has_lib_rs: false,
+            has_main_rs: true,
+            has_src_bin_dir: false,
+        }
+    }
+
+    fn guest_emitter() -> Self {
+        Self {
+            has_lib_rs: true,
             has_main_rs: true,
             has_src_bin_dir: false,
         }
@@ -319,6 +357,57 @@ fn artifact_type_failures(
             if layout.has_src_bin_dir {
                 failures.push(format!(
                     "{}: CLI must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::GuestEmitter => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: guest emitter must expose a library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for guest emitter library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: guest emitter must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-guest") {
+                    failures.push(format!(
+                        "{}: guest emitter [[bin]] name must be `crucible-guest`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/main.rs") {
+                    failures.push(format!(
+                        "{}: guest emitter [[bin]] path must be `src/main.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if !layout.has_main_rs {
+                failures.push(format!(
+                    "{}: guest emitter target must have src/main.rs",
+                    spec.package
+                ));
+            }
+            if layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: guest emitter must not add extra implicit binary targets under src/bin",
                     spec.package
                 ));
             }

@@ -57,7 +57,7 @@ pub(super) fn clippy_tier_failures(
         "--all-targets",
         "rust.dev",
         "-D warnings",
-        "${packageFlags}",
+        "${workspaceCargoFlags}",
     ] {
         if !crucible_package.contains(required) {
             findings.push(format!(

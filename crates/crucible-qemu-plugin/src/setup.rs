@@ -500,13 +500,14 @@ pub enum PluginSetupError {
 mod tests {
     use super::*;
 
+    use std::cell::Cell;
     use std::fs::{File, OpenOptions};
     use std::io::{Cursor, Read, Write};
     use std::os::fd::FromRawFd;
     #[cfg(not(target_os = "linux"))]
     use std::os::fd::IntoRawFd;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crucible_protocol::{
         CONTROL_PROTOCOL_VERSION, DescriptorHandoverError, HostMsg, NegotiatedHandshake, PluginMsg,
@@ -558,7 +559,7 @@ mod tests {
         assert_nonblocking(completion.wake_fd().as_raw_fd());
         assert_eq!(
             completion.registered_wake_fd().as_raw_fd(),
-            LAST_REGISTERED_WAKE_FD.load(Ordering::SeqCst)
+            last_registered_wake_fd()
         );
         assert!(io.written().is_empty());
         assert_eq!(io.flush_count(), 0);
@@ -746,7 +747,7 @@ mod tests {
             .register_with_qemu(accept_wake_fd_registration)
             .unwrap_or_else(|error| panic!("QEMU should accept wake fd: {error}"));
         assert_eq!(registered.as_raw_fd(), raw_fd);
-        assert_eq!(LAST_REGISTERED_WAKE_FD.load(Ordering::SeqCst), raw_fd);
+        assert_eq!(last_registered_wake_fd(), raw_fd);
     }
 
     #[test]
@@ -929,10 +930,16 @@ mod tests {
 
     extern "C" fn setup_test_direct_advance(_target_virtual_ns: i64) {}
 
-    static LAST_REGISTERED_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
+    thread_local! {
+        static LAST_REGISTERED_WAKE_FD: Cell<i32> = const { Cell::new(-1) };
+    }
+
+    fn last_registered_wake_fd() -> i32 {
+        LAST_REGISTERED_WAKE_FD.with(Cell::get)
+    }
 
     extern "C" fn accept_wake_fd_registration(fd: i32) -> i32 {
-        LAST_REGISTERED_WAKE_FD.store(fd, Ordering::SeqCst);
+        LAST_REGISTERED_WAKE_FD.with(|last| last.set(fd));
         0
     }
 

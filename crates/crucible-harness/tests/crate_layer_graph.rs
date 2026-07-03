@@ -1,8 +1,9 @@
 //! Checks the Crucible runtime crate dependency graph.
 //!
 //! The L0-L4 crate map in RFC-0010 file 27 is a phase-ordering contract: a
-//! runtime crate may depend only on crates in its own layer or lower layers, and
-//! the two in-VM L2 crates may depend directly only on L1 crates.
+//! runtime crate may depend only on crates in its own layer or lower layers,
+//! except for the host-side QEMU adapter edge into the engine crate. The two
+//! in-VM L2 crates may depend directly only on L1 crates.
 
 #![forbid(unsafe_code)]
 
@@ -87,6 +88,7 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
 ];
 
 const HARNESS_PACKAGE: &str = "crucible-harness";
+const HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS: &[(&str, &str)] = &[("crucible-qemu", "crucible")];
 
 #[test]
 fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std::error::Error>> {
@@ -126,7 +128,10 @@ fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std:
                     dependency,
                     dependency_layer
                 ));
-            } else if !spec.in_vm && dependency_layer > spec.layer {
+            } else if !spec.in_vm
+                && dependency_layer > spec.layer
+                && !allows_host_driver_engine_edge(spec.package, &dependency)
+            {
                 failures.push(format!(
                     "{}: upward dependency `{}` (L{}) -> `{}` (L{})",
                     display_repo_path(&manifest_path),
@@ -201,6 +206,22 @@ fn layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles() {
             .iter()
             .any(|failure| failure.contains("dependency cycle")),
         "cycles should be rejected: {failures:?}"
+    );
+
+    let allowed_host_driver_graph = BTreeMap::from([
+        (
+            "crucible-qemu".to_string(),
+            BTreeSet::from(["crucible".to_string()]),
+        ),
+        (
+            "crucible".to_string(),
+            BTreeSet::from(["crucible-sim".to_string()]),
+        ),
+    ]);
+    let allowed_failures = graph_rule_failures(&allowed_host_driver_graph);
+    assert!(
+        allowed_failures.is_empty(),
+        "host-side QEMU adapter edge into the engine should be allowed: {allowed_failures:?}"
     );
 }
 
@@ -298,7 +319,10 @@ fn graph_rule_failures(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
                     "in-VM L2 crate `{}` may depend directly only on L1 crates, found `{}` in L{}",
                     spec.package, dependency, dependency_layer
                 ));
-            } else if !spec.in_vm && dependency_layer > spec.layer {
+            } else if !spec.in_vm
+                && dependency_layer > spec.layer
+                && !allows_host_driver_engine_edge(spec.package, dependency)
+            {
                 failures.push(format!(
                     "upward dependency `{}` (L{}) -> `{}` (L{})",
                     spec.package, spec.layer, dependency, dependency_layer
@@ -309,6 +333,14 @@ fn graph_rule_failures(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
 
     failures.extend(cycle_failures(graph, &spec_by_package));
     failures
+}
+
+fn allows_host_driver_engine_edge(package: &str, dependency: &str) -> bool {
+    HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS
+        .iter()
+        .any(|(allowed_package, allowed_dependency)| {
+            package == *allowed_package && dependency == *allowed_dependency
+        })
 }
 
 fn cycle_failures(

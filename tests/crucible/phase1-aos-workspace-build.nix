@@ -52,7 +52,11 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^cargo_deps=fetchCargoDeps$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q -- '-p crucible-qemu-plugin' \
+            grep -q '^cargo_workspace_flags=--workspace' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q -- '--exclude aos' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q -- 'cargo_member_flags=.*-p crucible-qemu-plugin' \
               ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so

@@ -101,6 +101,7 @@ pub(super) fn boundary_manifest_findings(
     dependency_specs(manifest, workspace_dependencies)
         .into_iter()
         .filter(|dependency| dependency.package == "crucible")
+        .filter(|_| package != "crucible-qemu")
         .map(|dependency| {
             format!(
                 "`{package}` may not route host nondeterminism directly into engine State; dependency `{}` in {} must cross an API/session boundary or the crucible-sim decision source",
@@ -288,14 +289,14 @@ pub(super) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let direct_manifest: Value = r#"
         [package]
-        name = "crucible-qemu"
+        name = "crucible-daemon"
 
         [dependencies]
         engine = { package = "crucible", path = "../crucible" }
     "#
     .parse()?;
     let direct_findings =
-        boundary_manifest_findings("crucible-qemu", &direct_manifest, &toml::map::Map::new());
+        boundary_manifest_findings("crucible-daemon", &direct_manifest, &toml::map::Map::new());
     if !finding_contains(&direct_findings, "may not route host nondeterminism") {
         failures.push(
             "harness-lint confinement regression failed to reject direct engine dependency"

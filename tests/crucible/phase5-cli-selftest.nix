@@ -61,7 +61,7 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
-        label = "CLI depends on canonical gate catalog";
+        label = "CLI dev-tests against canonical gate catalog";
         needle = "crucible-harness = { path = \"../crucible-harness\" }";
       }
     ]
@@ -80,7 +80,15 @@
       }
       {
         label = "canonical gate validation";
-        needle = "crucible_harness::find_gate";
+        needle = "CANONICAL_GATE_NAMES";
+      }
+      {
+        label = "canonical gate catalog drift test";
+        needle = "cli_selftest_canonical_gate_names_match_harness_catalog";
+      }
+      {
+        label = "dev-test canonical gate catalog source";
+        needle = "crucible_harness::canonical_gates()";
       }
       {
         label = "selftest gate planner";

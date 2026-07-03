@@ -222,9 +222,10 @@ as `pkgs.aos` does.
 
 - **[PKG-19]** The `crucible` package MUST build the `crucible-*` workspace with
   `mkCargoPackage` + `fetchCargoDeps` ([PKG-4]), vendoring all crate dependencies
-  through `fetchCargoDeps` (no network at build time), and MUST run the workspace
-  test suite (`doCheck = true`, `cargoTestFlags = "--workspace"`) — which includes
-  the L0/L1 determinism unit tests and the in-process QEMU double tests
+  through `fetchCargoDeps` (no network at build time), and MUST run the
+  workspace-scoped Cargo test suite (`doCheck = true`, Cargo flags rooted at
+  `--workspace` with the non-Crucible AOS CLI crates explicitly excluded) — which
+  includes the L0/L1 determinism unit tests and the in-process QEMU double tests
   ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §3)
   that need no real QEMU. *Gate:* `gate:layer0-determinism`,
   `gate:abi-conformance`. *Spec:* §26.5; satisfies [G-7], [G-5].
@@ -596,9 +597,18 @@ carries findings across an incompatible build.
   cdylib built against the same pinned plugin-API headers, co-located with
   `qemu-crucible`, embedding plugin-ABI + shmem-ABI versions. — satisfies [PKG-17],
   [PKG-18]; spec §26.4.
-- [ ] **T-PKG-8** Package the `crucible` workspace + CLI with `mkCargoPackage` /
+- [x] **T-PKG-8** Package the `crucible` workspace + CLI with `mkCargoPackage` /
   `fetchCargoDeps`, vendored deps, `--workspace` tests (L0/L1 + double tests). —
   satisfies [PKG-19]; spec §26.5.
+  - Completed by `checks.crucible.phase7.crucibleWorkspacePackage`: the
+    `pkgs.crucible` package uses AOS `mkCargoPackage` + `fetchCargoDeps` with a
+    fixed vendored dependency hash, builds and tests the Crucible member inventory
+    through workspace-scoped Cargo flags rooted at `--workspace`, excludes the
+    non-Crucible AOS CLI crates that share `crates/Cargo.toml`, keeps package
+    checks enabled, runs clippy, warning-free rustdoc, and hermetic doctests in the
+    package build, installs the `crucible` CLI, and emits
+    `nix-support/crucible-build-info` recording the workspace flags and hermetic
+    cargo-deps path.
 - [ ] **T-PKG-9** Implement hermetic QEMU/plugin discovery wiring in the `crucible`
   package (baked store paths or `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN` wrapper; flag/env
   overrides; no host `$PATH` fallback). — satisfies [PKG-20]; spec §26.5,

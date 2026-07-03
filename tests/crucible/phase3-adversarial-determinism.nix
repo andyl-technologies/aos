@@ -14,6 +14,7 @@
 
   adversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
   gateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
+  engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_adversarial_determinism.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
@@ -187,6 +188,24 @@
         needle = "assert_eq!(run.final_fingerprint, baseline.final_fingerprint)";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/gate_adversarial_determinism.rs" engineGateTest [
+      {
+        label = "engine adversarial gate target";
+        needle = "Checks `gate:adversarial-determinism` (the Phase-3 exit gate) on the REAL";
+      }
+      {
+        label = "real scheduler coverage";
+        needle = "SingleScheduler";
+      }
+      {
+        label = "host adversary matrix coverage";
+        needle = "canonical_host_adversary_matrix()";
+      }
+      {
+        label = "stable corpus name";
+        needle = "gate-adversarial-determinism-corpus";
+      }
+    ]
     ++ forbiddenFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" gateTest [
       {
         label = "ignored red placeholder";
@@ -212,7 +231,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "adversarial target implemented";
-        needle = "gate: \"gate:adversarial-determinism\",\n        package: \"crucible-harness\",\n        test_target: \"gate_adversarial_determinism\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:adversarial-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_adversarial_determinism\",\n        required_features: &[],\n        placeholder: false,";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
@@ -224,7 +243,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "adversarial target mapping implemented";
-        needle = "gate = \"gate:adversarial-determinism\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_adversarial_determinism\";\n      requiredFeatures = [];\n      placeholder = false;";
+        needle = "gate = \"gate:adversarial-determinism\";\n      package = \"crucible\";\n      testTarget = \"gate_adversarial_determinism\";\n      requiredFeatures = [];\n      placeholder = false;";
       }
       {
         label = "placeholder count updated";
@@ -311,6 +330,13 @@ in
               -p crucible-harness \
               --test gate_adversarial_determinism \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-adversarial-determinism-target" \
+              -p crucible \
+              --test gate_adversarial_determinism \
+              -- --test-threads=1
           '';
         }
         {
@@ -323,7 +349,7 @@ in
             check=${attrPath}
             gate=gate:adversarial-determinism
             tasks=${taskList}
-            rust_tests=crucible-harness::gate_adversarial_determinism
+            rust_tests=crucible-harness::gate_adversarial_determinism,crucible::gate_adversarial_determinism
             hostile_profiles=quiet-single-core,loaded-single-core,reordered-two-core,loaded-many-core
             hostile_dimensions=task-order,logical-affinity,load-yield,worker-count,producer-consumer-skew,host-io
             representative_scenarios=2
