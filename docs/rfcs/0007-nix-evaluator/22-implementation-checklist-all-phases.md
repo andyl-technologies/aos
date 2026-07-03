@@ -5901,9 +5901,25 @@ and helps the oracle directly.
       no-writeback no-ops, partition preservation, repeat-install rejection, and
       unchanged live card-table state. This is still not a full live collector commit: the slots are not
       bound to live evaluator roots or heap object fields, and live root/field
-      mutation, real ABI object-header forwarding writes, object-generation
-      mutation, remembered-source field mutation, and Tier-B dispatch remain
-      open.
+      mutation, real ABI object-header forwarding writes, real heap-record
+      object-generation mutation, remembered-source field mutation, and Tier-B
+      dispatch remain open.
+- [x] Current boundary live writeback-destination binding side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings`
+      derives the same owned boundary commit dry run, validates sibling
+      worker/permanent applications through the shared raw relocation-map
+      coherence checks, clones root and heap-field writeback snapshots,
+      validates those writebacks against merged destination-byte snapshots, and
+      installs the resulting root/heap-field destination-binding records into an
+      outcome-owned side table. Empty/no-writeback boundaries leave the side
+      table unchanged, and repeat installs reject without partial mutation. Unit
+      tests cover copied root bindings, dirty old-field heap-field bindings,
+      repeat-install rejection/no-mutation, all-in-one live metadata
+      installation and atomicity, and empty-boundary no-op behavior. This is
+      still not a full live collector commit: installed bindings are not live
+      evaluator roots or heap object fields, and live root/field mutation, live
+      heap-object byte binding, real ABI object-header forwarding writes,
+      remembered-source field mutation, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6511,13 +6527,16 @@ and helps the oracle directly.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations`
       installs outcome-owned destination generation metadata from the same
       validated object-copy snapshots.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings`
+      installs outcome-owned root/heap-field destination-binding metadata from
+      the same validated writeback and destination snapshots.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       stages forwarding, destination-byte, outcome-owned object-generation
       metadata, forwarding-destination binding over the combined installed and
       planned forwarding cells against the final destination snapshot view,
-      reference-writeback, remembered-set, card-table-clear, and root/heap-field
-      destination-binding projections from one owned dry run, validates every
-      installable side-table payload and
+      reference-writeback, outcome-owned root/heap-field destination-binding
+      metadata, remembered-set, and card-table-clear projections from one owned
+      dry run, validates every installable side-table payload and
       destination-binding report before the first live metadata mutation, and
       then installs the outcome-owned side tables and clears the outcome card
       table together.
@@ -6540,12 +6559,14 @@ and helps the oracle directly.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       then validates installed typed/generation root writebacks against
       installed destination-byte snapshots, producing root-to-destination binding
-      metadata for a later live root writer without mutating evaluator roots.
+      metadata for the live writeback-destination binding side-table bridge and
+      a later live root writer without mutating evaluator roots.
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
       validates installed heap-field writebacks against their replacement
       destination snapshots, and requires copied nursery-field writes to target
       installed writeback-object destination snapshots, producing field binding
-      metadata for a later live object-field writer without mutating heap fields.
+      metadata for the live writeback-destination binding side-table bridge and
+      a later live object-field writer without mutating heap fields.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

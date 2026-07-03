@@ -679,6 +679,141 @@ impl EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
     }
 }
 
+/// Outcome-owned writeback destination-binding installation counts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+    root_writeback_bindings: usize,
+    heap_field_writeback_bindings: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+    const fn new(root_writeback_bindings: usize, heap_field_writeback_bindings: usize) -> Self {
+        Self {
+            root_writeback_bindings,
+            heap_field_writeback_bindings,
+        }
+    }
+
+    /// Returns how many root writeback destination bindings were installed.
+    pub const fn root_writeback_bindings(self) -> usize {
+        self.root_writeback_bindings
+    }
+
+    /// Returns how many heap-field writeback destination bindings were installed.
+    pub const fn heap_field_writeback_bindings(self) -> usize {
+        self.heap_field_writeback_bindings
+    }
+
+    /// Returns how many total writeback destination bindings were installed.
+    pub const fn bindings(self) -> usize {
+        self.root_writeback_bindings
+            .saturating_add(self.heap_field_writeback_bindings)
+    }
+}
+
+/// Outcome-owned root/heap-field destination-binding metadata.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
+    install_report: EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+    root_writeback_bindings: Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>,
+    heap_field_writeback_bindings:
+        Vec<EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding>,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
+    fn can_install(
+        &self,
+        install_report: EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+    ) -> Result<(), EvalHeapError> {
+        if install_report.bindings() != 0 && !self.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveWritebackDestinationBindingsAlreadyInstalled {
+                    existing: self.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn install(
+        &mut self,
+        root_writeback_bindings: Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>,
+        heap_field_writeback_bindings: Vec<
+            EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding,
+        >,
+    ) -> Result<
+        EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+        EvalHeapError,
+    > {
+        let install_report = live_writeback_destination_binding_install_report(
+            &root_writeback_bindings,
+            &heap_field_writeback_bindings,
+        );
+        if install_report.bindings() == 0 {
+            return Ok(
+                EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport::default(),
+            );
+        }
+        self.can_install(install_report)?;
+        self.install_prevalidated(
+            root_writeback_bindings,
+            heap_field_writeback_bindings,
+            install_report,
+        );
+        Ok(install_report)
+    }
+
+    fn install_prevalidated(
+        &mut self,
+        root_writeback_bindings: Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>,
+        heap_field_writeback_bindings: Vec<
+            EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding,
+        >,
+        install_report: EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+    ) {
+        if install_report.bindings() == 0 {
+            return;
+        }
+
+        self.install_report = install_report;
+        self.root_writeback_bindings = root_writeback_bindings;
+        self.heap_field_writeback_bindings = heap_field_writeback_bindings;
+    }
+
+    /// Returns whether no writeback destination-binding metadata is installed.
+    pub fn is_empty(&self) -> bool {
+        self.root_writeback_bindings.is_empty() && self.heap_field_writeback_bindings.is_empty()
+    }
+
+    /// Returns how many writeback destination-binding records are installed.
+    pub fn len(&self) -> usize {
+        self.root_writeback_bindings
+            .len()
+            .saturating_add(self.heap_field_writeback_bindings.len())
+    }
+
+    /// Returns the install report for the writeback destination bindings.
+    pub const fn install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+        self.install_report
+    }
+
+    /// Returns installed root writeback destination bindings.
+    pub fn root_writeback_bindings(
+        &self,
+    ) -> &[EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding] {
+        &self.root_writeback_bindings
+    }
+
+    /// Returns installed heap-field writeback destination bindings.
+    pub fn heap_field_writeback_bindings(
+        &self,
+    ) -> &[EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding] {
+        &self.heap_field_writeback_bindings
+    }
+}
+
 /// Applied boundary-owned object byte buffers for one minor-GC object copy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcObjectByteCopyApplication {
@@ -1706,6 +1841,16 @@ fn live_reference_writeback_install_report(
         report.record(application);
     }
     report
+}
+
+fn live_writeback_destination_binding_install_report(
+    root_writeback_bindings: &[EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding],
+    heap_field_writeback_bindings: &[EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding],
+) -> EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+    EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport::new(
+        root_writeback_bindings.len(),
+        heap_field_writeback_bindings.len(),
+    )
 }
 
 fn boundary_minor_gc_destination_object_generation_bindings(
@@ -4198,7 +4343,7 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
 /// the one live dirty-card clear applied to [`EvalOutcome`]'s card table after
 /// all preflight validation and owned-buffer applications succeeded. It still
 /// does not mutate live roots, heap fields, object bytes, forwarding slots,
-/// remembered-set storage, object generations, or semispace storage.
+/// remembered-set storage, heap-record object generations, or semispace storage.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4238,8 +4383,8 @@ impl EvalGcStressBoundaryMinorGcLiveCardTableCommitDryRun {
 /// values installed into [`EvalOutcome`]'s evaluator heap side table after all
 /// dry-run validation succeeds. It still does not write ABI object headers,
 /// copy live object bytes, mutate roots or heap fields, publish remembered-set
-/// storage, mutate object generations, clear card-table storage, or manage
-/// semispaces.
+/// storage, mutate heap-record object generations, clear card-table storage, or
+/// manage semispaces.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4281,8 +4426,8 @@ impl EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
 /// payload snapshots installed into [`EvalOutcome`]'s destination-byte side
 /// table after all dry-run validation succeeds. It still does not bind those
 /// bytes to live heap objects, write ABI object headers, mutate roots or heap
-/// fields, publish remembered-set storage, mutate object generations, clear
-/// card-table storage, or manage semispaces.
+/// fields, publish remembered-set storage, mutate heap-record object
+/// generations, clear card-table storage, or manage semispaces.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4367,7 +4512,7 @@ impl EvalGcStressBoundaryMinorGcLiveObjectGenerationCommitDryRun {
 /// and heap-field writeback slots installed into [`EvalOutcome`]'s metadata
 /// after all dry-run validation succeeds. It still does not mutate live roots,
 /// heap fields, object bytes, forwarding headers, remembered-set storage,
-/// object generations, card-table storage, or semispace pages.
+/// heap-record object generations, card-table storage, or semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4401,6 +4546,61 @@ impl EvalGcStressBoundaryMinorGcLiveReferenceWritebackCommitDryRun {
     /// Returns how many copied reference writeback slots were installed.
     pub const fn reference_writebacks_installed(&self) -> usize {
         self.reference_writeback_install_report.writebacks()
+    }
+}
+
+/// Boundary commit dry run plus outcome-owned writeback binding installation.
+///
+/// This report preserves the owned dry-run artifacts and records root/heap-field
+/// destination-binding metadata installed into [`EvalOutcome`]. It is a
+/// GC-stress bridge only: it does not mutate evaluator roots, heap object
+/// fields, object bytes, ABI forwarding headers, or semispace storage.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    writeback_destination_binding_install_report:
+        EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        writeback_destination_binding_install_report:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            writeback_destination_binding_install_report,
+        }
+    }
+
+    /// Returns the owned dry run that gated writeback binding installation.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live writeback destination-binding installation report.
+    pub const fn writeback_destination_binding_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+        self.writeback_destination_binding_install_report
+    }
+
+    /// Returns how many root writeback destination bindings were installed.
+    pub const fn root_writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report
+            .root_writeback_bindings()
+    }
+
+    /// Returns how many heap-field writeback destination bindings were installed.
+    pub const fn heap_field_writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report
+            .heap_field_writeback_bindings()
+    }
+
+    /// Returns how many total writeback destination bindings were installed.
+    pub const fn writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report.bindings()
     }
 }
 
@@ -4459,12 +4659,13 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
 /// metadata installed into [`EvalOutcome`] after all derived side-table payloads
 /// validated against the same dry run. It installs evaluator forwarding
 /// side-table values, destination-byte snapshots, reference-writeback metadata,
-/// object-generation metadata, the merged next remembered set, and the daemon
-/// card-table clear together. It also validates destination generation,
-/// forwarding-destination, and root/heap-field writeback destination bindings
-/// before the first live metadata mutation. It still does not mutate live root
-/// variables, heap fields, object bytes, ABI forwarding headers, evaluator
-/// heap-record generations, or semispace pages.
+/// object-generation metadata, writeback destination-binding metadata, the
+/// merged next remembered set, and the daemon card-table clear together. It
+/// also validates destination generation, forwarding-destination, and root/
+/// heap-field writeback destination bindings before the first live metadata
+/// mutation. It still does not mutate live root variables, heap fields, object
+/// bytes, ABI forwarding headers, evaluator heap-record generations, or
+/// semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4474,6 +4675,8 @@ pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
     reference_writeback_install_report:
         EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+    writeback_destination_binding_install_report:
+        EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
     remembered_set_published: bool,
     card_table_clear_report: GcCardTableClearReport,
 }
@@ -4485,6 +4688,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
         destination_storage_install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
         object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
         reference_writeback_install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
+        writeback_destination_binding_install_report: EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
         remembered_set_published: bool,
         card_table_clear_report: GcCardTableClearReport,
     ) -> Self {
@@ -4494,6 +4698,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
             destination_storage_install_report,
             object_generation_install_report,
             reference_writeback_install_report,
+            writeback_destination_binding_install_report,
             remembered_set_published,
             card_table_clear_report,
         }
@@ -4550,6 +4755,30 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     /// Returns how many copied reference writeback slots were installed.
     pub const fn reference_writebacks_installed(&self) -> usize {
         self.reference_writeback_install_report.writebacks()
+    }
+
+    /// Returns the live writeback destination-binding installation report.
+    pub const fn writeback_destination_binding_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport {
+        self.writeback_destination_binding_install_report
+    }
+
+    /// Returns how many root writeback destination bindings were installed.
+    pub const fn root_writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report
+            .root_writeback_bindings()
+    }
+
+    /// Returns how many heap-field writeback destination bindings were installed.
+    pub const fn heap_field_writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report
+            .heap_field_writeback_bindings()
+    }
+
+    /// Returns how many total writeback destination bindings were installed.
+    pub const fn writeback_destination_bindings_installed(&self) -> usize {
+        self.writeback_destination_binding_install_report.bindings()
     }
 
     /// Returns whether the outcome-owned remembered set was replaced.
@@ -4989,6 +5218,8 @@ pub struct EvalOutcome {
         EvalGcStressBoundaryMinorGcLiveDestinationStorage,
     pub(crate) gc_stress_boundary_minor_gc_object_generations:
         EvalGcStressBoundaryMinorGcLiveObjectGenerations,
+    pub(crate) gc_stress_boundary_minor_gc_writeback_destination_bindings:
+        EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings,
 }
 
 impl std::fmt::Debug for EvalOutcome {
@@ -5034,6 +5265,10 @@ impl std::fmt::Debug for EvalOutcome {
             .field(
                 "gc_stress_boundary_minor_gc_object_generations",
                 &self.gc_stress_boundary_minor_gc_object_generations,
+            )
+            .field(
+                "gc_stress_boundary_minor_gc_writeback_destination_bindings",
+                &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
             )
             .finish()
     }
@@ -5171,6 +5406,18 @@ impl EvalOutcome {
         &self,
     ) -> &EvalGcStressBoundaryMinorGcLiveObjectGenerations {
         &self.gc_stress_boundary_minor_gc_object_generations
+    }
+
+    /// Returns outcome-owned writeback destination bindings installed by live dry runs.
+    ///
+    /// These records are GC-stress bridge metadata. They bind installed
+    /// root/heap-field writeback snapshots to destination-byte snapshots, but
+    /// they are not live evaluator root slots or heap object fields and
+    /// ordinary evaluation does not read them.
+    pub const fn gc_stress_boundary_minor_gc_writeback_destination_bindings(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
+        &self.gc_stress_boundary_minor_gc_writeback_destination_bindings
     }
 
     /// Matches installed destination-byte snapshots to object generations.
@@ -5483,7 +5730,7 @@ impl EvalOutcome {
     /// This is a live forwarding-metadata bridge for GC-stress experiments, not
     /// a full collector commit. It does not write ABI object headers, bind live
     /// object-byte buffers, mutate roots or heap fields, publish remembered
-    /// sets, clear card-table storage, mutate object generations, reserve
+    /// sets, clear card-table storage, mutate heap-record object generations, reserve
     /// semispace storage, or invoke Tier B.
     ///
     /// # Errors
@@ -5604,6 +5851,67 @@ impl EvalOutcome {
         )
     }
 
+    /// Runs a boundary dry run and installs writeback destination bindings.
+    ///
+    /// The method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`], validates sibling
+    /// survivor relocations, merges destination-byte snapshots, clones the root
+    /// and heap-field writeback snapshots, validates each writeback against the
+    /// merged destinations, and installs the resulting binding records into
+    /// outcome-owned metadata. Empty boundaries, or non-empty boundaries with no
+    /// writebacks, leave the side table unchanged.
+    ///
+    /// This is a live writeback destination-binding metadata bridge for
+    /// GC-stress experiments, not a full collector commit. It does not mutate
+    /// evaluator roots, heap object fields, object bytes, forwarding headers,
+    /// remembered-set storage, semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling applications do not form one
+    /// coherent survivor relocation map, if writeback metadata cannot be
+    /// cloned, if root/heap-field destination binding validation fails, or if
+    /// writeback destination-binding metadata has already been installed for
+    /// this outcome. When an error is returned, the writeback destination-binding
+    /// side table is left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingCommitDryRun, EvalHeapError>
+    {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let object_bytes =
+            boundary_minor_gc_merged_destination_object_bytes(dry_run.commit_applications())?;
+        let writebacks =
+            clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;
+        let root_writeback_destination_bindings =
+            boundary_minor_gc_root_writeback_destination_bindings_from_applications(
+                &writebacks,
+                &object_bytes,
+            )?;
+        let heap_field_writeback_destination_bindings =
+            boundary_minor_gc_heap_field_writeback_destination_bindings_from_applications(
+                &writebacks,
+                &object_bytes,
+            )?;
+        let writeback_destination_binding_install_report = self
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings
+            .install(
+                root_writeback_destination_bindings,
+                heap_field_writeback_destination_bindings,
+            )?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingCommitDryRun::new(
+                dry_run,
+                writeback_destination_binding_install_report,
+            ),
+        )
+    }
+
     /// Runs a boundary dry run and installs outcome-owned writeback metadata.
     ///
     /// The method derives the same owned commit dry run as
@@ -5617,7 +5925,7 @@ impl EvalOutcome {
     /// This is a live metadata bridge for GC-stress experiments, not a full
     /// collector commit. It does not mutate live root variables, heap fields,
     /// object bytes, forwarding headers, remembered sets, card-table storage,
-    /// object generations, reserve semispace storage, or invoke Tier B.
+    /// heap-record object generations, reserve semispace storage, or invoke Tier B.
     ///
     /// # Errors
     ///
@@ -5657,9 +5965,10 @@ impl EvalOutcome {
     /// metadata, root/heap-field destination bindings, remembered-set
     /// publication, and live forwarding slots. After those checks pass, it
     /// installs evaluator side-table forwarding values, destination-byte
-    /// snapshots, object-generation metadata, reference-writeback metadata, the
-    /// merged next remembered set, and clears the daemon card table. Empty
-    /// boundaries leave the outcome unchanged.
+    /// snapshots, object-generation metadata, reference-writeback metadata,
+    /// writeback destination-binding metadata, the merged next remembered set,
+    /// and clears the daemon card table. Empty boundaries leave the outcome
+    /// unchanged.
     ///
     /// This is a staged live-metadata bridge for GC-stress experiments, not a
     /// full collector commit. It does not mutate live root variables, heap
@@ -5671,16 +5980,17 @@ impl EvalOutcome {
     /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
-    /// object-generation or reference-writeback metadata have already been
-    /// installed, if remembered set publication cannot be merged, if destination
-    /// generation or writeback destination bindings do not match the dry-run
-    /// destination snapshots, if the combined installed and planned forwarding
-    /// cells do not match the final destination snapshot view, or if forwarding
-    /// installation fails.
+    /// object-generation, reference-writeback, or writeback destination-binding
+    /// metadata have already been installed, if remembered set publication
+    /// cannot be merged, if destination generation or writeback destination
+    /// bindings do not match the dry-run destination snapshots, if the combined
+    /// installed and planned forwarding cells do not match the final destination
+    /// snapshot view, or if forwarding installation fails.
     /// All installable side-table payloads are validated before the first live
     /// mutation; if forwarding installation fails, destination storage,
-    /// object-generation metadata, reference-writeback metadata, remembered-set
-    /// state, and card-table state are left unchanged.
+    /// object-generation metadata, reference-writeback metadata, writeback
+    /// destination-binding metadata, remembered-set state, and card-table state
+    /// are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
         &mut self,
         promotion_policy: MinorGcPromotionPolicy,
@@ -5719,16 +6029,23 @@ impl EvalOutcome {
             live_reference_writeback_install_report(&writebacks);
         self.gc_stress_boundary_minor_gc_reference_writebacks
             .can_install(reference_writeback_install_report)?;
-        let _root_writeback_destination_bindings =
+        let root_writeback_destination_bindings =
             boundary_minor_gc_root_writeback_destination_bindings_from_applications(
                 &writebacks,
                 &object_bytes,
             )?;
-        let _heap_field_writeback_destination_bindings =
+        let heap_field_writeback_destination_bindings =
             boundary_minor_gc_heap_field_writeback_destination_bindings_from_applications(
                 &writebacks,
                 &object_bytes,
             )?;
+        let writeback_destination_binding_install_report =
+            live_writeback_destination_binding_install_report(
+                &root_writeback_destination_bindings,
+                &heap_field_writeback_destination_bindings,
+            );
+        self.gc_stress_boundary_minor_gc_writeback_destination_bindings
+            .can_install(writeback_destination_binding_install_report)?;
         let remembered_set = boundary_minor_gc_merged_remembered_set(
             dry_run.commit_applications(),
             self.thunk_resolve_remembered_set.epoch(),
@@ -5744,6 +6061,12 @@ impl EvalOutcome {
             .install_prevalidated(object_generations, object_generation_install_report);
         self.gc_stress_boundary_minor_gc_reference_writebacks
             .install_prevalidated(writebacks, reference_writeback_install_report);
+        self.gc_stress_boundary_minor_gc_writeback_destination_bindings
+            .install_prevalidated(
+                root_writeback_destination_bindings,
+                heap_field_writeback_destination_bindings,
+                writeback_destination_binding_install_report,
+            );
         let remembered_set_published = remembered_set.is_some();
         let card_table_clear_report = if let Some(remembered_set) = remembered_set {
             self.thunk_resolve_remembered_set = remembered_set;
@@ -5758,6 +6081,7 @@ impl EvalOutcome {
             destination_storage_install_report,
             object_generation_install_report,
             reference_writeback_install_report,
+            writeback_destination_binding_install_report,
             remembered_set_published,
             card_table_clear_report,
         ))
@@ -5812,7 +6136,7 @@ impl EvalOutcome {
     ///
     /// This is still a live metadata bridge, not a full collector commit. It
     /// does not bind live object-byte buffers, mutate roots or heap fields,
-    /// install forwarding pointers, mutate object generations, reserve
+    /// install forwarding pointers, mutate heap-record object generations, reserve
     /// semispace storage, or invoke Tier B.
     ///
     /// # Errors

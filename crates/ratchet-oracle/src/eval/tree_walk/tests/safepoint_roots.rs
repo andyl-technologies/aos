@@ -106,6 +106,8 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
                 EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
             gc_stress_boundary_minor_gc_object_generations:
                 EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+            gc_stress_boundary_minor_gc_writeback_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
         },
         thunk_value,
     )
@@ -1106,6 +1108,104 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         &object_generations_before_repeat
     );
 
+    let mut writeback_binding_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live writeback destination bindings");
+    assert!(
+        writeback_binding_outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+            .is_empty()
+    );
+    let live_writeback_binding_dry_run = writeback_binding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live writeback destination bindings");
+    let live_writeback_binding_commit = live_writeback_binding_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live writeback destination-binding worker commit records");
+    let live_writeback_binding_copy = &live_writeback_binding_commit.object_byte_copies()[0];
+    let live_writeback_destination_bindings =
+        writeback_binding_outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings();
+    assert_eq!(
+        live_writeback_binding_dry_run.writeback_destination_bindings_installed(),
+        1
+    );
+    assert_eq!(
+        live_writeback_binding_dry_run.root_writeback_destination_bindings_installed(),
+        1
+    );
+    assert_eq!(
+        live_writeback_binding_dry_run.heap_field_writeback_destination_bindings_installed(),
+        0
+    );
+    assert_eq!(live_writeback_destination_bindings.len(), 1);
+    assert_eq!(
+        live_writeback_destination_bindings.install_report(),
+        live_writeback_binding_dry_run.writeback_destination_binding_install_report()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings
+            .root_writeback_bindings()
+            .len(),
+        1
+    );
+    assert!(
+        live_writeback_destination_bindings
+            .heap_field_writeback_bindings()
+            .is_empty()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].root_source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].replacement_tag(),
+        ValueTag::Lambda
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].request(),
+        live_writeback_binding_copy.request()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].destination_bytes(),
+        live_writeback_binding_copy.destination_bytes()
+    );
+    let writeback_destination_bindings_before_repeat = live_writeback_destination_bindings.clone();
+    let repeat_error = writeback_binding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live writeback destination bindings reject repeat install");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveWritebackDestinationBindingsAlreadyInstalled {
+            existing: 1
+        }
+    );
+    assert_eq!(
+        writeback_binding_outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings(),
+        &writeback_destination_bindings_before_repeat
+    );
+
     let mut forwarding_outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
@@ -1213,6 +1313,11 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert!(
         outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+            .is_empty()
+    );
+    assert!(
+        outcome
             .gc_stress_boundary_minor_gc_destination_object_generation_bindings()
             .expect("empty object-generation binding report builds")
             .is_empty()
@@ -1263,6 +1368,15 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(
         live_metadata.reference_writebacks_installed(),
         summary.reference_writebacks()
+    );
+    assert_eq!(live_metadata.writeback_destination_bindings_installed(), 1);
+    assert_eq!(
+        live_metadata.root_writeback_destination_bindings_installed(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_metadata.heap_field_writeback_destination_bindings_installed(),
+        0
     );
     assert!(live_metadata.remembered_set_published());
     assert_eq!(live_metadata.card_table_dirty_cards_cleared(), 0);
@@ -1408,6 +1522,54 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
             .value()
             .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
     );
+    let live_writeback_destination_bindings =
+        outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings();
+    assert_eq!(live_writeback_destination_bindings.len(), 1);
+    assert_eq!(
+        live_writeback_destination_bindings
+            .install_report()
+            .root_writeback_bindings(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings
+            .install_report()
+            .heap_field_writeback_bindings(),
+        0
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].root_source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].replacement_tag(),
+        ValueTag::Lambda
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings.root_writeback_bindings()[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+    assert!(
+        live_writeback_destination_bindings
+            .heap_field_writeback_bindings()
+            .is_empty()
+    );
     let bindings = outcome
         .gc_stress_boundary_minor_gc_root_writeback_destination_bindings()
         .expect("root writeback destination bindings validate");
@@ -1432,6 +1594,7 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     let destination_storage_before_repeat = live_destination_storage.clone();
     let object_generations_before_repeat = live_object_generations.clone();
     let writebacks_before_repeat = live_writebacks.clone();
+    let writeback_destination_bindings_before_repeat = live_writeback_destination_bindings.clone();
     let repeat_error = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
             MinorGcPromotionPolicy::new(2),
@@ -1454,6 +1617,10 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
         &writebacks_before_repeat
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings(),
+        &writeback_destination_bindings_before_repeat
     );
     assert_eq!(
         outcome
@@ -1558,6 +1725,8 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     };
     outcome
         .heap
@@ -1600,6 +1769,11 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
     assert!(
         outcome
             .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
             .is_empty()
     );
     assert_eq!(outcome.thunk_resolve_remembered_set().len(), 0);
@@ -1651,6 +1825,9 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     let writebacks_before = outcome
         .gc_stress_boundary_minor_gc_reference_writebacks()
         .clone();
+    let writeback_destination_bindings_before = outcome
+        .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+        .clone();
     let remembered_epoch_before = outcome.thunk_resolve_remembered_set().epoch();
     let remembered_edges_before = outcome.thunk_resolve_remembered_set().len();
     let card_table_dirty_before = outcome.thunk_resolve_card_table().len();
@@ -1667,6 +1844,10 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     assert_eq!(empty_live_metadata.object_copies_installed(), 0);
     assert_eq!(empty_live_metadata.object_generations_installed(), 0);
     assert_eq!(empty_live_metadata.reference_writebacks_installed(), 0);
+    assert_eq!(
+        empty_live_metadata.writeback_destination_bindings_installed(),
+        0
+    );
     assert!(!empty_live_metadata.remembered_set_published());
     assert_eq!(empty_live_metadata.card_table_dirty_cards_cleared(), 0);
     assert_eq!(
@@ -1680,6 +1861,10 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_reference_writebacks(),
         &writebacks_before
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings(),
+        &writeback_destination_bindings_before
     );
     assert_eq!(
         outcome.thunk_resolve_remembered_set().epoch(),
@@ -2531,6 +2716,8 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     };
 
     let nursery_base = static_gc_address(0x1000_0000);
@@ -2781,6 +2968,46 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         dirty_field_binding.writeback_object_destination_bytes(),
         None
     );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+            .is_empty()
+    );
+    let live_writeback_binding_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("dirty old-field boundary installs live writeback destination bindings");
+    assert_eq!(
+        live_writeback_binding_dry_run.writeback_destination_bindings_installed(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_writeback_binding_dry_run.heap_field_writeback_destination_bindings_installed(),
+        summary.heap_field_writebacks()
+    );
+    let live_writeback_destination_bindings =
+        outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings();
+    assert_eq!(
+        live_writeback_destination_bindings.len(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        live_writeback_destination_bindings
+            .install_report()
+            .heap_field_writeback_bindings(),
+        summary.heap_field_writebacks()
+    );
+    let installed_dirty_field_binding = live_writeback_destination_bindings
+        .heap_field_writeback_bindings()
+        .iter()
+        .find(|binding| {
+            binding.validation_object() == gc_address(permanent_parent)
+                && binding.writeback_object() == gc_address(permanent_parent)
+        })
+        .expect("installed dirty old-field binding records");
+    assert_eq!(installed_dirty_field_binding, dirty_field_binding);
 
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let live_card_table_dry_run = outcome
@@ -2855,6 +3082,8 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     };
 
     let error = outcome
@@ -2934,6 +3163,8 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     };
 
     let error = outcome

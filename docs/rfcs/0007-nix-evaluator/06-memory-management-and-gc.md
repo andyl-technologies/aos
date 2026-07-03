@@ -1317,9 +1317,25 @@ GC must be observationally invisible (§8): every item is gated by the different
       no-writeback no-ops, partition preservation, repeat-install rejection, and
       unchanged live card-table state. This is still not a full live collector commit: the slots are not
       bound to live evaluator roots or heap object fields, and live root/field
-      mutation, real ABI object-header forwarding writes, object-generation
-      mutation, remembered-source field mutation, and Tier-B dispatch remain
-      open.
+      mutation, real ABI object-header forwarding writes, real heap-record
+      object-generation mutation, remembered-source field mutation, and Tier-B
+      dispatch remain open.
+- [x] Current boundary live writeback-destination binding side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings`
+      derives the same owned boundary commit dry run, validates sibling
+      worker/permanent applications through the shared raw relocation-map
+      coherence checks, clones root and heap-field writeback snapshots,
+      validates those writebacks against merged destination-byte snapshots, and
+      installs the resulting root/heap-field destination-binding records into an
+      outcome-owned side table. Empty/no-writeback boundaries leave the side
+      table unchanged, and repeat installs reject without partial mutation.
+      Tests cover copied root bindings, dirty old-field heap-field bindings,
+      repeat-install rejection/no-mutation, all-in-one live metadata
+      installation and atomicity, and empty-boundary no-op behavior. This is
+      still not a full live collector commit: installed bindings are not live
+      evaluator roots or heap object fields, and live root/field mutation, live
+      heap-object byte binding, real ABI object-header forwarding writes,
+      remembered-source field mutation, and Tier-B dispatch remain open.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -2141,14 +2157,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations`
       installs outcome-owned destination generation metadata from the same
       validated object-copy snapshots.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings`
+      installs outcome-owned root/heap-field destination-binding metadata from
+      the same validated writeback and destination snapshots.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       now stages those live metadata projections from one dry run, validating
       forwarding, destination-byte, outcome-owned object-generation metadata,
       forwarding-destination binding over the combined installed and planned
       forwarding cells against the final destination snapshot view,
-      reference-writeback, root/heap-field
-      destination-binding, and remembered-set payloads before installing
-      outcome-owned side tables and clearing the outcome card table together.
+      reference-writeback, outcome-owned root/heap-field destination-binding
+      metadata, and remembered-set payloads before installing outcome-owned side
+      tables and clearing the outcome card table together.
       `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
       validates installed destination-byte snapshots against their
       action-implied generation and object-copy byte length, producing
@@ -2164,12 +2183,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can
-      bind them.
+      bind them; the live writeback-destination binding side-table bridge can
+      install the same root binding metadata without mutating evaluator roots.
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
       validates installed heap-field writebacks against the replacement
       destination snapshots, and for copied nursery-field writes also validates
       the relocated writeback object's destination snapshot, before a future
-      live object-field writer can bind them.
+      live object-field writer can bind them; the live writeback-destination
+      binding side-table bridge can install the same field binding metadata
+      without mutating heap fields.
       These helpers still do not bind those bytes to live heap-object bodies,
       live root/field storage, real ABI object-header forwarding storage, real
       heap-record object-generation state, or semispace storage, and they do

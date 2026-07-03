@@ -151,6 +151,8 @@ fn eval_whnf_owned_with_evaluator(
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     })
 }
 
@@ -278,6 +280,8 @@ fn eval_instantiation_attr_path_with_evaluator(
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
     })
 }
 
