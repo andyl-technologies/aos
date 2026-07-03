@@ -38,9 +38,11 @@ pub use parallel_failure::{
 };
 pub use parallel_heap::{
     ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,
-    ParallelHashConsMergeError, ParallelHashConsMergeOutcome, ParallelWorkerNursery,
-    ParallelWorkerNurseryAssignment, ParallelWorkerNurseryPlan,
-    merge_parallel_hash_cons_candidates, parallel_worker_nursery_plan,
+    ParallelHashConsMergeError, ParallelHashConsMergeOutcome, ParallelNurseryOwnershipError,
+    ParallelNurseryOwnershipMode, ParallelTaskNurseryExecution, ParallelTaskNurseryOwnership,
+    ParallelTaskNurseryOwnershipPlan, ParallelWorkerNursery, ParallelWorkerNurseryAssignment,
+    ParallelWorkerNurseryPlan, merge_parallel_hash_cons_candidates,
+    parallel_task_nursery_ownership_plan, parallel_worker_nursery_plan,
 };
 pub use parallel_output::{
     ParallelDrvOutput, ParallelOutputCollation, ParallelOutputDeterminismError,

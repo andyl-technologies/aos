@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! top-level task -> initial worker -> worker-local bump nursery
+//! stolen top-level task -> executing worker -> executing worker-local nursery
 //! worker-local hash-cons candidates -> deterministic equality-confirmed merge
 //! ```
 //!
@@ -21,8 +22,7 @@ use thiserror::Error;
 ///
 /// Every worker receives a distinct nursery id equal to the worker id, and
 /// tasks are assigned to initial worker-local nurseries round-robin so the
-/// placement matches the safe top-level scheduler precursor. Future scheduler
-/// integration must decide how stolen tasks switch allocation ownership.
+/// placement matches the safe top-level scheduler precursor.
 pub fn parallel_worker_nursery_plan(
     task_count: usize,
     worker_count: NonZeroUsize,
@@ -51,6 +51,76 @@ pub fn parallel_worker_nursery_plan(
         nurseries,
         assignments,
     }
+}
+
+/// Builds the deterministic allocation-ownership plan for completed tasks.
+///
+/// The seed nursery is retained for diagnostics, but the allocation nursery is
+/// selected from the worker that actually executed the task. This gives stolen
+/// tasks an explicit ownership rule before live `EvalHeap` instances become
+/// worker-local: once worker `B` steals a task seeded to worker `A`, new
+/// allocations for that task must flow through worker `B`'s nursery.
+///
+/// Completion records are normalized by stable task index so the returned plan
+/// does not depend on scheduler completion order.
+///
+/// # Errors
+///
+/// Returns [`ParallelNurseryOwnershipError`] if a task completion references an
+/// unknown task, references an unknown executing worker, or reports the same
+/// task more than once.
+pub fn parallel_task_nursery_ownership_plan<I>(
+    nursery_plan: &ParallelWorkerNurseryPlan,
+    executions: I,
+) -> Result<ParallelTaskNurseryOwnershipPlan, ParallelNurseryOwnershipError>
+where
+    I: IntoIterator<Item = ParallelTaskNurseryExecution>,
+{
+    let mut executions = executions.into_iter().collect::<Vec<_>>();
+    executions.sort_by_key(|execution| execution.task_index);
+
+    for pair in executions.windows(2) {
+        let first = pair[0];
+        let second = pair[1];
+        if first.task_index == second.task_index {
+            return Err(ParallelNurseryOwnershipError::DuplicateTaskExecution {
+                task_index: first.task_index,
+            });
+        }
+    }
+
+    let mut records = Vec::with_capacity(executions.len());
+    for execution in executions {
+        let assignment = nursery_plan.assignments.get(execution.task_index).ok_or(
+            ParallelNurseryOwnershipError::UnknownTask {
+                task_index: execution.task_index,
+                task_count: nursery_plan.task_count,
+            },
+        )?;
+        let execution_nursery = nursery_plan
+            .nurseries
+            .get(execution.executing_worker)
+            .ok_or(ParallelNurseryOwnershipError::UnknownWorker {
+                worker_id: execution.executing_worker,
+                worker_count: nursery_plan.worker_count,
+            })?;
+        let mode = if assignment.worker_id == execution.executing_worker {
+            ParallelNurseryOwnershipMode::Local
+        } else {
+            ParallelNurseryOwnershipMode::Stolen
+        };
+
+        records.push(ParallelTaskNurseryOwnership {
+            task_index: execution.task_index,
+            initial_worker: assignment.worker_id,
+            initial_nursery_id: assignment.nursery_id,
+            executing_worker: execution.executing_worker,
+            allocation_nursery_id: execution_nursery.nursery_id,
+            mode,
+        });
+    }
+
+    Ok(ParallelTaskNurseryOwnershipPlan { records })
 }
 
 /// Merges worker-local hash-cons candidates into a deterministic canonical set.
@@ -200,6 +270,119 @@ impl ParallelWorkerNurseryAssignment {
     }
 }
 
+/// One observed top-level task completion for nursery ownership planning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelTaskNurseryExecution {
+    task_index: usize,
+    executing_worker: usize,
+}
+
+impl ParallelTaskNurseryExecution {
+    /// Builds a task completion record from the stable task and worker ids.
+    pub const fn new(task_index: usize, executing_worker: usize) -> Self {
+        Self {
+            task_index,
+            executing_worker,
+        }
+    }
+
+    /// Returns the stable top-level task index.
+    pub const fn task_index(self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker that executed the task body.
+    pub const fn executing_worker(self) -> usize {
+        self.executing_worker
+    }
+}
+
+/// Deterministic allocation ownership for completed top-level tasks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelTaskNurseryOwnershipPlan {
+    records: Vec<ParallelTaskNurseryOwnership>,
+}
+
+impl ParallelTaskNurseryOwnershipPlan {
+    /// Returns ownership records in stable task-index order.
+    pub fn records(&self) -> &[ParallelTaskNurseryOwnership] {
+        &self.records
+    }
+
+    /// Returns the number of completed tasks covered by the plan.
+    pub fn completed_task_count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Returns the number of tasks that executed on their seed worker.
+    pub fn local_task_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.mode == ParallelNurseryOwnershipMode::Local)
+            .count()
+    }
+
+    /// Returns the number of tasks that executed on a stealing worker.
+    pub fn stolen_task_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.mode == ParallelNurseryOwnershipMode::Stolen)
+            .count()
+    }
+}
+
+/// The worker-local nursery selected for one completed task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelTaskNurseryOwnership {
+    task_index: usize,
+    initial_worker: usize,
+    initial_nursery_id: usize,
+    executing_worker: usize,
+    allocation_nursery_id: usize,
+    mode: ParallelNurseryOwnershipMode,
+}
+
+impl ParallelTaskNurseryOwnership {
+    /// Returns the stable top-level task index.
+    pub const fn task_index(self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker that initially owned the task queue entry.
+    pub const fn initial_worker(self) -> usize {
+        self.initial_worker
+    }
+
+    /// Returns the nursery selected by the deterministic seed placement.
+    pub const fn initial_nursery_id(self) -> usize {
+        self.initial_nursery_id
+    }
+
+    /// Returns the worker that executed the task body.
+    pub const fn executing_worker(self) -> usize {
+        self.executing_worker
+    }
+
+    /// Returns the nursery that owns allocations made by the task body.
+    pub const fn allocation_nursery_id(self) -> usize {
+        self.allocation_nursery_id
+    }
+
+    /// Returns whether allocation stayed local or moved with a stolen task.
+    pub const fn mode(self) -> ParallelNurseryOwnershipMode {
+        self.mode
+    }
+}
+
+/// How task execution selected its allocation nursery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParallelNurseryOwnershipMode {
+    /// The task executed on its initial worker and kept the seed nursery.
+    Local,
+    /// The task was stolen and allocations move to the executing worker nursery.
+    Stolen,
+}
+
 /// One worker-local hash-cons admission candidate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParallelHashConsCandidate<K, V> {
@@ -326,6 +509,37 @@ pub enum ParallelHashConsMergeError {
     },
 }
 
+/// A failure while assigning completed tasks to worker-local nurseries.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ParallelNurseryOwnershipError {
+    /// A completion record referenced a task outside the seed plan.
+    #[error(
+        "parallel nursery ownership referenced task {task_index} with only {task_count} task(s) planned"
+    )]
+    UnknownTask {
+        /// The referenced stable task index.
+        task_index: usize,
+        /// The number of tasks in the seed nursery plan.
+        task_count: usize,
+    },
+    /// A completion record referenced a worker outside the seed plan.
+    #[error(
+        "parallel nursery ownership referenced worker {worker_id} with only {worker_count} worker(s) planned"
+    )]
+    UnknownWorker {
+        /// The referenced executing worker.
+        worker_id: usize,
+        /// The number of worker-local nurseries in the seed plan.
+        worker_count: usize,
+    },
+    /// More than one completion record was provided for the same task.
+    #[error("parallel nursery ownership received duplicate completion for task {task_index}")]
+    DuplicateTaskExecution {
+        /// The duplicated stable task index.
+        task_index: usize,
+    },
+}
+
 impl fmt::Display for ParallelWorkerNurseryPlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -351,6 +565,10 @@ mod tests {
         value: &'static str,
     ) -> ParallelHashConsCandidate<u64, &'static str> {
         ParallelHashConsCandidate::new(worker_id, local_index, hash, value)
+    }
+
+    const fn execution(task_index: usize, executing_worker: usize) -> ParallelTaskNurseryExecution {
+        ParallelTaskNurseryExecution::new(task_index, executing_worker)
     }
 
     #[test]
@@ -404,6 +622,135 @@ mod tests {
         assert_eq!(plan.nurseries().len(), 4);
         assert_eq!(plan.assignments().len(), 1);
         assert_eq!(plan.assignments()[0].worker_id(), 0);
+    }
+
+    #[test]
+    fn nursery_ownership_uses_executing_worker_for_stolen_tasks() {
+        let plan = parallel_worker_nursery_plan(5, workers(3));
+        let ownership = parallel_task_nursery_ownership_plan(
+            &plan,
+            [
+                execution(4, 1),
+                execution(0, 0),
+                execution(2, 0),
+                execution(1, 2),
+                execution(3, 0),
+            ],
+        )
+        .expect("ownership plan succeeds");
+
+        assert_eq!(ownership.completed_task_count(), 5);
+        assert_eq!(ownership.local_task_count(), 3);
+        assert_eq!(ownership.stolen_task_count(), 2);
+        assert_eq!(
+            ownership
+                .records()
+                .iter()
+                .copied()
+                .map(|record| {
+                    (
+                        record.task_index(),
+                        record.initial_worker(),
+                        record.initial_nursery_id(),
+                        record.executing_worker(),
+                        record.allocation_nursery_id(),
+                        record.mode(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0, 0, 0, 0, ParallelNurseryOwnershipMode::Local),
+                (1, 1, 1, 2, 2, ParallelNurseryOwnershipMode::Stolen),
+                (2, 2, 2, 0, 0, ParallelNurseryOwnershipMode::Stolen),
+                (3, 0, 0, 0, 0, ParallelNurseryOwnershipMode::Local),
+                (4, 1, 1, 1, 1, ParallelNurseryOwnershipMode::Local)
+            ]
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_is_independent_of_completion_order() {
+        let plan = parallel_worker_nursery_plan(4, workers(2));
+        let first = parallel_task_nursery_ownership_plan(
+            &plan,
+            [
+                execution(3, 0),
+                execution(0, 0),
+                execution(2, 1),
+                execution(1, 1),
+            ],
+        )
+        .expect("first ownership plan succeeds");
+        let second = parallel_task_nursery_ownership_plan(
+            &plan,
+            [
+                execution(0, 0),
+                execution(1, 1),
+                execution(2, 1),
+                execution(3, 0),
+            ],
+        )
+        .expect("second ownership plan succeeds");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn nursery_ownership_accepts_empty_completed_task_set() {
+        let plan = parallel_worker_nursery_plan(4, workers(2));
+        let ownership =
+            parallel_task_nursery_ownership_plan(&plan, Vec::<ParallelTaskNurseryExecution>::new())
+                .expect("empty ownership plan succeeds");
+
+        assert!(ownership.records().is_empty());
+        assert_eq!(ownership.completed_task_count(), 0);
+        assert_eq!(ownership.local_task_count(), 0);
+        assert_eq!(ownership.stolen_task_count(), 0);
+    }
+
+    #[test]
+    fn nursery_ownership_rejects_unknown_task() {
+        let plan = parallel_worker_nursery_plan(2, workers(2));
+        let error = parallel_task_nursery_ownership_plan(&plan, [execution(2, 0)])
+            .expect_err("unknown task rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::UnknownTask {
+                task_index: 2,
+                task_count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_rejects_unknown_worker() {
+        let plan = parallel_worker_nursery_plan(2, workers(2));
+        let error = parallel_task_nursery_ownership_plan(&plan, [execution(1, 2)])
+            .expect_err("unknown worker rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::UnknownWorker {
+                worker_id: 2,
+                worker_count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_rejects_duplicate_task_execution() {
+        let plan = parallel_worker_nursery_plan(2, workers(2));
+        let error = parallel_task_nursery_ownership_plan(
+            &plan,
+            [execution(1, 0), execution(0, 0), execution(1, 1)],
+        )
+        .expect_err("duplicate task rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::DuplicateTaskExecution { task_index: 1 }
+        );
     }
 
     #[test]

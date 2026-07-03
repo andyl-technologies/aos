@@ -6666,8 +6666,22 @@ nurseries build on the bump arena.
       per-worker-then-merged contract only: it does not allocate through
       per-worker `EvalHeap` instances, publish into the live cons tables, replace
       the current hash-cons implementation with a concurrent/lock-free table,
-      define allocation ownership for stolen tasks, integrate with the
-      scheduler, rely on never-free CLI mode, or satisfy the loom/Miri/TSan
+      integrate with the scheduler, rely on never-free CLI mode, or satisfy the
+      loom/Miri/TSan gate.
+- [x] Current stolen-task nursery ownership precursor:
+      `parallel_task_nursery_ownership_plan` combines the deterministic
+      top-level nursery seed plan with observed task completion workers, then
+      records that allocation ownership follows the executing worker's nursery
+      rather than the task's initial queue owner. Completion records are sorted
+      by stable task index so the ownership report is independent of scheduler
+      completion order. Tests cover stolen versus local ownership counts,
+      completion-order independence, empty completed sets, unknown task/worker
+      rejection, and duplicate task-completion rejection. This is an
+      allocation-ownership planning precursor only: it
+      does not allocate through live worker-local `EvalHeap` instances, migrate
+      existing objects between nurseries, attach ownership records to the
+      scheduler report, distinguish fail-fast cancellation from missing
+      completions, publish into hash-cons tables, or satisfy the loom/Miri/TSan
       gate.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
