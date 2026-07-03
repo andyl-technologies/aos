@@ -1934,6 +1934,34 @@ impl AllocationCollectorPollRootWriteback {
     pub const fn replacement_tag(&self) -> ValueTag {
         self.replacement_tag
     }
+
+    /// Reconstructs the typed young from-space value expected in the root slot.
+    ///
+    /// This validates the value word's tag/address shape only. It does not
+    /// prove that the source object remains live in an [`EvalHeap`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the expected value is no longer heap-backed
+    /// metadata or if its address is not valid for a typed evaluator heap
+    /// pointer.
+    pub fn expected_value(&self) -> Result<Value, EvalHeapError> {
+        value_for_resolved_generation(self.expected_tag, self.expected)
+    }
+
+    /// Reconstructs the typed relocated value that should replace the root slot.
+    ///
+    /// This validates the value word's tag/address shape only. It does not bind
+    /// the value to live semispace storage or install it into a root slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the replacement value is no longer
+    /// heap-backed metadata or if its address is not valid for a typed evaluator
+    /// heap pointer.
+    pub fn replacement_value(&self) -> Result<Value, EvalHeapError> {
+        value_for_resolved_generation(self.replacement_tag, self.replacement)
+    }
 }
 
 /// Root writebacks derived from an allocation-poll minor-GC commit plan.
@@ -4158,6 +4186,18 @@ fn validate_reference_slot_matches_rewrite(
         });
     }
     Ok(expected)
+}
+
+fn value_for_resolved_generation(
+    tag: ValueTag,
+    value: ResolvedValueGeneration,
+) -> Result<Value, EvalHeapError> {
+    let ResolvedValueGeneration::Heap { address, .. } = value else {
+        return Err(EvalHeapError::CollectorPollRootWritebackNonHeapValue { tag, value });
+    };
+    let ptr = NonNull::new(address.address_bits() as *mut HeapObject)
+        .ok_or(EvalHeapError::Value(ValueError::NullHeapPointer { tag }))?;
+    Value::heap(tag, ptr).map_err(EvalHeapError::Value)
 }
 
 fn minor_gc_writeback_object_for_nursery_field(

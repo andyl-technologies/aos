@@ -2096,7 +2096,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       Root-backed reference slots and derived root writebacks now carry the
       copied heap `ValueTag`, so a later live root-slot writer has the tag needed
       to reconstruct typed relocated `Value` handles from address/generation
-      metadata.
+      metadata. `AllocationCollectorPollRootWriteback::expected_value` and
+      `replacement_value` run that reconstruction through the checked
+      `Value::heap` path for preflight metadata; they still do not validate
+      object liveness, bind semispace storage, or mutate live root slots.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;

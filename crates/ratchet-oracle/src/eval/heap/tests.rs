@@ -5807,6 +5807,44 @@ fn collector_poll_minor_gc_root_writeback_plan_filters_stack_map_roots() {
     for writeback in root_writeback_plan.writebacks() {
         assert_eq!(writeback.expected_tag(), ValueTag::Thunk);
         assert_eq!(writeback.replacement_tag(), ValueTag::Thunk);
+        let ResolvedValueGeneration::Heap {
+            address: expected_address,
+            ..
+        } = writeback.expected()
+        else {
+            panic!("expected root writeback value should be heap-backed");
+        };
+        let ResolvedValueGeneration::Heap {
+            address: replacement_address,
+            ..
+        } = writeback.replacement()
+        else {
+            panic!("replacement root writeback value should be heap-backed");
+        };
+        let expected_value = writeback.expected_value().expect("expected value rebuilds");
+        let replacement_value = writeback
+            .replacement_value()
+            .expect("replacement value rebuilds");
+        assert!(
+            expected_value.raw_eq(
+                Value::heap(
+                    ValueTag::Thunk,
+                    NonNull::new(expected_address.address_bits() as *mut HeapObject)
+                        .expect("expected address is non-null"),
+                )
+                .expect("expected raw value rebuilds")
+            )
+        );
+        assert!(
+            replacement_value.raw_eq(
+                Value::heap(
+                    ValueTag::Thunk,
+                    NonNull::new(replacement_address.address_bits() as *mut HeapObject)
+                        .expect("replacement address is non-null"),
+                )
+                .expect("replacement raw value rebuilds")
+            )
+        );
     }
 
     let mut slots = root_writeback_plan

@@ -837,6 +837,17 @@ pub enum EvalHeapError {
         /// The copied root source missing tag metadata.
         root_source: EvalRootSource,
     },
+    /// A tagged root-writeback value could not be reconstructed from
+    /// heap-backed address metadata.
+    #[error(
+        "collector-poll minor-GC root writeback value with tag {tag:?} is not heap-backed metadata: {value:?}"
+    )]
+    CollectorPollRootWritebackNonHeapValue {
+        /// The copied heap tag associated with the root writeback.
+        tag: ValueTag,
+        /// The generation metadata that should have carried a heap address.
+        value: ResolvedValueGeneration,
+    },
     /// A live reference buffer cannot be derived for copied root-only slots yet.
     #[error(
         "collector-poll minor-GC reference slot {index} is not heap-field-backed: {root_source:?}"

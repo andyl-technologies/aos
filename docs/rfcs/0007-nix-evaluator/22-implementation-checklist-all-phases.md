@@ -6424,7 +6424,10 @@ and helps the oracle directly.
       Root-backed reference slots and derived root writebacks now carry the
       copied heap `ValueTag`, so a later live root-slot writer has the tag needed
       to reconstruct typed relocated `Value` handles from address/generation
-      metadata.
+      metadata. `AllocationCollectorPollRootWriteback::expected_value` and
+      `replacement_value` run that reconstruction through the checked
+      `Value::heap` path for preflight metadata; they still do not validate
+      object liveness, bind semispace storage, or mutate live root slots.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live heap-object byte slices, semispace
       destination storage, tree-walk root writeback, live object-field mutation,
