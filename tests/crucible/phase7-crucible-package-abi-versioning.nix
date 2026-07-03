@@ -190,7 +190,7 @@
       }
       {
         label = "plugin records shared generated header hash";
-        needle = "shmem_generated_header_hash=" + "$" + "{qemu-crucible.shmemHeaderHash}";
+        needle = "shmem_generated_header_hash=" + "$" + "{qemu-crucible.passthru.shmemHeaderHash}";
       }
       {
         label = "plugin records shmem ABI version";
@@ -370,7 +370,7 @@
       }
       {
         label = "phase1 smoke checks generated shmem header hash";
-        needle = "grep -q '^qemu_shmem_header_hash=" + "$" + "{packages.qemu-crucible.shmemHeaderHash}$'";
+        needle = "grep -q '^qemu_shmem_header_hash=" + "$" + "{packages.qemu-crucible.passthru.shmemHeaderHash}$'";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" abiConformanceCheck [

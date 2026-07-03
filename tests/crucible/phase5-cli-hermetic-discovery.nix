@@ -233,7 +233,7 @@
       }
       {
         label = "plugin build-info QEMU identity";
-        needle = "qemu_build_id=\${qemu-crucible.qemuBuildIdentity}";
+        needle = "qemu_build_id=\${qemu-crucible.passthru.qemuBuildIdentity}";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

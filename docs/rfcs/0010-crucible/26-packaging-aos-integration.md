@@ -744,10 +744,21 @@ carries findings across an incompatible build.
     gate bar (`gate:content-address`, `gate:replay-oracle`, and
     `gate:e2e-determinism`) while preserving the current no-RFC-0007 dependency
     rule.
-- [ ] **T-PKG-19** Produce the release manifest versioning the three things
+- [x] **T-PKG-19** Produce the release manifest versioning the three things
   (Crucible version, QEMU tag + series hash, three ABI versions) and ensure
   per-package reproducibility (pinned hashes, vendored deps, no embedded
   timestamps). — satisfies [PKG-36], [PKG-37]; spec §26.10.
+  - Completed by `checks.crucible.phase7.crucibleReleaseManifest`: the
+    `crucible` package now installs `release-manifest.env` and
+    `release-manifest.json` recording the Crucible workspace semver, the pinned
+    filtered Crucible source store identity, QEMU version/source hash/build
+    identity/patch-series hash, and the shmem, guest-host channel, and RPC ABI
+    versions. The gate compares those values to Rust constants and QEMU passthru
+    metadata, verifies the installed manifest files, verifies pinned
+    `fetchCargoDeps` and QEMU source/patch hashes, confirms the source filter
+    excludes `.git`, `target`, and `result`, rejects wall-clock timestamp
+    emitters in the package metadata paths, and is a dependency of
+    `checks.crucible.phase7.gates.e2eDeterminism`.
 - [ ] **T-PKG-20** Record the full provenance triple in every reproduction artifact
   so `crucible replay` refuses a mismatched build. — satisfies [PKG-38]; spec
   §26.10, coordinates with [`23-cli.md`](23-cli.md) §4, §12.

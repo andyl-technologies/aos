@@ -106,7 +106,7 @@ in
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^shmem_generated_header=${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^shmem_generated_header_hash=${packages.qemu-crucible.shmemHeaderHash}$' \
+            grep -q '^shmem_generated_header_hash=${packages.qemu-crucible.passthru.shmemHeaderHash}$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^plugin_abi=crucible-shmem-abi-v1$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -126,7 +126,7 @@ in
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
             grep -q '^qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
-            grep -q '^qemu_shmem_header_hash=${packages.qemu-crucible.shmemHeaderHash}$' \
+            grep -q '^qemu_shmem_header_hash=${packages.qemu-crucible.passthru.shmemHeaderHash}$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
 
             mkdir -p "$out"

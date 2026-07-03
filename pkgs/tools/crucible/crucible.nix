@@ -8,8 +8,13 @@
   crucible-qemu-plugin,
 }: let
   version = "0.1.0";
+  cargoDepsHash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
+  releaseManifest = import ./_release-manifest.nix {
+    inherit lib version src cargoDepsHash;
+    qemuPackage = qemu-crucible;
+  };
   nonCrucibleWorkspacePackages = [
     "aos"
     "aos-core"
@@ -59,7 +64,7 @@ in
     cargoDeps = fetchCargoDeps {
       inherit src;
       sourceRoot = "source/crates";
-      hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
+      hash = cargoDepsHash;
     };
 
     cargoFlags = workspaceCargoFlags;
@@ -113,6 +118,14 @@ in
 
     postInstall = ''
       test -x "$out/bin/crucible"
+
+      mkdir -p "$out/share/aos/crucible"
+      cat > "$out/share/aos/crucible/release-manifest.env" <<'CRUCIBLE_RELEASE_MANIFEST'
+      ${releaseManifest.envText}
+      CRUCIBLE_RELEASE_MANIFEST
+      cat > "$out/share/aos/crucible/release-manifest.json" <<'CRUCIBLE_RELEASE_MANIFEST_JSON'
+      ${releaseManifest.jsonText}
+      CRUCIBLE_RELEASE_MANIFEST_JSON
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-build-info" <<'INFO'
