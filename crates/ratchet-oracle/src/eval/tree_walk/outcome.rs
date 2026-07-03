@@ -3549,6 +3549,8 @@ fn apply_boundary_minor_gc_outcome_root_writebacks(
 
 fn apply_boundary_minor_gc_heap_field_writebacks(
     heap: &mut EvalHeap,
+    remembered_set: &mut RememberedSet,
+    card_table: &mut GcCardTable,
     plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
 ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
     let mut copied_writes = Vec::new();
@@ -3590,8 +3592,13 @@ fn apply_boundary_minor_gc_heap_field_writebacks(
         };
     }
 
-    let (copied_report, direct_report) =
-        heap.apply_collector_poll_minor_gc_heap_field_writes(&copied_writes, &direct_writes)?;
+    let (copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+            &copied_writes,
+            &direct_writes,
+            remembered_set,
+            card_table,
+        )?;
     debug_assert_eq!(
         copied_report
             .fields()
@@ -7249,9 +7256,16 @@ mod heap_field_writeback_destination_binding_tests {
             },
         ]);
         let mut heap = EvalHeap::new();
+        let mut remembered_set = RememberedSet::new();
+        let mut card_table = GcCardTable::default();
 
-        let err = apply_boundary_minor_gc_heap_field_writebacks(&mut heap, &write_plan)
-            .expect_err("direct in-place writeback is routed to the heap writer");
+        let err = apply_boundary_minor_gc_heap_field_writebacks(
+            &mut heap,
+            &mut remembered_set,
+            &mut card_table,
+            &write_plan,
+        )
+        .expect_err("direct in-place writeback is routed to the heap writer");
 
         assert!(matches!(
             err,
@@ -9273,32 +9287,42 @@ impl EvalOutcome {
     /// This consumes the installed heap-field writeback write plan and delegates
     /// relocated nursery-object fields to the copied-object field writer while
     /// applying in-place writes for old-generation worker records whose
-    /// replacement is promoted to old directly. The writeback object body for
+    /// replacement is promoted to old directly or copied to young with a
+    /// remembered-set/card-table barrier published atomically with the field
+    /// mutation. The writeback object body for
     /// copied fields and every replacement body must already be bound by
     /// [`EvalHeap::apply_collector_poll_minor_gc_object_body_writes`], and their
     /// destination generations must already be installed. It revalidates the
     /// combined copied/direct object-copy request set before staging any record
     /// mutation. The applicator rewrites only record-owned list elements and
-    /// attrset bindings. Copied destinations still assume unaliased
+    /// attrset bindings. Direct old-to-young write barriers are staged against
+    /// cloned outcome-owned remembered/card side tables before live side-table
+    /// publication and heap mutation. Copied destinations still assume unaliased
     /// collector-owned scratch records because the side table cannot prove
     /// semispace ownership yet. Permanent shared in-place writes, direct
-    /// old-to-young writes, captured environment fields, primop fields, thunk
-    /// fields, ABI headers, semispace storage, and Tier-B dispatch remain
+    /// permanent-to-young writes, captured environment fields, primop fields,
+    /// thunk fields, ABI headers, semispace storage, and Tier-B dispatch remain
     /// unsupported.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if installed heap-field writeback metadata is
     /// inconsistent, if a write targets a permanent shared or non-old direct
-    /// field, if a direct replacement would remain young, if a copied writeback
-    /// or replacement body/generation is not already bound, if the field no
-    /// longer contains the expected from-space value, or if the field source is
-    /// not a record-owned list element or attrset binding.
+    /// field, if remembered/card side-table staging fails for a direct
+    /// old-to-young replacement, if a copied writeback or replacement
+    /// body/generation is not already bound, if the field no longer contains
+    /// the expected from-space value, or if the field source is not a
+    /// record-owned list element or attrset binding.
     pub fn apply_gc_stress_boundary_minor_gc_heap_field_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
         let plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
-        apply_boundary_minor_gc_heap_field_writebacks(&mut self.heap, &plan)
+        apply_boundary_minor_gc_heap_field_writebacks(
+            &mut self.heap,
+            &mut self.thunk_resolve_remembered_set,
+            &mut self.thunk_resolve_card_table,
+            &plan,
+        )
     }
 
     /// Applies supported boundary heap-field writebacks to live records.

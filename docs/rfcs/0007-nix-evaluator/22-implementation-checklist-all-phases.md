@@ -6079,20 +6079,23 @@ and helps the oracle directly.
       the writeback object body and replacement object body to have already been
       bound through `EvalHeap::apply_collector_poll_minor_gc_object_body_writes`;
       direct fields are limited to old-generation worker records whose
-      replacement was promoted to old. The applicator revalidates one combined
-      copied/direct deduplicated object-copy request set before staging any heap
-      mutation, verifies destination generations, validates that the current
-      field still contains the expected young from-space value, merges copied
-      and direct field edits into one staged object per target record, rewrites
-      only record-owned list elements and attrset bindings, and clears stale
-      hash caches on mutated records. Unit tests cover copied list/attr writes,
-      same-object copied-field staging, mixed copied/direct same-record staging,
-      malformed copied and cross-branch request sets, direct old list/attr
-      writes, stale direct-field rejection without mutation, permanent-field
-      rejection, direct old-to-young rejection, attr symbol-slot stale metadata
-      rejection, and outcome-level direct-write routing. Permanent shared
-      in-place field mutation, direct old-to-young mutation plus remembered-set
-      publication, captured environment fields, primop fields, thunk fields,
+      replacements are either promoted to old or copied to young with a staged
+      remembered-set/card-table publication. The applicator revalidates one
+      combined copied/direct deduplicated object-copy request set before
+      staging any heap mutation, verifies destination generations, validates
+      that the current field still contains the expected young from-space value,
+      merges copied and direct field edits into one staged object per target
+      record, rewrites only record-owned list elements and attrset bindings,
+      publishes direct old-to-young remembered edges and dirty cards through
+      cloned outcome-owned side tables, and clears stale hash caches on mutated
+      records. Unit tests cover copied list/attr writes, same-object
+      copied-field staging, mixed copied/direct same-record staging, malformed
+      copied and cross-branch request sets, direct old list/attr writes, stale
+      direct-field rejection without mutation, permanent-field rejection,
+      strict-path direct old-to-young rejection, barrier-aware direct
+      old-to-young publication, attr symbol-slot stale metadata rejection, and
+      outcome-level direct-write routing. Permanent shared in-place field
+      mutation, captured environment fields, primop fields, thunk fields,
       synthetic destination allocation, ABI object headers, semispace storage,
       and Tier-B dispatch remain open, and copied destination records inherit
       the current unaliased collector-owned scratch record assumption because

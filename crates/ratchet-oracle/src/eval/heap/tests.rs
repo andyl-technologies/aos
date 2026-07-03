@@ -5613,6 +5613,87 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_wi
 }
 
 #[test]
+fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_replacement() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Young,
+        },
+        child_request,
+    );
+    let mut remembered_set = RememberedSet::new();
+    let mut card_table = GcCardTable::default();
+
+    let (copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+            &[],
+            &[write],
+            &mut remembered_set,
+            &mut card_table,
+        )
+        .expect("barrier-aware direct old-to-young write applies");
+
+    assert_eq!(copied_report.fields(), 0);
+    assert_eq!(direct_report.fields(), 1);
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(
+        list.get(0)
+            .expect("rewritten element exists")
+            .raw_eq(child_destination)
+    );
+    assert_eq!(
+        remembered_set.edges(),
+        &[RememberedEdge::new(
+            gc_address(parent),
+            gc_address(child_destination)
+        )]
+    );
+    assert!(card_table.snapshot().covers_source(gc_address(parent)));
+}
+
+#[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_request_set() {
     let mut heap = EvalHeap::new();
     let parent_source = static_gc_address(0x1000_0000);

@@ -2013,6 +2013,7 @@ struct CollectorPollDirectHeapFieldWrite {
     field_index: usize,
     source: HeapEdgeSource,
     replacement: Value,
+    remembered_edge: Option<RememberedEdge>,
 }
 
 enum RecordOwnedHeapFieldWriteObjectError {
@@ -3216,9 +3217,11 @@ impl AllocationCollectorPollCopiedHeapFieldWrite {
 
 /// A record-owned old-generation heap field rewritten in place after minor GC.
 ///
-/// The write targets an existing old-generation worker record and currently
-/// accepts only promoted-old replacement destinations. Permanent shared records,
-/// copied nursery replacements, captured environment fields, primop fields, and
+/// The write targets an existing old-generation worker record. The strict
+/// direct writer accepts only promoted-old replacement destinations; the
+/// combined card-table-aware writer additionally accepts copied-young
+/// replacement destinations after staging a remembered-set/card-table update.
+/// Permanent shared records, captured environment fields, primop fields, and
 /// thunk fields remain outside this direct writer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationCollectorPollDirectHeapFieldWrite {
@@ -4253,13 +4256,14 @@ impl EvalHeap {
         writes: &[AllocationCollectorPollDirectHeapFieldWrite],
     ) -> Result<AllocationCollectorPollDirectHeapFieldWriteReport, EvalHeapError> {
         let (planned, report) =
-            self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes)?;
+            self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes, false)?;
         let staged = self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
 
         Ok(report)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_collector_poll_minor_gc_heap_field_writes(
         &mut self,
         copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
@@ -4271,14 +4275,57 @@ impl EvalHeap {
         ),
         EvalHeapError,
     > {
+        self.apply_collector_poll_minor_gc_heap_field_writes_with_optional_barriers(
+            copied_writes,
+            direct_writes,
+            None,
+        )
+    }
+
+    pub(crate) fn apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+        &mut self,
+        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+        remembered_set: &mut RememberedSet,
+        card_table: &mut GcCardTable,
+    ) -> Result<
+        (
+            AllocationCollectorPollCopiedHeapFieldWriteReport,
+            AllocationCollectorPollDirectHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
+        self.apply_collector_poll_minor_gc_heap_field_writes_with_optional_barriers(
+            copied_writes,
+            direct_writes,
+            Some((remembered_set, card_table)),
+        )
+    }
+
+    fn apply_collector_poll_minor_gc_heap_field_writes_with_optional_barriers(
+        &mut self,
+        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+        barrier_targets: Option<(&mut RememberedSet, &mut GcCardTable)>,
+    ) -> Result<
+        (
+            AllocationCollectorPollCopiedHeapFieldWriteReport,
+            AllocationCollectorPollDirectHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
         validate_collector_poll_minor_gc_heap_field_write_request_invariants(
             copied_writes,
             direct_writes,
         )?;
+        let allow_young_direct_replacements = barrier_targets.is_some();
         let (planned_copied, copied_report) =
             self.plan_collector_poll_minor_gc_copied_heap_field_writes(copied_writes)?;
-        let (planned_direct, direct_report) =
-            self.plan_collector_poll_minor_gc_direct_heap_field_writes(direct_writes)?;
+        let (planned_direct, direct_report) = self
+            .plan_collector_poll_minor_gc_direct_heap_field_writes(
+                direct_writes,
+                allow_young_direct_replacements,
+            )?;
 
         let entries = copied_writes.len().checked_add(direct_writes.len()).ok_or(
             EvalHeapError::RootScanLengthOverflow {
@@ -4303,6 +4350,13 @@ impl EvalHeap {
             entries,
         )?;
 
+        if let Some((remembered_set, card_table)) = barrier_targets {
+            self.record_collector_poll_minor_gc_direct_heap_field_write_barriers(
+                &planned_direct,
+                remembered_set,
+                card_table,
+            )?;
+        }
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
 
         Ok((copied_report, direct_report))
@@ -4311,6 +4365,7 @@ impl EvalHeap {
     fn plan_collector_poll_minor_gc_direct_heap_field_writes(
         &self,
         writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+        allow_young_replacements: bool,
     ) -> Result<
         (
             Vec<CollectorPollDirectHeapFieldWrite>,
@@ -4344,7 +4399,10 @@ impl EvalHeap {
                     },
                 );
             }
-            planned.push(self.plan_collector_poll_minor_gc_direct_heap_field_write(write)?);
+            planned.push(self.plan_collector_poll_minor_gc_direct_heap_field_write(
+                write,
+                allow_young_replacements,
+            )?);
             report.record();
         }
 
@@ -4354,8 +4412,9 @@ impl EvalHeap {
     fn plan_collector_poll_minor_gc_direct_heap_field_write(
         &self,
         write: &AllocationCollectorPollDirectHeapFieldWrite,
+        allow_young_replacements: bool,
     ) -> Result<CollectorPollDirectHeapFieldWrite, EvalHeapError> {
-        self.validate_direct_heap_field_write_requests(write)?;
+        self.validate_direct_heap_field_write_requests(write, allow_young_replacements)?;
 
         let record_index = self.record_index_for_reference_slot_object(write.writeback_object())?;
         let record = &self.records[record_index];
@@ -4403,6 +4462,13 @@ impl EvalHeap {
         let replacement_value =
             value_for_resolved_generation(replacement_tag, write.replacement())?;
         validate_direct_heap_field_write_object_source(&record.object, write)?;
+        let remembered_edge = match write.replacement() {
+            ResolvedValueGeneration::Heap {
+                address: target,
+                generation: HeapGeneration::Young,
+            } => Some(RememberedEdge::new(write.writeback_object(), target)),
+            ResolvedValueGeneration::Inline | ResolvedValueGeneration::Heap { .. } => None,
+        };
 
         Ok(CollectorPollDirectHeapFieldWrite {
             record_index,
@@ -4410,6 +4476,7 @@ impl EvalHeap {
             field_index: write.field_index(),
             source: write.source().clone(),
             replacement: replacement_value,
+            remembered_edge,
         })
     }
 
@@ -4490,9 +4557,55 @@ impl EvalHeap {
         }
     }
 
+    fn record_collector_poll_minor_gc_direct_heap_field_write_barriers(
+        &self,
+        writes: &[CollectorPollDirectHeapFieldWrite],
+        remembered_set: &mut RememberedSet,
+        card_table: &mut GcCardTable,
+    ) -> Result<(), EvalHeapError> {
+        if writes.iter().all(|write| write.remembered_edge.is_none()) {
+            return Ok(());
+        }
+
+        let mut staged_remembered_set =
+            self.clone_remembered_set_for_direct_heap_field_write_barriers(remembered_set)?;
+        let mut staged_card_table = card_table
+            .try_clone()
+            .map_err(EvalHeapError::GenerationalGc)?;
+        for write in writes {
+            let Some(edge) = write.remembered_edge else {
+                continue;
+            };
+            staged_remembered_set
+                .record(edge)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            staged_card_table
+                .mark_source(edge.source())
+                .map_err(EvalHeapError::GenerationalGc)?;
+        }
+
+        *remembered_set = staged_remembered_set;
+        *card_table = staged_card_table;
+        Ok(())
+    }
+
+    fn clone_remembered_set_for_direct_heap_field_write_barriers(
+        &self,
+        remembered_set: &RememberedSet,
+    ) -> Result<RememberedSet, EvalHeapError> {
+        let mut staged = RememberedSet::with_epoch(remembered_set.epoch());
+        for edge in remembered_set.edges() {
+            staged
+                .record(*edge)
+                .map_err(EvalHeapError::GenerationalGc)?;
+        }
+        Ok(staged)
+    }
+
     fn validate_direct_heap_field_write_requests(
         &self,
         write: &AllocationCollectorPollDirectHeapFieldWrite,
+        allow_young_replacements: bool,
     ) -> Result<(), EvalHeapError> {
         let replacement_request = write.replacement_request();
         let ResolvedValueGeneration::Heap {
@@ -4536,7 +4649,9 @@ impl EvalHeap {
                 },
             );
         }
-        if generation != HeapGeneration::Old {
+        if generation != HeapGeneration::Old
+            && !(allow_young_replacements && generation == HeapGeneration::Young)
+        {
             return Err(
                 EvalHeapError::CollectorPollDirectHeapFieldWriteYoungReplacementUnsupported {
                     writeback_object: write.writeback_object(),
