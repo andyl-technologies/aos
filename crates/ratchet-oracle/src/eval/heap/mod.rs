@@ -217,6 +217,7 @@ struct HeapRecord {
     layout: HeapRecordLayout,
     structural_hash: Option<HotXxh3Hash>,
     allocation_domain: HeapAllocationDomain,
+    generation: HeapGeneration,
     minor_gc_forwarding: Cell<Option<ResolvedValueGeneration>>,
     last_touch_epoch: Cell<u64>,
     value_hash: Cell<Option<ValueHash>>,
@@ -246,6 +247,13 @@ pub enum HeapAllocationDomain {
     Worker,
     /// Permanent shared storage owns a hash-consed reusable value record.
     PermanentShared,
+}
+
+const fn initial_generation_for_allocation_domain(domain: HeapAllocationDomain) -> HeapGeneration {
+    match domain {
+        HeapAllocationDomain::Worker => HeapGeneration::Young,
+        HeapAllocationDomain::PermanentShared => HeapGeneration::Permanent,
+    }
 }
 
 /// The result of writing a canonical value hash onto a heap record.

@@ -53,6 +53,11 @@ fn allocation_domain(heap: &EvalHeap, value: Value) -> HeapAllocationDomain {
         .expect("heap record has an allocation domain")
 }
 
+fn heap_generation(heap: &EvalHeap, value: Value) -> HeapGeneration {
+    heap.generation(value)
+        .expect("heap record has a heap generation")
+}
+
 fn gc_address(value: Value) -> GcHeapAddress {
     GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
         .expect("heap pointers are valid GC addresses")
@@ -80,6 +85,7 @@ fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocati
         .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
         .expect("heap record exists");
     record.allocation_domain = domain;
+    record.generation = initial_generation_for_allocation_domain(domain);
 }
 
 fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
@@ -167,6 +173,37 @@ fn gc_stress_policy_installs_across_heap_allocation_domains() {
             .gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
+}
+
+#[test]
+fn heap_records_store_generation_separately_from_allocation_domain() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let permanent = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("string allocates");
+    let worker = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    assert_eq!(
+        allocation_domain(&heap, permanent),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(heap_generation(&heap, permanent), HeapGeneration::Permanent);
+    assert_eq!(
+        allocation_domain(&heap, worker),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Young);
+
+    heap.set_allocation_domain_for_test(worker, HeapAllocationDomain::PermanentShared)
+        .expect("test helper updates domain");
+
+    assert_eq!(
+        allocation_domain(&heap, worker),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Permanent);
 }
 
 #[test]

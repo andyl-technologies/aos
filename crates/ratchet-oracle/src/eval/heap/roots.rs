@@ -4447,10 +4447,7 @@ fn gc_address_for_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapE
 }
 
 const fn generation_for_record(record: &HeapRecord) -> HeapGeneration {
-    match record.allocation_domain {
-        HeapAllocationDomain::Worker => HeapGeneration::Young,
-        HeapAllocationDomain::PermanentShared => HeapGeneration::Permanent,
-    }
+    record.generation
 }
 
 fn push_thunk_kind_edges(

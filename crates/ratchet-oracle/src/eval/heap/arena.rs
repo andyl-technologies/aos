@@ -1103,6 +1103,25 @@ impl EvalHeap {
         }
     }
 
+    /// Returns the heap generation that currently owns `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not an evaluator heap
+    /// value. Returns [`EvalHeapError::UnknownPointer`] if the heap handle does
+    /// not belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`]
+    /// if the handle belongs to this heap but references another typed record.
+    pub fn generation(&self, value: Value) -> Result<HeapGeneration, EvalHeapError> {
+        let (tag, ptr) = any_value_heap_ptr(value)?;
+        let record = self.record_or_unknown(tag, ptr)?;
+        let actual = record.object.tag();
+        if actual == tag {
+            Ok(record.generation)
+        } else {
+            Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+        }
+    }
+
     /// Replaces a heap record's allocation domain in evaluator tests.
     ///
     /// # Errors
@@ -1129,6 +1148,7 @@ impl EvalHeap {
             return Err(EvalHeapError::record_type_mismatch(tag, actual, ptr));
         }
         record.allocation_domain = domain;
+        record.generation = initial_generation_for_allocation_domain(domain);
         Ok(())
     }
 
@@ -1185,6 +1205,9 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
+            generation: initial_generation_for_allocation_domain(
+                HeapAllocationDomain::PermanentShared,
+            ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1239,6 +1262,9 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
+            generation: initial_generation_for_allocation_domain(
+                HeapAllocationDomain::PermanentShared,
+            ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1293,6 +1319,9 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
+            generation: initial_generation_for_allocation_domain(
+                HeapAllocationDomain::PermanentShared,
+            ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1350,6 +1379,9 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
+            generation: initial_generation_for_allocation_domain(
+                HeapAllocationDomain::PermanentShared,
+            ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1384,6 +1416,7 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
+            generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1417,6 +1450,7 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
+            generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),
@@ -1450,6 +1484,7 @@ impl EvalHeap {
             layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
+            generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
             value_hash: Cell::new(None),

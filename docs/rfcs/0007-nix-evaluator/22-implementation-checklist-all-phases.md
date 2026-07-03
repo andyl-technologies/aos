@@ -5935,6 +5935,19 @@ and helps the oracle directly.
       it does not mutate heap-record generations, bind destination bytes to
       heap-object bodies, manage semispaces, mutate roots/fields, write ABI
       object headers, or invoke Tier B.
+- [x] Current heap-record generation-state precursor:
+      `EvalHeap` records store explicit `HeapGeneration` metadata separately
+      from allocator ownership. Worker allocations initialize as young,
+      permanent-shared allocations initialize as permanent, and existing
+      generation resolution for scans, remembered-set validation, nursery
+      frontier construction, and root/field metadata reads through that stored
+      generation field rather than deriving it from allocation ownership on
+      demand. Unit tests cover initial worker/permanent generation state,
+      test-only domain transitions, collector-poll minor-GC planning,
+      forwarding installation, and GC-stress safepoint integration. This is
+      still a state precursor: no collector path writes new generation values
+      into relocated destination records, binds destination bytes to heap-object
+      bodies, swaps semispaces, mutates roots/fields, or invokes Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
