@@ -5129,6 +5129,175 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() 
 }
 
 #[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_lambda_capture_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    let lexical_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lexical child lambda allocates");
+    let with_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("with child lambda allocates");
+    let global_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("global child lambda allocates");
+    let with_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(3),
+            FrameId::new(3),
+            EvalEnv::default(),
+        ))
+        .expect("with destination lambda allocates");
+    let global_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(4),
+            FrameId::new(4),
+            EvalEnv::default(),
+        ))
+        .expect("global destination lambda allocates");
+    let with_env = EvalWithEnv::capture(&[EvalWithScope::new(
+        EvalModuleId::ROOT,
+        IrId::new(8),
+        with_child,
+    )])
+    .expect("with env captures");
+    let scoped_globals =
+        EvalScopedGlobalEnv::capture(&[global_child]).expect("scoped globals capture");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, lexical_child).expect("lexical slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("lexical env captures");
+    let parent = heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(5),
+            IrId::new(6),
+            FrameId::new(7),
+            env,
+            with_env,
+            scoped_globals,
+        ))
+        .expect("parent lambda allocates");
+    let parent_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("parent destination lambda allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let with_request = object_copy_request_for_values(
+        &heap,
+        with_child,
+        with_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let global_request = object_copy_request_for_values(
+        &heap,
+        global_child,
+        global_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        with_request,
+        global_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let writes = [
+        AllocationCollectorPollCopiedHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            gc_address(parent_destination),
+            1,
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(with_destination),
+                generation: HeapGeneration::Old,
+            },
+            with_request,
+            parent_request,
+        ),
+        AllocationCollectorPollCopiedHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            gc_address(parent_destination),
+            2,
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(global_destination),
+                generation: HeapGeneration::Old,
+            },
+            global_request,
+            parent_request,
+        ),
+    ];
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&writes)
+        .expect("copied lambda capture field writes apply");
+
+    assert_eq!(report.fields(), 2);
+    let lambda = heap
+        .get_lambda(parent_destination)
+        .expect("destination lambda remains typed");
+    assert_eq!(lambda.pattern(), IrId::new(5));
+    assert_eq!(lambda.body(), IrId::new(6));
+    assert_eq!(lambda.frame(), FrameId::new(7));
+    assert_eq!(lambda.env().frames().len(), 1);
+    assert!(
+        lambda.env().frames()[0]
+            .get(0)
+            .expect("lexical slot reads")
+            .raw_eq(lexical_child)
+    );
+    assert_eq!(lambda.with_scope_env().scopes().len(), 1);
+    assert_eq!(lambda.with_scope_env().scopes()[0].scope(), IrId::new(8));
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
+            .raw_eq(with_destination)
+    );
+    assert_eq!(lambda.scoped_global_env().scopes().len(), 1);
+    assert!(lambda.scoped_global_env().scopes()[0].raw_eq(global_destination));
+}
+
+#[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let child = heap
@@ -5341,6 +5510,158 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
     assert_eq!(primop.args()[0].id(), IrId::new(7));
     assert_eq!(primop.args()[0].span(), Span::new(9, 12));
     assert!(primop.args()[0].value().raw_eq(child_destination));
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_lambda_capture_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    let lexical_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lexical child lambda allocates");
+    let with_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("with child lambda allocates");
+    let global_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("global child lambda allocates");
+    let with_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(3),
+            FrameId::new(3),
+            EvalEnv::default(),
+        ))
+        .expect("with destination lambda allocates");
+    let global_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(4),
+            FrameId::new(4),
+            EvalEnv::default(),
+        ))
+        .expect("global destination lambda allocates");
+    let with_env = EvalWithEnv::capture(&[EvalWithScope::new(
+        EvalModuleId::ROOT,
+        IrId::new(8),
+        with_child,
+    )])
+    .expect("with env captures");
+    let scoped_globals =
+        EvalScopedGlobalEnv::capture(&[global_child]).expect("scoped globals capture");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, lexical_child).expect("lexical slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("lexical env captures");
+    let parent = heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(5),
+            IrId::new(6),
+            FrameId::new(7),
+            env,
+            with_env,
+            scoped_globals,
+        ))
+        .expect("parent lambda allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let with_request = object_copy_request_for_values(
+        &heap,
+        with_child,
+        with_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let global_request = object_copy_request_for_values(
+        &heap,
+        global_child,
+        global_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        with_request,
+        global_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generations write");
+    let writes = [
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            1,
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(with_destination),
+                generation: HeapGeneration::Old,
+            },
+            with_request,
+        ),
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            2,
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(global_destination),
+                generation: HeapGeneration::Old,
+            },
+            global_request,
+        ),
+    ];
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&writes)
+        .expect("direct old lambda capture field writes apply");
+
+    assert_eq!(report.fields(), 2);
+    let lambda = heap
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert_eq!(lambda.pattern(), IrId::new(5));
+    assert_eq!(lambda.body(), IrId::new(6));
+    assert_eq!(lambda.frame(), FrameId::new(7));
+    assert_eq!(lambda.env().frames().len(), 1);
+    assert!(
+        lambda.env().frames()[0]
+            .get(0)
+            .expect("lexical slot reads")
+            .raw_eq(lexical_child)
+    );
+    assert_eq!(lambda.with_scope_env().scopes().len(), 1);
+    assert_eq!(lambda.with_scope_env().scopes()[0].scope(), IrId::new(8));
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
+            .raw_eq(with_destination)
+    );
+    assert_eq!(lambda.scoped_global_env().scopes().len(), 1);
+    assert!(lambda.scoped_global_env().scopes()[0].raw_eq(global_destination));
     assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
 }
 
@@ -5844,6 +6165,123 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
     assert!(
         list.get(0)
             .expect("rewritten element exists")
+            .raw_eq(child_destination)
+    );
+    assert_eq!(
+        remembered_set.edges(),
+        &[RememberedEdge::new(
+            gc_address(parent),
+            gc_address(child_destination)
+        )]
+    );
+    assert!(card_table.snapshot().covers_source(gc_address(parent)));
+}
+
+#[test]
+fn collector_poll_minor_gc_heap_field_writes_publish_lambda_capture_barrier() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let lexical_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lexical child lambda allocates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let with_env =
+        EvalWithEnv::capture(&[EvalWithScope::new(EvalModuleId::ROOT, IrId::new(8), child)])
+            .expect("with env captures");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, lexical_child).expect("lexical slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("lexical env captures");
+    let parent = heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(5),
+            IrId::new(6),
+            FrameId::new(7),
+            env,
+            with_env,
+            EvalScopedGlobalEnv::default(),
+        ))
+        .expect("parent lambda allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        1,
+        HeapEdgeSource::CapturedWithScope {
+            owner: CapturedRootOwner::Lambda,
+            index: 0,
+        },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Young,
+        },
+        child_request,
+    );
+    let mut remembered_set = RememberedSet::new();
+    let mut card_table = GcCardTable::default();
+
+    let (copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+            &[],
+            &[write],
+            &mut remembered_set,
+            &mut card_table,
+        )
+        .expect("barrier-aware direct old-to-young lambda capture write applies");
+
+    assert_eq!(copied_report.fields(), 0);
+    assert_eq!(direct_report.fields(), 1);
+    let lambda = heap
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert_eq!(lambda.env().frames().len(), 1);
+    assert!(
+        lambda.env().frames()[0]
+            .get(0)
+            .expect("lexical slot reads")
+            .raw_eq(lexical_child)
+    );
+    assert_eq!(lambda.with_scope_env().scopes().len(), 1);
+    assert_eq!(lambda.with_scope_env().scopes()[0].scope(), IrId::new(8));
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
             .raw_eq(child_destination)
     );
     assert_eq!(

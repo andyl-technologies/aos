@@ -18,6 +18,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use super::*;
+use crate::eval::EvalWithScope;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::heap::{
     GcCardTable, GcCardTableSnapshot, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
@@ -2020,6 +2021,7 @@ struct CollectorPollDirectHeapFieldWrite {
 enum RecordOwnedHeapFieldWriteObjectError {
     UnsupportedSource,
     Attr(AttrError),
+    Environment(EvalEnvError),
 }
 
 /// A summary of heap-record object-generation writes.
@@ -3222,8 +3224,8 @@ impl AllocationCollectorPollCopiedHeapFieldWrite {
 /// direct writer accepts only promoted-old replacement destinations; the
 /// combined card-table-aware writer additionally accepts copied-young
 /// replacement destinations after staging a remembered-set/card-table update.
-/// Permanent shared records, captured environment fields, and thunk fields
-/// remain outside this direct writer.
+/// Permanent shared records, shared lexical environment frame slots, and thunk
+/// fields remain outside this direct writer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationCollectorPollDirectHeapFieldWrite {
     allocation_domain: HeapAllocationDomain,
@@ -6155,6 +6157,20 @@ fn validate_copied_heap_field_write_object_source(
         {
             Ok(())
         }
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) if *index < lambda.with_scope_env().scopes().len() => Ok(()),
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
         _ => Err(
             EvalHeapError::CollectorPollCopiedHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6183,6 +6199,20 @@ fn validate_direct_heap_field_write_object_source(
         {
             Ok(())
         }
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) if *index < lambda.with_scope_env().scopes().len() => Ok(()),
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
         _ => Err(
             EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6206,6 +6236,9 @@ fn copied_heap_field_write_object_error(
             }
         }
         RecordOwnedHeapFieldWriteObjectError::Attr(source) => EvalHeapError::Attr(source),
+        RecordOwnedHeapFieldWriteObjectError::Environment(source) => {
+            EvalHeapError::Environment(source)
+        }
     }
 }
 
@@ -6222,6 +6255,9 @@ fn direct_heap_field_write_object_error(
             }
         }
         RecordOwnedHeapFieldWriteObjectError::Attr(source) => EvalHeapError::Attr(source),
+        RecordOwnedHeapFieldWriteObjectError::Environment(source) => {
+            EvalHeapError::Environment(source)
+        }
     }
 }
 
@@ -6264,6 +6300,54 @@ fn record_owned_heap_field_write_object(
                 symbol: primop.symbol(),
                 args,
             })))
+        }
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) => {
+            let mut scopes = lambda.with_scope_env().scopes().to_vec();
+            let Some(scope) = scopes.get_mut(*index) else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
+            let with_env = EvalWithEnv::capture(&scopes)
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
+            Ok(HeapObjectValue::Lambda(Rc::new(EvalLambda::with_captures(
+                lambda.module(),
+                lambda.pattern(),
+                lambda.body(),
+                lambda.frame(),
+                lambda.env().clone(),
+                with_env,
+                lambda.scoped_global_env().clone(),
+            ))))
+        }
+        (
+            HeapObjectValue::Lambda(lambda),
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) => {
+            let mut scopes = lambda.scoped_global_env().scopes().to_vec();
+            let Some(scope) = scopes.get_mut(*index) else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            *scope = replacement;
+            let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
+            Ok(HeapObjectValue::Lambda(Rc::new(EvalLambda::with_captures(
+                lambda.module(),
+                lambda.pattern(),
+                lambda.body(),
+                lambda.frame(),
+                lambda.env().clone(),
+                lambda.with_scope_env().clone(),
+                scoped_globals,
+            ))))
         }
         _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
     }

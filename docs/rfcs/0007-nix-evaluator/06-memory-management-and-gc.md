@@ -1499,18 +1499,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       staging any heap mutation, verifies destination generations, validates
       that the current field still contains the expected young from-space value,
       merges copied and direct field edits into one staged object per target
-      record, rewrites only record-owned list elements, attrset bindings, and
-      primop arguments, publishes direct old-to-young remembered edges and dirty
-      cards through cloned outcome-owned side tables, and clears stale hash
-      caches on mutated records. Tests cover copied list/attr/primop-argument
-      writes, same-object copied-field staging, mixed copied/direct same-record
-      staging, malformed copied and cross-branch request sets, direct old
-      list/attr/primop-argument writes, stale direct-field rejection without
-      mutation, permanent-field rejection, strict-path direct old-to-young
-      rejection, barrier-aware direct old-to-young publication, attr symbol-slot
-      stale metadata rejection, and outcome-level direct-write routing.
-      Permanent shared in-place field mutation, captured environment fields,
-      thunk fields, synthetic destination allocation, ABI object headers,
+      record, rewrites record-owned list elements, attrset bindings, primop
+      arguments, and lambda dynamic/global capture arrays, publishes direct
+      old-to-young remembered edges and dirty cards through cloned outcome-owned
+      side tables, and clears stale hash caches on mutated records. Tests cover
+      copied list/attr/primop-argument/lambda-capture writes, same-object
+      copied-field staging, mixed copied/direct same-record staging, malformed
+      copied and cross-branch request sets, direct old
+      list/attr/primop-argument/lambda-capture writes, stale direct-field
+      rejection without mutation, permanent-field rejection, strict-path direct
+      old-to-young rejection, barrier-aware direct old-to-young publication,
+      attr symbol-slot stale metadata rejection, and outcome-level direct-write
+      routing. Permanent shared in-place field mutation, shared lexical frame
+      slots, thunk fields, synthetic destination allocation, ABI object headers,
       semispace storage, and Tier-B dispatch remain open, and copied destination
       records inherit the current unaliased collector-owned scratch record
       assumption because semispace ownership is not modeled yet. The historical
