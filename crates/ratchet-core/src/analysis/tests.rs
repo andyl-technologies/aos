@@ -831,5 +831,6 @@ fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
     assert_eq!(escape(&ir, IrId::new(1)), Escape::Escapes);
 }
 
+mod dead_binding;
 mod strictness;
 mod thunk_sharing;

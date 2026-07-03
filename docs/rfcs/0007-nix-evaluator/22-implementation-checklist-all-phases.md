@@ -6852,6 +6852,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       single-entry thunk lowering, call-by-name downgrades, dead-binding
       elimination, escape-proven frame-locality integration, or the whole-program
       demand fixpoint.
+- [x] Current dead-binding elimination planning precursor:
+      `ratchet-core::analysis::dead_binding` consumes cardinality facts and
+      returns a conservative plan for `let` bindings whose value code can be
+      omitted while retaining a dummy frame slot. The planner admits only
+      static-key bindings with `Cardinality::Absent` and non-strict facts,
+      retains used bindings, retains contradictory absent-plus-strict bindings,
+      and retains dynamic-key bindings so key evaluation is not skipped. Tests
+      cover absent binding admission, many-use retention, absent-strict
+      retention, dynamic-key retention, missing value-fact rejection, and
+      malformed `let` payload rejection. This is a planning precursor only: it
+      does not rewrite IR, compact frame layouts, emit worker dummy arguments,
+      remove code in the tree-walk oracle, handle attrset or formal-argument
+      absence, improve cardinality precision, or run the whole-program demand
+      fixpoint.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for
       non-escaping attrsets/thunks.
 - [x] Current `analysis/escape.rs` precursor: `ratchet-core` exposes a

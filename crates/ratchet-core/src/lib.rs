@@ -27,12 +27,14 @@ pub mod runtime_abi;
 pub mod scope;
 
 pub use analysis::{
-    CardinalityAnalysisError, CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport,
+    CardinalityAnalysisError, CardinalityAnalysisReport, DeadBindingElimination,
+    DeadBindingEliminationError, DeadBindingEliminationPlan, DeadBindingReplacement,
+    DeadBindingRetention, DeadBindingRetentionReason, EscapeAnalysisError, EscapeAnalysisReport,
     FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
     FrameLocalThunkUpdateReason, FullLazinessAnalysisError, FullLazinessAnalysisReport,
     FullLazinessCandidate, StrictnessAnalysisError, StrictnessAnalysisReport,
     analyze_full_laziness, annotate_cardinality, annotate_escape, annotate_strictness,
-    frame_local_single_entry_thunk_downgrade,
+    dead_binding_elimination_plan, frame_local_single_entry_thunk_downgrade,
 };
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrAnalysisError,

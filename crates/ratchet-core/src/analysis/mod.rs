@@ -5,12 +5,18 @@
 //! uncertainty leaves the existing conservative fact unchanged.
 
 pub mod cardinality;
+pub mod dead_binding;
 pub mod escape;
 pub mod full_laziness;
 pub mod strictness;
 pub mod thunk_sharing;
 
 pub use cardinality::{CardinalityAnalysisError, CardinalityAnalysisReport, annotate_cardinality};
+pub use dead_binding::{
+    DeadBindingElimination, DeadBindingEliminationError, DeadBindingEliminationPlan,
+    DeadBindingReplacement, DeadBindingRetention, DeadBindingRetentionReason,
+    dead_binding_elimination_plan,
+};
 pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
 pub use full_laziness::{
     FullLazinessAnalysisError, FullLazinessAnalysisReport, FullLazinessCandidate,
