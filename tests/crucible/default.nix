@@ -2389,6 +2389,11 @@ in rec {
     };
   };
   phase7 = {
+    crucibleQemuPluginPackage = import ./phase7-crucible-qemu-plugin-package.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleQemuPluginPackage";
+      taskIds = ["T-PKG-7"];
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";

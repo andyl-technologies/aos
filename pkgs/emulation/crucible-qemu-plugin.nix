@@ -37,9 +37,28 @@ in
       grep -q 'qemu_plugin_rr_cursor' "$header"
       grep -q 'qemu_plugin_inject_preemption' "$header"
 
+      qemu_plugin_api_version=
+      while IFS= read -r line; do
+        case "$line" in
+          "pub const QEMU_PLUGIN_API_VERSION: c_int = "*";")
+            qemu_plugin_api_version=''${line#pub const QEMU_PLUGIN_API_VERSION: c_int = }
+            qemu_plugin_api_version=''${qemu_plugin_api_version%;}
+            ;;
+        esac
+      done < crates/crucible-qemu-plugin/src/abi.rs
+      test -n "$qemu_plugin_api_version"
+
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
       #include <qemu/qemu-plugin.h>
+
+      #ifndef QEMU_PLUGIN_VERSION
+      #error "QEMU_PLUGIN_VERSION must be exposed by qemu-crucible headers"
+      #endif
+
+      #if QEMU_PLUGIN_VERSION != CRUCIBLE_EXPECTED_QEMU_PLUGIN_API_VERSION
+      #error "qemu-crucible header plugin API version does not match the Rust plugin"
+      #endif
 
       uint64_t (*crucible_probe_rr_switch_quantum)(void) =
           qemu_plugin_crucible_rr_switch_quantum;
@@ -54,7 +73,9 @@ in
           qemu_plugin_inject_preemption;
       EOF
 
-      cc -fPIC -I"${qemu-crucible}/include" $(pkg-config --cflags glib-2.0) \
+      cc -fPIC -I"${qemu-crucible}/include" \
+        -DCRUCIBLE_EXPECTED_QEMU_PLUGIN_API_VERSION="$qemu_plugin_api_version" \
+        $(pkg-config --cflags glib-2.0) \
         -c "$TMPDIR/crucible-qemu-plugin-header-probe.c" \
         -o "$TMPDIR/crucible-qemu-plugin-header-probe.o"
 
@@ -63,6 +84,20 @@ in
 
     postInstall = ''
       test -f "$out/lib/libcrucible_qemu_plugin.so"
+      mkdir -p "$out/lib/qemu/plugins"
+      ln -s ../../libcrucible_qemu_plugin.so \
+        "$out/lib/qemu/plugins/crucible-qemu-plugin.so"
+
+      qemu_plugin_api_version=
+      while IFS= read -r line; do
+        case "$line" in
+          "pub const QEMU_PLUGIN_API_VERSION: c_int = "*";")
+            qemu_plugin_api_version=''${line#pub const QEMU_PLUGIN_API_VERSION: c_int = }
+            qemu_plugin_api_version=''${qemu_plugin_api_version%;}
+            ;;
+        esac
+      done < crucible-qemu-plugin/src/abi.rs
+      test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
       while IFS= read -r line; do
@@ -83,6 +118,10 @@ in
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.qemuBuildIdentity}
       qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
+      qemu_plugin_api_version=$qemu_plugin_api_version
+      qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
+      shmem_abi_version=$shmem_abi_version
+      shmem_abi=crucible-shmem-abi-v$shmem_abi_version
       plugin_abi=crucible-shmem-abi-v$shmem_abi_version
       INFO
     '';

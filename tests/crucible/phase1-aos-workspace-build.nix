@@ -60,6 +60,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
+            test -e ${packages.crucible-qemu-plugin}/lib/qemu/plugins/crucible-qemu-plugin.so
             test -f ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -68,6 +69,16 @@ in
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_plugin_header=${packages.qemu-crucible}/include/qemu/qemu-plugin.h$' \
+              ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
+            grep -q '^qemu_plugin_api_version=4$' \
+              ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
+            grep -q '^qemu_plugin_abi=qemu-plugin-api-v4$' \
+              ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
+            grep -q '^shmem_abi_version=1$' \
+              ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
+            grep -q '^shmem_abi=crucible-shmem-abi-v1$' \
+              ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
+            grep -q '^plugin_abi=crucible-shmem-abi-v1$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
 
             test -f ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
@@ -82,6 +93,10 @@ in
             packages=crucible,crucible-qemu-plugin,qemu-crucible
             cargo_deps=fetchCargoDeps
             plugin_headers=qemu-crucible
+            plugin_library=lib/libcrucible_qemu_plugin.so
+            plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
+            qemu_plugin_abi=qemu-plugin-api-v4
+            shmem_abi=crucible-shmem-abi-v1
             RESULT
           '';
         }
