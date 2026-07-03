@@ -6841,6 +6841,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       produced fact elides the argument thunk while preserving foldl-empty and
       unreached dynamic attr-path laziness. This does not close the whole-program
       closed-call-graph fixpoint or worker/wrapper transform.
+- [x] Current strictness fact-table validation hardening:
+      `annotate_strictness` now rejects fact-table/node-count mismatches before
+      demand propagation, so malformed imported facts cannot leave stale
+      strictness entries outside the IR arena. This is a fact-substrate
+      consistency check only; it does not extend the demand lattice or the
+      whole-program fixpoint.
 - [x] Current worker-wrapper planning precursor:
       `ratchet-core::analysis::worker_wrapper` consumes strictness facts for
       direct literal lambda applications and reports where a simple-formal

@@ -75,6 +75,14 @@ pub enum StrictnessAnalysisError {
         /// The unresolved symbol.
         symbol: Symbol,
     },
+    /// The fact table length did not match the arena node count.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of fact records required by the arena.
+        expected: usize,
+        /// The number of fact records present.
+        actual: usize,
+    },
 }
 
 /// Annotates IR nodes that are proven to be demanded.
@@ -91,6 +99,13 @@ pub enum StrictnessAnalysisError {
 pub fn annotate_strictness(
     ir: &mut Ir,
 ) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(StrictnessAnalysisError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
     StrictnessAnalyzer::new(ir).run()
 }
 

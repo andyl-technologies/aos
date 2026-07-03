@@ -3,6 +3,68 @@
 use super::*;
 
 #[test]
+fn strictness_rejects_fact_table_length_mismatches() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Int(1),
+        )],
+        Vec::new(),
+    );
+    let mut overlong = Ir {
+        root: IrId::new(0),
+        arena: arena.clone(),
+        facts: IrFacts::conservative(2),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    overlong
+        .facts
+        .get_mut(IrId::new(1))
+        .expect("stale fact exists")
+        .strictness = Strictness::Strict;
+
+    let error = annotate_strictness(&mut overlong).expect_err("overlong fact table rejects");
+
+    assert_eq!(
+        error,
+        StrictnessAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_eq!(strictness(&overlong, IrId::new(1)), Strictness::Strict);
+
+    let mut short = Ir {
+        root: IrId::new(0),
+        arena,
+        facts: IrFacts::conservative(0),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_strictness(&mut short).expect_err("short fact table rejects");
+
+    assert_eq!(
+        error,
+        StrictnessAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 0,
+        }
+    );
+}
+
+#[test]
 fn strictness_marks_root_and_guaranteed_strict_children_only() {
     let ir = annotate("if 1 == 1 then [ (1 / 0) ] else 0");
     let root = ir.root;
