@@ -6586,6 +6586,21 @@ nurseries build on the bump arena.
       scheduler, cannot prove the caller exhausted real worker deques or peer
       steals, does not hold a scheduler park token, and still uses the blocking
       wait-cell precursor rather than a lock-free waiter list.
+- [x] Current parallel thunk terminal-payload precursor:
+      `ParallelThunkPayloadCell` layers typed terminal payload storage over the
+      safe CAS/wait-cell protocol. The claim owner stores either a forced payload
+      or captured failure before publishing the terminal state, so foreign waiters
+      wake through the existing no-lost-wakeup path and then clone the matching
+      payload for re-raise or value replay. Dropping an active payload guard
+      publishes a configured failure payload before the underlying wait guard
+      releases `Failed`, preserving the no-stranded-claim invariant with a
+      concrete error. Tests cover forced payload wake/replay, failed payload
+      wake/replay, drop-to-failed payload publication, wait-or-steal payload
+      return with contention counters, and replay for later claim attempts. This
+      is still a safe payload precursor only: it does not replace the serial
+      tree-walk thunk cell, store evaluator-native `Value`/`TreeWalkError`
+      payloads, install the final lock-free waiter list, wire scheduler parking,
+      or satisfy the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every

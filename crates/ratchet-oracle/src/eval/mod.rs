@@ -16,6 +16,7 @@ pub mod parallel_heap;
 pub mod parallel_output;
 pub mod thunk;
 pub mod thunk_cas;
+pub mod thunk_payload;
 pub mod thunk_wait;
 pub mod tree_walk;
 pub mod whnf_tag;
@@ -53,6 +54,11 @@ pub use thunk_cas::{
     PARALLEL_THUNK_MAX_WORKER_ID, ParallelThunkAwait, ParallelThunkClaim, ParallelThunkClaimGuard,
     ParallelThunkPublish, ParallelThunkState, ParallelThunkStateError, ParallelThunkStateWord,
     ParallelThunkTerminalState, ParallelThunkWorkerId,
+};
+pub use thunk_payload::{
+    ParallelThunkPayloadCell, ParallelThunkPayloadError, ParallelThunkPayloadGuard,
+    ParallelThunkPayloadWait, ParallelThunkPayloadWorkWait, ParallelThunkTerminalPayload,
+    ParallelThunkTerminalStatus,
 };
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,
