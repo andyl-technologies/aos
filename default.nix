@@ -274,6 +274,7 @@
       e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
+      frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -288,6 +289,7 @@
           e2eGate
           fleetStoreGate
           sharedDagStoreGate
+          frontierLeaseGate
         ];
 
         phases = [
@@ -312,6 +314,13 @@
               grep -q '^shared_store_backend=SharedDagStore$' "$shared_dag_store_result"
               grep -q '^concurrent_put=idempotent$' "$shared_dag_store_result"
 
+              frontier_lease_result="${frontierLeaseGate}/result"
+              grep -q '^PASS$' "$frontier_lease_result"
+              grep -q '^tasks=T-DCE-2$' "$frontier_lease_result"
+              grep -q '^claim_lease=ttl-hint$' "$frontier_lease_result"
+              grep -q '^stale_claim_lock=reclaimable$' "$frontier_lease_result"
+              grep -q '^hash_affinity=priority-only$' "$frontier_lease_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -322,6 +331,14 @@
               grep -q '^concurrent_put=idempotent$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^concurrent_writers=16$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^object_file_count=1$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^claim_lease=ttl-hint$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^claim_key=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^expired_lease=reclaimable$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^stale_claim_lock=reclaimable$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^reclaimed_node_byte_identical=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^hash_affinity=priority-only$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^affinity_filters_frontier=false$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^static_partitioning=false$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -333,6 +350,7 @@
               e2e_gate_result=${e2eGate}/result
               fleet_store_gate_result=${fleetStoreGate}/result
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
+              frontier_lease_gate_result=${frontierLeaseGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -348,6 +366,14 @@
               concurrent_put=idempotent
               concurrent_writers=16
               object_file_count=1
+              claim_lease=ttl-hint
+              claim_key=content-addressed
+              expired_lease=reclaimable
+              stale_claim_lock=reclaimable
+              reclaimed_node_byte_identical=true
+              hash_affinity=priority-only
+              affinity_filters_frontier=false
+              static_partitioning=false
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

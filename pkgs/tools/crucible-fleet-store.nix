@@ -40,6 +40,13 @@ in
       grep -q '^concurrent_put=idempotent$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^concurrent_writers=16$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^object_file_count=1$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^claim_lease=ttl-hint$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^claim_key=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^expired_lease=reclaimable$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^stale_claim_lock=reclaimable$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^hash_affinity=priority-only$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^affinity_filters_frontier=false$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^static_partitioning=false$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -55,7 +62,11 @@ in
       fleet_visible=true
       aos_from_source=true
       dce_task=T-DCE-1
+      dce_claim_lease_task=T-DCE-2
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
+      frontier_claim_lease=ttl-hint
+      stale_claim_lock=reclaimable
+      soft_hash_affinity=priority-only
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"

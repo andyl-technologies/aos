@@ -273,12 +273,16 @@
         needle = "crucibleSharedDagStore = import ./phase7-crucible-shared-dag-store.nix";
       }
       {
+        label = "phase7 frontier leases check imported";
+        needle = "crucibleFrontierLeases = import ./phase7-crucible-frontier-leases.nix";
+      }
+      {
         label = "fleet equivalence raw gate waits for fleet store package";
-        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
       }
       {
         label = "fleet equivalence wrapper waits for fleet store package";
-        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-gate-ci-wiring.nix" gateCiWiring [
@@ -293,6 +297,10 @@
       {
         label = "CI wiring expects shared DagStore proof";
         needle = "checks.crucible.phase7.crucibleSharedDagStore";
+      }
+      {
+        label = "CI wiring expects frontier lease proof";
+        needle = "checks.crucible.phase7.crucibleFrontierLeases";
       }
       {
         label = "CI wiring expects TCG-only fleet store";
