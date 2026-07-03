@@ -227,3 +227,45 @@ fn dangling_thunk_body_is_rejected() {
         }
     );
 }
+
+#[test]
+fn self_referential_thunk_body_is_rejected() {
+    let root = IrId::new(0);
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::ThunkAlloc,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Node(root),
+        )],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        root,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        },
+    );
+
+    let error = frame_local_single_entry_thunk_downgrade(&ir, root)
+        .expect_err("self-referential thunk body rejects");
+
+    assert_eq!(
+        error,
+        FrameLocalThunkDowngradeError::SelfReferentialThunkBody { id: root }
+    );
+}

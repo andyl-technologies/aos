@@ -6876,6 +6876,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       remove code in the tree-walk oracle, handle attrset or formal-argument
       absence, improve cardinality precision, or run the whole-program demand
       fixpoint.
+- [x] Current single-entry-thunk preflight hardening:
+      `ratchet-core::analysis::thunk_sharing` rejects self-referential
+      `ThunkAlloc` payloads before facts can license a frame-local single-entry
+      downgrade, alongside existing checks for non-thunk nodes, malformed
+      payloads, missing body nodes, and missing fact records. This protects the
+      downgrade safety boundary for raw/imported IR corruption; it does not add
+      new cardinality precision, escape proofs, or evaluator lowering.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for
       non-escaping attrsets/thunks.
 - [x] Current `analysis/escape.rs` precursor: `ratchet-core` exposes a

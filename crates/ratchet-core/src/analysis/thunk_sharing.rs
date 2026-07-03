@@ -43,6 +43,9 @@ pub fn frame_local_single_entry_thunk_downgrade(
     ir.arena
         .node(body)
         .ok_or(FrameLocalThunkDowngradeError::MissingThunkBody { id, body })?;
+    if body == id {
+        return Err(FrameLocalThunkDowngradeError::SelfReferentialThunkBody { id });
+    }
     let facts = ir
         .facts
         .get(id)
@@ -154,6 +157,12 @@ pub enum FrameLocalThunkDowngradeError {
         id: IrId,
         /// The missing thunk body node.
         body: IrId,
+    },
+    /// A thunk allocation referenced itself as its deferred body.
+    #[error("thunk allocation {id:?} references itself as its body")]
+    SelfReferentialThunkBody {
+        /// The malformed thunk allocation node.
+        id: IrId,
     },
     /// A thunk allocation node carried a non-body payload.
     #[error("invalid payload for thunk allocation {id:?}: expected {expected}")]
