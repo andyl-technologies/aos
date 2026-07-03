@@ -6231,6 +6231,25 @@ and helps the oracle directly.
       destinations, and does not cover shared lexical frame slots, blackholed
       thunk deferred-work/capture fields, forced thunk cached-result fields, ABI
       object headers, semispace storage, or Tier-B dispatch.
+- [x] Current boundary live reference writeback validation bridge:
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_reference_writebacks`
+      consumes the same installed live root and heap-field writeback metadata
+      plus installed writeback-destination bindings as the live-reference
+      applicator, validates the outcome-owned `ValueStack { slot: 0 }` root,
+      current record-owned source fields, paired object-body/generation staging,
+      staged heap-field mutations, direct owner/destination aliasing, and staged
+      remembered-set/card-table barriers, then returns root/field/object
+      preflight counts without committing any staged writes. Unit tests cover a
+      mixed value-stack root plus dirty permanent lambda-capture field sharing
+      one existing scratch replacement without mutating destination
+      body/generation state, heap fields, remembered/card side tables, or the
+      outcome value, and stale-root rejection without mutation. This still
+      requires destination records to already exist as unaliased collector-owned
+      scratch records, does not allocate synthetic destinations, and does not
+      rewrite active evaluator frames, import caches, arbitrary value-stack
+      roots, JIT stack maps, shared lexical frame slots, blackholed thunk
+      deferred-work/capture fields, forced thunk cached-result fields, ABI
+      object headers, semispace storage, or Tier-B dispatch.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
@@ -7050,6 +7069,12 @@ and helps the oracle directly.
       body/generation writes across roots and fields, rejects direct in-place
       field owners that alias those destinations, applies the heap-side
       transaction, and then rewrites the already prevalidated outcome value. The
+      companion
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_reference_writebacks`
+      runs the same root, field, object-body/generation, alias, and barrier
+      staging checks without committing the heap-side transaction or outcome
+      value write.
+      The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage, and do not cover shared lexical frame slots, blackholed

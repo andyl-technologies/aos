@@ -4786,6 +4786,159 @@ fn live_heap_field_writebacks_reject_stale_direct_field_before_body_write() {
 }
 
 #[test]
+fn live_reference_writebacks_validate_root_and_field_without_mutation() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs for mixed root and field writebacks");
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let original_dirty_cards = outcome.thunk_resolve_card_table().dirty_cards().to_vec();
+    assert!(outcome.value().raw_eq(child));
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+
+    let report = outcome
+        .validate_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect("live reference writeback preflight validates root and field");
+
+    assert_eq!(report.object_body_preflight_objects(), 1);
+    assert_eq!(report.object_generation_preflight_objects(), 1);
+    assert_eq!(report.roots(), 1);
+    assert_eq!(report.fields(), 1);
+    assert_eq!(report.references(), 2);
+    assert!(outcome.value().raw_eq(child));
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(lambda.with_scope_env().scopes()[0].value().raw_eq(child));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("original destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn live_reference_writebacks_validate_rejects_stale_root_without_mutation() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+    let stale_value = Value::int(1);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs for mixed root and field writebacks");
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let original_dirty_cards = outcome.thunk_resolve_card_table().dirty_cards().to_vec();
+    outcome.value = stale_value;
+
+    let err = outcome
+        .validate_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect_err("stale root rejects live reference writeback preflight");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+            index: 0,
+            expected_tag: ValueTag::Lambda,
+            actual_tag: ValueTag::Int,
+            ..
+        }
+    ));
+    assert!(outcome.value().raw_eq(stale_value));
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("original destination remains heap-bound"),
+        original_destination_generation
+    );
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(lambda.with_scope_env().scopes()[0].value().raw_eq(child));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
 fn live_reference_writebacks_bind_once_and_rewrite_root_and_direct_field() {
     let (mut outcome, parent, child, destination) =
         boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
