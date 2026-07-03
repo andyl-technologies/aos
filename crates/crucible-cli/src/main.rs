@@ -27,13 +27,17 @@ use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
     RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
-    RpcControlClient, RpcEndpoint, serve_lifecycle_http2_with_mode_until_shutdown,
+    RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
+    serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::{
     CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
-    SessionCommandKind,
-    engine::{self as crucible, DagStore},
+    SessionCommandKind, StepMode,
+    engine::{
+        self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint, MemoryDagStore,
+        SimDuration, TemporalGraph, TemporalGraphStoreError,
+    },
 };
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
@@ -347,6 +351,9 @@ struct SaveArgs {
     /// Human label for the savepoint.
     #[arg(long, value_name = "name")]
     label: Option<String>,
+    /// Stop past this virtual time.
+    #[arg(long, value_name = "dur")]
+    max_virtual_time: Option<String>,
     /// Write the exported savepoint handle here.
     #[arg(long, value_name = "path")]
     out: Option<PathBuf>,
@@ -969,8 +976,10 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             subcommand,
             session_commands: vec![
                 SessionCommandKind::Start,
+                SessionCommandKind::StepQuantum,
                 SessionCommandKind::StepDuration,
                 SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Stop,
                 SessionCommandKind::Query,
             ],
             api_calls: vec![
@@ -1356,6 +1365,20 @@ struct SaveInvocationPlan {
     label: String,
     output: SaveOutputTarget,
     run_plan: RunInvocationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SavepointOracleProof {
+    configuration: crucible::ContentHash,
+    fat_checkpoint: crucible::ContentHash,
+    thin_checkpoint: crucible::ContentHash,
+    store_objects: usize,
+}
+
+impl SavepointOracleProof {
+    fn status_label(&self) -> &'static str {
+        "fat==thin-passed"
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1905,26 +1928,27 @@ fn plan_save_invocation(
     let until = match at {
         SaveAtArg::Quiescence => RunUntilArg::Quiescence,
         SaveAtArg::VirtualTime => {
-            return Err(usage_error(
-                "save --at virtual-time requires a concrete virtual-time coordinate; tracked by T-CLI-9",
-            ));
+            if args.max_virtual_time.is_none() {
+                return Err(usage_error(
+                    "save --at virtual-time requires --max-virtual-time <dur>",
+                ));
+            }
+            RunUntilArg::VirtualTime
         }
         SaveAtArg::Property => {
             return Err(usage_error(
-                "save --at property requires property-breakpoint savepoint export; tracked by T-CLI-9",
+                "save --at property requires a property breakpoint selector",
             ));
         }
         SaveAtArg::Marker => {
-            return Err(usage_error(
-                "save --at marker requires a marker coordinate; tracked by T-CLI-9",
-            ));
+            return Err(usage_error("save --at marker requires a marker coordinate"));
         }
     };
     let label = plan_save_label(args.label.as_deref())?;
     let run_args = RunArgs {
         scenario: args.scenario.clone(),
         until,
-        max_virtual_time: None,
+        max_virtual_time: args.max_virtual_time.clone(),
         max_quanta: None,
         interactive: false,
         save_on: RunSaveOnArg::Always,
@@ -4097,6 +4121,7 @@ struct BackendCommandOutcome {
     canonical_log_digest: String,
     artifact_digest: String,
     terminal_savepoint: Option<crucible::ContentHash>,
+    savepoint_oracle: Option<SavepointOracleProof>,
     reproduction_artifact: Option<Vec<u8>>,
     side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
 }
@@ -4113,6 +4138,7 @@ impl BackendCommandOutcome {
             canonical_log_digest: self.canonical_log_digest.clone(),
             artifact_digest: self.artifact_digest.clone(),
             terminal_savepoint: self.terminal_savepoint,
+            savepoint_oracle: self.savepoint_oracle.clone(),
         }
     }
 }
@@ -4168,6 +4194,7 @@ struct BackendCommandOutcomeProjection {
     canonical_log_digest: String,
     artifact_digest: String,
     terminal_savepoint: Option<crucible::ContentHash>,
+    savepoint_oracle: Option<SavepointOracleProof>,
 }
 
 trait BackendCommandRunner {
@@ -4179,6 +4206,7 @@ trait BackendCommandRunner {
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
+        save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 
     fn run_remote(
@@ -4189,6 +4217,7 @@ trait BackendCommandRunner {
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
+        save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 }
 
@@ -4204,6 +4233,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
+        save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
         if let Some(verify_plan) = verify_plan {
             return match (&verify_plan.mode, backend) {
@@ -4235,17 +4265,26 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                 }
             };
         }
+        if let Some(save_plan) = save_plan {
+            return match backend {
+                ResolvedLocalBackend::Double => run_local_double_save_workflow(
+                    thin_plan,
+                    backend_plan,
+                    ergonomics_plan,
+                    save_plan,
+                ),
+                ResolvedLocalBackend::Qemu { .. } => run_local_qemu_save_workflow(
+                    thin_plan,
+                    backend_plan,
+                    ergonomics_plan,
+                    save_plan,
+                ),
+            };
+        }
         if let Some(run_plan) = run_plan {
             return match backend {
                 ResolvedLocalBackend::Double => {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
-                }
-                ResolvedLocalBackend::Qemu { .. }
-                    if backend_plan.subcommand == CliSubcommand::Save =>
-                {
-                    Err(backend_error(
-                        "save with local QEMU requires the real-QEMU savepoint export runner tracked by T-CLI-9; use --backend double for the current quiescence savepoint workflow",
-                    ))
                 }
                 ResolvedLocalBackend::Qemu { .. } => Ok(backend_command_outcome(
                     thin_plan,
@@ -4269,7 +4308,13 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
+        save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
+        if save_plan.is_some() {
+            return Err(backend_error(
+                "save through a remote daemon requires a replay-oracle proof in the exported RPC savepoint reply; use a local backend for this workflow",
+            ));
+        }
         if let Some(run_plan) = run_plan {
             return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
         }
@@ -4296,6 +4341,7 @@ fn execute_backend_routed_command(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: Option<&RunInvocationPlan>,
     verify_plan: Option<&VerifyInvocationPlan>,
+    save_plan: Option<&SaveInvocationPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
     if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
@@ -4321,6 +4367,7 @@ fn execute_backend_routed_command(
             ergonomics_plan,
             run_plan,
             verify_plan,
+            save_plan,
         ),
         (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => runner.run_remote(
             daemon,
@@ -4329,6 +4376,7 @@ fn execute_backend_routed_command(
             ergonomics_plan,
             run_plan,
             verify_plan,
+            save_plan,
         ),
         _ => Err(CliError::Backend(
             "CLI backend route is internally inconsistent".to_string(),
@@ -4352,6 +4400,12 @@ struct RunWorkflowReport {
     execution_fingerprints: Vec<crucible::FingerprintSample>,
     acknowledged_commands: Vec<SessionCommandKind>,
     watch_statuses: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SaveWorkflowReport {
+    run: RunWorkflowReport,
+    oracle: SavepointOracleProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4447,6 +4501,69 @@ fn run_local_double_workflow(
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
+fn run_local_double_save_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-double-save",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| SaveRecordingLifecycleLoop::new(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
+    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SaveRecordingLifecycleLoop {
+    inner: QuiescentLifecycleLoop,
+}
+
+impl SaveRecordingLifecycleLoop {
+    fn new() -> Self {
+        Self {
+            inner: QuiescentLifecycleLoop::new(),
+        }
+    }
+}
+
+impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
+    fn drive_quantum(
+        &mut self,
+        request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        let previous = request.configuration.clone();
+        let mut outcome = self.inner.drive_quantum(request)?;
+        let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+            at: outcome.frontier,
+            order: Vec::new(),
+        });
+        outcome.configuration =
+            crucible::try_step(&previous, decision.clone()).map_err(|error| {
+                crucible::SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "save lifecycle double could not record virtual-time decision: {error}"
+                    ),
+                }
+            })?;
+        outcome.decisions = vec![decision];
+        Ok(outcome)
+    }
+
+    fn sample_fingerprint(
+        &mut self,
+        node: crucible::NodeId,
+    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        self.inner.sample_fingerprint(node)
+    }
+}
+
 fn run_local_double_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -4507,6 +4624,17 @@ fn run_local_qemu_verify_workflow(
     )?;
     append_local_qemu_verify_identity(&mut outcome, backend_plan)?;
     Ok(outcome)
+}
+
+fn run_local_qemu_save_workflow(
+    _thin_plan: &CliThinWrapperPlan,
+    _backend_plan: &BackendSelectionPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    _save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    Err(backend_error(
+        "save with local QEMU requires the real-QEMU savepoint export runner tracked by T-CLI-9; use --backend double for the current savepoint workflow",
+    ))
 }
 
 fn append_local_qemu_verify_identity(
@@ -4654,6 +4782,48 @@ fn finish_run_workflow_outcome(
         });
         outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     }
+    Ok(outcome)
+}
+
+fn finish_save_workflow_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+    report: SaveWorkflowReport,
+) -> Result<BackendCommandOutcome, CliError> {
+    let oracle = report.oracle;
+    let mut outcome = finish_run_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        &save_plan.run_plan,
+        report.run,
+    )?;
+    outcome.terminal_savepoint = Some(oracle.fat_checkpoint);
+    outcome.stdout.push(format!(
+        "save-oracle\tstatus={}\tconfiguration={}\tfat={}\tthin={}\tstore_objects={}",
+        oracle.status_label(),
+        format_content_hash_ref(oracle.configuration),
+        format_content_hash_ref(oracle.fat_checkpoint),
+        format_content_hash_ref(oracle.thin_checkpoint),
+        oracle.store_objects
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("replay-oracle"),
+        kind: String::from("save_oracle_validation"),
+        summary: format!(
+            "status={} configuration={} fat={} thin={}",
+            oracle.status_label(),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint),
+            format_content_hash_ref(oracle.thin_checkpoint)
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    outcome.savepoint_oracle = Some(oracle);
     Ok(outcome)
 }
 
@@ -5012,6 +5182,7 @@ fn canonical_run_log_entries(
         canonical_log_digest: content_address_bytes(b"empty"),
         artifact_digest: content_address_bytes(b"empty"),
         terminal_savepoint: None,
+        savepoint_oracle: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     };
@@ -5742,6 +5913,374 @@ where
         InteractiveCommandDriver::Preparsed(interactive_commands),
     )
     .await
+}
+
+async fn run_control_client_save_workflow_async<C>(
+    client: &C,
+    save_plan: &SaveInvocationPlan,
+) -> Result<SaveWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let run_plan = &save_plan.run_plan;
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
+        .with_start_paused(true);
+    let created = client
+        .create_session(request)
+        .await
+        .map_err(save_control_client_error)?;
+    let mut acknowledged_commands = Vec::new();
+    let mut state_updates = Vec::new();
+    let mut command_id = 1;
+
+    let boundary = match save_plan.at {
+        SaveAtArg::Quiescence => {
+            send_save_workflow_command(
+                client,
+                created.session,
+                &mut command_id,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused).await?
+        }
+        SaveAtArg::VirtualTime => {
+            let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
+                usage_error("save --at virtual-time requires --max-virtual-time <dur>")
+            })?;
+            let summary =
+                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
+                    .await?;
+            if summary.frontier.ticks < budget {
+                send_save_workflow_command(
+                    client,
+                    created.session,
+                    &mut command_id,
+                    SessionCommand::Step {
+                        mode: StepMode::Duration(SimDuration {
+                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                        }),
+                    },
+                    &mut acknowledged_commands,
+                    &mut state_updates,
+                )
+                .await?;
+            }
+            let boundary =
+                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
+                    .await?;
+            if boundary.frontier.ticks != budget {
+                return Err(CliError::Identity(format!(
+                    "save virtual-time boundary reached {}, expected {}",
+                    boundary.frontier.ticks, budget
+                )));
+            }
+            boundary
+        }
+        SaveAtArg::Property | SaveAtArg::Marker => {
+            return Err(usage_error(format!(
+                "save --at {} requires a concrete selector",
+                save_plan.at.label()
+            )));
+        }
+    };
+
+    let snapshot_response = send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::query_snapshot(),
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let snapshot = match snapshot_response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(other) => {
+            return Err(save_backend_error(format!(
+                "save boundary snapshot returned unexpected query payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(save_backend_error(
+                "save boundary snapshot returned no query payload",
+            ));
+        }
+    };
+    let savepoint_response = send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::CreateSavepoint {
+            label: save_plan.label.clone(),
+            reply: CommandReply::discard(),
+        },
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let savepoint = savepoint_response
+        .savepoint_info
+        .ok_or_else(|| save_backend_error("savepoint command returned no savepoint payload"))?;
+    if savepoint.label != save_plan.label {
+        return Err(CliError::Identity(format!(
+            "savepoint label mismatch: expected `{}`, got `{}`",
+            save_plan.label, savepoint.label
+        )));
+    }
+    let configuration = snapshot.configuration.id();
+    if savepoint.configuration != configuration {
+        return Err(CliError::Identity(format!(
+            "savepoint configuration {} did not match boundary snapshot {}",
+            format_content_hash_ref(savepoint.configuration),
+            format_content_hash_ref(configuration)
+        )));
+    }
+    let oracle = validate_savepoint_checkpoint(
+        save_plan,
+        &snapshot.configuration,
+        &savepoint.checkpoint,
+        boundary.frontier,
+    )?;
+    send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::Stop,
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let stopped = client
+        .list_sessions()
+        .await
+        .map_err(control_client_error)?
+        .sessions
+        .into_iter()
+        .find(|summary| summary.session == created.session);
+    if let Some(summary) = &stopped {
+        if let Some(terminal) = summary.terminal_savepoint {
+            if terminal != oracle.fat_checkpoint {
+                return Err(CliError::Identity(format!(
+                    "save terminal checkpoint {} did not match validated checkpoint {}",
+                    format_content_hash_ref(terminal),
+                    format_content_hash_ref(oracle.fat_checkpoint)
+                )));
+            }
+        }
+    }
+
+    let final_state = match save_plan.at {
+        SaveAtArg::Quiescence => String::from("quiescent"),
+        SaveAtArg::VirtualTime => String::from("virtual-time"),
+        SaveAtArg::Property => String::from("property"),
+        SaveAtArg::Marker => String::from("marker"),
+    };
+    if state_updates.last() != Some(&final_state) {
+        state_updates.push(final_state.clone());
+    }
+
+    Ok(SaveWorkflowReport {
+        run: RunWorkflowReport {
+            status: BackendCommandStatus::Passed,
+            created_state: format!("{:?}", created.state).to_ascii_lowercase(),
+            final_state,
+            outcome: Some(OutcomeKind::Passed),
+            terminal_savepoint: Some(oracle.fat_checkpoint),
+            final_frontier_ticks: stopped
+                .as_ref()
+                .map(|summary| summary.frontier.ticks)
+                .unwrap_or(boundary.frontier.ticks)
+                .max(boundary.frontier.ticks),
+            final_quanta: stopped
+                .as_ref()
+                .map(|summary| summary.quanta_stepped)
+                .unwrap_or(boundary.quanta_stepped)
+                .max(boundary.quanta_stepped),
+            budget_timed_out: false,
+            state_updates,
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands,
+            watch_statuses: Vec::new(),
+        },
+        oracle,
+    })
+}
+
+async fn send_save_workflow_command<C>(
+    client: &C,
+    session: SessionRef,
+    command_id: &mut u64,
+    command: SessionCommand,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+) -> Result<crucible_api::SendResponse, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let command_kind = SessionCommandKind::from(&command);
+    let request =
+        SendRequest::new(session, *command_id, command).with_expected_epoch(session.epoch);
+    let response = client
+        .send_command(request)
+        .await
+        .map_err(save_control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    if let Some(update) = response.state_update {
+        state_updates.push(format!("{:?}", update.state).to_ascii_lowercase());
+    }
+    match &response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(command_kind);
+            Ok(response)
+        }
+        CommandResultStatus::Rejected { reason } => Err(save_backend_error(format!(
+            "save workflow command `{}` was rejected: {reason:?}",
+            session_command_name(command_kind)
+        ))),
+    }
+}
+
+async fn wait_for_save_workflow_state<C>(
+    client: &C,
+    session: SessionRef,
+    expected: LiveStateKind,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+        let sessions = client
+            .list_sessions()
+            .await
+            .map_err(save_control_client_error)?;
+        let Some(summary) = sessions
+            .sessions
+            .iter()
+            .find(|summary| summary.session == session)
+        else {
+            return Err(save_backend_error("save workflow session disappeared"));
+        };
+        if summary.state == expected {
+            return Ok(summary.clone());
+        }
+        if expected != LiveStateKind::Stopped && summary.state == LiveStateKind::Stopped {
+            return Err(CliError::Outcome(status_from_outcome(summary.outcome)));
+        }
+        tokio::task::yield_now().await;
+    }
+    Err(save_backend_error(format!(
+        "save workflow did not reach {:?}",
+        expected
+    )))
+}
+
+fn validate_savepoint_checkpoint(
+    save_plan: &SaveInvocationPlan,
+    configuration: &crucible::Configuration,
+    checkpoint: &Checkpoint,
+    boundary: crucible::VirtualTime,
+) -> Result<SavepointOracleProof, CliError> {
+    let mut graph = save_validation_graph(save_plan.run_plan.scenario.scenario_def())?;
+    if checkpoint.configuration != configuration.id() {
+        return Err(CliError::Identity(format!(
+            "save checkpoint {} named configuration {}, expected {}",
+            format_content_hash_ref(checkpoint.id),
+            format_content_hash_ref(checkpoint.configuration),
+            format_content_hash_ref(configuration.id())
+        )));
+    }
+    if checkpoint.kind != CheckpointKind::Fat {
+        return Err(CliError::Identity(format!(
+            "save checkpoint {} was not materialized as fat",
+            format_content_hash_ref(checkpoint.id)
+        )));
+    }
+    if checkpoint.virtual_time != boundary {
+        return Err(CliError::Identity(format!(
+            "save checkpoint {} virtual time {} did not match boundary {}",
+            format_content_hash_ref(checkpoint.id),
+            checkpoint.virtual_time.ticks,
+            boundary.ticks
+        )));
+    }
+    if !configuration.is_genesis() {
+        graph
+            .cache_snapshot(configuration, checkpoint.clone())
+            .map_err(|error| {
+                CliError::Identity(format!("save checkpoint cache admission failed: {error}"))
+            })?;
+    }
+    let replay = graph
+        .replay_checkpoint(configuration, checkpoint)
+        .map_err(|error| {
+            CliError::Identity(format!(
+                "save replay-oracle fat==thin validation failed: {error}"
+            ))
+        })?;
+    if replay.fat_checkpoint != checkpoint.id || replay.thin_checkpoint != checkpoint.id {
+        return Err(CliError::Identity(format!(
+            "save replay-oracle mismatch: fat={} thin={} saved={}",
+            format_content_hash_ref(replay.fat_checkpoint),
+            format_content_hash_ref(replay.thin_checkpoint),
+            format_content_hash_ref(checkpoint.id)
+        )));
+    }
+    let store = MemoryDagStore::new();
+    graph
+        .persist_checkpoint_closure(&store, configuration)
+        .map_err(save_temporal_graph_error)?;
+    let store_objects = store.object_count().map_err(CliError::Store)?;
+    Ok(SavepointOracleProof {
+        configuration: replay.configuration,
+        fat_checkpoint: replay.fat_checkpoint,
+        thin_checkpoint: replay.thin_checkpoint,
+        store_objects,
+    })
+}
+
+fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<TemporalGraph, CliError> {
+    let genesis = crucible::Configuration::genesis(scenario.clone());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &genesis,
+        None,
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .map_err(|error| {
+        CliError::Identity(format!("save genesis checkpoint setup failed: {error}"))
+    })?;
+    TemporalGraph::empty()
+        .with_baked_genesis(scenario, GenesisCheckpoint { checkpoint })
+        .map_err(|error| CliError::Identity(format!("save validation graph setup failed: {error}")))
+}
+
+fn save_temporal_graph_error(error: TemporalGraphStoreError) -> CliError {
+    match error {
+        TemporalGraphStoreError::Engine { operation, source } => CliError::Identity(format!(
+            "save temporal graph {operation} failed replay-oracle validation: {source}"
+        )),
+        TemporalGraphStoreError::Store { source, .. } => CliError::Store(source),
+    }
+}
+
+fn save_control_client_error(error: crucible_api::ControlClientError) -> CliError {
+    save_backend_error(format!("control API error: {error}"))
+}
+
+fn save_backend_error(reason: impl Into<String>) -> CliError {
+    CliError::Identity(reason.into())
 }
 
 fn run_save_policy_label(policy: RunSavePolicy) -> &'static str {
@@ -6578,6 +7117,7 @@ fn backend_command_outcome(
         canonical_log_digest,
         artifact_digest,
         terminal_savepoint: None,
+        savepoint_oracle: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     }
@@ -6740,6 +7280,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .as_ref()
                 .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
             verify_plan.as_ref(),
+            save_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
         if matches!(
@@ -7109,9 +7650,9 @@ fn export_savepoint_handle(
     if outcome.status.is_non_passing() {
         return Ok(());
     }
-    let savepoint = outcome
-        .terminal_savepoint
-        .ok_or_else(|| backend_error("save completed without a materialized terminal savepoint"))?;
+    let savepoint = outcome.terminal_savepoint.ok_or_else(|| {
+        backend_error("save completed without a validated create-savepoint reply")
+    })?;
     let checkpoint = format_content_hash_ref(savepoint);
     let handle = savepoint_handle_bytes(plan, &checkpoint, outcome);
     let handle_digest = content_address_bytes(&handle);
@@ -7168,11 +7709,13 @@ fn savepoint_handle_bytes(
             plan.run_plan.terminal_condition.label(),
         ],
     );
-    artifact_line(
-        &mut text,
-        &["materialization", "terminal-savepoint", "session-summary"],
-    );
-    artifact_line(&mut text, &["oracle", "pending-fat-thin-replay-validation"]);
+    artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
+    let oracle_status = outcome
+        .savepoint_oracle
+        .as_ref()
+        .map(SavepointOracleProof::status_label)
+        .unwrap_or("pending-fat-thin-replay-validation");
+    artifact_line(&mut text, &["oracle", oracle_status]);
     artifact_line(&mut text, &["canonical-log", &outcome.canonical_log_digest]);
     text.into_bytes()
 }
@@ -9543,6 +10086,7 @@ mod tests {
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
             _run_plan: Option<&RunInvocationPlan>,
             _verify_plan: Option<&VerifyInvocationPlan>,
+            _save_plan: Option<&SaveInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.local_runs.push(backend.clone());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -9558,6 +10102,7 @@ mod tests {
             ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
             _run_plan: Option<&RunInvocationPlan>,
             _verify_plan: Option<&VerifyInvocationPlan>,
+            _save_plan: Option<&SaveInvocationPlan>,
         ) -> Result<BackendCommandOutcome, CliError> {
             self.remote_runs.push(daemon.to_string());
             let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -9734,6 +10279,7 @@ mod tests {
             None,
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )
         .expect_err("mismatched compare artifacts should fail");
@@ -9807,10 +10353,7 @@ mod tests {
         );
         artifact_line(&mut text, &["at", "quiescence"]);
         artifact_line(&mut text, &["terminal-condition", "quiescence"]);
-        artifact_line(
-            &mut text,
-            &["materialization", "terminal-savepoint", "session-summary"],
-        );
+        artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
         artifact_line(&mut text, &["oracle", "pending-fat-thin-replay-validation"]);
         artifact_line(&mut text, &["canonical-log", canonical_log]);
         let path = dir.join("resume-source.crucible-savepoint");
@@ -10063,6 +10606,7 @@ mod tests {
                     "SCENARIO",
                     "--at <virtual-time|quiescence|property|marker>",
                     "--label <name>",
+                    "--max-virtual-time <dur>",
                     "--out <path>",
                 ],
             ),
@@ -10873,8 +11417,8 @@ mod tests {
     }
 
     #[test]
-    fn cli_save_workflow_plans_quiescence_savepoint_and_rejects_unbacked_points()
-    -> Result<(), Box<dyn Error>> {
+    fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints() -> Result<(), Box<dyn Error>>
+    {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
         let artifact_dir = temp.path().join("artifacts");
@@ -10906,6 +11450,26 @@ mod tests {
             RunTerminalCondition::Quiescence
         );
 
+        let virtual_time = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+        ]);
+        let Commands::Save(args) = &virtual_time.command else {
+            panic!("expected save command");
+        };
+        let plan = plan_save_invocation(args, temp.path(), temp.path())?;
+        assert_eq!(plan.at, SaveAtArg::VirtualTime);
+        assert_eq!(
+            plan.run_plan.terminal_condition,
+            RunTerminalCondition::VirtualTime
+        );
+        assert_eq!(plan.run_plan.max_virtual_time_ticks, Some(2));
+
         let missing_at = Cli::parse_from([
             String::from("crucible"),
             String::from("save"),
@@ -10921,7 +11485,25 @@ mod tests {
         assert!(matches!(error, CliError::Usage(_)));
         assert_eq!(error.exit_code(), 64);
 
-        for at in ["virtual-time", "property", "marker"] {
+        let missing_virtual_time = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("virtual-time"),
+        ]);
+        let Commands::Save(args) = &missing_virtual_time.command else {
+            panic!("expected save command");
+        };
+        let error = match plan_save_invocation(args, temp.path(), temp.path()) {
+            Ok(_) => panic!("virtual-time save without coordinate must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("--max-virtual-time"));
+
+        for at in ["property", "marker"] {
             let cli = Cli::parse_from([
                 String::from("crucible"),
                 String::from("save"),
@@ -10933,12 +11515,12 @@ mod tests {
                 panic!("expected save command");
             };
             let error = match plan_save_invocation(args, temp.path(), temp.path()) {
-                Ok(_) => panic!("{at} savepoint planning must remain explicit until implemented"),
+                Ok(_) => panic!("{at} savepoint planning requires a concrete selector"),
                 Err(error) => error,
             };
             assert!(matches!(error, CliError::Usage(_)));
             assert_eq!(error.exit_code(), 64);
-            assert!(error.to_string().contains("T-CLI-9"));
+            assert!(error.to_string().contains("requires"));
         }
 
         Ok(())
@@ -10982,23 +11564,41 @@ mod tests {
             Some(&seed_plan),
             Some(&save_plan.run_plan),
             None,
+            Some(&save_plan),
             &mut NullBackendCommandRunner,
         )?;
         export_savepoint_handle(&save_plan, &mut outcome)?;
 
         assert_eq!(outcome.status, BackendCommandStatus::Passed);
         assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
         assert!(
             outcome.stdout.iter().any(|line| {
                 line.starts_with("run-savepoint\tpolicy=always\tcheckpoint=blake3:")
             })
         );
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("save-oracle\tstatus=fat==thin-passed\tconfiguration=blake3:")
+        }));
         assert!(
             outcome
                 .stdout
                 .iter()
                 .any(|line| line.starts_with("save-handle\tcheckpoint=blake3:")
                     && line.contains("label=release candidate"))
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "interactive_ack"
+                    && entry.summary == "create-savepoint")
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "save_oracle_validation")
         );
         assert!(
             outcome
@@ -11022,8 +11622,8 @@ mod tests {
         assert!(handle.contains("label\trelease candidate\n"));
         assert!(handle.contains("checkpoint\tblake3:"));
         assert!(handle.contains("at\tquiescence\n"));
-        assert!(handle.contains("materialization\tterminal-savepoint\tsession-summary\n"));
-        assert!(handle.contains("oracle\tpending-fat-thin-replay-validation\n"));
+        assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
+        assert!(handle.contains("oracle\tfat==thin-passed\n"));
 
         let explicit = temp.path().join("explicit.crucible-savepoint");
         let dispatch_cli = Cli::parse_from([
@@ -11046,6 +11646,31 @@ mod tests {
         ]);
         dispatch(&dispatch_cli)?;
         assert!(fs::read_to_string(explicit)?.contains("label\texplicit\n"));
+
+        let virtual_time_out = temp.path().join("virtual-time.crucible-savepoint");
+        let virtual_time_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("12"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("at-two-ticks"),
+            String::from("--out"),
+            virtual_time_out.display().to_string(),
+        ]);
+        dispatch(&virtual_time_cli)?;
+        let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
+        assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
+        assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
+        assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
 
         let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
         let qemu_cli = Cli::parse_from([
@@ -11073,21 +11698,29 @@ mod tests {
             &mut FakeSeedEntropySource::new(0),
         )?
         .expect("save should resolve a seed");
-        let qemu_error = match execute_backend_routed_command(
+        let qemu_result = execute_backend_routed_command(
             &plan_cli_invocation(&qemu_cli),
             &plan_backend_selection(&qemu_cli)?.expect("save should require backend"),
             Some(&qemu_seed_plan),
             Some(&qemu_save_plan.run_plan),
             None,
+            Some(&qemu_save_plan),
             &mut NullBackendCommandRunner,
-        ) {
-            Ok(_) => panic!("local QEMU save must fail until the QEMU runner exists"),
+        );
+        let error = match qemu_result {
+            Ok(_) => {
+                panic!("local QEMU save should remain blocked until T-CLI-9 has a real runner")
+            }
             Err(error) => error,
         };
-        assert!(matches!(qemu_error, CliError::Backend(_)));
-        assert_eq!(qemu_error.exit_code(), 4);
-        assert!(qemu_error.to_string().contains("local QEMU"));
-        assert!(qemu_error.to_string().contains("T-CLI-9"));
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(
+            error
+                .to_string()
+                .contains("real-QEMU savepoint export runner")
+        );
+        assert!(error.to_string().contains("T-CLI-9"));
 
         Ok(())
     }
@@ -11136,7 +11769,7 @@ mod tests {
         assert_eq!(handle.scenario_label, "resume-scenario.toml");
         assert_eq!(handle.at, SaveAtArg::Quiescence);
         assert_eq!(handle.terminal_condition, RunTerminalCondition::Quiescence);
-        assert_eq!(handle.materialization, "terminal-savepoint:session-summary");
+        assert_eq!(handle.materialization, "create-savepoint:reply");
         assert_eq!(handle.oracle_status, "pending-fat-thin-replay-validation");
         assert_eq!(handle.canonical_log_digest, canonical_log);
 
@@ -12138,6 +12771,7 @@ mod tests {
             Some(&seed_plan),
             Some(&run_plan),
             None,
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -12201,6 +12835,7 @@ mod tests {
             &plan_backend_selection(&pass_cli)?.expect("run should require backend selection"),
             Some(&pass_seed),
             Some(&pass_run),
+            None,
             None,
             &mut NullBackendCommandRunner,
         )?;
@@ -12270,6 +12905,7 @@ mod tests {
             Some(&timeout_seed),
             Some(&timeout_run),
             None,
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -12311,6 +12947,7 @@ mod tests {
             &plan_backend_selection(&property_cli)?.expect("run should require backend selection"),
             Some(&property_seed),
             Some(&property_run),
+            None,
             None,
             &mut NullBackendCommandRunner,
         )?;
@@ -12397,6 +13034,7 @@ mod tests {
             &backend_plan,
             Some(&ergonomics_plan),
             Some(&run_plan),
+            None,
             None,
             &mut NullBackendCommandRunner,
         )?;
@@ -12703,6 +13341,7 @@ mod tests {
                 Some(&seed_plan),
                 None,
                 Some(&verify_plan),
+                None,
                 &mut NullBackendCommandRunner,
             )?;
 
@@ -12891,6 +13530,7 @@ mod tests {
             Some(&seed_plan),
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )
         .expect("fresh local double verify should run independent reductions");
@@ -13010,6 +13650,7 @@ mod tests {
             Some(&seed_plan),
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -13220,6 +13861,7 @@ mod tests {
             None,
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )?;
 
@@ -13307,6 +13949,7 @@ mod tests {
             Some(&seed_plan),
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )
         .expect("fresh remote daemon verify should run independent reductions");
@@ -13376,6 +14019,7 @@ mod tests {
             None,
             None,
             Some(&verify_plan),
+            None,
             &mut NullBackendCommandRunner,
         )
         .expect("local qemu verify should run independent reductions");
@@ -13447,6 +14091,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &mut runner,
         )?;
         assert_eq!(runner.remote_runs, vec![String::from("127.0.0.1:9000")]);
@@ -13483,11 +14128,13 @@ mod tests {
             None,
             None,
             None,
+            None,
             &mut local_runner,
         )?;
         let remote_outcome = execute_backend_routed_command(
             &remote_thin,
             &remote_backend,
+            None,
             None,
             None,
             None,
@@ -13742,6 +14389,7 @@ mod tests {
             Some(&seed_one),
             None,
             None,
+            None,
             &mut local_runner,
         )?;
         let remote = execute_backend_routed_command(
@@ -13750,12 +14398,14 @@ mod tests {
             Some(&remote_seed_one),
             None,
             None,
+            None,
             &mut remote_runner,
         )?;
         let different_seed = execute_backend_routed_command(
             &different_seed_thin,
             &different_seed_backend,
             Some(&seed_two),
+            None,
             None,
             None,
             &mut different_seed_runner,
@@ -13839,8 +14489,15 @@ mod tests {
         let thin = plan_cli_invocation(&cli);
         let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
         let mut runner = RecordingBackendCommandRunner::default();
-        let mut outcome =
-            execute_backend_routed_command(&thin, &backend, Some(&plan), None, None, &mut runner)?;
+        let mut outcome = execute_backend_routed_command(
+            &thin,
+            &backend,
+            Some(&plan),
+            None,
+            None,
+            None,
+            &mut runner,
+        )?;
         mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan))?;
 
         emit_backend_command_output(&cli, &outcome)?;
@@ -13929,8 +14586,15 @@ mod tests {
         let backend = plan_backend_selection(&cli)?.expect("run should require backend selection");
         assert_eq!(backend.target, BackendExecutionTarget::RemoteDaemon);
         let mut runner = RecordingBackendCommandRunner::default();
-        let mut outcome =
-            execute_backend_routed_command(&thin, &backend, Some(&plan), None, None, &mut runner)?;
+        let mut outcome = execute_backend_routed_command(
+            &thin,
+            &backend,
+            Some(&plan),
+            None,
+            None,
+            None,
+            &mut runner,
+        )?;
 
         let error = match mark_mock_failure_outcome(&cli, &backend, &mut outcome, Some(&plan)) {
             Ok(()) => panic!("remote mock failure artifact must require producer provenance"),

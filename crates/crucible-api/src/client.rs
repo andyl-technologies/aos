@@ -1633,6 +1633,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
         },
         state_update,
         query_result,
+        savepoint_info: None,
     })
 }
 

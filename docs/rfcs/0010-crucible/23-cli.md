@@ -483,6 +483,7 @@ just `create_savepoint` (20 §4) at a chosen stop point.
   FLAGS
     --at <virtual-time|quiescence|property|marker>   Where to stop and save. Required.
     --label <name>     Human label for the savepoint (07).
+    --max-virtual-time <dur>   Coordinate for --at virtual-time.
     --out <path>       Write the exported savepoint handle here. Default: --artifact-dir.
 ```
 
@@ -1037,14 +1038,14 @@ branch on the verdict without parsing output:
   satisfies [CLI-19]; spec §9.
   Work in progress under `checks.crucible.phase5.cliSaveWorkflow`: the CLI now
   parses `save <SCENARIO>` with the required `--at` stop selector plus
-  `--label <name>` and `--out <path>`, plans the quiescence path through the
-  live double-backed run workflow with `--save-on always`, writes the terminal
-  savepoint exported as a `.crucible-savepoint` handle, and rejects the
-  virtual-time, property, and marker forms as usage errors until they have
-  concrete coordinates/breakpoints. Full closure remains blocked on issuing a
-  label-bearing `create_savepoint` at the requested boundary, replay-oracle
-  `fat==thin` validation before export, real-QEMU coverage, and the remaining
-  `--at` stop-point forms.
+  `--label <name>`, `--max-virtual-time <dur>`, and `--out <path>`, runs
+  quiescence and virtual-time saves to paused session boundaries, issues a
+  label-bearing `create_savepoint`, validates the returned materialized
+  checkpoint with the replay oracle (`fat==thin`) before export, writes the
+  validated `.crucible-savepoint` handle, and fails local QEMU saves clearly
+  until the real-QEMU savepoint export runner lands. Full closure remains
+  blocked on concrete property and marker selector syntax/breakpoints plus
+  real-QEMU savepoint coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.

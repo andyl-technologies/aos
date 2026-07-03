@@ -1327,6 +1327,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 state: LiveStateKind::Paused,
             }),
             query_result: None,
+            savepoint_info: None,
         }),
         &format!(
             "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\n"
@@ -1344,6 +1345,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             },
             state_update: None,
             query_result: None,
+            savepoint_info: None,
         }),
         "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\n",
     );

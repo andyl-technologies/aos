@@ -53,8 +53,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
-        label = "T-CLI-9 terminal savepoint scope";
-        needle = "savepoint exported as a `.crucible-savepoint` handle";
+        label = "T-CLI-9 oracle validated save scope";
+        needle = "validates the returned materialized";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -85,8 +85,28 @@
         needle = "fn plan_save_invocation";
       }
       {
+        label = "virtual time coordinate";
+        needle = "max_virtual_time";
+      }
+      {
         label = "save handle schema";
         needle = "crucible.savepoint-handle.v1";
+      }
+      {
+        label = "save oracle proof";
+        needle = "struct SavepointOracleProof";
+      }
+      {
+        label = "save workflow runner";
+        needle = "fn run_control_client_save_workflow_async";
+      }
+      {
+        label = "save checkpoint oracle validation";
+        needle = "fn validate_savepoint_checkpoint";
+      }
+      {
+        label = "typed savepoint payload";
+        needle = "savepoint_info";
       }
       {
         label = "save handle exporter";
@@ -101,28 +121,28 @@
         needle = "out={}";
       }
       {
-        label = "terminal savepoint materialization marker";
-        needle = "terminal-savepoint";
+        label = "create-savepoint reply materialization marker";
+        needle = "\"materialization\", \"create-savepoint\", \"reply\"";
       }
       {
-        label = "oracle status is not overclaimed";
-        needle = "pending-fat-thin-replay-validation";
+        label = "oracle validation status";
+        needle = "fat==thin-passed";
       }
       {
-        label = "virtual-time explicit blocker";
-        needle = "save --at virtual-time requires a concrete virtual-time coordinate";
+        label = "label-bearing create savepoint";
+        needle = "SessionCommand::CreateSavepoint";
       }
       {
-        label = "property explicit blocker";
-        needle = "save --at property requires property-breakpoint savepoint export";
+        label = "property selector blocker";
+        needle = "save --at property requires a property breakpoint selector";
       }
       {
-        label = "marker explicit blocker";
+        label = "marker selector blocker";
         needle = "save --at marker requires a marker coordinate";
       }
       {
         label = "save planning test";
-        needle = "cli_save_workflow_plans_quiescence_savepoint_and_rejects_unbacked_points";
+        needle = "cli_save_workflow_plans_quiescence_and_virtual_time_savepoints";
       }
       {
         label = "save export test";
@@ -130,7 +150,7 @@
       }
       {
         label = "qemu save blocker";
-        needle = "save with local QEMU requires the real-QEMU savepoint export runner";
+        needle = "real-QEMU savepoint export runner tracked by T-CLI-9";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
