@@ -54,14 +54,15 @@ pub use roots::{
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
     AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
-    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
-    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
-    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootValueWritebackSlot,
-    AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
-    AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
-    EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
-    InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollObjectGenerationWrite, AllocationCollectorPollObjectGenerationWritePlan,
+    AllocationCollectorPollObjectGenerationWriteReport, AllocationCollectorPollReferenceSlot,
+    AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
+    AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
+    AllocationCollectorPollRootValueWritebackSlot, AllocationCollectorPollRootWriteback,
+    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollRootWritebackReport,
+    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, CapturedRootOwner,
+    EvalHeapThunkResolveBarrier, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
+    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -656,6 +657,89 @@ pub enum EvalHeapError {
     UnknownCollectorPollSurvivorAddress {
         /// The unrecognized survivor address.
         address: GcHeapAddress,
+    },
+    /// A planned object-generation write points at no destination heap record.
+    #[error(
+        "collector-poll minor-GC object-generation destination does not belong to this heap: 0x{destination:x}",
+        destination = destination.address_bits()
+    )]
+    UnknownCollectorPollObjectGenerationDestination {
+        /// The destination address that should receive generation metadata.
+        destination: GcHeapAddress,
+    },
+    /// A planned object-generation write would rewrite the from-space source
+    /// record as its own relocated destination.
+    #[error(
+        "collector-poll minor-GC object-generation write for 0x{source_address:x} uses its source as destination",
+        source_address = source_address.address_bits()
+    )]
+    CollectorPollObjectGenerationWriteDestinationIsSource {
+        /// The duplicated from-space source and destination address.
+        source_address: GcHeapAddress,
+    },
+    /// A planned object-generation write appears more than once for one source.
+    #[error(
+        "collector-poll minor-GC object-generation write for 0x{source_address:x} appears more than once at index {index}",
+        source_address = source_address.address_bits()
+    )]
+    CollectorPollObjectGenerationWriteDuplicateSource {
+        /// The duplicated write index.
+        index: usize,
+        /// The duplicated from-space source address.
+        source_address: GcHeapAddress,
+    },
+    /// Multiple object-generation writes target one destination record.
+    #[error(
+        "collector-poll minor-GC object-generation destination 0x{destination:x} for source 0x{source_address:x} conflicts with source 0x{existing_source_address:x} at index {index}",
+        destination = destination.address_bits(),
+        source_address = source_address.address_bits(),
+        existing_source_address = existing_source_address.address_bits()
+    )]
+    CollectorPollObjectGenerationWriteDuplicateDestination {
+        /// The duplicated write index.
+        index: usize,
+        /// The source address currently being validated.
+        source_address: GcHeapAddress,
+        /// The earlier source address targeting the same destination.
+        existing_source_address: GcHeapAddress,
+        /// The duplicated destination address.
+        destination: GcHeapAddress,
+    },
+    /// A planned object-generation write targets a from-space survivor source.
+    #[error(
+        "collector-poll minor-GC object-generation destination 0x{destination:x} for source 0x{source_address:x} overlaps survivor source 0x{existing_source_address:x}, detected at index {index}",
+        destination = destination.address_bits(),
+        source_address = source_address.address_bits(),
+        existing_source_address = existing_source_address.address_bits()
+    )]
+    CollectorPollObjectGenerationWriteDestinationOverlapsSource {
+        /// The request index where the overlap was detected.
+        index: usize,
+        /// The source address whose destination overlaps a survivor source.
+        source_address: GcHeapAddress,
+        /// The survivor source address that overlaps a destination.
+        existing_source_address: GcHeapAddress,
+        /// The destination address that overlaps a survivor source.
+        destination: GcHeapAddress,
+    },
+    /// A planned object-generation write's destination generation disagrees
+    /// with its survivor action.
+    #[error(
+        "collector-poll minor-GC object-generation write for 0x{source_address:x} -> 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    CollectorPollObjectGenerationWriteGenerationMismatch {
+        /// The from-space source address.
+        source_address: GcHeapAddress,
+        /// The destination address.
+        destination: GcHeapAddress,
+        /// The generation implied by the survivor action.
+        expected: HeapGeneration,
+        /// The generation carried by the object-copy request.
+        actual: HeapGeneration,
+        /// The survivor action that implied the expected generation.
+        action: MinorGcSurvivorAction,
     },
     /// A collector-poll commit application did not receive one reference value
     /// per copied reference-slot label.

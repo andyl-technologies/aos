@@ -48,6 +48,7 @@ const MINOR_GC_OLD_FIELD_VALUES_TABLE: &str = "minor-GC old field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 const MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE: &str = "minor-GC object byte-copy requests";
+const MINOR_GC_OBJECT_GENERATION_WRITES_TABLE: &str = "minor-GC object generation writes";
 const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot buffer";
 const MINOR_GC_FORWARDING_VALUES_TABLE: &str = "minor-GC forwarding values";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
@@ -1876,6 +1877,271 @@ impl AllocationCollectorPollObjectByteCopyPlan {
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
+
+    /// Builds heap-record generation writes for this object-copy plan.
+    ///
+    /// The returned plan contains only metadata. Applying it still requires an
+    /// [`EvalHeap`] whose destination addresses already resolve to heap records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if request storage cannot be reserved, if a
+    /// request's destination generation disagrees with its survivor action, if
+    /// requests contain duplicate source or destination identities, or if a
+    /// destination overlaps any survivor source.
+    pub fn object_generation_write_plan(
+        &self,
+    ) -> Result<AllocationCollectorPollObjectGenerationWritePlan, EvalHeapError> {
+        AllocationCollectorPollObjectGenerationWritePlan::from_requests(&self.requests)
+    }
+}
+
+/// A summary of heap-record object-generation writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectGenerationWriteReport {
+    objects: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    payload_bytes: usize,
+}
+
+impl AllocationCollectorPollObjectGenerationWriteReport {
+    fn record(&mut self, write: &AllocationCollectorPollObjectGenerationWrite) {
+        self.objects = self.objects.saturating_add(1);
+        self.payload_bytes = self
+            .payload_bytes
+            .saturating_add(write.request().size_bytes());
+        match write.action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns how many destination heap records were written.
+    pub const fn objects(self) -> usize {
+        self.objects
+    }
+
+    /// Returns how many writes kept destinations in the young generation.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many writes promoted destinations to the old generation.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the total copied-object payload bytes covered by the writes.
+    pub const fn payload_bytes(self) -> usize {
+        self.payload_bytes
+    }
+}
+
+/// One planned heap-record generation write for a relocated object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectGenerationWrite {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    action: MinorGcSurvivorAction,
+    generation: HeapGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+}
+
+impl AllocationCollectorPollObjectGenerationWrite {
+    fn from_request(request: AllocationCollectorPollObjectByteCopyRequest) -> Self {
+        Self {
+            source: request.source(),
+            destination: request.destination(),
+            action: request.action(),
+            generation: request.destination_generation(),
+            request,
+        }
+    }
+
+    /// Returns the from-space survivor source object.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object whose heap record should be written.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns whether this destination stays young or is promoted.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.action
+    }
+
+    /// Returns the generation to write to the destination heap record.
+    pub const fn generation(self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the object-copy request that produced this generation write.
+    pub const fn request(self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+}
+
+/// Heap-record generation writes derived from object-copy requests.
+///
+/// The plan is valid for destination records that have already been bound into
+/// the evaluator heap side table. It does not allocate destination records, bind
+/// object bytes to heap storage, rewrite references, or manage semispaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectGenerationWritePlan {
+    report: AllocationCollectorPollObjectGenerationWriteReport,
+    writes: Vec<AllocationCollectorPollObjectGenerationWrite>,
+}
+
+impl AllocationCollectorPollObjectGenerationWritePlan {
+    fn new(writes: Vec<AllocationCollectorPollObjectGenerationWrite>) -> Self {
+        let mut report = AllocationCollectorPollObjectGenerationWriteReport::default();
+        for write in &writes {
+            report.record(write);
+        }
+        Self { report, writes }
+    }
+
+    fn from_requests(
+        requests: &[AllocationCollectorPollObjectByteCopyRequest],
+    ) -> Result<Self, EvalHeapError> {
+        let mut writes = Vec::new();
+        writes.try_reserve_exact(requests.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_OBJECT_GENERATION_WRITES_TABLE,
+                entries: requests.len(),
+            }
+        })?;
+
+        for (index, request) in requests.iter().copied().enumerate() {
+            validate_object_generation_write_request(index, request, &writes)?;
+            writes.push(AllocationCollectorPollObjectGenerationWrite::from_request(
+                request,
+            ));
+        }
+
+        Ok(Self::new(writes))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_requests_for_test(
+        requests: Vec<AllocationCollectorPollObjectByteCopyRequest>,
+    ) -> Result<Self, EvalHeapError> {
+        Self::from_requests(&requests)
+    }
+
+    /// Returns whether this plan has no heap-record generation writes.
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+    }
+
+    /// Returns how many heap-record generation writes are planned.
+    pub fn len(&self) -> usize {
+        self.writes.len()
+    }
+
+    /// Returns aggregate counts for the planned writes.
+    pub const fn report(&self) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.report
+    }
+
+    /// Returns the planned heap-record generation writes.
+    pub fn writes(&self) -> &[AllocationCollectorPollObjectGenerationWrite] {
+        &self.writes
+    }
+}
+
+const fn generation_for_destination_action(action: MinorGcSurvivorAction) -> HeapGeneration {
+    match action {
+        MinorGcSurvivorAction::CopyToNursery => HeapGeneration::Young,
+        MinorGcSurvivorAction::PromoteToOld => HeapGeneration::Old,
+    }
+}
+
+fn validate_object_generation_write_request(
+    index: usize,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    writes: &[AllocationCollectorPollObjectGenerationWrite],
+) -> Result<(), EvalHeapError> {
+    let expected = generation_for_destination_action(request.action());
+    let actual = request.destination_generation();
+    if actual != expected {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteGenerationMismatch {
+                source_address: request.source(),
+                destination: request.destination(),
+                expected,
+                actual,
+                action: request.action(),
+            },
+        );
+    }
+    if request.source() == request.destination() {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteDestinationIsSource {
+                source_address: request.source(),
+            },
+        );
+    }
+    if writes
+        .iter()
+        .any(|write| write.source() == request.source())
+    {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteDuplicateSource {
+                index,
+                source_address: request.source(),
+            },
+        );
+    }
+    if let Some(existing) = writes
+        .iter()
+        .find(|write| write.destination() == request.destination())
+    {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteDuplicateDestination {
+                index,
+                source_address: request.source(),
+                existing_source_address: existing.source(),
+                destination: request.destination(),
+            },
+        );
+    }
+    if let Some(existing) = writes
+        .iter()
+        .find(|write| write.source() == request.destination())
+    {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteDestinationOverlapsSource {
+                index,
+                source_address: request.source(),
+                existing_source_address: existing.source(),
+                destination: request.destination(),
+            },
+        );
+    }
+    if let Some(existing) = writes
+        .iter()
+        .find(|write| write.destination() == request.source())
+    {
+        return Err(
+            EvalHeapError::CollectorPollObjectGenerationWriteDestinationOverlapsSource {
+                index,
+                source_address: existing.source(),
+                existing_source_address: request.source(),
+                destination: existing.destination(),
+            },
+        );
+    }
+
+    Ok(())
 }
 
 /// A summary of live evaluator heap forwarding values installed for minor GC.
@@ -3100,6 +3366,55 @@ impl EvalHeap {
             ));
         }
         Ok(AllocationCollectorPollObjectByteCopyPlan::new(requests))
+    }
+
+    /// Applies heap-record generation writes for relocated destinations.
+    ///
+    /// Each source must still be a current young survivor, and each destination
+    /// address must already belong to a heap record in this evaluator side
+    /// table. The full plan is validated before any record generation is
+    /// changed, so an unknown source or destination leaves all records
+    /// unchanged. This only writes generation metadata on existing heap records;
+    /// it does not allocate destination records, bind object bytes to heap
+    /// storage, rewrite references, install forwarding headers, publish
+    /// remembered sets, or manage semispaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if planned scratch storage cannot be reserved,
+    /// if a source is unknown or no longer young, or if a destination address
+    /// does not belong to this heap.
+    pub fn apply_collector_poll_minor_gc_object_generation_writes(
+        &mut self,
+        plan: &AllocationCollectorPollObjectGenerationWritePlan,
+    ) -> Result<AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError> {
+        let mut planned = Vec::new();
+        planned
+            .try_reserve_exact(plan.writes().len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_OBJECT_GENERATION_WRITES_TABLE,
+                entries: plan.writes().len(),
+            })?;
+
+        for write in plan.writes().iter().copied() {
+            let _ = self.record_index_for_minor_gc_survivor(write.source())?;
+            let Some(destination_index) = self.records.iter().position(|record| {
+                record.ptr.as_ptr() as usize == write.destination().address_bits()
+            }) else {
+                return Err(
+                    EvalHeapError::UnknownCollectorPollObjectGenerationDestination {
+                        destination: write.destination(),
+                    },
+                );
+            };
+            planned.push((destination_index, write.generation()));
+        }
+
+        for (destination_index, generation) in planned {
+            self.records[destination_index].generation = generation;
+        }
+
+        Ok(plan.report())
     }
 
     /// Returns the live side-table forwarding value installed for `address`.

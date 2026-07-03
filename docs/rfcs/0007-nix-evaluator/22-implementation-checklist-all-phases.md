@@ -5948,6 +5948,23 @@ and helps the oracle directly.
       still a state precursor: no collector path writes new generation values
       into relocated destination records, binds destination bytes to heap-object
       bodies, swaps semispaces, mutates roots/fields, or invokes Tier B.
+- [x] Current heap-record object-generation write applicator precursor:
+      `AllocationCollectorPollObjectByteCopyPlan::object_generation_write_plan`
+      derives heap-record generation writes from validated object-copy requests,
+      rejecting generation/action mismatches, destination/source overlaps, and
+      duplicate source/destination identities;
+      `EvalHeap::apply_collector_poll_minor_gc_object_generation_writes`
+      validates that every source is still a young survivor and every
+      destination address already resolves to an evaluator heap record before
+      mutating any stored `HeapGeneration`. Unit tests cover a derived
+      copied-young write into an existing destination record,
+      unknown-destination rejection with no partial generation mutation, and
+      malformed generation/action rejection. This is only an
+      already-bound-record applicator: boundary dry-runs still produce
+      destination addresses and byte buffers that are not bound to live
+      heap-object records, and no path allocates destination records, binds
+      object bodies, swaps semispaces, mutates roots/fields, writes ABI object
+      headers, or invokes Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -6655,6 +6672,13 @@ and helps the oracle directly.
       installed destination-byte snapshots are exact mirrors before producing
       immutable source/destination/action/generation/request/payload records
       for a future heap-record generation writer.
+      `AllocationCollectorPollObjectByteCopyPlan::object_generation_write_plan`
+      and `EvalHeap::apply_collector_poll_minor_gc_object_generation_writes`
+      establish that heap-record writer for destinations that already have live
+      evaluator records, applying generation changes atomically after validating
+      young sources and destination-record bindings. Boundary dry-runs still do
+      not bind their destination bytes or addresses to live heap-object records,
+      so this writer is not yet wired into the boundary commit path.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without

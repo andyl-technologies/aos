@@ -4481,6 +4481,244 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
 }
 
 #[test]
+fn collector_poll_minor_gc_object_generation_writes_update_existing_destination_records() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let destination = heap
+        .alloc_string(NixString::from_bytes(b"destination".to_vec()))
+        .expect("destination string allocates");
+    let source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("source thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, source)
+        .expect("source root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(gc_address(destination), static_gc_address(0x2000_0000)),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+    let byte_copy_plan = heap
+        .collector_poll_minor_gc_object_byte_copy_plan(&commit)
+        .expect("object byte-copy plan derives");
+    let generation_write_plan = byte_copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan derives");
+
+    assert_eq!(generation_write_plan.len(), 1);
+    assert!(!generation_write_plan.is_empty());
+    assert_eq!(generation_write_plan.report().objects(), 1);
+    assert_eq!(generation_write_plan.report().copied_to_nursery(), 1);
+    assert_eq!(generation_write_plan.report().promoted_to_old(), 0);
+    assert_eq!(
+        generation_write_plan.report().payload_bytes(),
+        record_layout_size(&heap, source)
+    );
+    assert_eq!(
+        generation_write_plan.writes()[0].source(),
+        gc_address(source)
+    );
+    assert_eq!(
+        generation_write_plan.writes()[0].destination(),
+        gc_address(destination)
+    );
+    assert_eq!(
+        generation_write_plan.writes()[0].action(),
+        MinorGcSurvivorAction::CopyToNursery
+    );
+    assert_eq!(
+        generation_write_plan.writes()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        heap_generation(&heap, destination),
+        HeapGeneration::Permanent
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_object_generation_writes(&generation_write_plan)
+        .expect("generation writes apply");
+
+    assert_eq!(report, generation_write_plan.report());
+    assert_eq!(heap_generation(&heap, destination), HeapGeneration::Young);
+    assert_eq!(
+        allocation_domain(&heap, destination),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(heap_generation(&heap, source), HeapGeneration::Young);
+}
+
+#[test]
+fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_without_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let destination = heap
+        .alloc_string(NixString::from_bytes(b"destination".to_vec()))
+        .expect("destination string allocates");
+    let first_source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first source thunk allocates");
+    let second_source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("second source thunk allocates");
+    let missing_destination = static_gc_address(0x3000_0000);
+    let plan = AllocationCollectorPollObjectGenerationWritePlan::from_requests_for_test(vec![
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            gc_address(first_source),
+            gc_address(destination),
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            24,
+            8,
+        ),
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            gc_address(second_source),
+            missing_destination,
+            MinorGcSurvivorAction::PromoteToOld,
+            HeapGeneration::Old,
+            24,
+            8,
+        ),
+    ])
+    .expect("test generation write plan builds");
+
+    assert_eq!(
+        heap_generation(&heap, destination),
+        HeapGeneration::Permanent
+    );
+    let err = heap
+        .apply_collector_poll_minor_gc_object_generation_writes(&plan)
+        .expect_err("unknown destination rejects generation writes");
+
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollObjectGenerationDestination {
+            destination: missing_destination
+        }
+    );
+    assert_eq!(
+        heap_generation(&heap, destination),
+        HeapGeneration::Permanent
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_object_generation_write_plan_rejects_generation_action_mismatch() {
+    let source = static_gc_address(0x1000_0000);
+    let destination = static_gc_address(0x2000_0000);
+    let err = AllocationCollectorPollObjectGenerationWritePlan::from_requests_for_test(vec![
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            source,
+            destination,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Old,
+            24,
+            8,
+        ),
+    ])
+    .expect_err("generation/action mismatch is rejected");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollObjectGenerationWriteGenerationMismatch {
+            source_address: source,
+            destination,
+            expected: HeapGeneration::Young,
+            actual: HeapGeneration::Old,
+            action: MinorGcSurvivorAction::CopyToNursery,
+        }
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_object_generation_write_plan_rejects_destination_source_overlap() {
+    let first_source = static_gc_address(0x1000_0000);
+    let second_source = static_gc_address(0x2000_0000);
+    let first_destination = static_gc_address(0x3000_0000);
+    let second_destination = static_gc_address(0x4000_0000);
+
+    let err = AllocationCollectorPollObjectGenerationWritePlan::from_requests_for_test(vec![
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            first_source,
+            first_destination,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            24,
+            8,
+        ),
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            second_source,
+            first_source,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            24,
+            8,
+        ),
+    ])
+    .expect_err("destination matching an earlier source is rejected");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollObjectGenerationWriteDestinationOverlapsSource {
+            index: 1,
+            source_address: second_source,
+            existing_source_address: first_source,
+            destination: first_source,
+        }
+    );
+
+    let err = AllocationCollectorPollObjectGenerationWritePlan::from_requests_for_test(vec![
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            first_source,
+            second_source,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            24,
+            8,
+        ),
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            second_source,
+            second_destination,
+            MinorGcSurvivorAction::CopyToNursery,
+            HeapGeneration::Young,
+            24,
+            8,
+        ),
+    ])
+    .expect_err("earlier destination matching a later source is rejected");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollObjectGenerationWriteDestinationOverlapsSource {
+            index: 1,
+            source_address: first_source,
+            existing_source_address: second_source,
+            destination: second_source,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_plan_rejects_unremembered_permanent_to_worker_edge() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
