@@ -427,6 +427,13 @@ long-held locks.
   boundary commands are implemented; full closure waits for label-bearing
   `create_savepoint`, replay-oracle `fat==thin` validation, real-QEMU coverage,
   and all `--at` forms.
+  `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
+  covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
+  decoding, direct `blake3:<hash>` checkpoint references, virtual-time budget
+  validation, malformed-handle artifact errors, and an explicit backend error
+  until the checkpoint-instantiation runner is wired; full closure waits for
+  temporal-graph materialization, replay-oracle validation, real-QEMU coverage,
+  and continuing the resumed session.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch, and continued

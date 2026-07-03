@@ -1,8 +1,8 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase5.cliCompletionsHelp",
-  taskIds ? ["T-CLI-16"],
+  attrPath ? "checks.crucible.phase5.cliResumeWorkflow",
+  taskIds ? ["T-CLI-10"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,7 +15,6 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -45,92 +44,78 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-16 task";
-        needle = "**T-CLI-16** Implement `completions`";
+        label = "T-CLI-10 remains open";
+        needle = "- [ ] **T-CLI-10** Implement `resume`";
       }
       {
-        label = "T-CLI-16 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliCompletionsHelp`";
+        label = "T-CLI-10 progress note";
+        needle = "Work in progress under `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
-        label = "CLI help discipline";
-        needle = "**[CLI-6]** Flag and subcommand help text MUST be authored as user-facing CLI";
-      }
-      {
-        label = "completions top-level subcommand";
-        needle = "completions  Generate shell completions.";
-      }
-    ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "clap dependency";
-        needle = "clap = { workspace = true }";
-      }
-      {
-        label = "clap_complete dependency";
-        needle = "clap_complete = { workspace = true }";
-      }
-    ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
-      {
-        label = "completion shell argument";
-        needle = "shell: Shell";
-      }
-      {
-        label = "completion generator";
-        needle = "clap_complete::generate";
-      }
-      {
-        label = "completion dispatch";
-        needle = "write_completions(args.shell";
-      }
-      {
-        label = "documented backend value surface";
-        needle = "value_name = \"auto|qemu|double\"";
-      }
-      {
-        label = "replay help surface";
-        needle = "struct ReplayArgs";
-      }
-      {
-        label = "serve help surface";
-        needle = "struct ServeArgs";
-      }
-      {
-        label = "completion generation test";
-        needle = "cli_completions_generates_shell_script";
-      }
-      {
-        label = "completion daemon metadata test";
-        needle = "cli_completions_ignores_global_daemon_for_thin_wrapper_metadata";
-      }
-      {
-        label = "help/version surface test";
-        needle = "cli_resume_help_and_version_surface_matches_rfc_copy";
-      }
-      {
-        label = "future flag rejection test";
-        needle = "cli_help_surface_rejects_unimplemented_future_flags";
+        label = "T-CLI-10 checkpoint runner blocker";
+        needle = "checkpoint-instantiation runner";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI completions/help progress note";
-        needle = "`T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently";
+        label = "phase5 CLI resume progress note";
+        needle = "`T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "resume arguments";
+        needle = "struct ResumeArgs";
+      }
+      {
+        label = "resume invocation plan";
+        needle = "struct ResumeInvocationPlan";
+      }
+      {
+        label = "resume savepoint ref";
+        needle = "enum ResumeSavepointRef";
+      }
+      {
+        label = "savepoint handle decoder";
+        needle = "fn decode_savepoint_handle";
+      }
+      {
+        label = "resume planner";
+        needle = "fn plan_resume_invocation";
+      }
+      {
+        label = "resume resolver";
+        needle = "fn resolve_resume_savepoint";
+      }
+      {
+        label = "checkpoint hash parser";
+        needle = "fn parse_blake3_content_hash";
+      }
+      {
+        label = "checkpoint runner blocker";
+        needle = "requires the checkpoint-instantiation runner tracked by T-CLI-10";
+      }
+      {
+        label = "resume planning test";
+        needle = "cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs";
+      }
+      {
+        label = "resume execution blocker test";
+        needle = "cli_resume_workflow_rejects_execution_until_checkpoint_runner_exists";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase5 exposes CLI completions/help check";
-        needle = "cliCompletionsHelp = import ./phase5-cli-completions-help.nix";
+        label = "phase5 exposes CLI resume workflow check";
+        needle = "cliResumeWorkflow = import ./phase5-cli-resume-workflow.nix";
       }
     ];
 in
   if failures != []
-  then throw "crucible phase5 CLI completions/help check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase5 CLI resume workflow check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase5-cli-completions-help";
+      pname = "crucible-phase5-cli-resume-workflow";
       version = "0";
       src = crucibleSrc;
 
@@ -149,6 +134,7 @@ in
         {
           name = "unpack";
           script = ''
+            set -eu
             cp -R "$src" source
             chmod -R u+w source
             cd source
@@ -157,6 +143,7 @@ in
         {
           name = "configure";
           script = ''
+            set -eu
             export CARGO_HOME="$TMPDIR/cargo"
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
@@ -172,7 +159,7 @@ in
           '';
         }
         {
-          name = "run-cli-completions-help";
+          name = "run-cli-resume-workflow";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -182,16 +169,9 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
+              --target-dir "$TMPDIR/crucible-cli-resume-workflow-target" \
               -p crucible-cli \
-              cli_completions \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
-              -p crucible-cli \
-              cli_help \
+              cli_resume \
               -- --test-threads=1
           '';
         }
@@ -205,8 +185,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             component=crucible-cli
-            completions=clap_complete
-            help_surface=current-non-overclaiming
+            contract=resume-workflow-progress
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
