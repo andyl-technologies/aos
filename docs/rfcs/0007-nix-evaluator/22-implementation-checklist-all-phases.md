@@ -6873,7 +6873,7 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       scalar literals (`int`, `float`, `bool`, `null`) as `NoEscape` and resets
       all other nodes to `Escapes`. It validates node kind/payload shapes so
       malformed IR cannot silently retain stale `NoEscape` facts. Aggregate
-      escape analysis, primop escape signatures, scalar replacement, and
+      escape analysis, the full primop escape surface, scalar replacement, and
       frame-local thunk integration remain open.
 - [x] Current scalar replacement planning precursor:
       `ratchet-core::analysis::scalar_replacement` consumes strictness and
@@ -6883,8 +6883,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       nodes with missing proofs, retains non-scalar `Strict + NoEscape` facts as
       unsupported by this precursor, and rejects missing facts or malformed
       scalar payloads. This is a planning precursor only: optimized storage
-      lowering, aggregate scalar replacement, primop escape signatures, and
-      frame-local thunk/attrset escape integration remain open.
+      lowering, aggregate scalar replacement, the full primop escape surface,
+      and frame-local thunk/attrset escape integration remain open.
+- [x] Current primop escape-signature precursor:
+      `ratchet-core::analysis::escape_signature` classifies only direct primops
+      whose result is guaranteed to be an immediate scalar, and `annotate_escape`
+      now marks those primop result nodes `NoEscape` after validating their
+      symbol and child-slice side tables. Overloaded `add`, result-forwarding
+      operations such as `seq`/`trace`, aggregate/string builders, unknown
+      builtins, and effectful import/fetch/filesystem boundaries remain
+      conservative. This does not yet propagate primop result facts through
+      wrapping thunks, infer aggregate escape, or provide the property-test
+      harness for the full builtin surface.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and
       later the JIT), and the strictness FV set reused by the cache key (`C-2`).
 - [x] Current `ir/annotate.rs` precursor: `ratchet-core::ir::annotate_ir`

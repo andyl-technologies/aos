@@ -7,6 +7,7 @@
 pub mod cardinality;
 pub mod dead_binding;
 pub mod escape;
+pub mod escape_signature;
 pub mod full_laziness;
 pub mod scalar_replacement;
 pub mod strictness;
@@ -19,6 +20,7 @@ pub use dead_binding::{
     dead_binding_elimination_plan,
 };
 pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
+pub use escape_signature::{PrimOpEscapeSignature, primop_escape_signature};
 pub use full_laziness::{
     FullLazinessAnalysisError, FullLazinessAnalysisReport, FullLazinessCandidate,
     analyze_full_laziness,

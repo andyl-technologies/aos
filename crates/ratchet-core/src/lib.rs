@@ -32,11 +32,12 @@ pub use analysis::{
     DeadBindingRetention, DeadBindingRetentionReason, EscapeAnalysisError, EscapeAnalysisReport,
     FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
     FrameLocalThunkUpdateReason, FullLazinessAnalysisError, FullLazinessAnalysisReport,
-    FullLazinessCandidate, ScalarReplacement, ScalarReplacementError, ScalarReplacementKind,
-    ScalarReplacementPlan, ScalarReplacementRetention, ScalarReplacementRetentionReason,
-    StrictnessAnalysisError, StrictnessAnalysisReport, analyze_full_laziness, annotate_cardinality,
-    annotate_escape, annotate_strictness, dead_binding_elimination_plan,
-    frame_local_single_entry_thunk_downgrade, scalar_replacement_plan,
+    FullLazinessCandidate, PrimOpEscapeSignature, ScalarReplacement, ScalarReplacementError,
+    ScalarReplacementKind, ScalarReplacementPlan, ScalarReplacementRetention,
+    ScalarReplacementRetentionReason, StrictnessAnalysisError, StrictnessAnalysisReport,
+    analyze_full_laziness, annotate_cardinality, annotate_escape, annotate_strictness,
+    dead_binding_elimination_plan, frame_local_single_entry_thunk_downgrade,
+    primop_escape_signature, scalar_replacement_plan,
 };
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrAnalysisError,
