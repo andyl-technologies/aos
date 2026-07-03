@@ -693,9 +693,16 @@ carries findings across an incompatible build.
     IDs and MAC addresses from generated root-image SHA-256 identities, and
     includes a separate unmodified generic AOS Linux guest root image with no
     in-guest Crucible payload, exercised by `checks.crucible.phase2.gates.anyGuest`.
-- [ ] **T-PKG-14** Wire the determinism gates as AOS nix checks with correct
+- [x] **T-PKG-14** Wire the determinism gates as AOS nix checks with correct
   layer ordering: eval-class L0/L1/ABI gates, package-class QEMU gates, VM/fleet
   e2e gate. — satisfies [PKG-27], [PKG-28]; spec §26.8.
+  - Completed by `checks.crucible.phase7.crucibleGateCiWiring`: the CI guard
+    classifies the canonical determinism gates into eval-class L0/L1/ABI checks,
+    package-class `checks.integration.qemu-crucible-*` checks, and the phase-7
+    `checks.fleet.crucible-e2e-determinism` fleet check surface for
+    `gate:e2e-determinism`. It fails if the checked canonical gate targets or
+    required green-before-advance dependency edges drift from the current wiring.
+    `T-PKG-15` remains the concrete TCG-only VM/fleet runner for the e2e scenario.
 - [ ] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies

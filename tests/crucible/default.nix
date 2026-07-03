@@ -2425,6 +2425,11 @@ in rec {
       crucibleFixtures = pkgs.crucible-fixtures;
       anyGuestGate = phase2.gates.anyGuest;
     };
+    crucibleGateCiWiring = import ./phase7-crucible-gate-ci-wiring.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
+      taskIds = ["T-PKG-14"];
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";
@@ -2486,9 +2491,9 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = ["T-PLAN-3" "T-HARN-23"];
-          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures];
+          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring];
         };
-        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures];
+        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

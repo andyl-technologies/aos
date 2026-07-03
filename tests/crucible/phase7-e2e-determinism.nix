@@ -252,6 +252,9 @@ in
             shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
             machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
             real_host_reproduction=deferred-to-packaging-and-fleet-gates
+            ci_check_class=fleet-check-surface
+            fleet_check_surface=checks.fleet.crucible-e2e-determinism
+            ci_wiring_guard=checks.crucible.phase7.crucibleGateCiWiring
             cli_target=implemented_shared_mock_artifact
             RESULT
           '';
