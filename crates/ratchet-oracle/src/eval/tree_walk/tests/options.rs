@@ -407,6 +407,65 @@ fn heap_budget_and_persistent_cache_materialize_cold_values_after_reclaim_plan()
 }
 
 #[test]
+fn attr_path_heap_budget_and_persistent_cache_materialize_cold_values_after_reclaim_plan() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let persist_root = unique_temp_dir("attr-path-heap-budget-cold-value-materialization");
+    let ir = lower("{ selected = \"spill-prep-attr\"; }");
+    let attr_path = vec![b"selected".to_vec()];
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_cheap_memory_advice_min_idle_epochs(0);
+    options.set_persist_cache_root(&persist_root);
+
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir, &attr_path, options, None,
+    )
+    .expect("attr-path selection evaluates");
+    assert_eq!(
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("selected value is a heap-owned string")
+            .bytes(),
+        b"spill-prep-attr"
+    );
+
+    let plan = outcome
+        .cheap_memory_budget_plan()
+        .expect("attr-path outcome records a cold-aware budget plan");
+    assert!(
+        plan.cheap_advice_report().is_some(),
+        "the tiny budget should request reclaim"
+    );
+    let materialization = outcome
+        .cold_hash_consed_value_materialization()
+        .expect("attr-path outcome runs cold value materialization");
+    assert!(materialization.candidates() >= 1);
+    assert_eq!(materialization.captured(), materialization.candidates());
+    assert_eq!(materialization.uncapturable(), 0);
+    assert_eq!(materialization.errors(), 0);
+    assert_eq!(materialization.cache_unavailable(), 0);
+    assert_eq!(
+        materialization.materialized_hashes().len(),
+        materialization.materialized()
+    );
+    assert!(
+        !materialization.materialized_hashes().is_empty(),
+        "the attr-path report should name the ensured indexed value payloads"
+    );
+
+    let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
+    for value_hash in materialization.materialized_hashes() {
+        let payload = persist_cache
+            .load_cached_expression_value_indexed(*value_hash)
+            .expect("indexed value load succeeds")
+            .expect("indexed value exists");
+        assert_eq!(payload.value_hash().expect("payload hashes"), *value_hash);
+    }
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+}
+
+#[test]
 fn heap_budget_and_cheap_advice_options_fall_back_to_cold_advice_under_soft_limit() {
     let budget = HeapMemoryBudget::new(usize::MAX).expect("budget is non-zero");
     let ir = lower("\"under-budget\"");

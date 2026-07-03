@@ -6452,10 +6452,10 @@ and helps the oracle directly.
       allocation-safepoint budget action and `memory_budget_action()` still
       credit zero cold reclaim until CA-store spill/rematerialization exists.
       With a heap budget, post-evaluation cheap-advice idle threshold, and
-      persistent cache root configured, owned outcomes now run the cold
-      value-pack materialization precursor below when the cold-aware plan asks
-      for reclaim; this is spill preparation telemetry, not resident-byte
-      reclaim.
+      persistent cache root configured, owned root and attr-path outcomes now
+      run the cold value-pack materialization precursor below when the
+      cold-aware plan asks for reclaim; this is spill preparation telemetry, not
+      resident-byte reclaim.
 - [x] Current cold hash-cons candidate precursor:
       `EvalHeap` stamps typed heap records with a monotonic access epoch at
       allocation time, refreshes successful reusable-value reads and hash-cons
@@ -6491,12 +6491,12 @@ and helps the oracle directly.
       `TreeWalk::materialize_cold_hash_consed_values_indexed` and reports
       selected candidates, captured payloads, ensured value hashes, and advisory
       failures. Tests pin absence without a persistent cache root, presence when
-      the cold-aware plan asks for reclaim with a root, and indexed `values/`
-      pack loads for each reported hash. This runs after successful evaluation,
-      derivation snapshotting, stats capture, and cheap-advice planning; it does
-      not change output values, `memory_budget_action()`, allocation-time budget
-      polling, resident-byte accounting, heap handles, or value-access
-      rematerialization.
+      the cold-aware plan asks for reclaim with a root for both owned root and
+      attr-path outcomes, and indexed `values/` pack loads for each reported
+      hash. This runs after successful evaluation, derivation snapshotting,
+      stats capture, and cheap-advice planning; it does not change output
+      values, `memory_budget_action()`, allocation-time budget polling,
+      resident-byte accounting, heap handles, or value-access rematerialization.
 - [x] Current `madvise` portability closure:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

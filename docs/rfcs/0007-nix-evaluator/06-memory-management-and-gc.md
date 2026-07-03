@@ -1898,9 +1898,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       conservative and credit zero cold reclaim until CA-store
       spill/rematerialization exists. When callers configure a heap budget, a
       post-evaluation cheap-advice idle threshold, and a persistent cache root,
-      the owned outcome can now run the cold value-pack materialization
-      precursor below when the cold-aware plan asks for reclaim; this is still
-      telemetry and spill preparation rather than resident-byte reclaim.
+      owned root and attr-path outcomes can now run the cold value-pack
+      materialization precursor below when the cold-aware plan asks for reclaim;
+      this is still telemetry and spill preparation rather than resident-byte
+      reclaim.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 
@@ -1944,9 +1945,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::materialize_cold_hash_consed_values_indexed` and reports the
       selected candidates, captured payloads, ensured value hashes, and
       advisory failures. Tests pin that the report is absent without a
-      persistent cache root, present when the cold-aware plan asks for reclaim
-      with a root, and that each reported hash loads from the indexed
-      `values/` pack. This still runs after successful evaluation, derivation
+      persistent cache root, present for both owned root and attr-path outcomes
+      when the cold-aware plan asks for reclaim with a root, and that each
+      reported hash loads from the indexed `values/` pack. This still runs
+      after successful evaluation, derivation
       snapshotting, stats capture, and cheap-advice planning; it does not change
       output values, `memory_budget_action()`, allocation-time budget polling,
       resident-byte accounting, heap handles, or value-access rematerialization.
