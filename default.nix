@@ -268,6 +268,75 @@
           }
         ];
       };
+    crucible-distributed-continuous-exploration = let
+      fleetStore = pkgs.crucible-fleet-store;
+      explorer = pkgs.crucible;
+      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+      fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
+    in
+      pkgs.mkDerivation {
+        pname = "crucible-fleet-distributed-continuous-exploration-surface";
+        version = "0";
+        src = null;
+
+        buildDeps = [
+          pkgs.coreutils
+          pkgs.grep
+          fleetStore
+          explorer
+          e2eGate
+          fleetStoreGate
+        ];
+
+        phases = [
+          {
+            name = "check-distributed-continuous-exploration-surface";
+            script = ''
+              set -eu
+
+              result="${e2eGate}/result"
+              grep -q '^PASS$' "$result"
+              grep -q '^gate=gate:e2e-determinism$' "$result"
+
+              fleet_store_result="${fleetStoreGate}/result"
+              grep -q '^PASS$' "$fleet_store_result"
+              grep -q '^package=pkgs.crucible-fleet-store$' "$fleet_store_result"
+              grep -q '^tcg_only=true$' "$fleet_store_result"
+              grep -q '^kvm_required=false$' "$fleet_store_result"
+
+              test -x "${fleetStore}/bin/crucible-fleet-store"
+              test -x "${explorer}/bin/crucible"
+              probe_root="$TMPDIR/crucible-fleet-store"
+              "${fleetStore}/bin/crucible-fleet-store" probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^backend=SharedDagStore$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^interface=DagStore::put,DagStore::get,DagStore::has$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^concurrent_put=idempotent$' "$TMPDIR/crucible-fleet-store.probe"
+
+              mkdir -p "$out"
+              cat > "$out/result" <<'RESULT'
+              PASS
+              check=checks.fleet.crucible-distributed-continuous-exploration
+              gate=gate:fleet-equivalence
+              source_check=checks.crucible.phase7.crucibleFleetStore
+              e2e_gate_result=${e2eGate}/result
+              fleet_store_gate_result=${fleetStoreGate}/result
+              fleet_store_component=${fleetStore}
+              fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
+              explorer_closure=${explorer}
+              explorer_binary=${explorer}/bin/crucible
+              fleet_surface=true
+              vm_runner=tcg-only
+              tcg_only=true
+              required_system_features=none
+              kvm_required=false
+              distributed_search_surface=enabled
+              continuous_campaign_surface=enabled
+              hermetic_inputs=fleet-store,explorer
+              RESULT
+            '';
+          }
+        ];
+      };
   };
 in {
   inherit lib pkgs stdenv modules mkSystem;

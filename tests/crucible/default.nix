@@ -2440,6 +2440,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleCasRatchetSeam";
       taskIds = ["T-PKG-18"];
     };
+    crucibleFleetStore = import ./phase7-crucible-fleet-store.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleFleetStore";
+      taskIds = ["T-PKG-21"];
+    };
     cruciblePackagingConformance = import ./phase7-crucible-packaging-conformance.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.cruciblePackagingConformance";
@@ -2534,9 +2539,9 @@ in rec {
           phase = "phase7";
           taskIds = ["T-PLAN-3" "T-DCE-7"];
           reason = "fleet equivalence gate is intentionally pending";
-          dependencies = [e2eDeterminism.rawGate];
+          dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore];
         };
-        dependencies = [e2eDeterminism];
+        dependencies = [e2eDeterminism phase7.crucibleFleetStore];
       };
       campaignContinuity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.campaignContinuity";

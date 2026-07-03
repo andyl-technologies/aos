@@ -2,10 +2,11 @@
 //!
 //! `crucible-cas` owns the small standalone substrate required by RFC-0010:
 //! BLAKE3 content keys, a minimal `put`/`get`/`has` store interface, local and
-//! in-memory implementations, and a dependency-gated invalidation query. The
-//! crate intentionally has no dependency on RFC-0007 `ratchet` crates; any
-//! future shared substrate must adapt behind this crate's public interface and
-//! pass `gate:content-address` and `gate:replay-oracle` unchanged.
+//! in-memory implementations, a fleet-visible shared implementation, and a
+//! dependency-gated invalidation query. The crate intentionally has no
+//! dependency on RFC-0007 `ratchet` crates; any future shared substrate must
+//! adapt behind this crate's public interface and pass `gate:content-address`
+//! and `gate:replay-oracle` unchanged.
 //!
 //! Future RFC-0007 integration marker: RFC-0007 is the future home for a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
@@ -17,8 +18,9 @@
 //! unchanged. Until then, no RFC-0007 dependency exists.
 //!
 //! Module map: the crate root owns [`ContentHash`], [`DagStore`],
-//! [`MemoryDagStore`], [`LocalDagStore`], and the invalidation types
-//! [`DependencySnapshot`], [`InvalidationQuery`], and [`InvalidationDecision`].
+//! [`MemoryDagStore`], [`LocalDagStore`], [`SharedDagStore`], and the
+//! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
+//! [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -26,10 +28,12 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
@@ -333,6 +337,142 @@ impl DagStore for LocalDagStore {
     }
 }
 
+/// Fleet-visible filesystem [`DagStore`] with idempotent concurrent publish.
+///
+/// `SharedDagStore` uses the same two-level object layout as [`LocalDagStore`],
+/// but publishes objects through a per-writer temporary path and atomic hard-link
+/// creation. Concurrent writers that publish identical bytes converge on the
+/// same key and object path; a writer that finds different bytes under the same
+/// key fails loudly with [`CasError::ContentMismatch`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SharedDagStore {
+    root: PathBuf,
+}
+
+impl SharedDagStore {
+    /// Builds a shared DAG store rooted at `root`.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Returns the store root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the two-level object path for `key`.
+    ///
+    /// The layout is `{root}/{first 2 hex chars}/{full hex hash}`.
+    #[must_use]
+    pub fn object_path(&self, key: &ContentHash) -> PathBuf {
+        let hex = key.to_hex();
+        self.root.join(&hex[0..2]).join(hex)
+    }
+}
+
+impl DagStore for SharedDagStore {
+    fn put(&self, bytes: &[u8]) -> Result<ContentHash, CasError> {
+        let key = ContentHash::from_bytes(bytes);
+        let path = self.object_path(&key);
+        match fs::read(&path) {
+            Ok(existing) if existing == bytes && ContentHash::from_bytes(&existing) == key => {
+                return Ok(key);
+            }
+            Ok(existing) => {
+                return Err(CasError::ContentMismatch {
+                    expected: key,
+                    actual: ContentHash::from_bytes(&existing),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(CasError::Io {
+                    operation: "read",
+                    path,
+                    source,
+                });
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| CasError::Io {
+                operation: "create-dir",
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let temp_path = create_shared_store_temp_file(&path, &key, bytes)?;
+
+        match fs::hard_link(&temp_path, &path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&temp_path);
+                Ok(key)
+            }
+            Err(source) => {
+                let existing = fs::read(&path);
+                let _ = fs::remove_file(&temp_path);
+                match existing {
+                    Ok(existing)
+                        if existing == bytes && ContentHash::from_bytes(&existing) == key =>
+                    {
+                        Ok(key)
+                    }
+                    Ok(existing) => Err(CasError::ContentMismatch {
+                        expected: key,
+                        actual: ContentHash::from_bytes(&existing),
+                    }),
+                    Err(error) if source.kind() == io::ErrorKind::AlreadyExists => {
+                        Err(CasError::Io {
+                            operation: "read",
+                            path,
+                            source: error,
+                        })
+                    }
+                    Err(_) => Err(CasError::Io {
+                        operation: "hard-link",
+                        path,
+                        source,
+                    }),
+                }
+            }
+        }
+    }
+
+    fn get(&self, key: &ContentHash) -> Result<Vec<u8>, CasError> {
+        let path = self.object_path(key);
+        let bytes = fs::read(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                CasError::NotFound { key: *key }
+            } else {
+                CasError::Io {
+                    operation: "read",
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        let actual = ContentHash::from_bytes(&bytes);
+        if actual != *key {
+            return Err(CasError::ContentMismatch {
+                expected: *key,
+                actual,
+            });
+        }
+        Ok(bytes)
+    }
+
+    fn has(&self, key: &ContentHash) -> Result<bool, CasError> {
+        match self.get(key) {
+            Ok(_) => Ok(true),
+            Err(CasError::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// A named set of content-addressed inputs recorded for an invalidation query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DependencySnapshot {
@@ -461,9 +601,79 @@ fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
     temp_path
 }
 
+static SHARED_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const SHARED_STORE_TEMP_CREATE_ATTEMPTS: usize = 4096;
+
+fn shared_store_temp_path(path: &Path, key: &ContentHash, sequence: u64) -> PathBuf {
+    let mut temp_path = path.to_path_buf();
+    temp_path.set_file_name(format!(
+        ".{}.{}.{}.tmp",
+        key.to_hex(),
+        std::process::id(),
+        sequence
+    ));
+    temp_path
+}
+
+fn create_shared_store_temp_file(
+    path: &Path,
+    key: &ContentHash,
+    bytes: &[u8],
+) -> Result<PathBuf, CasError> {
+    create_shared_store_temp_file_with(path, key, bytes, || {
+        SHARED_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    })
+}
+
+fn create_shared_store_temp_file_with(
+    path: &Path,
+    key: &ContentHash,
+    bytes: &[u8],
+    mut next_sequence: impl FnMut() -> u64,
+) -> Result<PathBuf, CasError> {
+    for _ in 0..SHARED_STORE_TEMP_CREATE_ATTEMPTS {
+        let temp_path = shared_store_temp_path(path, key, next_sequence());
+        let mut temp_file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(temp_file) => temp_file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(CasError::Io {
+                    operation: "create-temp",
+                    path: temp_path,
+                    source,
+                });
+            }
+        };
+        if let Err(source) = temp_file.write_all(bytes) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(CasError::Io {
+                operation: "write",
+                path: temp_path,
+                source,
+            });
+        }
+        return Ok(temp_path);
+    }
+
+    Err(CasError::Io {
+        operation: "create-temp",
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "exhausted shared store temporary path attempts",
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn memory_store_deduplicates_identical_bytes() -> Result<(), Box<dyn std::error::Error>> {
@@ -498,6 +708,87 @@ mod tests {
             store.get(&key),
             Err(CasError::ContentMismatch { expected, .. }) if expected == key
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn shared_store_identity_is_location_independent() -> Result<(), Box<dyn std::error::Error>> {
+        let left_temp = tempfile::tempdir()?;
+        let right_temp = tempfile::tempdir()?;
+        let left = SharedDagStore::new(left_temp.path());
+        let right = SharedDagStore::new(right_temp.path());
+
+        let left_key = left.put(b"fleet-checkpoint")?;
+        let right_key = right.put(b"fleet-checkpoint")?;
+
+        assert_eq!(left_key, right_key);
+        assert_eq!(left.get(&left_key)?, right.get(&right_key)?);
+        assert_ne!(left.object_path(&left_key), right.object_path(&right_key));
+        assert_eq!(
+            left.object_path(&left_key).file_name(),
+            right.object_path(&right_key).file_name()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn shared_store_concurrent_put_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = Arc::new(SharedDagStore::new(temp.path()));
+        let mut handles = Vec::new();
+
+        for _ in 0..16 {
+            let store = Arc::clone(&store);
+            handles.push(thread::spawn(move || store.put(b"shared-frontier-node")));
+        }
+
+        let mut keys = BTreeSet::new();
+        for handle in handles {
+            keys.insert(
+                handle
+                    .join()
+                    .map_err(|_| std::io::Error::other("shared store writer panicked"))??,
+            );
+        }
+
+        assert_eq!(keys.len(), 1);
+        let key = keys
+            .iter()
+            .next()
+            .copied()
+            .ok_or_else(|| std::io::Error::other("shared store did not publish a key"))?;
+        assert!(store.has(&key)?);
+        assert_eq!(store.get(&key)?, b"shared-frontier-node");
+
+        Ok(())
+    }
+
+    #[test]
+    fn shared_store_temp_creation_skips_existing_collision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SharedDagStore::new(temp.path());
+        let key = ContentHash::from_bytes(b"shared-temp-collision");
+        let path = store.object_path(&key);
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("shared store object path has no parent"))?;
+        fs::create_dir_all(parent)?;
+
+        let stale_temp = shared_store_temp_path(&path, &key, 0);
+        fs::write(&stale_temp, b"stale writer temp")?;
+        let mut sequences = [0_u64, 1].into_iter();
+
+        let created =
+            create_shared_store_temp_file_with(&path, &key, b"shared-temp-collision", || {
+                sequences.next().unwrap_or(2)
+            })?;
+
+        assert_ne!(created, stale_temp);
+        assert_eq!(fs::read(&stale_temp)?, b"stale writer temp");
+        assert_eq!(fs::read(&created)?, b"shared-temp-collision");
 
         Ok(())
     }
