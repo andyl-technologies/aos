@@ -7074,6 +7074,19 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       ordering, and frame-initialization preservation.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the
       `eval_expr` flip.
+- [x] Current `--eval --json` command-gate precursor:
+      `aos nix-diff --eval-json` now compares raw strict-JSON expression output
+      from `nix-cli` and the native diff candidate, with repeatable `--expr`
+      inputs or a built-in smoke corpus covering scalar values, float
+      formatting, attr ordering, string escaping, lazy list length, attr
+      update, and reflected string-context rendering. The command rejects
+      derivation-diff selection flags in eval-json mode, renders human and
+      machine-readable failure reports with per-expression reproduction
+      commands, and treats native fallback/errors as gate failures rather than
+      silently accepting CLI output. This is a runnable CLI precursor for
+      `C-4`, but it does not yet run the generated package/conformance eval
+      corpus, consume the `parity_json` fuzz corpus budget, wire CI, or close
+      `C-4`.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with

@@ -1,4 +1,4 @@
-//! `aos nix-diff` -- compare evaluator `.drv` output.
+//! `aos nix-diff` -- compare evaluator `.drv` and strict JSON expression output.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -204,6 +204,17 @@ impl NixDiffReportedFailure {
         Self { message }
     }
 
+    fn eval_json_failed(failing_exprs: usize, divergence_count: usize) -> Self {
+        let message = if divergence_count == 0 {
+            format!("eval-json diff failed for {failing_exprs} expression(s)")
+        } else {
+            format!(
+                "eval-json diff failed for {failing_exprs} expression(s) with {divergence_count} divergence(s)"
+            )
+        };
+        Self { message }
+    }
+
     fn attr_error(error: String) -> Self {
         Self { message: error }
     }
@@ -232,6 +243,8 @@ pub fn run(
     smoke: bool,
     all: bool,
     systems: bool,
+    eval_json: bool,
+    exprs: &[String],
     mode: DiffMode,
     oracle_stats: bool,
     cache_validation: bool,
@@ -239,12 +252,35 @@ pub fn run(
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
     }
+    validate_eval_json_selection(
+        eval_json,
+        attr,
+        smoke,
+        all,
+        systems,
+        mode,
+        oracle_stats,
+        cache_validation,
+    )?;
     ensure_nix_instantiate_after_cache_validation_mode_check(
         cache_validation,
         mode,
         NixRunner::ensure_nix_instantiate_available,
     )?;
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
+
+    if eval_json {
+        let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
+        let candidate_name = candidate.name();
+        return run_eval_json(
+            printer,
+            &oracle,
+            candidate.as_ref(),
+            candidate_name,
+            &eval_config,
+            exprs,
+        );
+    }
 
     if cache_validation {
         return run_cache_validation(
@@ -700,6 +736,193 @@ fn run_all(
     Err(failure.into())
 }
 
+fn run_eval_json(
+    printer: &Printer,
+    oracle: &NixCli,
+    candidate: &dyn NixEval,
+    candidate_name: &str,
+    eval_config: &NixEvalConfig,
+    exprs: &[String],
+) -> Result<()> {
+    let entries = eval_json_entries(exprs);
+    printer.info(&format!(
+        "Comparing {} strict JSON expression(s)...",
+        entries.len()
+    ));
+
+    let reports = entries
+        .iter()
+        .map(|entry| eval_json_report(oracle, candidate, entry))
+        .collect::<Vec<_>>();
+    let failure = eval_json_failure(&reports);
+
+    if printer.json_if_active(&eval_json_report_json(
+        &reports,
+        candidate_name,
+        eval_config,
+        failure.as_ref(),
+    )) {
+        if let Some(failure) = failure {
+            return Err(failure.into());
+        }
+        return Ok(());
+    }
+
+    let Some(failure) = failure else {
+        printer.success(&format!(
+            "eval-json diff matched {} expression(s): nix-cli vs {candidate_name}",
+            reports.len()
+        ));
+        return Ok(());
+    };
+
+    if printer.mode() == OutputMode::Quiet {
+        printer.error(&failure.to_string());
+    } else {
+        let failed = reports
+            .iter()
+            .filter(|report| report.failure.is_some())
+            .count();
+        printer.warning(&format!(
+            "eval-json diff failed for {failed} of {} expression(s): nix-cli vs {candidate_name}",
+            reports.len()
+        ));
+        for report in reports.iter().filter(|report| report.failure.is_some()) {
+            let failure = report
+                .failure
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "eval-json diff failed".to_string());
+            printer.plain(&format!("  - {}: {failure}", report.name));
+            printer.plain(&format!(
+                "      reproduce: {}",
+                eval_json_reproduction_command(eval_config, &report.expr)
+            ));
+            if let (EvalJsonResult::Value(oracle), EvalJsonResult::Value(candidate)) =
+                (&report.oracle, &report.candidate)
+            {
+                printer.plain(&format!("      oracle: {oracle}"));
+                printer.plain(&format!("      candidate: {candidate}"));
+            }
+        }
+    }
+    Err(failure.into())
+}
+
+fn eval_json_entries(exprs: &[String]) -> Vec<EvalJsonEntry> {
+    if exprs.is_empty() {
+        return default_eval_json_entries();
+    }
+
+    exprs
+        .iter()
+        .enumerate()
+        .map(|(index, expr)| EvalJsonEntry {
+            name: format!("expr[{index}]"),
+            expr: expr.clone(),
+        })
+        .collect()
+}
+
+fn default_eval_json_entries() -> Vec<EvalJsonEntry> {
+    [
+        ("scalar", "1 + 1"),
+        (
+            "float-format",
+            "[ 1.0 1.50 (-0.0) 0.000001 100000000000000000000.0 ]",
+        ),
+        ("attr-order", r#"{ b = 1; a = [ true null "x" ]; }"#),
+        ("string-escape", r#""tab\tcr\rnl\nslash\\quote\"""#),
+        (
+            "attr-update",
+            r#"({ a = "left"; } // { b = "right"; a = "right"; })"#,
+        ),
+        ("lazy-length", "builtins.length [ (1 / 0) ]"),
+        (
+            "string-context",
+            r#"let
+  x = builtins.appendContext "x" {
+    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-seed" = { path = true; };
+  };
+in builtins.getContext "${x}""#,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, expr)| EvalJsonEntry {
+        name: name.to_string(),
+        expr: expr.to_string(),
+    })
+    .collect()
+}
+
+fn eval_json_report(
+    oracle: &dyn NixEval,
+    candidate: &dyn NixEval,
+    entry: &EvalJsonEntry,
+) -> EvalJsonReport {
+    let oracle_result = eval_json_side(oracle, &entry.expr);
+    let candidate_result = eval_json_side(candidate, &entry.expr);
+    let failure = eval_json_expression_failure(&oracle_result, &candidate_result);
+
+    EvalJsonReport {
+        name: entry.name.clone(),
+        expr: entry.expr.clone(),
+        oracle: oracle_result,
+        candidate: candidate_result,
+        failure,
+    }
+}
+
+fn eval_json_side(eval: &dyn NixEval, expr: &str) -> EvalJsonResult {
+    match eval.eval_expr(expr) {
+        Ok(value) => EvalJsonResult::Value(value),
+        Err(error) => EvalJsonResult::Error(format!("{error:#}")),
+    }
+}
+
+fn eval_json_expression_failure(
+    oracle: &EvalJsonResult,
+    candidate: &EvalJsonResult,
+) -> Option<NixDiffReportedFailure> {
+    match (oracle, candidate) {
+        (EvalJsonResult::Value(oracle), EvalJsonResult::Value(candidate))
+            if oracle == candidate =>
+        {
+            None
+        }
+        (EvalJsonResult::Value(_), EvalJsonResult::Value(_)) => Some(
+            NixDiffReportedFailure::attr_error("eval-json output diverged".to_string()),
+        ),
+        (EvalJsonResult::Error(error), EvalJsonResult::Value(_)) => Some(
+            NixDiffReportedFailure::attr_error(format!("nix-cli eval-json failed: {error}")),
+        ),
+        (EvalJsonResult::Value(_), EvalJsonResult::Error(error)) => Some(
+            NixDiffReportedFailure::attr_error(format!("candidate eval-json failed: {error}")),
+        ),
+        (EvalJsonResult::Error(oracle), EvalJsonResult::Error(candidate)) => {
+            Some(NixDiffReportedFailure::attr_error(format!(
+                "both evaluators failed: nix-cli={oracle}; candidate={candidate}"
+            )))
+        }
+    }
+}
+
+fn eval_json_failure(reports: &[EvalJsonReport]) -> Option<NixDiffReportedFailure> {
+    let failing_exprs = reports
+        .iter()
+        .filter(|report| report.failure.is_some())
+        .count();
+    if failing_exprs == 0 {
+        return None;
+    }
+
+    let divergence_count = reports.iter().filter(|report| report.diverged()).count();
+    Some(NixDiffReportedFailure::eval_json_failed(
+        failing_exprs,
+        divergence_count,
+    ))
+}
+
 #[derive(Debug)]
 struct AttrDiffReport {
     file: PathBuf,
@@ -707,6 +930,36 @@ struct AttrDiffReport {
     report: Option<DrvDiffReport>,
     failure: Option<NixDiffReportedFailure>,
     oracle_stats: Option<NixInstantiateStats>,
+}
+
+#[derive(Debug, Clone)]
+struct EvalJsonEntry {
+    name: String,
+    expr: String,
+}
+
+#[derive(Debug)]
+struct EvalJsonReport {
+    name: String,
+    expr: String,
+    oracle: EvalJsonResult,
+    candidate: EvalJsonResult,
+    failure: Option<NixDiffReportedFailure>,
+}
+
+impl EvalJsonReport {
+    fn diverged(&self) -> bool {
+        matches!(
+            (&self.oracle, &self.candidate),
+            (EvalJsonResult::Value(oracle), EvalJsonResult::Value(candidate)) if oracle != candidate
+        )
+    }
+}
+
+#[derive(Debug)]
+enum EvalJsonResult {
+    Value(String),
+    Error(String),
 }
 
 #[derive(Debug)]
@@ -1612,6 +1865,38 @@ fn validate_cache_validation_mode(mode: DiffMode) -> Result<()> {
     Ok(())
 }
 
+fn validate_eval_json_selection(
+    eval_json: bool,
+    attr: Option<&str>,
+    smoke: bool,
+    all: bool,
+    systems: bool,
+    mode: DiffMode,
+    oracle_stats: bool,
+    cache_validation: bool,
+) -> Result<()> {
+    if !eval_json {
+        return Ok(());
+    }
+
+    if attr.is_some() || smoke || all || systems || oracle_stats || cache_validation {
+        return Err(AosError::InvalidArgument {
+            message: "nix-diff --eval-json cannot be combined with derivation diff selection"
+                .to_string(),
+        }
+        .into());
+    }
+
+    if mode != DiffMode::Byte {
+        return Err(AosError::InvalidArgument {
+            message: "nix-diff --eval-json does not accept --mode".to_string(),
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
 fn ensure_nix_instantiate_after_cache_validation_mode_check<F>(
     cache_validation: bool,
     mode: DiffMode,
@@ -1902,6 +2187,67 @@ fn corpus_json(
         object.insert("oracle_stats_summary".to_string(), summary.json());
     }
     value
+}
+
+fn eval_json_report_json(
+    reports: &[EvalJsonReport],
+    candidate_name: &str,
+    eval_config: &NixEvalConfig,
+    failure: Option<&NixDiffReportedFailure>,
+) -> serde_json::Value {
+    let failed_exprs = reports
+        .iter()
+        .filter(|report| report.failure.is_some())
+        .count();
+    let divergence_count = reports.iter().filter(|report| report.diverged()).count();
+
+    serde_json::json!({
+        "eval_json": true,
+        "oracle": "nix-cli",
+        "candidate": candidate_name,
+        "matched": failure.is_none(),
+        "error": failure.map(ToString::to_string),
+        "expressions_checked": reports.len(),
+        "expressions_failed": failed_exprs,
+        "divergence_count": divergence_count,
+        "reports": reports.iter()
+            .map(|report| eval_json_entry_json(report, candidate_name, eval_config))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn eval_json_entry_json(
+    report: &EvalJsonReport,
+    candidate_name: &str,
+    eval_config: &NixEvalConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": report.name,
+        "expr": report.expr,
+        "reproduce": eval_json_reproduction_command(eval_config, &report.expr),
+        "oracle": "nix-cli",
+        "candidate": candidate_name,
+        "matched": report.failure.is_none(),
+        "error": report.failure.as_ref().map(ToString::to_string),
+        "oracle_value": eval_json_value(&report.oracle),
+        "candidate_value": eval_json_value(&report.candidate),
+        "oracle_error": eval_json_error(&report.oracle),
+        "candidate_error": eval_json_error(&report.candidate),
+    })
+}
+
+fn eval_json_value(result: &EvalJsonResult) -> Option<&str> {
+    match result {
+        EvalJsonResult::Value(value) => Some(value),
+        EvalJsonResult::Error(_) => None,
+    }
+}
+
+fn eval_json_error(result: &EvalJsonResult) -> Option<&str> {
+    match result {
+        EvalJsonResult::Value(_) => None,
+        EvalJsonResult::Error(error) => Some(error),
+    }
 }
 
 fn attr_report_json(
@@ -2339,6 +2685,44 @@ fn reproduction_command(
         .map(|arg| shell_word(arg))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn eval_json_reproduction_command(eval_config: &NixEvalConfig, expr: &str) -> String {
+    eval_json_reproduction_args(eval_config, expr)
+        .iter()
+        .map(|arg| shell_word(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn eval_json_reproduction_args(eval_config: &NixEvalConfig, expr: &str) -> Vec<String> {
+    let mut args = vec!["aos".to_string()];
+    if eval_config.trace_verbose() {
+        args.push("--trace-verbose".to_string());
+    }
+    if let Some(current_system) = eval_config.current_system() {
+        args.push(format!("--eval-system={current_system}"));
+    }
+    match eval_config.eval_mode() {
+        NixEvalMode::Ambient => {}
+        NixEvalMode::Impure => args.push("--impure-eval".to_string()),
+        NixEvalMode::Pure => args.push("--pure-eval".to_string()),
+        NixEvalMode::Restricted => {
+            args.push("--restrict-eval".to_string());
+            for path in eval_config.allowed_paths() {
+                args.push(format!("--eval-allow-path={path}"));
+            }
+            for uri in eval_config.allowed_uris() {
+                args.push(format!("--eval-allow-uri={uri}"));
+            }
+        }
+    }
+    args.extend([
+        "nix-diff".to_string(),
+        "--eval-json".to_string(),
+        format!("--expr={expr}"),
+    ]);
+    args
 }
 
 fn reproduction_args(
@@ -2846,6 +3230,60 @@ mod tests {
         }
     }
 
+    struct FixedJsonEval {
+        name: &'static str,
+        result: std::result::Result<&'static str, &'static str>,
+        eval_expr_calls: AtomicUsize,
+    }
+
+    impl FixedJsonEval {
+        fn value(name: &'static str, value: &'static str) -> Self {
+            Self {
+                name,
+                result: Ok(value),
+                eval_expr_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn error(name: &'static str, message: &'static str) -> Self {
+            Self {
+                name,
+                result: Err(message),
+                eval_expr_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn eval_expr_calls(&self) -> usize {
+            self.eval_expr_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NixEval for FixedJsonEval {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            Err(anyhow::anyhow!(
+                "fixed JSON evaluator only supports eval_expr"
+            ))
+        }
+
+        fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+            Err(anyhow::anyhow!(
+                "fixed JSON evaluator only supports eval_expr"
+            ))
+        }
+
+        fn eval_expr(&self, _expr: &str) -> Result<String> {
+            self.eval_expr_calls.fetch_add(1, Ordering::SeqCst);
+            match self.result {
+                Ok(value) => Ok(value.to_string()),
+                Err(message) => Err(anyhow::anyhow!(message)),
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
     fn repro_config() -> NixEvalConfig {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
@@ -2902,6 +3340,67 @@ mod tests {
         })
         .expect("ordinary path-mode diff still probes Nix");
         assert!(probe_called);
+    }
+
+    #[test]
+    fn eval_json_selection_rejects_drv_options_and_modes() {
+        let error = validate_eval_json_selection(
+            true,
+            Some("pkgs.hello"),
+            false,
+            false,
+            false,
+            DiffMode::Byte,
+            false,
+            false,
+        )
+        .expect_err("attr selection should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be combined with derivation diff selection"),
+            "{error}"
+        );
+
+        let error = validate_eval_json_selection(
+            true,
+            None,
+            false,
+            false,
+            false,
+            DiffMode::Structural,
+            false,
+            false,
+        )
+        .expect_err("structural mode should be rejected");
+        assert!(
+            error.to_string().contains("does not accept --mode"),
+            "{error}"
+        );
+
+        validate_eval_json_selection(
+            true,
+            None,
+            false,
+            false,
+            false,
+            DiffMode::Byte,
+            false,
+            false,
+        )
+        .expect("plain eval-json selection is accepted");
+
+        validate_eval_json_selection(
+            false,
+            Some("pkgs.hello"),
+            true,
+            true,
+            true,
+            DiffMode::Structural,
+            true,
+            true,
+        )
+        .expect("derivation options are accepted outside eval-json mode");
     }
 
     #[test]
@@ -3387,6 +3886,100 @@ mod tests {
         );
         fs::remove_dir_all(&failing_path)?;
         Ok(())
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_matching_expression() {
+        let oracle = FixedJsonEval::value("oracle", r#"{"a":1}"#);
+        let candidate = FixedJsonEval::value("candidate", r#"{"a":1}"#);
+        let entry = EvalJsonEntry {
+            name: "sample".to_string(),
+            expr: "1".to_string(),
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+
+        assert_eq!(oracle.eval_expr_calls(), 1);
+        assert_eq!(candidate.eval_expr_calls(), 1);
+        assert!(failure.is_none());
+        assert_eq!(value["eval_json"], true);
+        assert_eq!(value["matched"], true);
+        assert_eq!(value["expressions_checked"], 1);
+        assert_eq!(value["expressions_failed"], 0);
+        assert_eq!(value["divergence_count"], 0);
+        assert_eq!(value["reports"][0]["name"], "sample");
+        assert_eq!(value["reports"][0]["expr"], "1");
+        assert_eq!(
+            value["reports"][0]["reproduce"],
+            "aos --impure-eval nix-diff --eval-json --expr=1"
+        );
+        assert_eq!(value["reports"][0]["oracle_value"], r#"{"a":1}"#);
+        assert_eq!(value["reports"][0]["candidate_value"], r#"{"a":1}"#);
+        assert!(value["reports"][0]["oracle_error"].is_null());
+        assert!(value["reports"][0]["candidate_error"].is_null());
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_value_divergence() {
+        let oracle = FixedJsonEval::value("oracle", "1");
+        let candidate = FixedJsonEval::value("candidate", "2");
+        let entry = EvalJsonEntry {
+            name: "number".to_string(),
+            expr: "1 + 1".to_string(),
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+
+        assert_eq!(
+            failure.as_ref().map(ToString::to_string).as_deref(),
+            Some("eval-json diff failed for 1 expression(s) with 1 divergence(s)")
+        );
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["expressions_failed"], 1);
+        assert_eq!(value["divergence_count"], 1);
+        assert_eq!(value["reports"][0]["matched"], false);
+        assert_eq!(value["reports"][0]["error"], "eval-json output diverged");
+        assert_eq!(value["reports"][0]["oracle_value"], "1");
+        assert_eq!(value["reports"][0]["candidate_value"], "2");
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_candidate_error() {
+        let oracle = FixedJsonEval::value("oracle", "1");
+        let candidate = FixedJsonEval::error("candidate", "unsupported builtin");
+        let entry = EvalJsonEntry {
+            name: "unsupported".to_string(),
+            expr: "builtins.currentTime".to_string(),
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+
+        assert_eq!(
+            failure.as_ref().map(ToString::to_string).as_deref(),
+            Some("eval-json diff failed for 1 expression(s)")
+        );
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["expressions_failed"], 1);
+        assert_eq!(value["divergence_count"], 0);
+        assert_eq!(
+            value["reports"][0]["error"],
+            "candidate eval-json failed: unsupported builtin"
+        );
+        assert_eq!(value["reports"][0]["oracle_value"], "1");
+        assert!(value["reports"][0]["candidate_value"].is_null());
+        assert_eq!(
+            value["reports"][0]["candidate_error"],
+            "unsupported builtin"
+        );
     }
 
     #[test]

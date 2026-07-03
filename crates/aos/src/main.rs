@@ -145,6 +145,8 @@ async fn run(cli: &Cli) -> Result<()> {
         smoke,
         all,
         systems,
+        eval_json,
+        expr,
         file,
         mode,
         oracle_stats,
@@ -174,9 +176,13 @@ async fn run(cli: &Cli) -> Result<()> {
             }
             (None, None) => {}
         }
-        let file = match file {
-            Some(file) => file.clone(),
-            None => NixRunner::find_root()?.join("default.nix"),
+        let file = if *eval_json {
+            PathBuf::new()
+        } else {
+            match file {
+                Some(file) => file.clone(),
+                None => NixRunner::find_root()?.join("default.nix"),
+            }
         };
         return run_nix_diff_threaded(
             printer,
@@ -187,6 +193,8 @@ async fn run(cli: &Cli) -> Result<()> {
             *smoke,
             *all,
             *systems,
+            *eval_json,
+            expr.clone(),
             (*mode).into(),
             *oracle_stats,
             *cache_validation,
@@ -395,6 +403,8 @@ fn run_nix_diff_threaded(
     smoke: bool,
     all: bool,
     systems: bool,
+    eval_json: bool,
+    exprs: Vec<String>,
     mode: DiffMode,
     oracle_stats: bool,
     cache_validation: bool,
@@ -417,6 +427,8 @@ fn run_nix_diff_threaded(
                 smoke,
                 all,
                 systems,
+                eval_json,
+                &exprs,
                 mode,
                 oracle_stats,
                 cache_validation,
@@ -693,6 +705,8 @@ mod tests {
                 smoke: false,
                 all: false,
                 systems: false,
+                eval_json: false,
+                expr: Vec::new(),
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
                 oracle_stats: false,

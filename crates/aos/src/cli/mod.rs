@@ -185,41 +185,92 @@ pub enum Commands {
         /// Dependency to trace
         dependency: String,
     },
-    /// Compare evaluator .drv output
+    /// Compare evaluator .drv or strict-JSON expression output
     NixDiff {
         /// Attribute to instantiate
         #[arg(
             short = 'A',
             long,
-            conflicts_with_all = ["all", "systems", "smoke", "oracle_drv", "candidate_drv"],
-            required_unless_present_any = ["all", "systems", "smoke", "oracle_drv"]
+            conflicts_with_all = [
+                "all",
+                "systems",
+                "smoke",
+                "eval_json",
+                "oracle_drv",
+                "candidate_drv"
+            ],
+            required_unless_present_any = ["all", "systems", "smoke", "eval_json", "oracle_drv"]
         )]
         attr: Option<String>,
         /// Compare the cheap per-commit smoke corpus
         #[arg(
             long,
-            conflicts_with_all = ["all", "systems", "oracle_drv", "candidate_drv"]
+            conflicts_with_all = [
+                "all",
+                "systems",
+                "eval_json",
+                "oracle_drv",
+                "candidate_drv"
+            ]
         )]
         smoke: bool,
         /// Compare every derivation in the pkgs set
-        #[arg(long, conflicts_with_all = ["smoke", "oracle_drv", "candidate_drv"])]
+        #[arg(
+            long,
+            conflicts_with_all = ["smoke", "eval_json", "oracle_drv", "candidate_drv"]
+        )]
         all: bool,
         /// Compare every system toplevel
-        #[arg(long, conflicts_with_all = ["smoke", "oracle_drv", "candidate_drv"])]
+        #[arg(
+            long,
+            conflicts_with_all = ["smoke", "eval_json", "oracle_drv", "candidate_drv"]
+        )]
         systems: bool,
+        /// Compare strict JSON expression rendering instead of .drv output
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "attr",
+                "smoke",
+                "all",
+                "systems",
+                "file",
+                "oracle_stats",
+                "cache_validation",
+                "oracle_drv",
+                "candidate_drv"
+            ]
+        )]
+        eval_json: bool,
+        /// Raw Nix expression to compare under --eval-json
+        #[arg(long, value_name = "EXPR", requires = "eval_json")]
+        expr: Vec<String>,
         /// Nix file to instantiate (default: repository default.nix)
-        #[arg(conflicts_with_all = ["oracle_drv", "candidate_drv"])]
+        #[arg(conflicts_with_all = ["eval_json", "oracle_drv", "candidate_drv"])]
         file: Option<std::path::PathBuf>,
         /// Comparison mode
-        #[arg(long, value_enum, default_value_t = NixDiffMode::Byte)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = NixDiffMode::Byte,
+            conflicts_with = "eval_json"
+        )]
         mode: NixDiffMode,
         /// Capture raw NIX_SHOW_STATS JSON from the C++ Nix oracle
-        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
+        #[arg(
+            long,
+            conflicts_with_all = ["eval_json", "oracle_drv", "candidate_drv"]
+        )]
         oracle_stats: bool,
         /// Compare native cache-off and cold-cache output against the oracle
         #[arg(
             long,
-            conflicts_with_all = ["oracle_drv", "candidate_drv", "oracle_stats"]
+            conflicts_with_all = [
+                "eval_json",
+                "oracle_drv",
+                "candidate_drv",
+                "oracle_stats"
+            ]
         )]
         cache_validation: bool,
         /// Existing oracle .drv path for direct node comparison
@@ -401,6 +452,8 @@ mod tests {
                 smoke,
                 all,
                 systems,
+                eval_json,
+                expr,
                 file,
                 mode,
                 oracle_stats,
@@ -414,6 +467,8 @@ mod tests {
                 assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
+                assert!(!eval_json);
+                assert!(expr.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
@@ -445,6 +500,8 @@ mod tests {
                 smoke,
                 all,
                 systems,
+                eval_json,
+                expr,
                 file,
                 mode,
                 oracle_stats,
@@ -458,6 +515,8 @@ mod tests {
                 assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
+                assert!(!eval_json);
+                assert!(expr.is_empty());
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
                 assert!(!oracle_stats);
@@ -520,6 +579,63 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_eval_json_expressions() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--eval-json",
+            "--expr",
+            "1 + 1",
+            "--expr",
+            "{ a = 1; }",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr,
+                smoke,
+                all,
+                systems,
+                eval_json,
+                expr,
+                file,
+                oracle_stats,
+                cache_validation,
+                ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(!smoke);
+                assert!(!all);
+                assert!(!systems);
+                assert!(eval_json);
+                assert_eq!(expr, ["1 + 1".to_string(), "{ a = 1; }".to_string()]);
+                assert_eq!(file, None);
+                assert!(!oracle_stats);
+                assert!(!cache_validation);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_eval_json_conflicts_with_drv_selection() {
+        let err = parse_cli_error(["aos", "nix-diff", "--eval-json", "--attr", "pkgs.hello"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--eval-json", "--smoke"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--eval-json", "default.nix"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--eval-json", "--mode=structural"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--expr", "1 + 1"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn nix_diff_parses_cache_validation_smoke_hook_command() {
         let cli = parse_cli([
             "aos",
@@ -537,6 +653,8 @@ mod tests {
                 smoke,
                 all,
                 systems,
+                eval_json,
+                expr,
                 file,
                 mode,
                 oracle_stats,
@@ -547,6 +665,8 @@ mod tests {
                 assert!(smoke);
                 assert!(!all);
                 assert!(!systems);
+                assert!(!eval_json);
+                assert!(expr.is_empty());
                 assert_eq!(file.as_deref(), Some(std::path::Path::new("default.nix")));
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
@@ -575,6 +695,8 @@ mod tests {
                 smoke,
                 all,
                 systems,
+                eval_json,
+                expr,
                 file,
                 mode,
                 oracle_stats,
@@ -588,6 +710,8 @@ mod tests {
                 assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
+                assert!(!eval_json);
+                assert!(expr.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Structural);
                 assert!(!oracle_stats);
