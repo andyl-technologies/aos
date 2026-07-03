@@ -849,6 +849,30 @@ pub enum EvalHeapError {
         /// The young replacement destination required by the installed writeback.
         target_address: GcHeapAddress,
     },
+    /// An existing-destination boundary commit had writeback metadata but no
+    /// remembered-set publication recorded with that metadata.
+    #[error(
+        "boundary minor-GC existing-destination commit has {bindings} writeback destination bindings but no recorded remembered-set publication"
+    )]
+    BoundaryMinorGcExistingDestinationCommitMissingRememberedSetPublication {
+        /// The number of installed writeback destination bindings.
+        bindings: usize,
+    },
+    /// An existing-destination boundary commit found a live remembered set that
+    /// no longer matches the publication recorded with its writeback metadata.
+    #[error(
+        "boundary minor-GC existing-destination commit remembered-set publication mismatch: expected epoch {expected_epoch:?} with {expected_edges} edges, found epoch {actual_epoch:?} with {actual_edges} edges"
+    )]
+    BoundaryMinorGcExistingDestinationCommitRememberedSetPublicationMismatch {
+        /// The remembered-set epoch recorded with the writeback metadata.
+        expected_epoch: RememberedSetEpoch,
+        /// The currently published remembered-set epoch.
+        actual_epoch: RememberedSetEpoch,
+        /// The remembered-edge count recorded with the writeback metadata.
+        expected_edges: usize,
+        /// The currently published remembered-edge count.
+        actual_edges: usize,
+    },
     /// Boundary live destination-byte snapshots have already been installed.
     #[error(
         "boundary minor-GC live destination storage already contains {existing} object snapshots"

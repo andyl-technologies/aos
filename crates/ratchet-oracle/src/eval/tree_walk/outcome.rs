@@ -746,6 +746,7 @@ pub struct EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
     root_writeback_bindings: Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>,
     heap_field_writeback_bindings:
         Vec<EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding>,
+    expected_remembered_set: Option<RememberedSet>,
 }
 
 impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
@@ -769,6 +770,7 @@ impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
         heap_field_writeback_bindings: Vec<
             EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding,
         >,
+        expected_remembered_set: Option<RememberedSet>,
     ) -> Result<
         EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
         EvalHeapError,
@@ -786,6 +788,7 @@ impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
         self.install_prevalidated(
             root_writeback_bindings,
             heap_field_writeback_bindings,
+            expected_remembered_set,
             install_report,
         );
         Ok(install_report)
@@ -797,6 +800,7 @@ impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
         heap_field_writeback_bindings: Vec<
             EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding,
         >,
+        expected_remembered_set: Option<RememberedSet>,
         install_report: EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindingInstallReport,
     ) {
         if install_report.bindings() == 0 {
@@ -806,6 +810,7 @@ impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
         self.install_report = install_report;
         self.root_writeback_bindings = root_writeback_bindings;
         self.heap_field_writeback_bindings = heap_field_writeback_bindings;
+        self.expected_remembered_set = expected_remembered_set;
     }
 
     /// Returns whether no writeback destination-binding metadata is installed.
@@ -839,6 +844,11 @@ impl EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings {
         &self,
     ) -> &[EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding] {
         &self.heap_field_writeback_bindings
+    }
+
+    /// Returns the remembered set expected after the metadata's source dry run.
+    pub const fn expected_remembered_set(&self) -> Option<&RememberedSet> {
+        self.expected_remembered_set.as_ref()
     }
 }
 
@@ -4419,6 +4429,38 @@ fn validate_boundary_minor_gc_existing_destination_commit_published_remembered_e
     Ok(())
 }
 
+fn validate_boundary_minor_gc_existing_destination_commit_published_remembered_set(
+    remembered_set: &RememberedSet,
+    live_bindings: &EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings,
+) -> Result<(), EvalHeapError> {
+    let Some(expected_remembered_set) = live_bindings.expected_remembered_set() else {
+        if live_bindings.install_report().bindings() == 0 {
+            return Ok(());
+        }
+        return Err(
+            EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedSetPublication {
+                bindings: live_bindings.install_report().bindings(),
+            },
+        );
+    };
+
+    if remembered_set != expected_remembered_set {
+        return Err(
+            EvalHeapError::BoundaryMinorGcExistingDestinationCommitRememberedSetPublicationMismatch {
+                expected_epoch: expected_remembered_set.epoch(),
+                actual_epoch: remembered_set.epoch(),
+                expected_edges: expected_remembered_set.len(),
+                actual_edges: remembered_set.len(),
+            },
+        );
+    }
+
+    validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+        remembered_set,
+        live_bindings,
+    )
+}
+
 fn validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
     object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
     heap_field_plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
@@ -7554,6 +7596,7 @@ mod root_writeback_destination_binding_tests {
             install_report,
             root_writeback_bindings,
             heap_field_writeback_bindings: Vec::new(),
+            expected_remembered_set: None,
         }
     }
 
@@ -8327,6 +8370,7 @@ mod heap_field_writeback_destination_binding_tests {
             install_report,
             root_writeback_bindings: Vec::new(),
             heap_field_writeback_bindings,
+            expected_remembered_set: None,
         }
     }
 
@@ -11113,8 +11157,9 @@ impl EvalOutcome {
     /// projections for existing destination records: forwarding-header metadata,
     /// paired object-body/generation staging, outcome-owned value-stack root
     /// writeback, supported record-owned heap-field writes, direct
-    /// owner/destination alias rejection, published remembered-set coherence for
-    /// installed direct old/permanent-to-young writebacks, and remembered-set/card-table
+    /// owner/destination alias rejection, exact published remembered-set
+    /// coherence for the writeback-destination metadata, direct
+    /// old/permanent-to-young edge coverage, and remembered-set/card-table
     /// barrier staging against side-table clones.
     ///
     /// This is a read-only GC-stress orchestration bridge. It does not write ABI
@@ -11129,10 +11174,11 @@ impl EvalOutcome {
     /// root/heap-field writeback metadata is inconsistent, if live roots or
     /// fields no longer hold the expected from-space values, if the card table
     /// is dirty after live metadata publication, if the already-published
-    /// remembered set is missing a direct old/permanent-to-young edge required
-    /// by installed writeback metadata, if a destination heap record aliases a
-    /// direct in-place heap-field write owner, or if existing destination
-    /// records reject paired body/generation staging.
+    /// remembered set does not match the publication recorded with installed
+    /// writeback metadata, if it is missing a direct old/permanent-to-young edge
+    /// required by that metadata, if a destination heap record aliases a direct
+    /// in-place heap-field write owner, or if existing destination records
+    /// reject paired body/generation staging.
     /// Whether this returns `Ok` or `Err`, live forwarding cells, destination
     /// object bodies/generations, roots, heap fields, remembered-set/card-table
     /// state, and the outcome value are left unchanged.
@@ -11162,7 +11208,7 @@ impl EvalOutcome {
                 },
             );
         }
-        validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+        validate_boundary_minor_gc_existing_destination_commit_published_remembered_set(
             &self.thunk_resolve_remembered_set,
             &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
         )?;
@@ -11184,9 +11230,10 @@ impl EvalOutcome {
     /// forwarding-destination bindings, including the zero-coverage guard for
     /// independently installed reference metadata, verifies that prior live
     /// metadata publication left the card table clean, checks that the
-    /// already-published remembered set covers direct old/permanent-to-young
-    /// edges from the installed writeback batch, and clones that remembered set
-    /// before mutation. It then consumes installed root and heap-field writeback
+    /// already-published remembered set exactly matches the publication recorded
+    /// with the installed writeback-destination metadata and covers its direct
+    /// old/permanent-to-young edges, and clones that remembered set before
+    /// mutation. It then consumes installed root and heap-field writeback
     /// metadata plus installed writeback destination bindings through the
     /// live-reference applicator, binding destination object bodies/generations,
     /// rewriting supported record-owned heap fields, updating the prevalidated
@@ -11211,9 +11258,10 @@ impl EvalOutcome {
     /// destination records reject paired body/generation writes, or if supported
     /// field or remembered/card-table writes cannot be staged, if the card table
     /// is dirty after live metadata publication, if the already-published
-    /// remembered set is missing a direct old/permanent-to-young edge required
-    /// by installed writeback metadata, or if the published remembered set
-    /// cannot be cloned before mutation. Forwarding metadata, card-table, and
+    /// remembered set does not match the publication recorded with installed
+    /// writeback metadata, if it is missing a direct old/permanent-to-young edge
+    /// required by that metadata, or if the published remembered set cannot be
+    /// cloned before mutation. Forwarding metadata, card-table, and
     /// remembered-set coherence validation happen before destination object
     /// bodies, generations, roots, heap fields, remembered-set/card-table state,
     /// or the outcome value are changed.
@@ -11238,7 +11286,7 @@ impl EvalOutcome {
                 },
             );
         }
-        validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+        validate_boundary_minor_gc_existing_destination_commit_published_remembered_set(
             &self.thunk_resolve_remembered_set,
             &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
         )?;
@@ -11907,7 +11955,8 @@ impl EvalOutcome {
     /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`], validates sibling
     /// survivor relocations, merges destination-byte snapshots, clones the root
     /// and heap-field writeback snapshots, validates each writeback against the
-    /// merged destinations, and installs the resulting binding records into
+    /// merged destinations, records the remembered-set publication expected from
+    /// the same dry run, and installs the resulting binding records into
     /// outcome-owned metadata. Empty boundaries, or non-empty boundaries with no
     /// writebacks, leave the side table unchanged.
     ///
@@ -11948,11 +11997,16 @@ impl EvalOutcome {
                 &writebacks,
                 &object_bytes,
             )?;
+        let expected_remembered_set = boundary_minor_gc_merged_remembered_set(
+            dry_run.commit_applications(),
+            self.thunk_resolve_remembered_set.epoch(),
+        )?;
         let writeback_destination_binding_install_report = self
             .gc_stress_boundary_minor_gc_writeback_destination_bindings
             .install(
                 root_writeback_destination_bindings,
                 heap_field_writeback_destination_bindings,
+                expected_remembered_set,
             )?;
 
         Ok(
@@ -12177,6 +12231,10 @@ impl EvalOutcome {
             dry_run.commit_applications(),
             self.thunk_resolve_remembered_set.epoch(),
         )?;
+        let writeback_expected_remembered_set = remembered_set
+            .as_ref()
+            .map(clone_boundary_remembered_set)
+            .transpose()?;
         let object_body_and_generation_write_report = if preflight_existing_destinations {
             let object_body_plan =
                 boundary_minor_gc_object_body_generation_preflight_plan_from_generations(
@@ -12209,6 +12267,7 @@ impl EvalOutcome {
             .install_prevalidated(
                 root_writeback_destination_bindings,
                 heap_field_writeback_destination_bindings,
+                writeback_expected_remembered_set,
                 writeback_destination_binding_install_report,
             );
         let remembered_set_published = remembered_set.is_some();

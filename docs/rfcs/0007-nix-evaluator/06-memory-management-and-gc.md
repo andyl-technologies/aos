@@ -1713,8 +1713,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       cells and the zero forwarding-header coverage gate before deriving
       root/field write plans or committing writes, requires the live card table
       to already be clean after live metadata publication, clones the already
-      published remembered set after checking it covers the installed direct
-      old/permanent-to-young writeback edges, then binds paired
+      published remembered set after checking it exactly matches the
+      writeback-destination metadata's recorded publication and covers the
+      installed direct old/permanent-to-young writeback edges, then binds paired
       object-body/generation writes, rewrites the supported outcome-owned
       value-stack root and record-owned heap fields, restores the published
       remembered set, and clears the card-table dirt introduced by apply-time
@@ -2784,13 +2785,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`
       layers forwarding-header metadata validation over that read-only reference
       preflight and requires the card table to be clean after live metadata
-      publication and the published remembered set to cover the installed direct
-      old/permanent-to-young writeback edges, so missing or stale forwarding
-      cells, stale dirty cards, and stale remembered-set publication fail before
-      a future existing-destination commit would publish headers or reference
-      writes. The existing-destination commit applicator preserves the
-      already-published remembered set after that edge-coverage check and clears
-      the card-table dirt introduced while applying direct heap-field barriers.
+      publication and the published remembered set to exactly match the
+      publication recorded with the installed writeback-destination metadata
+      while covering its direct old/permanent-to-young writeback edges, so
+      missing or stale forwarding cells, stale dirty cards, and stale
+      remembered-set publication fail before a future existing-destination
+      commit would publish headers or reference writes. The existing-destination
+      commit applicator preserves the already-published remembered set after
+      that recorded-publication check and clears the card-table dirt introduced
+      while applying direct heap-field barriers.
       The
       `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` adaptor now
       applies the existing typed root-writeback plan to explicit mutable

@@ -6300,7 +6300,7 @@ fn live_existing_destination_commit_apply_rejects_dirty_card_table_before_mutati
 }
 
 #[test]
-fn live_existing_destination_commit_rejects_stale_published_remembered_set_before_mutation() {
+fn live_existing_destination_commit_rejects_superset_published_remembered_set_before_mutation() {
     let (mut outcome, parent, child, destination) =
         boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
     let source_address = gc_address(child);
@@ -6321,6 +6321,8 @@ fn live_existing_destination_commit_rejects_stale_published_remembered_set_befor
             .edges()
             .contains(&expected_edge)
     );
+    let expected_epoch = outcome.thunk_resolve_remembered_set().epoch();
+    let expected_edges = outcome.thunk_resolve_remembered_set().len();
     let root_plan = outcome
         .gc_stress_boundary_minor_gc_root_writeback_write_plan()
         .expect("root writeback plan validates");
@@ -6335,8 +6337,10 @@ fn live_existing_destination_commit_rejects_stale_published_remembered_set_befor
         .generation(destination)
         .expect("original destination is heap-bound");
     let stale_edge = RememberedEdge::new(writeback_source, static_gc_address(0x3000_0000));
-    let mut stale_remembered_set =
-        RememberedSet::with_epoch(outcome.thunk_resolve_remembered_set().epoch());
+    let mut stale_remembered_set = RememberedSet::with_epoch(expected_epoch);
+    stale_remembered_set
+        .record(expected_edge)
+        .expect("expected remembered edge records in stale superset");
     stale_remembered_set
         .record(stale_edge)
         .expect("stale remembered edge records");
@@ -6347,9 +6351,11 @@ fn live_existing_destination_commit_rejects_stale_published_remembered_set_befor
         .expect_err("stale remembered set rejects existing-destination preflight");
     assert_eq!(
         validate_err,
-        EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
-            source_address: writeback_source,
-            target_address: destination_address,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitRememberedSetPublicationMismatch {
+            expected_epoch,
+            actual_epoch: expected_epoch,
+            expected_edges,
+            actual_edges: 2,
         }
     );
     let apply_err = outcome
@@ -6358,9 +6364,11 @@ fn live_existing_destination_commit_rejects_stale_published_remembered_set_befor
 
     assert_eq!(
         apply_err,
-        EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
-            source_address: writeback_source,
-            target_address: destination_address,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitRememberedSetPublicationMismatch {
+            expected_epoch,
+            actual_epoch: expected_epoch,
+            expected_edges,
+            actual_edges: 2,
         }
     );
     assert!(outcome.value().raw_eq(original_outcome_value));
@@ -6402,7 +6410,7 @@ fn live_existing_destination_commit_rejects_stale_published_remembered_set_befor
     ));
     assert_eq!(
         outcome.thunk_resolve_remembered_set().edges(),
-        &[stale_edge]
+        &[expected_edge, stale_edge]
     );
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
