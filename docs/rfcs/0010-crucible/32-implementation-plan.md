@@ -434,6 +434,16 @@ long-held locks.
   until the checkpoint-instantiation runner is wired; full closure waits for
   temporal-graph materialization, replay-oracle validation, real-QEMU coverage,
   and continuing the resumed session.
+  `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
+  covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
+  plumbing, repeatable `--override decision=value` validation, labels,
+  virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
+  `blake3:<hash>` checkpoint references, malformed-handle artifact errors,
+  seed/override conflict usage errors, and an explicit backend error until the
+  independent child checkpoint-instantiation runner is wired; full closure waits
+  for temporal-graph prefix instantiation, final post-fork decision application,
+  child reproduction artifacts, replay-oracle validation, and real-QEMU
+  coverage.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch, and continued

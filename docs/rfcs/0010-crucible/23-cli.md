@@ -1056,6 +1056,18 @@ branch on the verdict without parsing output:
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
+  Work in progress under `checks.crucible.phase5.cliForkWorkflow`: the CLI now
+  parses `fork <SAVEPOINT>` with global `--seed`, repeatable `--override
+  decision=value`, `--until`, `--max-virtual-time`, `--label`, `--interactive`,
+  and `--watch`; resolves `.crucible-savepoint` handles and direct
+  `blake3:<hash>` checkpoint references through the shared savepoint decoder;
+  validates override pairs, virtual-time budgets, malformed handles, and
+  conflicting explicit `--seed` plus `--override`; and fails execution
+  explicitly until the independent child checkpoint-instantiation runner is
+  wired. Full closure remains blocked on temporal-graph prefix instantiation
+  into an independent child session, final post-fork seed/override application,
+  replay-oracle validation, child reproduction artifacts, and real-QEMU
+  coverage.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
