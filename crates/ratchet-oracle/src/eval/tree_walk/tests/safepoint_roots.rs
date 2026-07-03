@@ -3610,6 +3610,137 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
 }
 
 #[test]
+fn existing_destination_live_metadata_preflights_object_body_generations_before_install() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let original_address = gc_address(original_value);
+    let destination_address = gc_address(destination_value);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), destination_address),
+        )
+        .expect("existing-destination live metadata preflight installs metadata");
+    let object_body_report = live_metadata
+        .object_body_and_generation_write_report()
+        .body_write_report();
+    let object_generation_report = live_metadata
+        .object_body_and_generation_write_report()
+        .generation_write_report();
+
+    assert_eq!(live_metadata.object_body_preflight_objects(), 1);
+    assert_eq!(live_metadata.object_generation_preflight_objects(), 1);
+    assert_eq!(object_body_report.promoted_to_old(), 1);
+    assert_eq!(object_generation_report.promoted_to_old(), 1);
+    assert_eq!(live_metadata.live_metadata().object_copies_installed(), 1);
+    assert_eq!(
+        live_metadata.live_metadata().object_generations_installed(),
+        1
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        Some(ResolvedValueGeneration::Heap {
+            address: destination_address,
+            generation: HeapGeneration::Old,
+        })
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    let object_generation_plan = outcome
+        .gc_stress_boundary_minor_gc_object_generation_write_plan()
+        .expect("object-generation metadata was installed");
+    let write = &object_generation_plan.writes()[0];
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                write.request(),
+                ValueTag::Lambda
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert!(outcome.value().raw_eq(original_value));
+}
+
+#[test]
+fn existing_destination_live_metadata_rejects_synthetic_destination_before_metadata_install() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let original_address = gc_address(original_value);
+    let destination_generation_before = outcome
+        .heap()
+        .generation(destination_value)
+        .expect("destination starts heap-bound");
+    let missing_destination = static_gc_address(0x1000_0000);
+
+    let err = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(missing_destination, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("strict live metadata rejects synthetic destinations before install");
+
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+            destination: missing_destination,
+        }
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_object_generations()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+            .is_empty()
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        None
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("unrelated destination remains heap-bound"),
+        destination_generation_before
+    );
+    assert!(outcome.value().raw_eq(original_value));
+}
+
+#[test]
 fn live_object_bodies_bind_existing_copied_destination_record_body() {
     let (mut outcome, original_value, destination_value) =
         boundary_lambda_outcome_with_existing_destination();

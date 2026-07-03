@@ -1404,6 +1404,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       records. This is still an already-bound-record preflight: it does not
       allocate synthetic destination records, reserve semispace storage, mutate
       roots/fields, write ABI object headers, or invoke Tier B.
+- [x] Current existing-destination live metadata preflight installer:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata`
+      derives the same all-in-one live metadata dry run as the ordinary
+      `with_live_metadata` bridge, validates the same outcome-owned side-table
+      payloads, then lowers the merged object-copy plan to the heap-record
+      paired body/generation validator before installing forwarding slots or
+      outcome-owned metadata. Tests cover promoted existing-destination success
+      with a body/generation preflight report while leaving destination
+      body/generation state unchanged, and synthetic destination rejection before
+      forwarding or metadata installation. This is a stricter
+      already-bound-record installer, not a full collector commit: it does not
+      commit the staged body/generation writes, allocate synthetic destination
+      records, reserve semispace storage, mutate roots/fields, write ABI object
+      headers, or invoke Tier B.
 - [x] Current heap-record generation-state precursor:
       `EvalHeap` records now store explicit `HeapGeneration` metadata separately
       from allocator ownership. Worker allocations initialize as young,
@@ -2545,6 +2559,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       reference-writeback, outcome-owned root/heap-field destination-binding
       metadata, and remembered-set payloads before installing outcome-owned side
       tables and clearing the outcome card table together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata`
+      uses the same all-in-one metadata path, and before installing metadata it
+      stages paired object-body/generation writes for the merged object-copy
+      plan, rejecting synthetic destinations before forwarding or metadata
+      installation.
       `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
       validates installed destination-byte snapshots against their
       action-implied generation and object-copy byte length, producing

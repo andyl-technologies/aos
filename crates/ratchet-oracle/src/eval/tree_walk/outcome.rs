@@ -44,6 +44,8 @@ const BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITES_TABLE: &str =
     "boundary minor-GC object-generation writes";
 const BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITE_BYTES_TABLE: &str =
     "boundary minor-GC object-generation write bytes";
+const BOUNDARY_MINOR_GC_OBJECT_BODY_GENERATION_PREFLIGHT_REQUESTS_TABLE: &str =
+    "boundary minor-GC object body/generation preflight requests";
 const BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE: &str =
     "boundary minor-GC forwarding destination bindings";
 const BOUNDARY_MINOR_GC_FORWARDING_HEADER_WRITES_TABLE: &str =
@@ -2980,6 +2982,26 @@ fn boundary_minor_gc_live_object_generations_from_objects(
     }
 
     Ok(object_generations)
+}
+
+fn boundary_minor_gc_object_body_generation_preflight_plan_from_generations(
+    object_generations: &[EvalGcStressBoundaryMinorGcLiveObjectGeneration],
+) -> Result<AllocationCollectorPollObjectByteCopyPlan, EvalHeapError> {
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(object_generations.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_BODY_GENERATION_PREFLIGHT_REQUESTS_TABLE,
+            entries: object_generations.len(),
+        })?;
+
+    for generation in object_generations {
+        requests.push(generation.request());
+    }
+
+    Ok(AllocationCollectorPollObjectByteCopyPlan::from_requests(
+        requests,
+    ))
 }
 
 fn boundary_minor_gc_destination_object_generation_bindings_from_objects(
@@ -9509,6 +9531,60 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     }
 }
 
+/// Boundary live metadata installation gated by existing destination records.
+///
+/// This report wraps the ordinary live metadata dry run and records the
+/// no-mutation heap-record body/generation preflight that succeeded before any
+/// live forwarding slots, outcome-owned metadata side tables, remembered-set
+/// state, or card-table state were changed. It still does not write live object
+/// bodies or heap-record generations; it only proves those paired writes can be
+/// staged for destination records that already exist in the evaluator heap side
+/// table.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun {
+    live_metadata: EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun,
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+}
+
+impl EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun {
+    const fn new(
+        live_metadata: EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun,
+        object_body_and_generation_write_report: AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    ) -> Self {
+        Self {
+            live_metadata,
+            object_body_and_generation_write_report,
+        }
+    }
+
+    /// Returns the live metadata dry run installed after the preflight succeeded.
+    pub const fn live_metadata(&self) -> &EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
+        &self.live_metadata
+    }
+
+    /// Returns the no-mutation body/generation preflight report.
+    pub const fn object_body_and_generation_write_report(
+        &self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
+    /// Returns how many existing destinations were covered by the body preflight.
+    pub const fn object_body_preflight_objects(&self) -> usize {
+        self.object_body_and_generation_write_report
+            .body_write_report()
+            .objects()
+    }
+
+    /// Returns how many existing destinations were covered by the generation preflight.
+    pub const fn object_generation_preflight_objects(&self) -> usize {
+        self.object_body_and_generation_write_report
+            .generation_write_report()
+            .objects()
+    }
+}
+
 /// Aggregate counts and payload bytes from owned boundary minor-GC dry runs.
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
@@ -11212,6 +11288,71 @@ impl EvalOutcome {
         promotion_policy: MinorGcPromotionPolicy,
         bases: MinorGcDestinationBases,
     ) -> Result<EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun, EvalHeapError> {
+        let (live_metadata, _) = self
+            .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata_inner(
+                promotion_policy,
+                bases,
+                false,
+            )?;
+        Ok(live_metadata)
+    }
+
+    /// Runs a boundary dry run, preflights existing destinations, and installs metadata.
+    ///
+    /// This is the strict existing-destination variant of
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`].
+    /// It derives the same owned dry run and validates the same side-table
+    /// payloads, then stages paired heap-record object-body/generation writes
+    /// for the merged destination plan before any live forwarding slots,
+    /// outcome-owned metadata, remembered-set state, or card-table state are
+    /// mutated. Only after that no-mutation preflight succeeds does it install
+    /// the same live metadata as the ordinary installer.
+    ///
+    /// This remains a metadata bridge: it does not commit the staged object-body
+    /// or generation writes, allocate synthetic destination records, reserve
+    /// semispace storage, mutate roots or heap fields, write ABI object headers,
+    /// or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] under the same conditions as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`],
+    /// and also if any copied/promoted destination address does not already
+    /// belong to this evaluator heap or if the paired body/generation preflight
+    /// cannot be staged. When an error is returned before forwarding
+    /// installation, live metadata and heap-record state are left unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun, EvalHeapError>
+    {
+        let (live_metadata, object_body_and_generation_write_report) = self
+            .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata_inner(
+                promotion_policy,
+                bases,
+                true,
+            )?;
+        Ok(
+            EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun::new(
+                live_metadata,
+                object_body_and_generation_write_report,
+            ),
+        )
+    }
+
+    fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata_inner(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+        preflight_existing_destinations: bool,
+    ) -> Result<
+        (
+            EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun,
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+        ),
+        EvalHeapError,
+    > {
         let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
         let forwarding_slots =
             boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
@@ -11276,6 +11417,18 @@ impl EvalOutcome {
             dry_run.commit_applications(),
             self.thunk_resolve_remembered_set.epoch(),
         )?;
+        let object_body_and_generation_write_report = if preflight_existing_destinations {
+            let object_body_plan =
+                boundary_minor_gc_object_body_generation_preflight_plan_from_generations(
+                    &object_generations,
+                )?;
+            self.heap
+                .validate_collector_poll_minor_gc_object_body_and_generation_writes(
+                    &object_body_plan,
+                )?
+        } else {
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport::default()
+        };
 
         let forwarding_install_report = self
             .heap
@@ -11306,16 +11459,19 @@ impl EvalOutcome {
             GcCardTableClearReport::default()
         };
 
-        Ok(EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun::new(
-            dry_run,
-            forwarding_install_report,
-            forwarding_destination_binding_install_report,
-            destination_storage_install_report,
-            object_generation_install_report,
-            reference_writeback_install_report,
-            writeback_destination_binding_install_report,
-            remembered_set_published,
-            card_table_clear_report,
+        Ok((
+            EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun::new(
+                dry_run,
+                forwarding_install_report,
+                forwarding_destination_binding_install_report,
+                destination_storage_install_report,
+                object_generation_install_report,
+                reference_writeback_install_report,
+                writeback_destination_binding_install_report,
+                remembered_set_published,
+                card_table_clear_report,
+            ),
+            object_body_and_generation_write_report,
         ))
     }
 

@@ -5986,6 +5986,20 @@ and helps the oracle directly.
       records. This remains an already-bound-record preflight: it does not
       allocate synthetic destination records, reserve semispace storage, mutate
       roots/fields, write ABI object headers, or invoke Tier B.
+- [x] Current existing-destination live metadata preflight installer:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata`
+      derives the same all-in-one live metadata dry run as the ordinary
+      `with_live_metadata` bridge, validates the same outcome-owned side-table
+      payloads, then lowers the merged object-copy plan to the heap-record
+      paired body/generation validator before installing forwarding slots or
+      outcome-owned metadata. Unit tests cover promoted existing-destination
+      success with a body/generation preflight report while leaving destination
+      body/generation state unchanged, and synthetic destination rejection before
+      forwarding or metadata installation. This remains a stricter
+      already-bound-record installer, not a full collector commit: it does not
+      commit the staged body/generation writes, allocate synthetic destination
+      records, reserve semispace storage, mutate roots/fields, write ABI object
+      headers, or invoke Tier B.
 - [x] Current heap-record generation-state precursor:
       `EvalHeap` records store explicit `HeapGeneration` metadata separately
       from allocator ownership. Worker allocations initialize as young,
@@ -6930,6 +6944,11 @@ and helps the oracle directly.
       destination-binding report before the first live metadata mutation, and
       then installs the outcome-owned side tables and clears the outcome card
       table together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata`
+      uses the same all-in-one metadata path, and before installing metadata it
+      stages paired object-body/generation writes for the merged object-copy
+      plan, rejecting synthetic destinations before forwarding or metadata
+      installation.
       These helpers still do not bind those bytes to live
       heap-object bodies, live root/field storage, real ABI object-header
       forwarding storage, real heap-record object-generation state, or
