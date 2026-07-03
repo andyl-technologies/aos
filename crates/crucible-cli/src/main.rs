@@ -136,6 +136,10 @@ enum OutputFormat {
 }
 
 impl OutputFormat {
+    fn is_machine_readable(self) -> bool {
+        matches!(self, Self::Jsonl | Self::Json)
+    }
+
     fn triage_report_format(self) -> crucible::FailureClusterReportFormat {
         match self {
             Self::Jsonl => crucible::FailureClusterReportFormat::JsonLines,
@@ -501,6 +505,24 @@ impl CliSubcommand {
             Commands::Debug(_) => Self::Debug,
             Commands::Serve(_) => Self::Serve,
             Commands::Completions(_) => Self::Completions,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Verify => "verify",
+            Self::Selftest => "selftest",
+            Self::Save => "save",
+            Self::Resume => "resume",
+            Self::Fork => "fork",
+            Self::Replay => "replay",
+            Self::Search => "search",
+            Self::Fuzz => "fuzz",
+            Self::Triage => "triage",
+            Self::Debug => "debug",
+            Self::Serve => "serve",
+            Self::Completions => "completions",
         }
     }
 }
@@ -2930,6 +2952,15 @@ impl BackendCommandStatus {
         CliError::Outcome(self).exit_code()
     }
 
+    fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Crashed => "crashed",
+            Self::Timeout => "timeout",
+        }
+    }
+
     fn non_passing_variants() -> [Self; 3] {
         [Self::Failed, Self::Crashed, Self::Timeout]
     }
@@ -5355,9 +5386,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Verify(args) => Some(plan_verify_invocation(args, &run_store_root)?),
         _ => None,
     };
+    let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
-        if !cli.quiet {
+        if emit_human {
             println!("{}", plan.seed_announcement());
         }
     }
@@ -5383,7 +5415,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ) {
             mark_mock_failure_outcome(cli, &backend_plan, &mut outcome, ergonomics_plan.as_ref())?;
         }
-        if backend_plan.should_announce(cli.quiet) {
+        if emit_human && backend_plan.should_announce(cli.quiet) {
             println!("{}", backend_plan.announcement());
         }
         emit_backend_command_output(cli, &outcome)?;
@@ -5594,13 +5626,11 @@ fn mark_mock_failure_outcome(
 }
 
 fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Result<(), CliError> {
-    let _trace = emit_canonical_trace(
-        cli.format,
-        &outcome.canonical_log,
-        cli.trace.as_deref(),
-        !cli.quiet,
-    )?;
-    if !cli.quiet {
+    let trace_entries = backend_machine_readable_trace_entries(outcome);
+    let _trace =
+        emit_canonical_trace(cli.format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
+    let emit_human = !cli.quiet && should_emit_human_backend_output(cli.format);
+    if emit_human {
         for line in &outcome.stdout {
             println!("{line}");
         }
@@ -5610,7 +5640,7 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
             for (label, artifact) in &outcome.side_reproduction_artifacts {
                 let slug = format!("{}-{label}", outcome.status.failure_slug());
                 let report = write_failure_reproduction_artifact(cli, artifact, &slug)?;
-                if !cli.quiet {
+                if emit_human {
                     println!(
                         "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
                         label,
@@ -5638,7 +5668,7 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
         };
         let report =
             write_failure_reproduction_artifact(cli, artifact, outcome.status.failure_slug())?;
-        if !cli.quiet {
+        if emit_human {
             println!(
                 "crucible: wrote reproduction artifact {} ({}) digest={}",
                 report.path.display(),
@@ -5656,6 +5686,42 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
         }
     }
     Ok(())
+}
+
+fn should_emit_human_backend_output(format: OutputFormat) -> bool {
+    !format.is_machine_readable()
+}
+
+fn should_emit_human_dispatch_output(cli: &Cli) -> bool {
+    !cli.quiet && should_emit_human_backend_output(cli.format)
+}
+
+fn backend_machine_readable_trace_entries(
+    outcome: &BackendCommandOutcome,
+) -> Vec<CanonicalLogEntry> {
+    let mut entries = outcome.canonical_log.clone();
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: entries
+            .last()
+            .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+            .unwrap_or(0),
+        node: String::from("cli"),
+        kind: String::from("final_outcome"),
+        summary: final_outcome_summary(outcome),
+    });
+    entries
+}
+
+fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
+    format!(
+        "subcommand={} status={} exit_code={} canonical_log={} artifact={}",
+        outcome.subcommand.label(),
+        outcome.status.label(),
+        outcome.exit_code,
+        outcome.canonical_log_digest,
+        outcome.artifact_digest
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9226,6 +9292,92 @@ mod tests {
     }
 
     #[test]
+    fn cli_exit_machine_readable_mapping_matches_rfc_15() {
+        let cases = [
+            (CliError::Outcome(BackendCommandStatus::Passed), 0),
+            (CliError::Outcome(BackendCommandStatus::Failed), 1),
+            (CliError::ReplayCheck(String::from("mismatch")), 1),
+            (CliError::Outcome(BackendCommandStatus::Timeout), 2),
+            (CliError::Outcome(BackendCommandStatus::Crashed), 3),
+            (CliError::Serve(String::from("backend error")), 3),
+            (
+                CliError::Identity(String::from("pinned identity mismatch")),
+                3,
+            ),
+            (CliError::Backend(String::from("discovery/config error")), 4),
+            (CliError::InvalidScenario(String::from("bad scenario")), 5),
+            (CliError::Artifact(String::from("bad artifact")), 5),
+            (CliError::Usage(String::from("bad flags")), 64),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.exit_code(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("1"),
+            String::from("run"),
+            scenario.display().to_string(),
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let run_plan = plan_run_invocation(args, temp.path())?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("run should resolve a seed");
+        let outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &plan_backend_selection(&cli)?.expect("run should require backend selection"),
+            Some(&seed_plan),
+            Some(&run_plan),
+            None,
+            &mut NullBackendCommandRunner,
+        )?;
+
+        let entries = backend_machine_readable_trace_entries(&outcome);
+        let final_entry = entries.last().expect("final outcome entry");
+        assert_eq!(entries.len(), outcome.canonical_log.len() + 1);
+        assert_eq!(final_entry.kind, "final_outcome");
+        assert_eq!(final_entry.node, "cli");
+        assert!(final_entry.summary.contains("subcommand=run"));
+        assert!(final_entry.summary.contains("status=passed"));
+        assert!(final_entry.summary.contains("exit_code=0"));
+        assert!(final_entry.summary.contains(&outcome.canonical_log_digest));
+        assert!(final_entry.summary.contains(&outcome.artifact_digest));
+
+        let jsonl = render_canonical_event_log(OutputFormat::Jsonl, &entries)?;
+        let jsonl_text = String::from_utf8(jsonl.bytes)?;
+        assert_eq!(jsonl_text.lines().count(), entries.len());
+        assert!(
+            jsonl_text
+                .lines()
+                .last()
+                .expect("jsonl final line")
+                .contains("\"kind\":\"final_outcome\"")
+        );
+        let json = render_canonical_event_log(OutputFormat::Json, &entries)?;
+        assert!(String::from_utf8(json.bytes)?.contains("\"kind\":\"final_outcome\""));
+        assert!(!should_emit_human_backend_output(OutputFormat::Jsonl));
+        assert!(!should_emit_human_backend_output(OutputFormat::Json));
+        assert!(should_emit_human_backend_output(OutputFormat::Table));
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_run_workflow_executes_local_double_session_and_timeout_budget()
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
@@ -10683,7 +10835,14 @@ mod tests {
         emit_backend_command_output(&cli, &outcome)?;
 
         let trace_text = fs::read_to_string(&trace)?;
-        assert_eq!(trace_text.lines().count(), outcome.canonical_log.len());
+        assert_eq!(trace_text.lines().count(), outcome.canonical_log.len() + 1);
+        assert!(
+            trace_text
+                .lines()
+                .last()
+                .expect("trace should include final outcome")
+                .contains("\"kind\":\"final_outcome\"")
+        );
         let artifact_entries = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
         assert_eq!(artifact_entries.len(), 1);
         let artifact_path = artifact_entries[0].path();

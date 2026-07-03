@@ -1060,6 +1060,14 @@ branch on the verdict without parsing output:
 - [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
+  Work in progress under `checks.crucible.phase5.cliExitMachineReadable`: the
+  backend-routed output path now appends a machine-readable final-outcome record
+  to canonical `json`/`jsonl` traces, keeps human summary/footer lines out of
+  machine-readable stdout, and regression-tests the RFC §15 exit-code mapping
+  for success, failure/divergence, timeout, crash/backend/identity, discovery,
+  invalid-artifact/scenario, and usage classes. Full closure remains blocked on
+  the remaining run-capable command-behavior gates (`T-CLI-7 … T-CLI-13`) so the
+  same output contract can be certified across every implemented runner.
 - [ ] **T-CLI-16** Implement `completions` (generate shell completions) and the
   `--help`/`--version` surface, verifying help text matches the normative copy in
   §6–§14 and stays in sync with flag behavior. — satisfies [CLI-6]; spec §2.1.
