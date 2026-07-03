@@ -284,6 +284,72 @@ fn cardinality_rejects_malformed_local_var_payloads() {
 }
 
 #[test]
+fn cardinality_rejects_unreachable_malformed_payloads_before_marking_facts() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"x").expect("symbol interns");
+    let nodes = vec![
+        IrNode::new(
+            IrKind::Int,
+            Span::new(8, 9),
+            EffectClass::pure(),
+            IrData::Int(1),
+        ),
+        IrNode::new(
+            IrKind::Null,
+            Span::new(16, 17),
+            EffectClass::pure(),
+            IrData::None,
+        ),
+        IrNode::new(
+            IrKind::Let,
+            Span::new(0, 17),
+            EffectClass::pure(),
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: IrId::new(1),
+                frame: None,
+            },
+        ),
+        IrNode::new(
+            IrKind::LocalVar,
+            Span::new(18, 19),
+            EffectClass::pure(),
+            IrData::None,
+        ),
+    ];
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
+    let mut ir = Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value: IrId::new(0),
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_cardinality(&mut ir).expect_err("invalid local payload errors");
+
+    assert!(matches!(
+        error,
+        CardinalityAnalysisError::InvalidPayload {
+            id,
+            kind: IrKind::LocalVar,
+            expected: "local slot payload",
+        } if id == IrId::new(3)
+    ));
+    assert_eq!(cardinality(&ir, IrId::new(0)), Cardinality::Many);
+}
+
+#[test]
 fn full_laziness_reports_closed_pure_let_bindings_under_simple_lambdas() {
     let ir = lowered("x: let y = 1 + 2; in y + x");
     let report = analyze_full_laziness(&ir).expect("full-laziness analysis succeeds");

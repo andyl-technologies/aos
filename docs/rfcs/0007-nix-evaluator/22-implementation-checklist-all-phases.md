@@ -6880,6 +6880,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       leave stale cardinality entries outside the IR arena. This is a
       fact-substrate consistency check only; it does not add whole-program
       cardinality precision or new single-entry-thunk lowering.
+- [x] Current cardinality payload-validation hardening:
+      `annotate_cardinality` now validates every arena node's kind/payload
+      shape before local usage counting mutates binding facts, so unreachable
+      malformed raw/imported IR cannot leave a partially-refined cardinality
+      table. This is an analyzer-boundary check only; it does not add
+      whole-program usage precision or single-entry-thunk lowering.
 - [x] Current dead-binding elimination planning precursor:
       `ratchet-core::analysis::dead_binding` consumes cardinality facts and
       returns a conservative plan for `let` bindings whose value code can be

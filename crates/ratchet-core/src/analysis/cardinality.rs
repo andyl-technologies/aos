@@ -124,8 +124,18 @@ impl<'a> CardinalityAnalyzer<'a> {
     }
 
     fn run(mut self) -> Result<CardinalityAnalysisReport, CardinalityAnalysisError> {
+        self.validate_payloads()?;
         self.visit(self.ir.root)?;
         Ok(self.report)
+    }
+
+    fn validate_payloads(&self) -> Result<(), CardinalityAnalysisError> {
+        for index in 0..self.ir.arena.nodes().len() {
+            let id = IrId::new(index as u32);
+            let node = *self.node(id)?;
+            self.validate_payload(id, node)?;
+        }
+        Ok(())
     }
 
     fn visit(&mut self, id: IrId) -> Result<(), CardinalityAnalysisError> {
