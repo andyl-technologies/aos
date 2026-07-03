@@ -1045,6 +1045,187 @@ fn collector_poll_minor_gc_reference_writeback_plan_rejects_stale_poll_before_mu
 }
 
 #[test]
+fn collector_poll_minor_gc_reference_writebacks_apply_to_safepoint_buffers_all_roots() {
+    let (evaluator, live, value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("collector-poll reference writebacks apply to buffers");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 10);
+    assert_eq!(application.scanned_objects(), 1);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 10);
+    assert_eq!(application.root_writebacks(), 10);
+    assert_eq!(application.heap_field_writebacks(), 0);
+    assert_eq!(application.applied_root_writebacks(), 10);
+    assert_eq!(application.applied_heap_field_writebacks(), 0);
+    assert_eq!(application.applied_writebacks(), 10);
+    assert_eq!(application.report().root_writebacks(), 10);
+    assert_eq!(application.root_value_writeback_slots().len(), 10);
+    assert!(application.heap_field_writeback_slots().is_empty());
+    let relocated = relocated_value(ValueTag::Lambda, nursery_base);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+}
+
+#[test]
+fn collector_poll_minor_gc_reference_writebacks_reject_stale_poll_before_buffers() {
+    let (mut evaluator, live, value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let later = alloc_test_lambda(&mut evaluator, 101);
+    assert!(!later.raw_eq(live));
+    let current = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("later allocation requested a collector poll");
+
+    let err = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+            &value_stack,
+        )
+        .expect_err("stale poll is rejected before buffer application");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Scan(TreeWalkSafepointScanError::StaleCollectorPoll {
+            poll,
+            current: Some(current),
+        },)
+    );
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+}
+
+#[test]
+fn reference_writebacks_to_safepoint_buffers_reject_stale_root_slot() {
+    let (evaluator, live, value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+            &value_stack,
+        )
+        .expect("reference writeback plan derives");
+    let stale = Value::int(99);
+    evaluator.env[0]
+        .set(0, stale)
+        .expect("active frame slot can be made stale");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_buffers(&plan, &value_stack)
+        .expect_err("stale typed root slot rejects buffer application");
+
+    let TreeWalkSafepointRootWritebackError::Heap(
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch { actual_tag, .. },
+    ) = err
+    else {
+        panic!("unexpected error: {err:?}");
+    };
+    assert_eq!(actual_tag, ValueTag::Int);
+    assert_raw_eq(value_stack[0], live);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        stale,
+    );
+}
+
+#[test]
+fn typed_reference_writeback_plan_rejects_stale_heap_field_before_root_buffer_mutation() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (evaluator, child, _parent, poll, value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives");
+    let root_plan = plan.writebacks().root_writebacks();
+    let heap_plan = plan.writebacks().heap_field_writebacks();
+    let mut root_slots: Vec<_> = root_plan
+        .writebacks()
+        .iter()
+        .map(|writeback| {
+            AllocationCollectorPollRootValueWritebackSlot::new(
+                writeback.source().clone(),
+                writeback
+                    .expected_value()
+                    .expect("expected root reconstructs"),
+            )
+        })
+        .collect();
+    let mut heap_slots: Vec<_> = heap_plan
+        .writebacks()
+        .iter()
+        .map(|writeback| {
+            AllocationCollectorPollHeapFieldWritebackSlot::new(
+                writeback.validation_object(),
+                writeback.writeback_object(),
+                writeback.field_index(),
+                writeback.source().clone(),
+                ResolvedValueGeneration::Inline,
+            )
+        })
+        .collect();
+
+    let err = plan
+        .writebacks()
+        .apply_to_value_and_heap_field_slots(&mut root_slots, &mut heap_slots)
+        .expect_err("stale heap-field metadata rejects typed combined application");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 4,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    for slot in &root_slots {
+        assert_raw_eq(slot.value(), child);
+    }
+    assert_eq!(heap_slots[0].value(), ResolvedValueGeneration::Inline);
+}
+
+#[test]
 fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     let nursery_base = static_gc_address(0x1000_0000);
     let (evaluator, child, parent, poll, value_stack) =
@@ -1102,6 +1283,86 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
         }
     );
     assert_raw_eq(value_stack[0], child);
+}
+
+#[test]
+fn collector_poll_minor_gc_reference_writebacks_apply_to_safepoint_buffers_mixed_partitions() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (evaluator, child, parent, poll, value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writebacks apply to buffers");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 4);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 5);
+    assert_eq!(application.root_writebacks(), 3);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.applied_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_writebacks(), 4);
+    let relocated = relocated_value(ValueTag::Lambda, nursery_base);
+    let root_sources: Vec<_> = application
+        .root_value_writeback_slots()
+        .iter()
+        .map(|slot| slot.source())
+        .collect();
+    assert!(root_sources.contains(&&EvalRootSource::ValueStack { slot: 0 }));
+    assert!(root_sources.contains(&&EvalRootSource::TreeWalkFrame { frame: 0, slot: 0 }));
+    assert!(root_sources.contains(&&EvalRootSource::ImportCache { index: 0 }));
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+
+    let heap_field_slots = application.heap_field_writeback_slots();
+    assert_eq!(heap_field_slots.len(), 1);
+    let heap_slot = &heap_field_slots[0];
+    assert_eq!(heap_slot.validation_object(), gc_address(parent));
+    assert_eq!(heap_slot.writeback_object(), gc_address(parent));
+    assert_eq!(heap_slot.field_index(), 0);
+    assert_eq!(
+        heap_slot.source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(
+        heap_slot.value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
 }
 
 #[test]

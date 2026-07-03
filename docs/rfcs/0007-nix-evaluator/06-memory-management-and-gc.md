@@ -2423,13 +2423,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
       exposes the complete root+heap-field writeback partition with scan,
       survivor, and reference-slot counts for the future full live-reference
-      writer. Tests cover the poll-derived all-root rewrite, direct stale-poll
-      rejection before mutation in both the planning wrapper and root-only
-      applicator, complete mixed root/field partition reporting down to the
-      remembered list-field owner/source/replacement, and dirty permanent-list
-      mixed-plan rejection before mutating the value stack, active frame root, or
-      ready import-cache root. These helpers still do not validate object
-      liveness, bind semispace storage, mutate interned
+      writer. `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
+      and
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
+      now prevalidate and apply the complete root+heap-field partition to
+      caller-owned typed root buffers plus heap-field metadata buffers before a
+      future live writer binds those buffers to evaluator storage. Tests cover
+      the poll-derived all-root rewrite, direct stale-poll rejection before
+      mutation in the planning wrapper, root-only applicator, and buffer
+      applicator, stale typed-root and heap-field buffer rejection before either
+      buffer partition is rewritten, complete mixed root/field partition
+      reporting down to the remembered list-field
+      owner/source/replacement, mixed root/heap-field buffer application, and
+      dirty permanent-list mixed-plan rejection before mutating the value stack,
+      active frame root, or ready import-cache root. These helpers still do not
+      validate object liveness, bind semispace storage, mutate interned
       roots, detached primop metadata, or JIT stack-map slots, copy object
       bodies, update heap fields, publish remembered/card-table state, or wire
       root writebacks into automatic allocation-safepoint collection.
@@ -2568,7 +2576,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
       preserves the complete root+heap-field partition for the future full
       live-reference writer, including exact remembered-field writeback metadata.
-      The
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
+      applies that partition to caller-owned typed root and heap-field buffers
+      without mutating evaluator storage. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints, and do not cover

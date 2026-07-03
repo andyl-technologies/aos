@@ -2915,6 +2915,35 @@ impl AllocationCollectorPollReferenceWritebackPlan {
             heap_field_writebacks: self.heap_field_writebacks.len(),
         })
     }
+
+    /// Applies typed root and heap-field writebacks to caller-owned buffers.
+    ///
+    /// This is the typed-root variant of [`Self::apply_to_slots`]. Root slots
+    /// contain concrete [`Value`] handles so tree-walk callers can preserve heap
+    /// tags while heap-field slots continue to carry generation-style metadata.
+    /// Both partitions are validated before either partition is rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if either caller-owned slot buffer no longer
+    /// matches its derived writeback plan, or if a planned root replacement
+    /// cannot be reconstructed as a typed [`Value`].
+    pub fn apply_to_value_and_heap_field_slots(
+        &self,
+        root_slots: &mut [AllocationCollectorPollRootValueWritebackSlot],
+        heap_field_slots: &mut [AllocationCollectorPollHeapFieldWritebackSlot],
+    ) -> Result<AllocationCollectorPollReferenceWritebackReport, EvalHeapError> {
+        validate_root_value_writeback_slots(&self.root_writebacks, root_slots)?;
+        validate_heap_field_writeback_slots(&self.heap_field_writebacks, heap_field_slots)?;
+
+        apply_root_value_writeback_slots(&self.root_writebacks, root_slots)?;
+        apply_heap_field_writeback_slots(&self.heap_field_writebacks, heap_field_slots);
+
+        Ok(AllocationCollectorPollReferenceWritebackReport {
+            root_writebacks: self.root_writebacks.len(),
+            heap_field_writebacks: self.heap_field_writebacks.len(),
+        })
+    }
 }
 
 /// A summary of caller-owned reference slots rewritten by a combined plan.
