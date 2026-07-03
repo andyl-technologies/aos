@@ -30,6 +30,8 @@ const BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE: &str =
     "boundary minor-GC live destination object bytes";
 const BOUNDARY_MINOR_GC_DESTINATION_OBJECT_GENERATION_BINDINGS_TABLE: &str =
     "boundary minor-GC destination object-generation bindings";
+const BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE: &str =
+    "boundary minor-GC forwarding destination bindings";
 const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE: &str =
     "boundary minor-GC root writeback destination bindings";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_DESTINATION_BINDINGS_TABLE: &str =
@@ -1004,6 +1006,73 @@ impl EvalGcStressBoundaryMinorGcDestinationObjectGenerationBinding {
     }
 }
 
+/// A forwarding value matched to an installed destination-byte snapshot.
+///
+/// The binding is validation metadata for a future ABI object-header writer. It
+/// proves that a forwarding value names the same destination object, generation,
+/// and payload bytes as the destination-copy metadata for its source. It does
+/// not write object headers, bind bytes to heap-object storage, or mutate
+/// generation state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcForwardingDestinationBinding {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    generation: HeapGeneration,
+    forwarded_value: ResolvedValueGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcForwardingDestinationBinding {
+    fn new(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        generation: HeapGeneration,
+        forwarded_value: ResolvedValueGeneration,
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            source,
+            destination,
+            generation,
+            forwarded_value,
+            request,
+            destination_bytes,
+        }
+    }
+
+    /// Returns the from-space object that owns the forwarding value.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the destination object address carried by the forwarding value.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the generation carried by the forwarding value.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the complete forwarding metadata value.
+    pub const fn forwarded_value(&self) -> ResolvedValueGeneration {
+        self.forwarded_value
+    }
+
+    /// Returns the object-copy request that installed the destination payload.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the installed destination payload bytes.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
 /// A root writeback matched to an installed destination-byte snapshot.
 ///
 /// The binding is validation metadata for a future live root writer. It proves
@@ -1526,6 +1595,133 @@ fn validate_boundary_minor_gc_destination_generation_objects(
     }
 
     Ok(())
+}
+
+fn boundary_minor_gc_forwarding_destination_bindings(
+    heap: &EvalHeap,
+    destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
+) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
+    let destination_objects = destination_storage.object_bytes();
+    let mut forwarding_slots = Vec::new();
+    forwarding_slots
+        .try_reserve_exact(destination_objects.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE,
+            entries: destination_objects.len(),
+        })?;
+
+    for object in destination_objects {
+        let Some(forwarded) = heap.minor_gc_forwarding_value_at(object.source())? else {
+            return Err(EvalHeapError::BoundaryMinorGcDestinationForwardingMissing {
+                source_address: object.source(),
+                destination: object.destination(),
+            });
+        };
+        forwarding_slots.push(MinorGcForwardingSlot::with_forwarded_value(
+            object.source(),
+            forwarded,
+        ));
+    }
+
+    boundary_minor_gc_forwarding_destination_bindings_from_slots(
+        &forwarding_slots,
+        destination_objects,
+    )
+}
+
+fn boundary_minor_gc_forwarding_destination_bindings_from_slots(
+    forwarding_slots: &[MinorGcForwardingSlot],
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
+    validate_boundary_minor_gc_destination_generation_objects(destination_objects)?;
+    for object in destination_objects {
+        if !forwarding_slots
+            .iter()
+            .any(|slot| slot.source() == object.source())
+        {
+            return Err(EvalHeapError::BoundaryMinorGcDestinationForwardingMissing {
+                source_address: object.source(),
+                destination: object.destination(),
+            });
+        }
+    }
+
+    let mut bindings = Vec::new();
+    bindings
+        .try_reserve_exact(forwarding_slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE,
+            entries: forwarding_slots.len(),
+        })?;
+
+    for (index, slot) in forwarding_slots.iter().enumerate() {
+        if forwarding_slots[..index]
+            .iter()
+            .any(|existing| existing.source() == slot.source())
+        {
+            return Err(EvalHeapError::CollectorPollForwardingSlotDuplicateSource {
+                index,
+                address: slot.source(),
+            });
+        }
+        let Some(forwarded_value) = slot.forwarded_value() else {
+            return Err(EvalHeapError::CollectorPollForwardingSlotEmpty {
+                index,
+                address: slot.source(),
+            });
+        };
+        let ResolvedValueGeneration::Heap {
+            address: destination,
+            generation,
+        } = forwarded_value
+        else {
+            return Err(EvalHeapError::BoundaryMinorGcForwardingDestinationNonHeap {
+                source_address: slot.source(),
+                actual: forwarded_value,
+            });
+        };
+        let destination_object = destination_objects
+            .iter()
+            .find(|object| object.source() == slot.source())
+            .ok_or(EvalHeapError::BoundaryMinorGcForwardingDestinationMissing {
+                source_address: slot.source(),
+            })?;
+        if destination != destination_object.destination() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcForwardingDestinationMismatch {
+                    source_address: slot.source(),
+                    expected: destination_object.destination(),
+                    actual: destination,
+                },
+            );
+        }
+        let expected_generation = validated_destination_object_generation(destination_object)?;
+        if generation != expected_generation {
+            return Err(EvalHeapError::BoundaryMinorGcForwardingGenerationMismatch {
+                source_address: slot.source(),
+                destination,
+                expected: expected_generation,
+                actual: generation,
+                action: destination_object.request().action(),
+            });
+        }
+
+        bindings.push(
+            EvalGcStressBoundaryMinorGcForwardingDestinationBinding::new(
+                slot.source(),
+                destination,
+                generation,
+                forwarded_value,
+                destination_object.request(),
+                clone_boundary_destination_storage_bytes(
+                    BOUNDARY_MINOR_GC_FORWARDING_DESTINATION_BINDINGS_TABLE,
+                    destination_object.destination_bytes(),
+                )?,
+            ),
+        );
+    }
+
+    Ok(bindings)
 }
 
 fn boundary_minor_gc_root_writeback_destination_bindings(
@@ -2600,6 +2796,253 @@ mod destination_object_generation_binding_tests {
             } if destination == request.destination()
         ));
         assert!(destination_storage.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod forwarding_destination_binding_tests {
+    use super::*;
+
+    fn address(bits: usize) -> GcHeapAddress {
+        GcHeapAddress::new(bits).expect("test address is non-zero")
+    }
+
+    fn heap(address: GcHeapAddress, generation: HeapGeneration) -> ResolvedValueGeneration {
+        ResolvedValueGeneration::Heap {
+            address,
+            generation,
+        }
+    }
+
+    fn request(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+    ) -> AllocationCollectorPollObjectByteCopyRequest {
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            source,
+            destination,
+            action,
+            generation_for_destination_action(action),
+            4,
+            8,
+        )
+    }
+
+    fn object_bytes(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes {
+        EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes::new(request, destination_bytes)
+    }
+
+    fn forwarding_slot(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        generation: HeapGeneration,
+    ) -> MinorGcForwardingSlot {
+        MinorGcForwardingSlot::with_forwarded_value(source, heap(destination, generation))
+    }
+
+    #[test]
+    fn matches_forwarding_slots_to_destination_snapshots() {
+        let copied_source = address(0x1000);
+        let copied_destination = address(0x2000);
+        let promoted_source = address(0x3000);
+        let promoted_destination = address(0x4000);
+        let copied_request = request(
+            copied_source,
+            copied_destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let promoted_request = request(
+            promoted_source,
+            promoted_destination,
+            MinorGcSurvivorAction::PromoteToOld,
+        );
+        let copied_bytes = vec![1, 2, 3, 4];
+        let promoted_bytes = vec![5, 6, 7, 8];
+        let forwarding_slots = [
+            forwarding_slot(copied_source, copied_destination, HeapGeneration::Young),
+            forwarding_slot(promoted_source, promoted_destination, HeapGeneration::Old),
+        ];
+        let destination_objects = [
+            object_bytes(copied_request, copied_bytes.clone()),
+            object_bytes(promoted_request, promoted_bytes.clone()),
+        ];
+
+        let bindings = boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            &forwarding_slots,
+            &destination_objects,
+        )
+        .expect("forwarding destination bindings validate");
+
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].source(), copied_source);
+        assert_eq!(bindings[0].destination(), copied_destination);
+        assert_eq!(bindings[0].generation(), HeapGeneration::Young);
+        assert_eq!(
+            bindings[0].forwarded_value(),
+            heap(copied_destination, HeapGeneration::Young)
+        );
+        assert_eq!(bindings[0].request(), copied_request);
+        assert_eq!(bindings[0].destination_bytes(), copied_bytes);
+        assert_eq!(bindings[1].source(), promoted_source);
+        assert_eq!(bindings[1].destination(), promoted_destination);
+        assert_eq!(bindings[1].generation(), HeapGeneration::Old);
+        assert_eq!(
+            bindings[1].forwarded_value(),
+            heap(promoted_destination, HeapGeneration::Old)
+        );
+        assert_eq!(bindings[1].request(), promoted_request);
+        assert_eq!(bindings[1].destination_bytes(), promoted_bytes);
+    }
+
+    #[test]
+    fn rejects_destination_snapshot_without_forwarding_value() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let destination_objects = [object_bytes(request, vec![1, 2, 3, 4])];
+
+        let err =
+            boundary_minor_gc_forwarding_destination_bindings_from_slots(&[], &destination_objects)
+                .expect_err("missing forwarding value is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcDestinationForwardingMissing {
+                source_address: actual_source,
+                destination: actual_destination,
+            } if actual_source == source && actual_destination == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_forwarding_value_without_destination_snapshot() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let forwarding_slots = [forwarding_slot(source, destination, HeapGeneration::Young)];
+
+        let err =
+            boundary_minor_gc_forwarding_destination_bindings_from_slots(&forwarding_slots, &[])
+                .expect_err("forwarding without destination is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcForwardingDestinationMissing {
+                source_address: actual_source,
+            } if actual_source == source
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_forwarding_source() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let forwarding_slots = [
+            forwarding_slot(source, destination, HeapGeneration::Young),
+            forwarding_slot(source, destination, HeapGeneration::Young),
+        ];
+        let destination_objects = [object_bytes(request, vec![1, 2, 3, 4])];
+
+        let err = boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            &forwarding_slots,
+            &destination_objects,
+        )
+        .expect_err("duplicate forwarding source is rejected");
+
+        assert_eq!(
+            err,
+            EvalHeapError::CollectorPollForwardingSlotDuplicateSource {
+                index: 1,
+                address: source,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_heap_forwarding_metadata() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let forwarding_slots = [MinorGcForwardingSlot::with_forwarded_value(
+            source,
+            ResolvedValueGeneration::Inline,
+        )];
+        let destination_objects = [object_bytes(request, vec![1, 2, 3, 4])];
+
+        let err = boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            &forwarding_slots,
+            &destination_objects,
+        )
+        .expect_err("non-heap forwarding metadata is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcForwardingDestinationNonHeap {
+                source_address: actual_source,
+                actual: ResolvedValueGeneration::Inline,
+            } if actual_source == source
+        ));
+    }
+
+    #[test]
+    fn rejects_forwarding_destination_mismatch() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let other_destination = address(0x3000);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let forwarding_slots = [forwarding_slot(
+            source,
+            other_destination,
+            HeapGeneration::Young,
+        )];
+        let destination_objects = [object_bytes(request, vec![1, 2, 3, 4])];
+
+        let err = boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            &forwarding_slots,
+            &destination_objects,
+        )
+        .expect_err("destination mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcForwardingDestinationMismatch {
+                source_address: actual_source,
+                expected,
+                actual,
+            } if actual_source == source
+                && expected == destination
+                && actual == other_destination
+        ));
+    }
+
+    #[test]
+    fn rejects_forwarding_generation_mismatch() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let forwarding_slots = [forwarding_slot(source, destination, HeapGeneration::Old)];
+        let destination_objects = [object_bytes(request, vec![1, 2, 3, 4])];
+
+        let err = boundary_minor_gc_forwarding_destination_bindings_from_slots(
+            &forwarding_slots,
+            &destination_objects,
+        )
+        .expect_err("generation mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcForwardingGenerationMismatch {
+                source_address: actual_source,
+                destination: actual_destination,
+                expected: HeapGeneration::Young,
+                actual: HeapGeneration::Old,
+                action: MinorGcSurvivorAction::CopyToNursery,
+            } if actual_source == source && actual_destination == destination
+        ));
     }
 }
 
@@ -3728,10 +4171,10 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
 /// validated against the same dry run. It installs evaluator forwarding
 /// side-table values, destination-byte snapshots, reference-writeback metadata,
 /// the merged next remembered set, and the daemon card-table clear together. It
-/// also validates root and heap-field writeback destination bindings before the
-/// first live metadata mutation. It still does not mutate live root variables,
-/// heap fields, object bytes, ABI forwarding headers, object generations, or
-/// semispace pages.
+/// also validates destination generation, forwarding-destination, and root/
+/// heap-field writeback destination bindings before the first live metadata
+/// mutation. It still does not mutate live root variables, heap fields, object
+/// bytes, ABI forwarding headers, object generations, or semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
@@ -4431,6 +4874,33 @@ impl EvalOutcome {
         )
     }
 
+    /// Matches installed forwarding values to destination-byte snapshots.
+    ///
+    /// This validates outcome-owned GC-stress bridge metadata only. Each
+    /// returned binding proves that an installed source forwarding value points
+    /// at the destination payload and action-implied generation produced for the
+    /// same source. It does not write ABI object headers, bind bytes to
+    /// heap-object storage, mutate object-generation state, or validate object
+    /// liveness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if an installed destination snapshot has no
+    /// matching forwarding value, if forwarding metadata is not heap-backed, if
+    /// the forwarding destination or generation disagrees with its destination
+    /// snapshot, if destination generation or payload-size validation fails, or
+    /// if the binding report cannot reserve storage. This installed-state view
+    /// is driven by destination snapshots; it does not enumerate unrelated
+    /// forwarding cells that may have been installed by another GC-stress bridge.
+    pub fn gc_stress_boundary_minor_gc_forwarding_destination_bindings(
+        &self,
+    ) -> Result<Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>, EvalHeapError> {
+        boundary_minor_gc_forwarding_destination_bindings(
+            &self.heap,
+            &self.gc_stress_boundary_minor_gc_destination_storage,
+        )
+    }
+
     /// Matches installed root writebacks to installed destination-byte snapshots.
     ///
     /// This validates outcome-owned GC-stress bridge metadata only. Each
@@ -4813,9 +5283,10 @@ impl EvalOutcome {
     ///
     /// The method derives one owned commit dry run, then validates every live
     /// metadata payload derived from it before mutating the outcome: sibling
-    /// survivor relocations, destination-byte snapshots, reference-writeback
-    /// metadata, root/heap-field destination bindings, remembered-set
-    /// publication, and live forwarding slots. After those checks pass, it
+    /// survivor relocations, destination-byte snapshots, destination
+    /// object-generation bindings, forwarding-destination bindings,
+    /// reference-writeback metadata, root/heap-field destination bindings,
+    /// remembered-set publication, and live forwarding slots. After those checks pass, it
     /// installs evaluator side-table forwarding values, destination-byte
     /// snapshots, reference-writeback metadata, the merged next remembered set,
     /// and clears the daemon card table. Empty boundaries leave the outcome
@@ -4832,11 +5303,11 @@ impl EvalOutcome {
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
     /// reference-writeback metadata have already been installed, if remembered
-    /// set publication cannot be merged, if writeback destination bindings do
-    /// not match the dry-run destination snapshots, or if forwarding
-    /// installation fails. All installable side-table payloads are validated
-    /// before the first live mutation; if forwarding installation fails,
-    /// destination storage,
+    /// set publication cannot be merged, if destination generation,
+    /// forwarding-destination, or writeback destination bindings do not match
+    /// the dry-run destination snapshots, or if forwarding installation fails.
+    /// All installable side-table payloads are validated before the first live
+    /// mutation; if forwarding installation fails, destination storage,
     /// reference-writeback metadata, remembered-set state, and card-table state
     /// are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
@@ -4855,6 +5326,11 @@ impl EvalOutcome {
             .can_install(destination_storage_install_report)?;
         let _destination_object_generation_bindings =
             boundary_minor_gc_destination_object_generation_bindings_from_objects(&object_bytes)?;
+        let _forwarding_destination_bindings =
+            boundary_minor_gc_forwarding_destination_bindings_from_slots(
+                &forwarding_slots,
+                &object_bytes,
+            )?;
         let writebacks =
             clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;
         let reference_writeback_install_report =

@@ -841,6 +841,71 @@ pub enum EvalHeapError {
         /// The installed byte-snapshot length.
         actual: usize,
     },
+    /// A forwarding value points at no installed destination-byte snapshot.
+    #[error(
+        "boundary minor-GC forwarding source 0x{source:x} points at missing destination payload",
+        source = source_address.address_bits()
+    )]
+    BoundaryMinorGcForwardingDestinationMissing {
+        /// The from-space source whose forwarding value lacks destination bytes.
+        source_address: GcHeapAddress,
+    },
+    /// A destination-byte snapshot has no matching forwarding value.
+    #[error(
+        "boundary minor-GC destination payload for source 0x{source:x} -> 0x{destination:x} has no forwarding value",
+        source = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcDestinationForwardingMissing {
+        /// The from-space source object.
+        source_address: GcHeapAddress,
+        /// The copied or promoted destination address.
+        destination: GcHeapAddress,
+    },
+    /// A forwarding value is not heap-backed destination metadata.
+    #[error(
+        "boundary minor-GC forwarding source 0x{source:x} is not heap destination metadata: {actual:?}",
+        source = source_address.address_bits()
+    )]
+    BoundaryMinorGcForwardingDestinationNonHeap {
+        /// The from-space source whose forwarding metadata is invalid.
+        source_address: GcHeapAddress,
+        /// The non-heap forwarding metadata.
+        actual: ResolvedValueGeneration,
+    },
+    /// A forwarding value disagrees with its destination-byte snapshot.
+    #[error(
+        "boundary minor-GC forwarding source 0x{source:x} expected destination 0x{expected:x}, found 0x{actual:x}",
+        source = source_address.address_bits(),
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    BoundaryMinorGcForwardingDestinationMismatch {
+        /// The from-space source whose forwarding destination disagreed.
+        source_address: GcHeapAddress,
+        /// The destination address installed with copied bytes.
+        expected: GcHeapAddress,
+        /// The destination address carried by forwarding metadata.
+        actual: GcHeapAddress,
+    },
+    /// A forwarding value's generation disagrees with its destination action.
+    #[error(
+        "boundary minor-GC forwarding source 0x{source:x} destination 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        source = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcForwardingGenerationMismatch {
+        /// The from-space source whose forwarding generation disagreed.
+        source_address: GcHeapAddress,
+        /// The copied or promoted destination address.
+        destination: GcHeapAddress,
+        /// The generation implied by the destination action.
+        expected: HeapGeneration,
+        /// The generation carried by forwarding metadata.
+        actual: HeapGeneration,
+        /// The object-copy action that implied the expected generation.
+        action: MinorGcSurvivorAction,
+    },
     /// A heap-field writeback replacement is not heap-backed metadata.
     #[error(
         "boundary minor-GC heap-field writeback for 0x{writeback_object:x}[{field_index}] {field_source:?} replacement is not heap metadata: {value:?}",

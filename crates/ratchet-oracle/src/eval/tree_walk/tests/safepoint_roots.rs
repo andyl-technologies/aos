@@ -1139,6 +1139,12 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
             .expect("empty object-generation binding report builds")
             .is_empty()
     );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_bindings()
+            .expect("empty forwarding destination binding report builds")
+            .is_empty()
+    );
     assert_eq!(
         outcome
             .heap()
@@ -1234,6 +1240,37 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert_eq!(
         object_generation_bindings[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+    let forwarding_destination_bindings = outcome
+        .gc_stress_boundary_minor_gc_forwarding_destination_bindings()
+        .expect("forwarding destination bindings validate");
+    assert_eq!(forwarding_destination_bindings.len(), 1);
+    assert_eq!(
+        forwarding_destination_bindings[0].source(),
+        original_address
+    );
+    assert_eq!(
+        forwarding_destination_bindings[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        forwarding_destination_bindings[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        forwarding_destination_bindings[0].forwarded_value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        forwarding_destination_bindings[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        forwarding_destination_bindings[0].destination_bytes(),
         live_object_copy.destination_bytes()
     );
 
