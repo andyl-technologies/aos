@@ -279,6 +279,7 @@
       campaignManifestGate = crucibleChecks.phase7.crucibleCampaignManifest;
       campaignSeedingGate = crucibleChecks.phase7.crucibleCampaignSeeding;
       campaignStorageBoundingGate = crucibleChecks.phase7.crucibleCampaignStorageBounding;
+      determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -298,6 +299,7 @@
           campaignManifestGate
           campaignSeedingGate
           campaignStorageBoundingGate
+          determinismGuardrailGate
         ];
 
         phases = [
@@ -375,6 +377,12 @@
               grep -q '^corpus_retention_reproducible=true$' "$campaign_storage_bounding_result"
               grep -q '^findings_ledger_retention=never-evict$' "$campaign_storage_bounding_result"
 
+              determinism_guardrail_result="${determinismGuardrailGate}/result"
+              grep -q '^PASS$' "$determinism_guardrail_result"
+              grep -q '^tasks=T-DCE-7$' "$determinism_guardrail_result"
+              grep -q '^harness_lint_extension=distribution-metadata-flow$' "$determinism_guardrail_result"
+              grep -q '^distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban$' "$determinism_guardrail_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -448,6 +456,7 @@
               campaign_manifest_gate_result=${campaignManifestGate}/result
               campaign_seeding_gate_result=${campaignSeedingGate}/result
               campaign_storage_bounding_gate_result=${campaignStorageBoundingGate}/result
+              determinism_guardrail_gate_result=${determinismGuardrailGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -510,6 +519,10 @@
               corpus_retention_reproducible=true
               corpus_retention_root=source-cap-seed-proof
               findings_ledger_retention=never-evict
+              distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
+              distribution_metadata_lint=distribution-metadata-flow
+              distribution_metadata_forbidden_paths=reduce,Decision,content-key,artifact
+              distribution_metadata_allowed_paths=claim-lease,affinity,telemetry,progress
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer
