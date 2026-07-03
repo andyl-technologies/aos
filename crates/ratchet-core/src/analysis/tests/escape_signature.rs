@@ -1,7 +1,37 @@
 //! Primitive-operation escape signature tests.
 
 use super::*;
+use crate::builtins::BUILTINS;
 use crate::syntax::Symbol;
+
+const IMMEDIATE_SCALAR_PRIMOP_NAMES: &[&[u8]] = &[
+    b"isAttrs",
+    b"isList",
+    b"isFunction",
+    b"isString",
+    b"isInt",
+    b"isFloat",
+    b"isBool",
+    b"isNull",
+    b"isPath",
+    b"length",
+    b"ceil",
+    b"floor",
+    b"hasContext",
+    b"stringLength",
+    b"sub",
+    b"mul",
+    b"div",
+    b"bitAnd",
+    b"bitOr",
+    b"bitXor",
+    b"compareVersions",
+    b"lessThan",
+    b"all",
+    b"any",
+    b"hasAttr",
+    b"elem",
+];
 
 fn root_escape(source: &str) -> Escape {
     let ir = annotate_allocations(source);
@@ -59,6 +89,34 @@ fn primop_escape_signature_classifies_only_scalar_results() {
         primop_escape_signature(b"__notABuiltin"),
         PrimOpEscapeSignature::Conservative
     );
+}
+
+#[test]
+fn primop_escape_signature_matches_registered_builtin_allowlist() {
+    for name in IMMEDIATE_SCALAR_PRIMOP_NAMES {
+        assert!(
+            BUILTINS.lookup(name).is_some(),
+            "{}",
+            String::from_utf8_lossy(name)
+        );
+    }
+
+    for builtin in BUILTINS.iter() {
+        let expected = if IMMEDIATE_SCALAR_PRIMOP_NAMES
+            .iter()
+            .any(|name| *name == builtin.name())
+        {
+            PrimOpEscapeSignature::ImmediateScalar
+        } else {
+            PrimOpEscapeSignature::Conservative
+        };
+        assert_eq!(
+            primop_escape_signature(builtin.name()),
+            expected,
+            "{}",
+            String::from_utf8_lossy(builtin.name())
+        );
+    }
 }
 
 #[test]

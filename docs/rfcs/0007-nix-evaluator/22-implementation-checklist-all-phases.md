@@ -6934,6 +6934,14 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
+- [x] Current escape-signature harness precursor:
+      `analysis::tests::escape_signature` now walks every registered builtin
+      declaration and checks `primop_escape_signature` against an explicit
+      allowlist of immediate-scalar primop names. This pins the current
+      no-escape surface so new builtin declarations or direct-lowering changes
+      cannot silently gain scalar-replacement eligibility. This is not the full
+      property-test fuzzing harness, does not execute randomized primop inputs,
+      and does not prove aggregate/result-forwarding escape behavior.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
       default, `Eager` gated by proven strictness, and `Scalar` gated by both
