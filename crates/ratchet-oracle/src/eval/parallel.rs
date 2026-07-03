@@ -534,6 +534,39 @@ mod tests {
     }
 
     #[test]
+    fn nursery_ownership_bridge_rejects_incomplete_scheduler_report() {
+        let report = ParallelTopLevelExecutionReport {
+            worker_count: 2,
+            task_count: 2,
+            results: vec![ParallelTaskExecution {
+                task_index: 0,
+                initial_worker: 0,
+                worker_id: 0,
+                result: 10,
+            }],
+            worker_reports: vec![
+                ParallelWorkerExecutionReport::new(0),
+                ParallelWorkerExecutionReport::new(1),
+            ],
+        };
+        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(2, workers(2));
+
+        let error =
+            super::super::parallel_heap::parallel_task_nursery_ownership_from_top_level_report(
+                &plan, &report,
+            )
+            .expect_err("incomplete scheduler report rejects");
+
+        assert_eq!(
+            error,
+            super::super::parallel_heap::ParallelNurseryOwnershipError::IncompleteTaskReport {
+                task_count: 2,
+                completed_task_count: 1
+            }
+        );
+    }
+
+    #[test]
     fn top_level_executor_reports_worker_panic() {
         let error = execute_parallel_top_level(0..4, workers(2), |value| {
             assert_ne!(value, 2, "task panic is reported as worker failure");

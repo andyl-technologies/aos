@@ -6679,10 +6679,23 @@ nurseries build on the bump arena.
       rejection, and duplicate task-completion rejection. This is an
       allocation-ownership planning precursor only: it
       does not allocate through live worker-local `EvalHeap` instances, migrate
-      existing objects between nurseries, attach ownership records to the
-      scheduler report, distinguish fail-fast cancellation from missing
-      completions, publish into hash-cons tables, or satisfy the loom/Miri/TSan
-      gate.
+      existing objects between nurseries, execute the scheduler, distinguish
+      fail-fast cancellation from missing completions, publish into hash-cons
+      tables, or satisfy the loom/Miri/TSan gate.
+- [x] Current scheduler-to-nursery ownership bridge:
+      `parallel_task_nursery_ownership_from_top_level_report` derives the
+      allocation-ownership plan from the safe L1 scheduler report, requiring the
+      report and nursery seed plan to agree on worker count, task count, and each
+      task's initial worker before assigning the allocation nursery from the
+      worker that actually completed the task. Tests cover successful ownership
+      derivation from `execute_parallel_top_level`, worker-count mismatch
+      rejection, task-count mismatch rejection, and internally malformed
+      incomplete-report rejection. This is the scheduler report bridge only: it
+      does not embed ownership records into the scheduler report type, allocate
+      through live worker-local `EvalHeap` instances, handle the
+      fallible/cancelled root-execution report, expose a public partial-report
+      constructor, distinguish cancellation from completions, publish into
+      hash-cons tables, or satisfy the loom/Miri/TSan gate.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.

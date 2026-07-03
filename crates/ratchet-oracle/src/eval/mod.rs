@@ -42,7 +42,8 @@ pub use parallel_heap::{
     ParallelNurseryOwnershipMode, ParallelTaskNurseryExecution, ParallelTaskNurseryOwnership,
     ParallelTaskNurseryOwnershipPlan, ParallelWorkerNursery, ParallelWorkerNurseryAssignment,
     ParallelWorkerNurseryPlan, merge_parallel_hash_cons_candidates,
-    parallel_task_nursery_ownership_plan, parallel_worker_nursery_plan,
+    parallel_task_nursery_ownership_from_top_level_report, parallel_task_nursery_ownership_plan,
+    parallel_worker_nursery_plan,
 };
 pub use parallel_output::{
     ParallelDrvOutput, ParallelOutputCollation, ParallelOutputDeterminismError,

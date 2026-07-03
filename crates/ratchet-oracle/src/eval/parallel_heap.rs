@@ -18,6 +18,8 @@ use std::{collections::BTreeMap, fmt, num::NonZeroUsize};
 
 use thiserror::Error;
 
+use super::parallel::ParallelTopLevelExecutionReport;
+
 /// Builds the deterministic initial per-worker nursery plan for top-level work.
 ///
 /// Every worker receives a distinct nursery id equal to the worker id, and
@@ -121,6 +123,68 @@ where
     }
 
     Ok(ParallelTaskNurseryOwnershipPlan { records })
+}
+
+/// Builds allocation ownership from a safe top-level scheduler report.
+///
+/// This is the stricter integration path for [`super::parallel`]: it requires
+/// the nursery plan and scheduler report to agree on task and worker counts,
+/// verifies that the report's initial worker matches the seed nursery
+/// assignment, and then assigns allocations to the worker that actually
+/// completed each task.
+///
+/// # Errors
+///
+/// Returns [`ParallelNurseryOwnershipError`] if the report does not match the
+/// seed nursery plan or if any reported task execution is invalid for that plan.
+pub fn parallel_task_nursery_ownership_from_top_level_report<R>(
+    nursery_plan: &ParallelWorkerNurseryPlan,
+    report: &ParallelTopLevelExecutionReport<R>,
+) -> Result<ParallelTaskNurseryOwnershipPlan, ParallelNurseryOwnershipError> {
+    if nursery_plan.worker_count != report.worker_count() {
+        return Err(ParallelNurseryOwnershipError::WorkerCountMismatch {
+            planned_worker_count: nursery_plan.worker_count,
+            reported_worker_count: report.worker_count(),
+        });
+    }
+    if nursery_plan.task_count != report.task_count() {
+        return Err(ParallelNurseryOwnershipError::TaskCountMismatch {
+            planned_task_count: nursery_plan.task_count,
+            reported_task_count: report.task_count(),
+        });
+    }
+    if report.results().len() != report.task_count() {
+        return Err(ParallelNurseryOwnershipError::IncompleteTaskReport {
+            task_count: report.task_count(),
+            completed_task_count: report.results().len(),
+        });
+    }
+
+    let executions = report
+        .results()
+        .iter()
+        .map(|execution| {
+            let assignment = nursery_plan.assignments.get(execution.task_index()).ok_or(
+                ParallelNurseryOwnershipError::UnknownTask {
+                    task_index: execution.task_index(),
+                    task_count: nursery_plan.task_count,
+                },
+            )?;
+            if assignment.worker_id != execution.initial_worker() {
+                return Err(ParallelNurseryOwnershipError::InitialWorkerMismatch {
+                    task_index: execution.task_index(),
+                    planned_worker: assignment.worker_id,
+                    reported_worker: execution.initial_worker(),
+                });
+            }
+            Ok(ParallelTaskNurseryExecution::new(
+                execution.task_index(),
+                execution.worker_id(),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    parallel_task_nursery_ownership_plan(nursery_plan, executions)
 }
 
 /// Merges worker-local hash-cons candidates into a deterministic canonical set.
@@ -512,6 +576,36 @@ pub enum ParallelHashConsMergeError {
 /// A failure while assigning completed tasks to worker-local nurseries.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ParallelNurseryOwnershipError {
+    /// The scheduler report used a different worker count than the nursery plan.
+    #[error(
+        "parallel nursery ownership planned {planned_worker_count} worker(s) but report used {reported_worker_count}"
+    )]
+    WorkerCountMismatch {
+        /// The number of worker-local nurseries in the seed plan.
+        planned_worker_count: usize,
+        /// The number of workers in the scheduler report.
+        reported_worker_count: usize,
+    },
+    /// The scheduler report used a different task count than the nursery plan.
+    #[error(
+        "parallel nursery ownership planned {planned_task_count} task(s) but report used {reported_task_count}"
+    )]
+    TaskCountMismatch {
+        /// The number of tasks in the seed nursery plan.
+        planned_task_count: usize,
+        /// The number of tasks in the scheduler report.
+        reported_task_count: usize,
+    },
+    /// A scheduler report did not contain one result per submitted task.
+    #[error(
+        "parallel nursery ownership report has {completed_task_count} completed task(s) for {task_count} submitted task(s)"
+    )]
+    IncompleteTaskReport {
+        /// The number of submitted tasks in the scheduler report.
+        task_count: usize,
+        /// The number of completed task results in the scheduler report.
+        completed_task_count: usize,
+    },
     /// A completion record referenced a task outside the seed plan.
     #[error(
         "parallel nursery ownership referenced task {task_index} with only {task_count} task(s) planned"
@@ -531,6 +625,18 @@ pub enum ParallelNurseryOwnershipError {
         worker_id: usize,
         /// The number of worker-local nurseries in the seed plan.
         worker_count: usize,
+    },
+    /// A scheduler report disagreed with the seed plan's initial owner.
+    #[error(
+        "parallel nursery ownership expected task {task_index} to start on worker {planned_worker} but report used worker {reported_worker}"
+    )]
+    InitialWorkerMismatch {
+        /// The task whose seed worker disagreed with the plan.
+        task_index: usize,
+        /// The worker selected by the nursery seed plan.
+        planned_worker: usize,
+        /// The worker recorded by the scheduler report.
+        reported_worker: usize,
     },
     /// More than one completion record was provided for the same task.
     #[error("parallel nursery ownership received duplicate completion for task {task_index}")]
@@ -552,6 +658,7 @@ impl fmt::Display for ParallelWorkerNurseryPlan {
 
 #[cfg(test)]
 mod tests {
+    use super::super::parallel::execute_parallel_top_level;
     use super::*;
 
     fn workers(count: usize) -> NonZeroUsize {
@@ -750,6 +857,84 @@ mod tests {
         assert_eq!(
             error,
             ParallelNurseryOwnershipError::DuplicateTaskExecution { task_index: 1 }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_derives_from_top_level_scheduler_report() {
+        let worker_count = workers(3);
+        let report = execute_parallel_top_level(0..9, worker_count, |value| value * 2)
+            .expect("parallel execution succeeds");
+        let plan = parallel_worker_nursery_plan(report.task_count(), worker_count);
+
+        let ownership = parallel_task_nursery_ownership_from_top_level_report(&plan, &report)
+            .expect("scheduler report ownership succeeds");
+
+        assert_eq!(ownership.completed_task_count(), report.results().len());
+        assert_eq!(
+            ownership.local_task_count() + ownership.stolen_task_count(),
+            report.results().len()
+        );
+        assert_eq!(
+            ownership
+                .records()
+                .iter()
+                .map(|record| (
+                    record.task_index(),
+                    record.initial_worker(),
+                    record.initial_nursery_id(),
+                    record.executing_worker(),
+                    record.allocation_nursery_id(),
+                ))
+                .collect::<Vec<_>>(),
+            report
+                .results()
+                .iter()
+                .map(|execution| (
+                    execution.task_index(),
+                    execution.initial_worker(),
+                    execution.initial_worker(),
+                    execution.worker_id(),
+                    execution.worker_id(),
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_report_rejects_worker_count_mismatch() {
+        let report = execute_parallel_top_level(0..3, workers(3), |value| value)
+            .expect("parallel execution succeeds");
+        let plan = parallel_worker_nursery_plan(report.task_count(), workers(2));
+
+        let error = parallel_task_nursery_ownership_from_top_level_report(&plan, &report)
+            .expect_err("worker count mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::WorkerCountMismatch {
+                planned_worker_count: 2,
+                reported_worker_count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_report_rejects_task_count_mismatch() {
+        let worker_count = workers(2);
+        let report = execute_parallel_top_level(0..3, worker_count, |value| value)
+            .expect("parallel execution succeeds");
+        let plan = parallel_worker_nursery_plan(2, worker_count);
+
+        let error = parallel_task_nursery_ownership_from_top_level_report(&plan, &report)
+            .expect_err("task count mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::TaskCountMismatch {
+                planned_task_count: 2,
+                reported_task_count: 3
+            }
         );
     }
 
