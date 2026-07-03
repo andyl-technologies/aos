@@ -948,12 +948,23 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 > fuzzing), replay-oracle, and content-address foundations they depend on
 > ([DCE-1], [G-5], [PLAN-4]).
 
-- [ ] **T-DCE-1** Implement the shared content-addressed `DagStore` backend (a
+- [x] **T-DCE-1** Implement the shared content-addressed `DagStore` backend (a
   remote/durable implementation of the unchanged 07 §7 `put`/`get`/`exists`
   interface behind `crucible-cas`), proving location-independent identity (same
   node/finding is the same object on any host) and idempotent, convergent
   concurrent `put`. — satisfies [DCE-2], [DCE-3], [DCE-4], [DCE-22], [DCE-28]; spec §35.2.1,
   §35.5.1; cross-ref 07 §7, [TEMP-22].
+  - Completed by `checks.crucible.phase7.crucibleSharedDagStore`: `crucible-cas`
+    exports `SharedDagStore` behind the unchanged `DagStore::put`/`DagStore::get`/
+    `DagStore::has` interface, using content-derived BLAKE3 keys, the shared
+    two-level object layout, exclusive temporary files, atomic hard-link publish,
+    and content-mismatch rejection. The `crucible-fleet-store probe` now proves
+    location-independent identity across two store roots and idempotent convergent
+    publication from 16 concurrent writers with a single final object. The
+    TCG-only `checks.fleet.crucible-distributed-continuous-exploration` surface
+    consumes this source proof plus the AOS-built `pkgs.crucible-fleet-store`
+    package; CLAIM/LEASE scheduling, four-layer dedup, and full
+    `gate:fleet-equivalence` execution remain T-DCE-2, T-DCE-3, and T-DCE-8.
 - [ ] **T-DCE-2** Implement content-addressed CLAIM/LEASE work-stealing over the
   shared frontier (TTL leases, not static partitioning; lost/expired claim
   re-expands to a byte-identical deduped node), with soft hash-affinity as a

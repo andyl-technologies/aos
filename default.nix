@@ -273,6 +273,7 @@
       explorer = pkgs.crucible;
       e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
+      sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -286,6 +287,7 @@
           explorer
           e2eGate
           fleetStoreGate
+          sharedDagStoreGate
         ];
 
         phases = [
@@ -304,22 +306,33 @@
               grep -q '^tcg_only=true$' "$fleet_store_result"
               grep -q '^kvm_required=false$' "$fleet_store_result"
 
+              shared_dag_store_result="${sharedDagStoreGate}/result"
+              grep -q '^PASS$' "$shared_dag_store_result"
+              grep -q '^tasks=T-DCE-1$' "$shared_dag_store_result"
+              grep -q '^shared_store_backend=SharedDagStore$' "$shared_dag_store_result"
+              grep -q '^concurrent_put=idempotent$' "$shared_dag_store_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
               "${fleetStore}/bin/crucible-fleet-store" probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^backend=SharedDagStore$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^interface=DagStore::put,DagStore::get,DagStore::has$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^location_independent_roots=2$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^concurrent_put=idempotent$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^concurrent_writers=16$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^object_file_count=1$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
               PASS
               check=checks.fleet.crucible-distributed-continuous-exploration
               gate=gate:fleet-equivalence
-              source_check=checks.crucible.phase7.crucibleFleetStore
+              source_check=checks.crucible.phase7.crucibleSharedDagStore
+              package_check=checks.crucible.phase7.crucibleFleetStore
               e2e_gate_result=${e2eGate}/result
               fleet_store_gate_result=${fleetStoreGate}/result
+              shared_dag_store_gate_result=${sharedDagStoreGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -329,6 +342,12 @@
               tcg_only=true
               required_system_features=none
               kvm_required=false
+              shared_store_backend=SharedDagStore
+              shared_store_interface=DagStore::put,DagStore::get,DagStore::has
+              location_independent_roots=2
+              concurrent_put=idempotent
+              concurrent_writers=16
+              object_file_count=1
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer
