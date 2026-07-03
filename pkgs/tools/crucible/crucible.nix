@@ -104,6 +104,11 @@ in
       cargo_doc=warning-free
       cargo_doctest=hermetic
       rustdocflags=-D warnings -D missing_docs
+      qemu_package=qemu-crucible
+      qemu_path=${qemu-crucible}/bin/qemu-system-x86_64
+      plugin_package=crucible-qemu-plugin
+      plugin_path=${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
+      discovery_hint=compile-time-aos-package-set
       INFO
     '';
 

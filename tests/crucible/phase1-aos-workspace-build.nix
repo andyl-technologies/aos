@@ -58,6 +58,16 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q -- 'cargo_member_flags=.*-p crucible-qemu-plugin' \
               ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^qemu_package=qemu-crucible$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^qemu_path=${packages.qemu-crucible}/bin/qemu-system-x86_64$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^plugin_package=crucible-qemu-plugin$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^plugin_path=${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^discovery_hint=compile-time-aos-package-set$' \
+              ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
             test -e ${packages.crucible-qemu-plugin}/lib/qemu/plugins/crucible-qemu-plugin.so
@@ -95,6 +105,7 @@ in
             plugin_headers=qemu-crucible
             plugin_library=lib/libcrucible_qemu_plugin.so
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
+            qemu_discovery_hint=compile-time-aos-package-set
             qemu_plugin_abi=qemu-plugin-api-v4
             shmem_abi=crucible-shmem-abi-v1
             RESULT
