@@ -630,6 +630,11 @@ in rec {
       attrPath = "checks.crucible.phase3.blockWireAbi";
       taskIds = ["T-IO-3"];
     };
+    blockCowOverlayPattern = import ./phase3-block-cow-overlay-pattern.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.blockCowOverlayPattern";
+      taskIds = ["T-IO-2" "T-IO-5" "T-PAT-7"];
+    };
     gates = rec {
       layer1Injection = greenBeforeAdvance {
         attrPath = "checks.crucible.phase3.gates.layer1Injection";
