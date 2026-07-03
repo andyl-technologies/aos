@@ -101,14 +101,23 @@
     ++ lib.optionals (!(hasInfix "qemu_plugins_enabled=false" productionQemu.qemuBuildIdentityMaterial)) [
       "pkgs.qemu: production QEMU must not enable plugin support by default"
     ]
+    ++ lib.optionals (!(hasInfix "qemu_sim_capability=none" productionQemu.qemuBuildIdentityMaterial)) [
+      "pkgs.qemu: production QEMU must not advertise Crucible sim capability"
+    ]
     ++ lib.optionals (!(hasInfix "qemu_crucible_patches_applied=true" patchedQemu.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible: patched QEMU must apply the Crucible patch series"
     ]
     ++ lib.optionals (!(hasInfix "qemu_plugins_enabled=true" patchedQemu.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible: patched QEMU must enable plugin support"
     ]
+    ++ lib.optionals (!(hasInfix "qemu_sim_capability=qemu-crucible" patchedQemu.qemuBuildIdentityMaterial)) [
+      "pkgs.qemu-crucible: patched QEMU must advertise Crucible sim capability"
+    ]
     ++ lib.optionals (!(hasInfix "qemu_crucible_patches_applied=false" referenceQemu.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible-reference: inertness reference QEMU must be unpatched"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu_sim_capability=none" referenceQemu.qemuBuildIdentityMaterial)) [
+      "pkgs.qemu-crucible-reference: inertness reference QEMU must not advertise Crucible sim capability"
     ]
     ++ lib.optionals (!(builtins.elem "--target-list=x86_64-softmmu" patchedQemu.qemuConfigureFlags)) [
       "pkgs.qemu-crucible: missing x86_64-softmmu target-list configure flag"
@@ -175,7 +184,7 @@
       }
       {
         label = "sim capability metadata";
-        needle = "qemu_sim_capability=qemu-crucible";
+        needle = "qemu_sim_capability=" + "$" + "{qemuSimCapability}";
       }
       {
         label = "build identity metadata";

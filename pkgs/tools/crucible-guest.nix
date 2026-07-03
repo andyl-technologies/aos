@@ -22,6 +22,7 @@ in
     cargoTestFlags = "-p crucible-guest";
     doCheck = true;
     buildDeps = [patchelf];
+    runtimeDeps = [];
 
     preBuild = ''
       target_triple="$(rustc -vV | sed -n 's/^host: //p')"

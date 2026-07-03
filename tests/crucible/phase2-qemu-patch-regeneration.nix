@@ -109,7 +109,7 @@
     ++ lib.optionals (!(hasInfix "qemu-build-identity.env" qemuNix && hasInfix "qemu_build_id=" qemuNix)) [
       "pkgs/emulation/qemu.nix: QEMU package must install build identity metadata"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_sim_capability=qemu-crucible" qemuNix && hasInfix "qemu_shmem_abi=" qemuNix)) [
+    ++ lib.optionals (!(hasInfix "qemuSimCapability =" qemuNix && hasInfix "qemu_sim_capability=" qemuNix && hasInfix "qemu_shmem_abi=" qemuNix)) [
       "pkgs/emulation/qemu.nix: QEMU package must install Crucible sim-capability and shmem ABI metadata"
     ]
     ++ lib.optionals (!(hasInfix "crucible_shmem_abi.h" qemuNix && hasInfix "shmemHeaderHash" qemuNix)) [

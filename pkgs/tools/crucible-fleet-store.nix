@@ -23,6 +23,7 @@ in
     cargoTestFlags = "-p crucible-cas";
     doCheck = true;
     buildDeps = [grep];
+    runtimeDeps = [];
 
     preBuild = ''
       cd crates

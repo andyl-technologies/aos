@@ -549,11 +549,19 @@ carries findings across an incompatible build.
 > They populate the packaging slice of the plan and feed `gate:qemu-inert`,
 > `gate:patch-microtests`, `gate:abi-conformance`, and `gate:e2e-determinism`.
 
-- [ ] **T-PKG-1** Establish the Crucible package inventory under
+- [x] **T-PKG-1** Establish the Crucible package inventory under
   `pkgs/emulation/`, `pkgs/kernel/`, and `pkgs/tools/crucible/` with AOS package
   structure (mkDerivation / mkCargoPackage, inline pins, dep classification), no
   host tools, no nixpkgs. — satisfies [PKG-1], [PKG-2], [PKG-3], [PKG-4], [PKG-6],
   [G-7]; spec §26.1, §26.2.
+  - Completed by `checks.crucible.phase7.cruciblePackageInventory`: the AOS package
+    set exposes `pkgs.qemu`, `pkgs.qemu-crucible`,
+    `pkgs.qemu-crucible-reference`, `pkgs.crucible-qemu-plugin`,
+    `pkgs.linux-crucible`, `pkgs.crucible`, `pkgs.crucible-fixtures`,
+    `pkgs.crucible-guest`, and `pkgs.crucible-fleet-store`; the guard verifies
+    builder style, inline pins/vendor hashes, dependency classification, package
+    attr names, production-vs-patched QEMU separation, and absence of nixpkgs or
+    `hostTools` in the Crucible package files.
 - [x] **T-PKG-2** Package `qemu-crucible`: same pinned (≥ 10.0) QEMU source as
   production QEMU + ordered `crucible-*.patch` series applied at unpack, sim accel
   / shmem device files compiled in, completeness preserved; build `qemu-crucible`

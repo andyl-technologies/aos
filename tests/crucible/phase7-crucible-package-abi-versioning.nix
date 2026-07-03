@@ -156,7 +156,7 @@
       }
       {
         label = "QEMU sim-capability marker";
-        needle = "qemu_sim_capability=qemu-crucible";
+        needle = "qemu_sim_capability=" + "$" + "{qemuSimCapability}";
       }
       {
         label = "QEMU shmem ABI version marker";
