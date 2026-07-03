@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimDoubleSuite",
-  taskIds ? ["T-SESS-12"],
+  taskIds ? ["T-SESS-12" "T-PAT-6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,6 +15,7 @@
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   harnessDoc = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  patternsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
   sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
@@ -106,6 +107,32 @@
       {
         label = "SESS-28 control-plane double rule";
         needle = "A session test that needs real QEMU to";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsDoc [
+      {
+        label = "T-PAT-6 checked off";
+        needle = "- [x] **T-PAT-6**";
+      }
+      {
+        label = "T-PAT-6 session backend completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend` and";
+      }
+      {
+        label = "T-PAT-6 SimDouble suite completion note";
+        needle = "`checks.crucible.phase5.sessionSimDoubleSuite`";
+      }
+      {
+        label = "T-PAT-6 SimDouble adapter claim";
+        needle = "`crucible::SimDouble` quantum-loop adapter";
+      }
+      {
+        label = "T-PAT-6 scheduler liveness harness claim";
+        needle = "initialized `crucible::SimDouble` liveness harness";
+      }
+      {
+        label = "T-PAT-6 no real QEMU claim";
+        needle = "real QEMU";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -395,6 +422,10 @@
       {
         label = "phase5 exposes SimDouble suite";
         needle = "sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix";
+      }
+      {
+        label = "phase5 SimDouble suite carries T-PAT-6";
+        needle = "taskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
       }
       {
         label = "phase5 SimDouble suite attr path";

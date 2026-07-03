@@ -1134,9 +1134,18 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     carries its domain-qualified `RngStreamId` in the schedule.
     `checks.crucible.phase1.decisionRng` and
     `checks.crucible.phase1.decisionRecording` gate the pattern.
-- [ ] **T-PAT-6** Ensure the session drives nodes through the §29.6
+- [x] **T-PAT-6** Ensure the session drives nodes through the §29.6
   `SimulationBackend` trait with an in-process drop-in double. — satisfies
   [PAT-8]; realized by **T-SESS-11**, **T-SESS-12** (spec 20 §10, 24 §3).
+  - Completed by `checks.crucible.phase5.sessionSimulationBackend` and
+    `checks.crucible.phase5.sessionSimDoubleSuite`: `SimulationBackend` is the
+    exported scheduler-timed backend boundary, implemented by the mock,
+    `SimBackend`, `SimDouble`, and QEMU `QemuNode`; trait-level stepping cannot
+    authorize cross-node sends or own scheduler time; and the session, API,
+    daemon, and control-responsive gate exercise the same in-process
+    `crucible::SimDouble` quantum-loop adapter, while scheduler-liveness uses an
+    initialized `crucible::SimDouble` liveness harness, without constructing
+    real QEMU.
 - [x] **T-PAT-9** Ensure the runtime realizer follows the §29.9 recursive
   `instantiate` shape with start ≡ resume ≡ fork and the cold boot confined to
   `bake`. — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
