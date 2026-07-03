@@ -6491,16 +6491,21 @@ and helps the oracle directly.
       installs deduplicated outcome-owned destination-byte snapshots from the
       same validated commit applications.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
-      stages forwarding, destination-byte, reference-writeback, remembered-set,
-      card-table-clear, and root/heap-field destination-binding projections
-      from one owned dry run, validates every installable side-table payload
-      and destination-binding report before the first live metadata mutation,
-      and then installs the outcome-owned side tables and clears the outcome
-      card table together.
+      stages forwarding, destination-byte, destination object-generation,
+      reference-writeback, remembered-set, card-table-clear, and
+      root/heap-field destination-binding projections from one owned dry run,
+      validates every installable side-table payload and destination-binding
+      report before the first live metadata mutation, and then installs the
+      outcome-owned side tables and clears the outcome card table together.
       These helpers still do not bind those bytes to live
       heap-object bodies, live root/field storage, real ABI object-header
-      forwarding storage, object-generation metadata, or semispace storage, and
-      they do not commit those live mutations.
+      forwarding storage, live object-generation state, or semispace storage,
+      and they do not commit those live mutations.
+      `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
+      validates installed destination-byte snapshots against their
+      action-implied generation and object-copy byte length, producing
+      destination-to-generation binding metadata for a later live object
+      generation writer without mutating evaluator heap records.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       then validates installed typed/generation root writebacks against
       installed destination-byte snapshots, producing root-to-destination binding

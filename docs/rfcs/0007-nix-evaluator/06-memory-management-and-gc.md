@@ -2122,9 +2122,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       same validated commit applications.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
       now stages those live metadata projections from one dry run, validating
-      forwarding, destination-byte, reference-writeback, root/heap-field
-      destination-binding, and remembered-set payloads before installing
-      outcome-owned side tables and clearing the outcome card table together.
+      forwarding, destination-byte, destination object-generation,
+      reference-writeback, root/heap-field destination-binding, and
+      remembered-set payloads before installing outcome-owned side tables and
+      clearing the outcome card table together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_destination_object_generation_bindings`
+      validates installed destination-byte snapshots against their
+      action-implied generation and object-copy byte length, producing
+      destination-to-generation binding metadata for a later live object
+      generation writer without mutating evaluator heap records.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can
@@ -2136,7 +2142,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       live object-field writer can bind them.
       These helpers still do not bind those bytes to live heap-object bodies,
       live root/field storage, real ABI object-header forwarding storage,
-      object-generation metadata, or semispace storage, and they do not commit
+      live object-generation state, or semispace storage, and they do not commit
       those live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended

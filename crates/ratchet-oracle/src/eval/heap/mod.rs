@@ -828,6 +828,19 @@ pub enum EvalHeapError {
         /// The object-copy action that implied the expected generation.
         action: MinorGcSurvivorAction,
     },
+    /// A destination byte-copy snapshot does not match its request length.
+    #[error(
+        "boundary minor-GC destination snapshot for 0x{destination:x} has {actual} bytes, expected {expected}",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcDestinationPayloadSizeMismatch {
+        /// The copied or promoted destination address.
+        destination: GcHeapAddress,
+        /// The byte length requested by the object-copy metadata.
+        expected: usize,
+        /// The installed byte-snapshot length.
+        actual: usize,
+    },
     /// A heap-field writeback replacement is not heap-backed metadata.
     #[error(
         "boundary minor-GC heap-field writeback for 0x{writeback_object:x}[{field_index}] {field_source:?} replacement is not heap metadata: {value:?}",
