@@ -1021,12 +1021,13 @@ branch on the verdict without parsing output:
   catalog against a built-in corpus, double-backed by default, real-QEMU under
   `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
   Work in progress under `checks.crucible.phase5.cliSelftest`: the CLI now
-  accepts `--gates <list>` for the built-in corpus replay-oracle gate, validates
-  names against the canonical gate catalog, rejects malformed or unsupported
-  gate selections, runs the built-in example corpus, and emits a per-gate PASS
-  row. Full closure remains blocked on the broader double-backed gate runners,
-  real-QEMU gate execution for `--with-qemu`, and file-backed corpus override
-  support.
+  accepts `--gates <list>` for the built-in corpus replay-oracle gate and
+  advertises `--with-qemu`, validates names against the canonical gate catalog,
+  rejects malformed or unsupported gate selections, fails `--with-qemu` as a
+  discovery/config error until the real-QEMU gate runner exists, runs the
+  built-in example corpus, and emits a per-gate PASS row. Full closure remains
+  blocked on the broader double-backed gate runners, real-QEMU gate execution for
+  `--with-qemu`, and file-backed corpus override support.
 - [ ] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.

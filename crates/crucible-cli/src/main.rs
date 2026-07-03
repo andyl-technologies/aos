@@ -266,6 +266,9 @@ struct SelftestArgs {
     /// Run this double-backed gate subset.
     #[arg(long, value_name = "list")]
     gates: Option<String>,
+    /// Also run real-QEMU gates.
+    #[arg(long, action = ArgAction::SetTrue)]
+    with_qemu: bool,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -5566,6 +5569,12 @@ fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
 
 fn run_selftest(_cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
     let selected_gates = plan_selftest_gates(args)?;
+    if args.with_qemu {
+        return Err(CliError::Backend(
+            "selftest --with-qemu requires the real-QEMU selftest gate runner tracked by T-CLI-8"
+                .to_string(),
+        ));
+    }
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {
@@ -8317,7 +8326,7 @@ mod tests {
                     "--compare <A> <B>",
                 ],
             ),
-            ("selftest", &["--gates <list>"]),
+            ("selftest", &["--gates <list>", "--with-qemu"]),
             ("replay", &["ARTIFACT", "--check <original-log>"]),
             (
                 "serve",
@@ -8346,7 +8355,6 @@ mod tests {
     #[test]
     fn cli_help_surface_rejects_unimplemented_future_flags() {
         for argv in [
-            vec!["crucible", "selftest", "--with-qemu"],
             vec!["crucible", "replay", "case.crucible", "--to", "savepoint"],
             vec![
                 "crucible",
@@ -9253,6 +9261,35 @@ mod tests {
         };
         assert!(matches!(error, CliError::Usage(_)));
         assert_eq!(error.exit_code(), 64);
+
+        let invalid_with_qemu = Cli::parse_from([
+            "crucible",
+            "selftest",
+            "--with-qemu",
+            "--gates",
+            "gate:not-real",
+        ]);
+        let Commands::Selftest(args) = &invalid_with_qemu.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&invalid_with_qemu, args) {
+            Ok(_) => panic!("invalid selftest gate must be rejected before qemu discovery"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        let with_qemu = Cli::parse_from(["crucible", "selftest", "--with-qemu"]);
+        let Commands::Selftest(args) = &with_qemu.command else {
+            panic!("expected selftest command");
+        };
+        let error = match run_selftest(&with_qemu, args) {
+            Ok(_) => panic!("real-QEMU selftest runner must not be silently accepted"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("real-QEMU selftest gate runner"));
 
         Ok(())
     }

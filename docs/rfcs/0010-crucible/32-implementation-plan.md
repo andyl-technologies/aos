@@ -413,11 +413,12 @@ long-held locks.
   `T-CLI-7 … T-CLI-13` so the final help text can be certified in sync with
   behavior.
   `T-CLI-8` remains open. `checks.crucible.phase5.cliSelftest` currently covers
-  `--gates <list>` for the built-in corpus replay-oracle gate, canonical gate
-  name validation, malformed/unsupported selection rejection, built-in example
-  corpus execution, and a per-gate PASS row; full closure waits for the broader
-  double-backed gate runners, real-QEMU gate execution under `--with-qemu`, and
-  file-backed corpus override support.
+  `--gates <list>` for the built-in corpus replay-oracle gate, `--with-qemu`
+  parser/help exposure with discovery/config failure until the real-QEMU gate
+  runner exists, canonical gate name validation, malformed/unsupported selection
+  rejection, built-in example corpus execution, and a per-gate PASS row; full
+  closure waits for the broader double-backed gate runners, real-QEMU gate
+  execution under `--with-qemu`, and file-backed corpus override support.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch, and continued
