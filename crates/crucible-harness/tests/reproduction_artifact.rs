@@ -6,12 +6,14 @@ use std::error::Error;
 
 use crucible_harness::adversarial::{HostAdversaryProfile, canonical_host_adversary_matrix};
 use crucible_harness::reproduction::{
-    ComponentKind, ComponentPayload, ContentAddressedComponent,
-    PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME, PRODUCER_CANONICAL_LOG_COMPONENT_NAME,
-    PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME, PinnedBuildIdentity, REPRODUCTION_ARTIFACT_SCHEMA,
-    RecordedDecision, ReproductionArtifact, ReproductionArtifactError, ReproductionSchedule,
-    mock_e2e_reproduction_artifact, mock_reproduction_build_identity,
-    verify_mock_machine_independent_reproduction,
+    CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON, CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA,
+    CampaignCorpusReuseDecision, CampaignCorpusSeed, ComponentKind, ComponentPayload,
+    ContentAddressedComponent, PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME,
+    PRODUCER_CANONICAL_LOG_COMPONENT_NAME, PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME,
+    PinnedBuildIdentity, REPRODUCTION_ARTIFACT_SCHEMA, RecordedDecision, ReproductionArtifact,
+    ReproductionArtifactError, ReproductionSchedule, campaign_provenance_key,
+    content_address_bytes, evaluate_campaign_corpus_reuse, mock_e2e_reproduction_artifact,
+    mock_reproduction_build_identity, verify_mock_machine_independent_reproduction,
     verify_mock_machine_independent_reproduction_bytes,
 };
 
@@ -523,6 +525,163 @@ fn reproduction_artifact_machine_verification_rejects_backend_build_id_drift()
         error,
         ReproductionArtifactError::BuildIdentityMismatch { .. }
     ));
+
+    Ok(())
+}
+
+#[test]
+fn campaign_corpus_reuse_seeds_matching_provenance() -> Result<(), Box<dyn Error>> {
+    let identity = mock_reproduction_build_identity();
+    let corpus_root = content_address_bytes(b"prior-corpus-root");
+    let lineage_id = content_address_bytes(b"prior-lineage");
+    let prior = CampaignCorpusSeed::new(corpus_root.clone(), lineage_id.clone(), identity.clone())?;
+
+    let decision = evaluate_campaign_corpus_reuse(&prior, &identity)?;
+
+    match decision {
+        CampaignCorpusReuseDecision::SeedPriorCorpus {
+            corpus_root: seeded_corpus,
+            lineage_id: reused_lineage,
+            provenance_key,
+        } => {
+            assert_eq!(seeded_corpus, corpus_root);
+            assert_eq!(reused_lineage, lineage_id);
+            assert_eq!(provenance_key, campaign_provenance_key(&identity)?);
+        }
+        CampaignCorpusReuseDecision::RefuseCrossProvenanceReuse { .. } => {
+            panic!("matching provenance must seed the prior corpus")
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn campaign_corpus_reuse_refuses_patch_series_drift() -> Result<(), Box<dyn Error>> {
+    let prior_identity = mock_reproduction_build_identity();
+    let corpus_root = content_address_bytes(b"patch-series-corpus-root");
+    let lineage_id = content_address_bytes(b"patch-series-lineage");
+    let prior = CampaignCorpusSeed::new(
+        corpus_root.clone(),
+        lineage_id.clone(),
+        prior_identity.clone(),
+    )?;
+    let mut run_identity = prior_identity.clone();
+    run_identity.qemu_patch_series_hash = String::from("sha256-different-qemu-patch-series");
+
+    let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
+
+    match decision {
+        CampaignCorpusReuseDecision::RefuseCrossProvenanceReuse { baseline_event } => {
+            assert_eq!(
+                baseline_event.schema_version,
+                CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA
+            );
+            assert_eq!(
+                baseline_event.reason,
+                CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON
+            );
+            assert_eq!(baseline_event.refused_corpus_root, corpus_root);
+            assert_eq!(baseline_event.previous_lineage_id, lineage_id);
+            assert_ne!(
+                baseline_event.previous_provenance_key,
+                baseline_event.run_provenance_key
+            );
+            assert!(
+                baseline_event
+                    .fresh_lineage_id
+                    .starts_with("crucible-hash:")
+            );
+        }
+        CampaignCorpusReuseDecision::SeedPriorCorpus { .. } => {
+            panic!("patch-series drift must refuse cross-provenance corpus reuse")
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn campaign_corpus_reuse_refuses_qemu_build_id_drift() -> Result<(), Box<dyn Error>> {
+    let prior_identity = mock_reproduction_build_identity();
+    let corpus_root = content_address_bytes(b"qemu-build-corpus-root");
+    let lineage_id = content_address_bytes(b"qemu-build-lineage");
+    let prior = CampaignCorpusSeed::new(
+        corpus_root.clone(),
+        lineage_id.clone(),
+        prior_identity.clone(),
+    )?;
+    let mut run_identity = prior_identity;
+    run_identity.qemu_build_id = content_address_bytes(b"different-qemu-build-identity");
+
+    let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
+
+    match decision {
+        CampaignCorpusReuseDecision::RefuseCrossProvenanceReuse { baseline_event } => {
+            assert_eq!(
+                baseline_event.reason,
+                CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON
+            );
+            assert_eq!(baseline_event.refused_corpus_root, corpus_root);
+            assert_eq!(baseline_event.previous_lineage_id, lineage_id);
+            assert_ne!(
+                baseline_event.previous_provenance_key,
+                baseline_event.run_provenance_key
+            );
+            assert!(
+                baseline_event
+                    .fresh_lineage_id
+                    .starts_with("crucible-hash:")
+            );
+        }
+        CampaignCorpusReuseDecision::SeedPriorCorpus { .. } => {
+            panic!("QEMU build identity drift must refuse cross-provenance corpus reuse")
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn campaign_corpus_reuse_refuses_abi_drift() -> Result<(), Box<dyn Error>> {
+    let prior_identity = mock_reproduction_build_identity();
+    let corpus_root = content_address_bytes(b"abi-corpus-root");
+    let lineage_id = content_address_bytes(b"abi-lineage");
+    let prior = CampaignCorpusSeed::new(
+        corpus_root.clone(),
+        lineage_id.clone(),
+        prior_identity.clone(),
+    )?;
+    let mut run_identity = prior_identity;
+    run_identity.guest_host_protocol_version = String::from("2");
+
+    let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
+
+    match decision {
+        CampaignCorpusReuseDecision::RefuseCrossProvenanceReuse { baseline_event } => {
+            assert_eq!(
+                baseline_event.schema_version,
+                CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA
+            );
+            assert_eq!(
+                baseline_event.reason,
+                CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON
+            );
+            assert_eq!(baseline_event.refused_corpus_root, corpus_root);
+            assert_ne!(
+                baseline_event.previous_provenance_key,
+                baseline_event.run_provenance_key
+            );
+            assert!(
+                baseline_event
+                    .fresh_lineage_id
+                    .starts_with("crucible-hash:")
+            );
+        }
+        CampaignCorpusReuseDecision::SeedPriorCorpus { .. } => {
+            panic!("ABI drift must refuse cross-provenance corpus reuse")
+        }
+    }
 
     Ok(())
 }

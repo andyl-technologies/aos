@@ -67,6 +67,16 @@ pub const PRODUCER_BACKEND_BUILD_ID_MEDIA_TYPE: &str =
 pub const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 
+/// Schema for campaign provenance keys derived from pinned producer identities.
+pub const CAMPAIGN_PROVENANCE_SCHEMA: &str = "crucible.campaign.provenance.v1";
+
+/// Schema for a recorded fresh-lineage baseline event.
+pub const CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA: &str =
+    "crucible.campaign.fresh-lineage-baseline.v1";
+
+/// Reason recorded when a prior corpus is refused across provenance boundaries.
+pub const CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON: &str = "cross-provenance-corpus-reuse-refused";
+
 /// A versioned reproduction artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReproductionArtifact {
@@ -378,6 +388,139 @@ impl PinnedBuildIdentity {
         validate_digest("build_identity.qemu_build_id", &self.qemu_build_id)?;
         Ok(())
     }
+}
+
+/// Previously persisted campaign corpus and the provenance that produced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignCorpusSeed {
+    /// Content-addressed corpus root proposed as a seed.
+    pub corpus_root: String,
+    /// Content-addressed lineage identifier that owns the corpus.
+    pub lineage_id: String,
+    /// Pinned build identity that produced the corpus.
+    pub provenance: PinnedBuildIdentity,
+}
+
+impl CampaignCorpusSeed {
+    /// Builds a validated prior campaign corpus seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReproductionArtifactError`] when the corpus root, lineage id,
+    /// or pinned provenance is invalid.
+    pub fn new(
+        corpus_root: impl Into<String>,
+        lineage_id: impl Into<String>,
+        provenance: PinnedBuildIdentity,
+    ) -> Result<Self, ReproductionArtifactError> {
+        let seed = Self {
+            corpus_root: corpus_root.into(),
+            lineage_id: lineage_id.into(),
+            provenance,
+        };
+        seed.validate()?;
+        Ok(seed)
+    }
+
+    fn validate(&self) -> Result<(), ReproductionArtifactError> {
+        validate_digest("campaign.corpus_root", &self.corpus_root)?;
+        validate_digest("campaign.lineage_id", &self.lineage_id)?;
+        self.provenance.validate()
+    }
+}
+
+/// Baseline event recorded when a new campaign lineage is forked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignFreshLineageBaselineEvent {
+    /// Event schema identifier.
+    pub schema_version: String,
+    /// Loud refusal reason for operators and CI logs.
+    pub reason: String,
+    /// Prior corpus root that was refused as a seed.
+    pub refused_corpus_root: String,
+    /// Lineage id that owns the refused corpus.
+    pub previous_lineage_id: String,
+    /// Deterministic id for the newly forked lineage.
+    pub fresh_lineage_id: String,
+    /// Provenance key of the refused prior corpus.
+    pub previous_provenance_key: String,
+    /// Provenance key of the current run.
+    pub run_provenance_key: String,
+}
+
+/// Result of deciding whether a prior campaign corpus may seed this run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignCorpusReuseDecision {
+    /// The prior corpus has identical provenance and may be seeded.
+    SeedPriorCorpus {
+        /// Content-addressed corpus root to seed from.
+        corpus_root: String,
+        /// Existing lineage id reused by this campaign.
+        lineage_id: String,
+        /// Provenance key shared by the corpus and current run.
+        provenance_key: String,
+    },
+    /// The prior corpus was loudly refused and a fresh lineage was recorded.
+    RefuseCrossProvenanceReuse {
+        /// Fresh-lineage baseline event that must be recorded by callers.
+        baseline_event: CampaignFreshLineageBaselineEvent,
+    },
+}
+
+/// Computes the deterministic campaign provenance key for a pinned identity.
+///
+/// The key is derived from the full pinned build identity used by reproduction
+/// artifacts: Crucible version and ABI, QEMU build id and patch-series hash,
+/// shmem ABI, guest-host protocol, RPC ABI/build tag, and plugin ABI.
+///
+/// # Errors
+///
+/// Returns [`ReproductionArtifactError`] when `identity` is not a valid pinned
+/// build identity.
+pub fn campaign_provenance_key(
+    identity: &PinnedBuildIdentity,
+) -> Result<String, ReproductionArtifactError> {
+    identity.validate()?;
+    Ok(content_address_bytes(
+        campaign_provenance_material(identity).as_bytes(),
+    ))
+}
+
+/// Decides whether `prior` can seed a campaign under `run_provenance`.
+///
+/// # Errors
+///
+/// Returns [`ReproductionArtifactError`] when either provenance identity or the
+/// prior corpus seed is invalid.
+pub fn evaluate_campaign_corpus_reuse(
+    prior: &CampaignCorpusSeed,
+    run_provenance: &PinnedBuildIdentity,
+) -> Result<CampaignCorpusReuseDecision, ReproductionArtifactError> {
+    prior.validate()?;
+    run_provenance.validate()?;
+    let previous_provenance_key = campaign_provenance_key(&prior.provenance)?;
+    let run_provenance_key = campaign_provenance_key(run_provenance)?;
+    if prior.provenance == *run_provenance {
+        return Ok(CampaignCorpusReuseDecision::SeedPriorCorpus {
+            corpus_root: prior.corpus_root.clone(),
+            lineage_id: prior.lineage_id.clone(),
+            provenance_key: run_provenance_key,
+        });
+    }
+
+    let fresh_lineage_id =
+        fresh_campaign_lineage_id(prior, &previous_provenance_key, &run_provenance_key);
+    Ok(CampaignCorpusReuseDecision::RefuseCrossProvenanceReuse {
+        baseline_event: CampaignFreshLineageBaselineEvent {
+            schema_version: CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA.to_string(),
+            reason: CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON.to_string(),
+            refused_corpus_root: prior.corpus_root.clone(),
+            previous_lineage_id: prior.lineage_id.clone(),
+            fresh_lineage_id,
+            previous_provenance_key,
+            run_provenance_key,
+        },
+    })
 }
 
 /// A content-addressed artifact component reference.
@@ -1277,6 +1420,53 @@ fn pinned_identity_from_e2e(source: &E2eBuildIdentity) -> PinnedBuildIdentity {
         rpc_abi_build: source.rpc_abi_build.clone(),
         plugin_abi: source.plugin_abi.clone(),
     }
+}
+
+fn campaign_provenance_material(identity: &PinnedBuildIdentity) -> String {
+    let mut material = String::new();
+    record(&mut material, "schema", &[CAMPAIGN_PROVENANCE_SCHEMA]);
+    record(
+        &mut material,
+        "identity",
+        &[
+            &identity.engine_version,
+            &identity.engine_abi,
+            &identity.artifact_abi,
+            &identity.qemu_build_id,
+            &identity.qemu_patch_series_hash,
+            &identity.shmem_abi_version,
+            &identity.guest_host_protocol_version,
+            &identity.rpc_abi_version,
+            &identity.rpc_abi_build,
+            &identity.plugin_abi,
+        ],
+    );
+    material
+}
+
+fn fresh_campaign_lineage_id(
+    prior: &CampaignCorpusSeed,
+    previous_provenance_key: &str,
+    run_provenance_key: &str,
+) -> String {
+    let mut material = String::new();
+    record(
+        &mut material,
+        "schema",
+        &[CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA],
+    );
+    record(
+        &mut material,
+        "fresh-lineage",
+        &[
+            CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON,
+            &prior.corpus_root,
+            &prior.lineage_id,
+            previous_provenance_key,
+            run_provenance_key,
+        ],
+    );
+    content_address_bytes(material.as_bytes())
 }
 
 fn verify_pinned_build_identity(
