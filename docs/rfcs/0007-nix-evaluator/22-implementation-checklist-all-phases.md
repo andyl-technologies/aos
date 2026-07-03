@@ -6996,6 +6996,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       cannot silently gain scalar-replacement eligibility. This is not the full
       property-test fuzzing harness, does not execute randomized primop inputs,
       and does not prove aggregate/result-forwarding escape behavior.
+- [x] Current raw primop escape-signature fuzz precursor:
+      `analysis::tests::escape_signature` now uses `proptest` to sample
+      registered builtin names, unknown builtin-like names, and direct-primop
+      arities against raw `PrimOp` IR fixtures. The fuzz harness checks that
+      registered names match the immediate-scalar allowlist, unknown names stay
+      conservative, and direct builtin arity mismatches reject before escape
+      facts are admitted. This still does not execute randomized semantic
+      primop inputs against the evaluator, so aggregate/result-forwarding
+      escape transparency remains open.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
       default, `Eager` gated by proven strictness, and `Scalar` gated by both

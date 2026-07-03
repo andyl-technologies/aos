@@ -3900,6 +3900,7 @@ name = "ratchet-core"
 version = "0.1.0"
 dependencies = [
  "aos-nix-syntax",
+ "proptest",
  "thiserror",
 ]
 

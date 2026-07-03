@@ -1,7 +1,9 @@
 //! Primitive-operation escape signature tests.
 
+use proptest::prelude::*;
+
 use super::*;
-use crate::builtins::BUILTINS;
+use crate::builtins::{BUILTINS, direct_builtin};
 use crate::syntax::Symbol;
 
 const IMMEDIATE_SCALAR_PRIMOP_NAMES: &[&[u8]] = &[
@@ -36,6 +38,71 @@ const IMMEDIATE_SCALAR_PRIMOP_NAMES: &[&[u8]] = &[
 fn root_escape(source: &str) -> Escape {
     let ir = annotate_allocations(source);
     escape(&ir, ir.root)
+}
+
+fn immediate_scalar_allowlisted(name: &[u8]) -> bool {
+    IMMEDIATE_SCALAR_PRIMOP_NAMES
+        .iter()
+        .any(|allowlisted| *allowlisted == name)
+}
+
+fn registered_builtin_name() -> impl Strategy<Value = Vec<u8>> {
+    prop::sample::select(
+        BUILTINS
+            .iter()
+            .map(|builtin| builtin.name().to_vec())
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn unknown_builtin_name() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(b'a'..=b'z', 0..24).prop_map(|mut suffix| {
+        let mut name = b"__aos_escape_fuzz_".to_vec();
+        name.append(&mut suffix);
+        name
+    })
+}
+
+fn raw_primop_escape(name: &[u8], arity: usize) -> Result<Escape, EscapeAnalysisError> {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(name).expect("symbol interns");
+    let root = IrId::new(arity as u32);
+    let children = (0..arity)
+        .map(|index| IrId::new(index as u32))
+        .collect::<Vec<_>>();
+    let mut nodes = children
+        .iter()
+        .map(|_| {
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )
+        })
+        .collect::<Vec<_>>();
+    nodes.push(IrNode::new(
+        IrKind::PrimOp,
+        Span::new(0, 1),
+        EffectClass::pure(),
+        IrData::PrimOp {
+            symbol,
+            args: IrChildSlice::new(0, arity as u32),
+        },
+    ));
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(nodes.len()),
+        arena: IrArena::from_raw_parts(nodes, children),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    annotate_escape(&mut ir).map(|_| escape(&ir, root))
 }
 
 #[test]
@@ -115,6 +182,64 @@ fn primop_escape_signature_matches_registered_builtin_allowlist() {
             expected,
             "{}",
             String::from_utf8_lossy(builtin.name())
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn primop_escape_signature_fuzzes_registered_builtin_surface(name in registered_builtin_name()) {
+        let expected = if immediate_scalar_allowlisted(&name) {
+            PrimOpEscapeSignature::ImmediateScalar
+        } else {
+            PrimOpEscapeSignature::Conservative
+        };
+
+        prop_assert_eq!(
+            primop_escape_signature(&name),
+            expected,
+            "{}",
+            String::from_utf8_lossy(&name)
+        );
+    }
+
+    #[test]
+    fn primop_escape_signature_fuzzes_unknown_names_conservative(name in unknown_builtin_name()) {
+        prop_assert!(BUILTINS.lookup(&name).is_none(), "{}", String::from_utf8_lossy(&name));
+        prop_assert_eq!(
+            primop_escape_signature(&name),
+            PrimOpEscapeSignature::Conservative,
+            "{}",
+            String::from_utf8_lossy(&name)
+        );
+        prop_assert_eq!(raw_primop_escape(&name, 2).expect("unknown primop annotates"), Escape::Escapes);
+    }
+
+    #[test]
+    fn raw_primop_escape_fuzzes_signature_and_direct_arity(
+        name in registered_builtin_name(),
+        arity in 0usize..=4,
+    ) {
+        let result = raw_primop_escape(&name, arity);
+        if let Some(direct) = direct_builtin(&name)
+            && arity != direct.arity()
+        {
+            let Err(EscapeAnalysisError::InvalidPrimOpArity { expected, actual, .. }) = result
+            else {
+                return Err(TestCaseError::fail(format!("{result:?}")));
+            };
+            prop_assert_eq!(expected, direct.arity());
+            prop_assert_eq!(actual, arity);
+            return Ok(());
+        }
+
+        let escape = result
+            .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+        prop_assert_eq!(
+            escape,
+            primop_escape_signature(&name).escape(),
+            "{}",
+            String::from_utf8_lossy(&name)
         );
     }
 }

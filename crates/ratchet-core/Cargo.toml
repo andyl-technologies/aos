@@ -11,3 +11,6 @@ test-util = []
 [dependencies]
 thiserror = { workspace = true }
 aos-nix-syntax = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
