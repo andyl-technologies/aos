@@ -1755,6 +1755,26 @@ impl AllocationCollectorPollObjectByteCopyRequest {
         }
     }
 
+    #[cfg(test)]
+    /// Creates object byte-copy metadata for tests that exercise sealed reports.
+    pub(crate) const fn for_test(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+        destination_generation: HeapGeneration,
+        size_bytes: usize,
+        align: usize,
+    ) -> Self {
+        Self {
+            source,
+            destination,
+            action,
+            destination_generation,
+            size_bytes,
+            align,
+        }
+    }
+
     /// Returns the current young-generation source object address.
     pub const fn source(&self) -> GcHeapAddress {
         self.source

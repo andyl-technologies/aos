@@ -1140,6 +1140,12 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
             .expect("source forwarding cell is readable"),
         None
     );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_root_writeback_destination_bindings()
+            .expect("empty binding report builds")
+            .is_empty()
+    );
 
     let live_metadata = outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
@@ -1216,6 +1222,26 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
         live_worker_writebacks.root_value_writeback_slots()[0]
             .value()
             .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
+    );
+    let bindings = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_destination_bindings()
+        .expect("root writeback destination bindings validate");
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        bindings[0].root_source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(bindings[0].replacement_tag(), ValueTag::Lambda);
+    assert_eq!(bindings[0].destination(), nursery_base);
+    assert_eq!(bindings[0].generation(), HeapGeneration::Young);
+    assert_eq!(bindings[0].request(), live_object_copy.request());
+    assert_eq!(
+        bindings[0].destination_bytes(),
+        live_object_copy.destination_bytes()
     );
 
     let destination_storage_before_repeat = live_destination_storage.clone();

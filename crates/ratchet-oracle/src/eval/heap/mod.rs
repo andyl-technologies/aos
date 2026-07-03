@@ -22,8 +22,8 @@ use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaRegionPopReport, ArenaStats};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, RememberedSetEpoch,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, MinorGcSurvivorAction,
+    RememberedSetEpoch, ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{
@@ -770,6 +770,49 @@ pub enum EvalHeapError {
         /// The duplicate destination object address.
         destination_address: GcHeapAddress,
     },
+    /// A live root writeback points at no installed destination-byte snapshot.
+    #[error(
+        "boundary minor-GC root writeback for {root_source:?} points at missing destination 0x{destination:x}",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackDestinationMissing {
+        /// The copied root source whose replacement needs destination bytes.
+        root_source: EvalRootSource,
+        /// The replacement destination address without an installed snapshot.
+        destination: GcHeapAddress,
+    },
+    /// A live root writeback's typed replacement disagrees with its destination metadata.
+    #[error(
+        "boundary minor-GC root writeback for {root_source:?} expected destination 0x{expected_destination:x}, found typed {actual_tag:?}/0x{actual_payload:016x}",
+        expected_destination = expected_destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackDestinationMismatch {
+        /// The copied root source whose replacement metadata disagreed.
+        root_source: EvalRootSource,
+        /// The destination address carried by the generation-style root slot.
+        expected_destination: GcHeapAddress,
+        /// The tag carried by the typed root slot.
+        actual_tag: ValueTag,
+        /// The raw typed-slot payload bits.
+        actual_payload: u64,
+    },
+    /// A live root writeback's generation disagrees with its destination action.
+    #[error(
+        "boundary minor-GC root writeback for {root_source:?} destination 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackGenerationMismatch {
+        /// The copied root source whose destination generation disagreed.
+        root_source: EvalRootSource,
+        /// The replacement destination address.
+        destination: GcHeapAddress,
+        /// The generation implied by the destination action.
+        expected: HeapGeneration,
+        /// The generation carried by the generation-style root slot.
+        actual: HeapGeneration,
+        /// The object-copy action that implied the expected generation.
+        action: MinorGcSurvivorAction,
+    },
     /// A live forwarding installation received an empty forwarding slot.
     #[error(
         "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",
@@ -803,12 +846,12 @@ pub enum EvalHeapError {
         /// The caller-supplied root value count.
         actual: usize,
     },
-    /// A caller-supplied root value no longer describes the copied root slot.
+    /// A caller-supplied or installed root value names a different root source.
     #[error(
-        "collector-poll minor-GC root reference slot {index} source mismatch: expected {expected:?}, found {actual:?}"
+        "collector-poll minor-GC root reference source {index} mismatch: expected {expected:?}, found {actual:?}"
     )]
     CollectorPollRootReferenceSourceMismatch {
-        /// The copied allocation-poll reference-slot index.
+        /// The copied allocation-poll reference slot or root-writeback pair index.
         index: usize,
         /// The copied root source captured by the poll plan.
         expected: EvalRootSource,

@@ -2125,6 +2125,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       forwarding, destination-byte, reference-writeback, and remembered-set
       payloads before installing outcome-owned side tables and clearing the
       outcome card table together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
+      validates that installed typed/generation root writebacks point at
+      installed destination-byte snapshots before a future live root writer can
+      bind them.
       These helpers still do not bind those bytes to live heap-object bodies,
       live root/field storage, real ABI object-header forwarding storage,
       object-generation metadata, or semispace storage, and they do not commit

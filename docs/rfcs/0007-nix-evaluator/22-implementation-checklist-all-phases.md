@@ -6499,6 +6499,10 @@ and helps the oracle directly.
       heap-object bodies, live root/field storage, real ABI object-header
       forwarding storage, object-generation metadata, or semispace storage, and
       they do not commit those live mutations.
+      `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
+      then validates installed typed/generation root writebacks against
+      installed destination-byte snapshots, producing root-to-destination binding
+      metadata for a later live root writer without mutating evaluator roots.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

@@ -3,6 +3,8 @@
 use super::*;
 use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
+use crate::eval::heap::EvalRootSource;
+use crate::heap::HeapGeneration;
 
 type IfdRealizerCallback =
     dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
@@ -26,6 +28,8 @@ const BOUNDARY_MINOR_GC_DESTINATION_STORAGE_LAYOUTS_TABLE: &str =
     "boundary minor-GC destination storage layouts";
 const BOUNDARY_MINOR_GC_LIVE_DESTINATION_OBJECT_BYTES_TABLE: &str =
     "boundary minor-GC live destination object bytes";
+const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE: &str =
+    "boundary minor-GC root writeback destination bindings";
 const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
     "boundary minor-GC forwarding slot buffer";
 const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
@@ -928,6 +932,80 @@ impl EvalGcStressBoundaryMinorGcLiveDestinationStorage {
     }
 }
 
+/// A root writeback matched to an installed destination-byte snapshot.
+///
+/// The binding is validation metadata for a future live root writer. It proves
+/// that an outcome-owned typed root replacement and its generation-style slot
+/// point at an installed destination payload, but it is not a live root slot and
+/// does not bind bytes to heap-object storage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding {
+    allocation_domain: HeapAllocationDomain,
+    root_source: EvalRootSource,
+    replacement_tag: ValueTag,
+    destination: GcHeapAddress,
+    generation: HeapGeneration,
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding {
+    fn new(
+        allocation_domain: HeapAllocationDomain,
+        root_source: EvalRootSource,
+        replacement_tag: ValueTag,
+        destination: GcHeapAddress,
+        generation: HeapGeneration,
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            allocation_domain,
+            root_source,
+            replacement_tag,
+            destination,
+            generation,
+            request,
+            destination_bytes,
+        }
+    }
+
+    /// Returns the allocator domain whose boundary application produced this binding.
+    pub const fn allocation_domain(&self) -> HeapAllocationDomain {
+        self.allocation_domain
+    }
+
+    /// Returns the copied root source that would be rewritten.
+    pub const fn root_source(&self) -> &EvalRootSource {
+        &self.root_source
+    }
+
+    /// Returns the heap tag needed to rebuild the typed replacement value.
+    pub const fn replacement_tag(&self) -> ValueTag {
+        self.replacement_tag
+    }
+
+    /// Returns the destination object address for the replacement value.
+    pub const fn destination(&self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the generation of the destination object.
+    pub const fn generation(&self) -> HeapGeneration {
+        self.generation
+    }
+
+    /// Returns the object-copy request that installed the destination payload.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the installed destination payload bytes matched to the root.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
 /// Applied boundary-owned buffers for one minor-GC commit preflight.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcCommitApplication {
@@ -1205,6 +1283,142 @@ fn live_reference_writeback_install_report(
         report.record(application);
     }
     report
+}
+
+fn boundary_minor_gc_root_writeback_destination_bindings(
+    writebacks: &EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
+    destination_storage: &EvalGcStressBoundaryMinorGcLiveDestinationStorage,
+) -> Result<Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>, EvalHeapError> {
+    let mut bindings = Vec::new();
+    extend_boundary_minor_gc_root_writeback_destination_bindings(
+        &mut bindings,
+        HeapAllocationDomain::Worker,
+        writebacks.worker(),
+        destination_storage.object_bytes(),
+    )?;
+    extend_boundary_minor_gc_root_writeback_destination_bindings(
+        &mut bindings,
+        HeapAllocationDomain::PermanentShared,
+        writebacks.permanent_shared(),
+        destination_storage.object_bytes(),
+    )?;
+    Ok(bindings)
+}
+
+fn extend_boundary_minor_gc_root_writeback_destination_bindings(
+    bindings: &mut Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>,
+    allocation_domain: HeapAllocationDomain,
+    application: Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication>,
+    destination_objects: &[EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes],
+) -> Result<(), EvalHeapError> {
+    let Some(application) = application else {
+        return Ok(());
+    };
+
+    let root_slots = application.root_writeback_slots();
+    let value_slots = application.root_value_writeback_slots();
+    if root_slots.len() != value_slots.len() {
+        return Err(
+            EvalHeapError::CollectorPollRootWritebackSlotLengthMismatch {
+                expected: root_slots.len(),
+                actual: value_slots.len(),
+            },
+        );
+    }
+
+    for (index, (root_slot, value_slot)) in root_slots.iter().zip(value_slots.iter()).enumerate() {
+        if root_slot.source() != value_slot.source() {
+            return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+                index,
+                expected: root_slot.source().clone(),
+                actual: value_slot.source().clone(),
+            });
+        }
+        let ResolvedValueGeneration::Heap {
+            address: destination,
+            generation,
+        } = root_slot.value()
+        else {
+            return Err(EvalHeapError::CollectorPollRootWritebackNonHeapValue {
+                tag: value_slot.value().tag(),
+                value: root_slot.value(),
+            });
+        };
+        let replacement = value_slot.value();
+        let replacement_ptr = replacement.as_heap_ptr().map_err(EvalHeapError::Value)?;
+        let replacement_destination = GcHeapAddress::new(replacement_ptr.as_ptr() as usize)
+            .map_err(EvalHeapError::GenerationalGc)?;
+        if replacement_destination != destination {
+            return Err(
+                EvalHeapError::BoundaryMinorGcRootWritebackDestinationMismatch {
+                    root_source: root_slot.source().clone(),
+                    expected_destination: destination,
+                    actual_tag: replacement.tag(),
+                    actual_payload: replacement.payload_bits(),
+                },
+            );
+        }
+
+        let destination_object = destination_objects
+            .iter()
+            .find(|object| object.destination() == destination)
+            .ok_or_else(
+                || EvalHeapError::BoundaryMinorGcRootWritebackDestinationMissing {
+                    root_source: root_slot.source().clone(),
+                    destination,
+                },
+            )?;
+        let expected_generation =
+            generation_for_destination_action(destination_object.request().action());
+        if generation != expected_generation {
+            return Err(
+                EvalHeapError::BoundaryMinorGcRootWritebackGenerationMismatch {
+                    root_source: root_slot.source().clone(),
+                    destination,
+                    expected: expected_generation,
+                    actual: generation,
+                    action: destination_object.request().action(),
+                },
+            );
+        }
+
+        let entries =
+            bindings
+                .len()
+                .checked_add(1)
+                .ok_or(EvalHeapError::RootScanLengthOverflow {
+                    table: BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE,
+                })?;
+        bindings
+            .try_reserve_exact(1)
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE,
+                entries,
+            })?;
+        bindings.push(
+            EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding::new(
+                allocation_domain,
+                root_slot.source().clone(),
+                replacement.tag(),
+                destination,
+                generation,
+                destination_object.request(),
+                clone_boundary_destination_storage_bytes(
+                    BOUNDARY_MINOR_GC_ROOT_WRITEBACK_DESTINATION_BINDINGS_TABLE,
+                    destination_object.destination_bytes(),
+                )?,
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+const fn generation_for_destination_action(action: MinorGcSurvivorAction) -> HeapGeneration {
+    match action {
+        MinorGcSurvivorAction::CopyToNursery => HeapGeneration::Young,
+        MinorGcSurvivorAction::PromoteToOld => HeapGeneration::Old,
+    }
 }
 
 fn clone_boundary_forwarding_slots(
@@ -1730,6 +1944,242 @@ mod live_remembered_set_merge_tests {
                     generation: HeapGeneration::Young,
                 },
             } if source_address == middle && address == middle
+        ));
+    }
+}
+
+#[cfg(test)]
+mod root_writeback_destination_binding_tests {
+    use std::ptr::NonNull;
+
+    use super::*;
+    use crate::value::{HeapObject, ValueError};
+
+    fn address(bits: usize) -> GcHeapAddress {
+        GcHeapAddress::new(bits).expect("test address is non-zero")
+    }
+
+    fn root_source(slot: usize) -> EvalRootSource {
+        EvalRootSource::ValueStack { slot }
+    }
+
+    fn heap(address: GcHeapAddress, generation: HeapGeneration) -> ResolvedValueGeneration {
+        ResolvedValueGeneration::Heap {
+            address,
+            generation,
+        }
+    }
+
+    fn heap_value(tag: ValueTag, address: GcHeapAddress) -> Value {
+        Value::heap(
+            tag,
+            NonNull::new(address.address_bits() as *mut HeapObject)
+                .expect("test heap address is non-null"),
+        )
+        .expect("test heap value is aligned")
+    }
+
+    fn request(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        action: MinorGcSurvivorAction,
+    ) -> AllocationCollectorPollObjectByteCopyRequest {
+        AllocationCollectorPollObjectByteCopyRequest::for_test(
+            source,
+            destination,
+            action,
+            generation_for_destination_action(action),
+            16,
+            8,
+        )
+    }
+
+    fn writebacks(
+        source: EvalRootSource,
+        generation_value: ResolvedValueGeneration,
+        typed_value: Value,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+        let application = EvalGcStressBoundaryMinorGcReferenceWritebackApplication::new(
+            AllocationCollectorPollReferenceWritebackReport::default(),
+            vec![AllocationCollectorPollRootWritebackSlot::new(
+                source.clone(),
+                generation_value,
+            )],
+            vec![AllocationCollectorPollRootValueWritebackSlot::new(
+                source,
+                typed_value,
+            )],
+            Vec::new(),
+        );
+        let applications =
+            EvalGcStressBoundaryMinorGcReferenceWritebackApplications::new(Some(application), None);
+        let install_report = live_reference_writeback_install_report(&applications);
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
+            install_report,
+            applications,
+        }
+    }
+
+    fn destination_storage(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        destination_bytes: Vec<u8>,
+    ) -> EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+        let object_bytes = vec![EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes::new(
+            request,
+            destination_bytes,
+        )];
+        let install_report = live_destination_storage_install_report(&object_bytes);
+        EvalGcStressBoundaryMinorGcLiveDestinationStorage {
+            install_report,
+            object_bytes,
+        }
+    }
+
+    #[test]
+    fn matches_typed_root_writeback_to_destination_snapshot() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let root_source = root_source(0);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let destination_bytes = vec![1, 2, 3, 4];
+        let writebacks = writebacks(
+            root_source.clone(),
+            heap(destination, HeapGeneration::Young),
+            heap_value(ValueTag::Lambda, destination),
+        );
+        let destination_storage = destination_storage(request, destination_bytes.clone());
+
+        let bindings = boundary_minor_gc_root_writeback_destination_bindings(
+            &writebacks,
+            &destination_storage,
+        )
+        .expect("binding report succeeds");
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(
+            bindings[0].allocation_domain(),
+            HeapAllocationDomain::Worker
+        );
+        assert_eq!(bindings[0].root_source(), &root_source);
+        assert_eq!(bindings[0].replacement_tag(), ValueTag::Lambda);
+        assert_eq!(bindings[0].destination(), destination);
+        assert_eq!(bindings[0].generation(), HeapGeneration::Young);
+        assert_eq!(bindings[0].request(), request);
+        assert_eq!(bindings[0].destination_bytes(), destination_bytes);
+    }
+
+    #[test]
+    fn rejects_root_writeback_without_installed_destination_snapshot() {
+        let destination = address(0x2000);
+        let root_source = root_source(0);
+        let writebacks = writebacks(
+            root_source.clone(),
+            heap(destination, HeapGeneration::Young),
+            heap_value(ValueTag::Lambda, destination),
+        );
+        let destination_storage = EvalGcStressBoundaryMinorGcLiveDestinationStorage::default();
+
+        let err = boundary_minor_gc_root_writeback_destination_bindings(
+            &writebacks,
+            &destination_storage,
+        )
+        .expect_err("missing destination snapshot is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcRootWritebackDestinationMissing {
+                root_source: actual_root_source,
+                destination: actual_destination,
+            } if actual_root_source == root_source && actual_destination == destination
+        ));
+    }
+
+    #[test]
+    fn rejects_typed_root_writeback_destination_mismatch() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let sibling_destination = address(0x3000);
+        let root_source = root_source(0);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let writebacks = writebacks(
+            root_source.clone(),
+            heap(destination, HeapGeneration::Young),
+            heap_value(ValueTag::Lambda, sibling_destination),
+        );
+        let destination_storage = destination_storage(request, vec![1, 2, 3, 4]);
+
+        let err = boundary_minor_gc_root_writeback_destination_bindings(
+            &writebacks,
+            &destination_storage,
+        )
+        .expect_err("mismatched typed destination is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcRootWritebackDestinationMismatch {
+                root_source: actual_root_source,
+                expected_destination,
+                actual_tag: ValueTag::Lambda,
+                actual_payload,
+            } if actual_root_source == root_source
+                && expected_destination == destination
+                && actual_payload == sibling_destination.address_bits() as u64
+        ));
+    }
+
+    #[test]
+    fn rejects_inline_typed_root_writeback_replacement() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let root_source = root_source(0);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let writebacks = writebacks(
+            root_source,
+            heap(destination, HeapGeneration::Young),
+            Value::int(7),
+        );
+        let destination_storage = destination_storage(request, vec![1, 2, 3, 4]);
+
+        let err = boundary_minor_gc_root_writeback_destination_bindings(
+            &writebacks,
+            &destination_storage,
+        )
+        .expect_err("inline typed root replacement is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::Value(ValueError::NotHeapTag { tag: ValueTag::Int })
+        ));
+    }
+
+    #[test]
+    fn rejects_generation_that_disagrees_with_destination_action() {
+        let source = address(0x1000);
+        let destination = address(0x2000);
+        let root_source = root_source(0);
+        let request = request(source, destination, MinorGcSurvivorAction::CopyToNursery);
+        let writebacks = writebacks(
+            root_source.clone(),
+            heap(destination, HeapGeneration::Old),
+            heap_value(ValueTag::Lambda, destination),
+        );
+        let destination_storage = destination_storage(request, vec![1, 2, 3, 4]);
+
+        let err = boundary_minor_gc_root_writeback_destination_bindings(
+            &writebacks,
+            &destination_storage,
+        )
+        .expect_err("generation/action mismatch is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcRootWritebackGenerationMismatch {
+                root_source: actual_root_source,
+                destination: actual_destination,
+                expected: HeapGeneration::Young,
+                actual: HeapGeneration::Old,
+                action: MinorGcSurvivorAction::CopyToNursery,
+            } if actual_root_source == root_source && actual_destination == destination
         ));
     }
 }
@@ -2874,6 +3324,32 @@ impl EvalOutcome {
         &self,
     ) -> &EvalGcStressBoundaryMinorGcLiveDestinationStorage {
         &self.gc_stress_boundary_minor_gc_destination_storage
+    }
+
+    /// Matches installed root writebacks to installed destination-byte snapshots.
+    ///
+    /// This validates outcome-owned GC-stress bridge metadata only. Each
+    /// returned binding proves that an installed typed root replacement, its
+    /// generation-style root slot, and an installed destination-byte snapshot
+    /// agree on the same destination object. It does not mutate live evaluator
+    /// roots, bind destination bytes to heap-object storage, or validate object
+    /// liveness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed root writeback metadata is
+    /// internally inconsistent, if a typed root value is not heap-backed, if a
+    /// root replacement points at no installed destination-byte snapshot, if the
+    /// destination generation disagrees with the matched copy action, or if the
+    /// binding report cannot reserve storage.
+    pub fn gc_stress_boundary_minor_gc_root_writeback_destination_bindings(
+        &self,
+    ) -> Result<Vec<EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding>, EvalHeapError>
+    {
+        boundary_minor_gc_root_writeback_destination_bindings(
+            &self.gc_stress_boundary_minor_gc_reference_writebacks,
+            &self.gc_stress_boundary_minor_gc_destination_storage,
+        )
     }
 
     /// Builds minor-GC plans from the recorded GC-stress boundary scans.

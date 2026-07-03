@@ -57,7 +57,7 @@ use super::heap::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
     EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode,
     EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    EvalThunkKind, HeapAllocationDomain, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -352,9 +352,10 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
     EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryMinorGcRelocationPlan,
-    EvalGcStressBoundaryMinorGcRelocationPlans, EvalGcStressBoundaryScans, EvalOutcome, EvalStats,
-    EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,
-    IfdRealizationError, IfdRealizer,
+    EvalGcStressBoundaryMinorGcRelocationPlans,
+    EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding, EvalGcStressBoundaryScans,
+    EvalOutcome, EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail,
+    IfdRealization, IfdRealizationError, IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{
