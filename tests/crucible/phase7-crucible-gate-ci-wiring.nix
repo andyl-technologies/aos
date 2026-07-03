@@ -165,9 +165,14 @@
       needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore];";
     }
     {
-      label = "campaign continuity waits for fleet equivalence";
-      edge = "gate:fleet-equivalence->gate:campaign-continuity";
-      needle = "dependencies = [fleetEquivalence.rawGate];";
+      label = "campaign continuity waits for fleet equivalence and campaign provenance";
+      edge = "gate:fleet-equivalence+campaign-provenance->gate:campaign-continuity";
+      needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignProvenance];";
+    }
+    {
+      label = "campaign continuity wrapper waits for fleet equivalence and campaign provenance";
+      edge = "gate:fleet-equivalence-wrapper+campaign-provenance->gate:campaign-continuity-wrapper";
+      needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignProvenance];";
     }
   ];
 
@@ -436,6 +441,10 @@
         needle = ''attrPath = "checks.crucible.phase7.crucibleFleetStore";'';
       }
       {
+        label = "T-PKG-22 campaign provenance guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";'';
+      }
+      {
         label = "phase7 e2e gate import";
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
@@ -488,6 +497,14 @@
       {
         label = "T-PKG-21 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
+      }
+      {
+        label = "T-PKG-22 checklist complete";
+        needle = "- [x] **T-PKG-22**";
+      }
+      {
+        label = "T-PKG-22 completion note";
+        needle = "Completed by `checks.crucible.phase7.crucibleCampaignProvenance`";
       }
     ];
 

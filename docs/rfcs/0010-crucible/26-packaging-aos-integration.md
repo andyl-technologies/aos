@@ -797,10 +797,21 @@ carries findings across an incompatible build.
     `tcg_only=true`, `required_system_features=none`, and `kvm_required=false`.
     Campaign provenance lineage and cross-provenance corpus refusal remain
     covered by T-PKG-22.
-- [ ] **T-PKG-22** Key campaigns to the provenance triple and refuse cross-provenance
+- [x] **T-PKG-22** Key campaigns to the provenance triple and refuse cross-provenance
   corpus reuse (a QEMU/patch-series/ABI bump starts a fresh campaign lineage,
   recorded as a baseline event), loudly rather than silently merging. — satisfies
   [PKG-44]; spec §26.11; cross-ref [PERF-28].
+  - Completed by `checks.crucible.phase7.crucibleCampaignProvenance`:
+    `crucible-harness` now exposes `campaign_provenance_key` and
+    `evaluate_campaign_corpus_reuse` over the same pinned build identity carried
+    by reproduction artifacts. A prior corpus with the same provenance key seeds
+    the existing lineage; a QEMU patch-series or ABI mismatch returns
+    `RefuseCrossProvenanceReuse` with a
+    `crucible.campaign.fresh-lineage-baseline.v1` fresh-lineage baseline event
+    and the loud `cross-provenance-corpus-reuse-refused` reason. The guard also
+    makes `checks.crucible.phase7.gates.campaignContinuity` depend on this
+    provenance check while leaving the full distributed campaign-continuity gate
+    red until the DCE campaign store and continuity tests are implemented.
 - [ ] **T-PKG-23** Extend the `crucible-cas` ratchet-seam merge marker to name the
   fleet-visible store + dependency-gated invalidation as the SAME seam behind the
   unchanged narrow interface (merge bar = gate:content-address /
