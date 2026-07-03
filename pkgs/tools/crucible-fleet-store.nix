@@ -47,6 +47,13 @@ in
       grep -q '^hash_affinity=priority-only$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^affinity_filters_frontier=false$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^static_partitioning=false$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^exists_gated_expansion=skip-existing$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_map_admission=compare-and-merge$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_map_repair=entry-markers-before-fingerprint$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_map_duplicate=skipped$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^reduction_fingerprint=shared-prune$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^claim_set_anti_redundancy=unclaimed-first$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -63,10 +70,13 @@ in
       aos_from_source=true
       dce_task=T-DCE-1
       dce_claim_lease_task=T-DCE-2
+      dce_four_layer_dedup_task=T-DCE-3
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable
       soft_hash_affinity=priority-only
+      four_layer_dedup=exists,coverage-map,reduction-fingerprint,claim-set
+      coverage_map_repair=entry-markers-before-fingerprint
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"

@@ -160,11 +160,11 @@
       }
       {
         label = "fleet equivalence raw gate waits for seam proof";
-        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
       }
       {
         label = "fleet equivalence wrapper waits for seam proof";
-        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-gate-ci-wiring.nix" gateCiWiring [
@@ -174,7 +174,7 @@
       }
       {
         label = "CI wiring expects fleet equivalence seam dependency";
-        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleCasFleetRatchetSeam];";
+        needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-fleet-store.nix" fleetStoreGate [

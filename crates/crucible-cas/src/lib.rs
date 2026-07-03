@@ -24,8 +24,9 @@
 //! Module map: the crate root owns [`ContentHash`], [`DagStore`],
 //! [`MemoryDagStore`], [`LocalDagStore`], [`SharedDagStore`],
 //! [`SharedFrontier`], [`FrontierClaimRequest`], [`FrontierLease`],
-//! [`SoftHashAffinity`], and the invalidation types [`DependencySnapshot`],
-//! [`InvalidationQuery`], and [`InvalidationDecision`].
+//! [`SoftHashAffinity`], [`SharedDedupIndex`], [`ExpansionDedupDecision`],
+//! [`CoverageAdmission`], [`ReductionAdmission`], and the invalidation types
+//! [`DependencySnapshot`], [`InvalidationQuery`], and [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -1102,6 +1103,236 @@ impl SoftHashAffinity {
     }
 }
 
+/// Fleet-visible index for the four redundant-work dedup layers.
+///
+/// The index stores only content-addressed markers. Expansion gating is read from
+/// a [`DagStore`], coverage-map admission is keyed by covered entry hash,
+/// reduction representatives are keyed by shared reduction fingerprint, and
+/// claim-set anti-redundancy remains owned by [`SharedFrontier`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SharedDedupIndex {
+    root: PathBuf,
+}
+
+impl SharedDedupIndex {
+    /// Builds a shared dedup index rooted at `root`.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Returns the shared dedup index root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the shared coverage-map marker path for `entry`.
+    ///
+    /// The path is keyed only by the covered entry's content address.
+    #[must_use]
+    pub fn coverage_path(&self, entry: &ContentHash) -> PathBuf {
+        content_path(&self.root.join("coverage-map"), entry)
+    }
+
+    /// Returns the shared coverage-fingerprint admission path for `fingerprint`.
+    ///
+    /// The path is keyed only by the candidate coverage fingerprint.
+    #[must_use]
+    pub fn coverage_fingerprint_path(&self, fingerprint: &ContentHash) -> PathBuf {
+        content_path(&self.root.join("coverage-fingerprints"), fingerprint)
+    }
+
+    /// Returns the shared reduction-fingerprint marker path for `fingerprint`.
+    ///
+    /// The path is keyed only by the reduction fingerprint content address.
+    #[must_use]
+    pub fn reduction_path(&self, fingerprint: &ContentHash) -> PathBuf {
+        content_path(&self.root.join("reduction-fingerprints"), fingerprint)
+    }
+
+    /// Decides whether `node` should be expanded by checking the shared store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the store cannot answer the membership query.
+    pub fn exists_gated_expansion(
+        &self,
+        store: &impl DagStore,
+        node: &ContentHash,
+    ) -> Result<ExpansionDedupDecision, CasError> {
+        if store.has(node)? {
+            Ok(ExpansionDedupDecision::SkipExisting)
+        } else {
+            Ok(ExpansionDedupDecision::Expand)
+        }
+    }
+
+    /// Admits coverage entries when at least one entry is new to the shared map.
+    ///
+    /// Duplicate entries are skipped. The returned admission is novel when one or
+    /// more content-addressed coverage markers were created.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when a coverage marker cannot be persisted.
+    pub fn admit_coverage_map<I>(
+        &self,
+        coverage_fingerprint: ContentHash,
+        entries: I,
+    ) -> Result<CoverageAdmission, CasError>
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let mut entries = entries.into_iter().collect::<Vec<_>>();
+        entries.sort();
+        entries.dedup();
+        let fingerprint_was_committed = self
+            .coverage_fingerprint_path(&coverage_fingerprint)
+            .exists();
+
+        let mut new_entries = Vec::new();
+        let mut duplicate_entries = Vec::new();
+        for entry in &entries {
+            let path = self.coverage_path(&entry);
+            let material = coverage_record_material(&coverage_fingerprint, entry);
+            if create_content_record(&path, &material)? {
+                new_entries.push(*entry);
+            } else {
+                duplicate_entries.push(*entry);
+            }
+        }
+        let fingerprint_path = self.coverage_fingerprint_path(&coverage_fingerprint);
+        let _ = create_content_record(
+            &fingerprint_path,
+            &coverage_fingerprint_record_material(&coverage_fingerprint, &entries),
+        )?;
+        if fingerprint_was_committed {
+            duplicate_entries = entries;
+            new_entries.clear();
+        }
+
+        Ok(CoverageAdmission {
+            coverage_fingerprint,
+            new_entries,
+            duplicate_entries,
+        })
+    }
+
+    /// Admits the first representative for a shared reduction fingerprint.
+    ///
+    /// Later calls for the same fingerprint return the existing representative as
+    /// the fleet-wide cover for the supplied candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the reduction marker cannot be read, parsed, or
+    /// persisted.
+    pub fn admit_reduction_fingerprint(
+        &self,
+        fingerprint: ContentHash,
+        representative: ContentHash,
+    ) -> Result<ReductionAdmission, CasError> {
+        let path = self.reduction_path(&fingerprint);
+        let material = reduction_record_material(&fingerprint, &representative);
+        if create_content_record(&path, &material)? {
+            return Ok(ReductionAdmission {
+                fingerprint,
+                representative,
+                covered: None,
+            });
+        }
+
+        let existing = parse_reduction_record(
+            &path,
+            &fingerprint,
+            &fs::read_to_string(&path).map_err(|source| CasError::Io {
+                operation: "read",
+                path: path.clone(),
+                source,
+            })?,
+        )?;
+        Ok(ReductionAdmission {
+            fingerprint,
+            representative: existing,
+            covered: Some(representative),
+        })
+    }
+}
+
+/// Decision returned by an exists-gated expansion check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpansionDedupDecision {
+    /// The node is absent from the shared store and may be expanded.
+    Expand,
+    /// The node already exists in the shared store and should be skipped.
+    SkipExisting,
+}
+
+impl ExpansionDedupDecision {
+    /// Returns whether the node should be expanded.
+    #[must_use]
+    pub fn should_expand(self) -> bool {
+        matches!(self, Self::Expand)
+    }
+
+    /// Returns whether the node was skipped because it already exists.
+    #[must_use]
+    pub fn skipped_existing(self) -> bool {
+        matches!(self, Self::SkipExisting)
+    }
+}
+
+/// Result of shared coverage-map compare-and-merge admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoverageAdmission {
+    /// Coverage fingerprint associated with the candidate being admitted.
+    pub coverage_fingerprint: ContentHash,
+    /// Coverage entries newly added to the shared map.
+    pub new_entries: Vec<ContentHash>,
+    /// Coverage entries already present in the shared map.
+    pub duplicate_entries: Vec<ContentHash>,
+}
+
+impl CoverageAdmission {
+    /// Returns whether this candidate added any new shared coverage.
+    #[must_use]
+    pub fn admitted(&self) -> bool {
+        !self.new_entries.is_empty()
+    }
+
+    /// Returns whether this candidate was redundant against the shared map.
+    #[must_use]
+    pub fn redundant(&self) -> bool {
+        self.new_entries.is_empty()
+    }
+}
+
+/// Result of shared symmetry or partial-order reduction-fingerprint admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReductionAdmission {
+    /// Shared reduction fingerprint used for fleet-wide pruning.
+    pub fingerprint: ContentHash,
+    /// Representative retained for this fingerprint.
+    pub representative: ContentHash,
+    /// Candidate covered by the representative, if this was redundant.
+    pub covered: Option<ContentHash>,
+}
+
+impl ReductionAdmission {
+    /// Returns whether this candidate became the shared representative.
+    #[must_use]
+    pub fn admitted(&self) -> bool {
+        self.covered.is_none()
+    }
+
+    /// Returns whether this candidate was covered by an existing representative.
+    #[must_use]
+    pub fn covered(&self) -> bool {
+        self.covered.is_some()
+    }
+}
+
 fn content_path(root: &Path, key: &ContentHash) -> PathBuf {
     let hex = key.to_hex();
     root.join(&hex[0..2]).join(hex)
@@ -1139,6 +1370,66 @@ fn validate_claim_request(request: &FrontierClaimRequest) -> Result<(), CasError
             reason: "lease expiry tick overflows u64",
         })?;
     Ok(())
+}
+
+fn create_content_record(path: &Path, material: &str) -> Result<bool, CasError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| CasError::Io {
+            operation: "create-dir",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => {
+            if let Err(source) = file.write_all(material.as_bytes()) {
+                let _ = fs::remove_file(path);
+                return Err(CasError::Io {
+                    operation: "write",
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(source) => Err(CasError::Io {
+            operation: "create",
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn coverage_record_material(coverage_fingerprint: &ContentHash, entry: &ContentHash) -> String {
+    format!(
+        "format=crucible.coverage-map-entry.v1\ncoverage_fingerprint={}\nentry={}\n",
+        coverage_fingerprint.to_hex(),
+        entry.to_hex()
+    )
+}
+
+fn coverage_fingerprint_record_material(
+    coverage_fingerprint: &ContentHash,
+    entries: &[ContentHash],
+) -> String {
+    let entries = entries
+        .iter()
+        .map(|entry| entry.to_hex())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "format=crucible.coverage-fingerprint.v1\ncoverage_fingerprint={}\nentries={entries}\n",
+        coverage_fingerprint.to_hex()
+    )
+}
+
+fn reduction_record_material(fingerprint: &ContentHash, representative: &ContentHash) -> String {
+    format!(
+        "format=crucible.reduction-fingerprint.v1\nfingerprint={}\nrepresentative={}\n",
+        fingerprint.to_hex(),
+        representative.to_hex()
+    )
 }
 
 fn frontier_lease_id(node: &ContentHash, owner: &str, expires_at_tick: u64) -> ContentHash {
@@ -1232,6 +1523,37 @@ fn parse_lease_record(
         expires_at_tick,
         lease_id,
     })
+}
+
+fn parse_reduction_record(
+    path: &Path,
+    expected_fingerprint: &ContentHash,
+    material: &str,
+) -> Result<ContentHash, CasError> {
+    let mut fields = BTreeMap::new();
+    for line in material.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(CasError::InvalidFrontierRecord {
+                path: path.to_path_buf(),
+                reason: "reduction record line is missing '='",
+            });
+        };
+        fields.insert(key, value);
+    }
+    if fields.get("format") != Some(&"crucible.reduction-fingerprint.v1") {
+        return Err(CasError::InvalidFrontierRecord {
+            path: path.to_path_buf(),
+            reason: "reduction record format is unsupported",
+        });
+    }
+    let fingerprint = parse_required_hash(path, &fields, "fingerprint")?;
+    if fingerprint != *expected_fingerprint {
+        return Err(CasError::InvalidFrontierRecord {
+            path: path.to_path_buf(),
+            reason: "reduction record fingerprint does not match marker path",
+        });
+    }
+    parse_required_hash(path, &fields, "representative")
 }
 
 fn parse_claim_lock_record(
@@ -1753,6 +2075,99 @@ mod tests {
         assert_eq!(reclaimed.node, node);
         assert_eq!(reclaimed.owner, "reclaiming-host");
         assert_eq!(reclaimed.expires_at_tick, 110);
+
+        Ok(())
+    }
+
+    #[test]
+    fn shared_dedup_index_proves_four_layers() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SharedDagStore::new(temp.path().join("objects"));
+        let index = SharedDedupIndex::new(temp.path().join("dedup"));
+        let child = ContentHash::from_bytes(b"four-layer-child");
+
+        assert_eq!(
+            index.exists_gated_expansion(&store, &child)?,
+            ExpansionDedupDecision::Expand
+        );
+        assert_eq!(store.put(b"four-layer-child")?, child);
+        assert_eq!(
+            index.exists_gated_expansion(&store, &child)?,
+            ExpansionDedupDecision::SkipExisting
+        );
+
+        let edge_a = ContentHash::from_bytes(b"coverage-edge-a");
+        let edge_b = ContentHash::from_bytes(b"coverage-edge-b");
+        let edge_c = ContentHash::from_bytes(b"coverage-edge-c");
+        let coverage_ab = ContentHash::from_bytes(b"coverage-a-b");
+        let first_coverage = index.admit_coverage_map(coverage_ab, [edge_a, edge_b])?;
+        assert!(first_coverage.admitted());
+        assert_eq!(first_coverage.new_entries.len(), 2);
+        let same_fingerprint = index.admit_coverage_map(coverage_ab, [edge_a, edge_b])?;
+        assert!(same_fingerprint.redundant());
+        assert_eq!(same_fingerprint.duplicate_entries.len(), 2);
+
+        let interrupted_fingerprint = ContentHash::from_bytes(b"coverage-interrupted");
+        let interrupted_a = ContentHash::from_bytes(b"coverage-interrupted-a");
+        let interrupted_b = ContentHash::from_bytes(b"coverage-interrupted-b");
+        let interrupted_path = index.coverage_fingerprint_path(&interrupted_fingerprint);
+        let interrupted_parent = interrupted_path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("coverage fingerprint path has no parent"))?;
+        fs::create_dir_all(interrupted_parent)?;
+        fs::write(
+            &interrupted_path,
+            coverage_fingerprint_record_material(
+                &interrupted_fingerprint,
+                &[interrupted_a, interrupted_b],
+            ),
+        )?;
+        assert!(!index.coverage_path(&interrupted_a).exists());
+        let repaired =
+            index.admit_coverage_map(interrupted_fingerprint, [interrupted_a, interrupted_b])?;
+        assert!(repaired.redundant());
+        assert_eq!(repaired.duplicate_entries.len(), 2);
+        assert!(index.coverage_path(&interrupted_a).exists());
+        assert!(index.coverage_path(&interrupted_b).exists());
+
+        let duplicate_coverage = index.admit_coverage_map(
+            ContentHash::from_bytes(b"coverage-a-b-duplicate"),
+            [edge_a, edge_b],
+        )?;
+        assert!(duplicate_coverage.redundant());
+        assert_eq!(duplicate_coverage.duplicate_entries.len(), 2);
+        let merged_coverage =
+            index.admit_coverage_map(ContentHash::from_bytes(b"coverage-b-c"), [edge_b, edge_c])?;
+        assert!(merged_coverage.admitted());
+        assert_eq!(merged_coverage.new_entries, vec![edge_c]);
+        assert_eq!(merged_coverage.duplicate_entries, vec![edge_b]);
+
+        let reduction_fingerprint = ContentHash::from_bytes(b"symmetry-por-fingerprint");
+        let representative = ContentHash::from_bytes(b"canonical-representative");
+        let covered = ContentHash::from_bytes(b"covered-equivalent");
+        let first_reduction =
+            index.admit_reduction_fingerprint(reduction_fingerprint, representative)?;
+        assert!(first_reduction.admitted());
+        assert_eq!(first_reduction.representative, representative);
+        let covered_reduction =
+            index.admit_reduction_fingerprint(reduction_fingerprint, covered)?;
+        assert!(covered_reduction.covered());
+        assert_eq!(covered_reduction.representative, representative);
+        assert_eq!(covered_reduction.covered, Some(covered));
+
+        let frontier = SharedFrontier::new(temp.path().join("frontier"));
+        let node_a = store.put(b"claim-anti-redundancy-a")?;
+        let node_b = store.put(b"claim-anti-redundancy-b")?;
+        frontier.admit(&node_a)?;
+        frontier.admit(&node_b)?;
+        let first_claim = frontier
+            .claim_next(&FrontierClaimRequest::new("host-a", 1, 5))?
+            .ok_or_else(|| std::io::Error::other("first host did not claim a frontier node"))?;
+        let second_claim = frontier
+            .claim_next(&FrontierClaimRequest::new("host-b", 2, 5))?
+            .ok_or_else(|| std::io::Error::other("second host did not claim fallback node"))?;
+        assert_ne!(first_claim.node, second_claim.node);
+        assert!(!frontier.claimable_nodes(3)?.contains(&first_claim.node));
 
         Ok(())
     }
