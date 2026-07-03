@@ -5,9 +5,10 @@
 //! publish one outside the current frame. Aggregate values, thunks, strings,
 //! paths, variables, and most nodes whose result depends on another expression
 //! stay conservative unless the current primitive-operation escape signature
-//! table proves an immediate scalar result, or a strict thunk allocation is the
-//! unique argument reference to a direct simple identity lambda and wraps a
-//! value that is already proven not to escape.
+//! table proves an immediate scalar result, a strict aggregate allocation is
+//! uniquely consumed by such a scalar-result primitive operation, or a strict
+//! thunk allocation is the unique argument reference to a direct simple identity
+//! lambda and wraps a value that is already proven not to escape.
 
 use thiserror::Error;
 
@@ -116,7 +117,8 @@ pub enum EscapeAnalysisError {
 /// node to [`Escape::Escapes`] unless this pass positively proves
 /// [`Escape::NoEscape`]. The current positive proofs are allocation-free
 /// immediate scalar literals, direct primops whose escape signatures return an
-/// immediate scalar result, and strict thunk allocations that are the unique
+/// immediate scalar result, strict aggregate allocations uniquely consumed by
+/// such scalar-result primops, and strict thunk allocations that are the unique
 /// argument reference to a direct simple identity lambda whose body result is
 /// already proven not to escape.
 ///
@@ -200,6 +202,22 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
             .node(id)
             .ok_or(EscapeAnalysisError::MissingFact { id })?;
         if !strict_thunk_wraps_no_escape_body(ir, id, node)? {
+            continue;
+        }
+        let facts = ir
+            .facts
+            .get_mut(id)
+            .ok_or(EscapeAnalysisError::MissingFact { id })?;
+        facts.escape = Escape::NoEscape;
+        report.nodes_marked_no_escape += 1;
+    }
+    for index in 0..node_count {
+        let id = IrId::new(index as u32);
+        let node = *ir
+            .arena
+            .node(id)
+            .ok_or(EscapeAnalysisError::MissingFact { id })?;
+        if !strict_aggregate_consumed_by_scalar_primop(ir, id, node)? {
             continue;
         }
         let facts = ir
@@ -495,6 +513,53 @@ fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {
 
 fn count_id(id: IrId, target: IrId) -> usize {
     usize::from(id == target)
+}
+
+fn strict_aggregate_consumed_by_scalar_primop(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+) -> Result<bool, EscapeAnalysisError> {
+    if !matches!(node.kind, IrKind::List | IrKind::AttrSet) {
+        return Ok(false);
+    }
+    let facts = ir
+        .facts
+        .get(id)
+        .ok_or(EscapeAnalysisError::MissingFact { id })?;
+    if facts.strictness != Strictness::Strict {
+        return Ok(false);
+    }
+    unique_scalar_primop_argument(ir, id)
+}
+
+fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, EscapeAnalysisError> {
+    let mut reference_count = count_id(ir.root, argument);
+    let mut scalar_argument_count = 0usize;
+
+    for with_chain in &ir.with_chains {
+        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+    }
+
+    for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
+        let current = IrId::new(index as u32);
+        reference_count =
+            reference_count.saturating_add(reference_count_in_node(ir, current, node, argument)?);
+
+        let IrData::PrimOp { args, .. } = node.data else {
+            continue;
+        };
+        let Some(signature) = primop_signature(ir, current, node.data)? else {
+            continue;
+        };
+        if signature.escape() != Escape::NoEscape {
+            continue;
+        }
+        scalar_argument_count = scalar_argument_count
+            .saturating_add(count_ids(child_ids(ir, current, args)?, argument));
+    }
+
+    Ok(reference_count == 1 && scalar_argument_count == 1)
 }
 
 fn primop_signature(

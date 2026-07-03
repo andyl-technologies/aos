@@ -6933,6 +6933,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       raw/shared IR aliases through arena nodes, the root id, or dynamic
       `with` chains, aggregate escape, and closure-capture/frame escape remain
       conservative.
+- [x] Current aggregate scalar-primop escape precursor:
+      `annotate_escape` now marks `List` and `AttrSet` allocations `NoEscape`
+      only when the aggregate is already proven `Strict`, has exactly one IR
+      reference, and that reference is as an argument to a primitive operation
+      whose result signature is an immediate scalar. Lazy aggregates, aggregates
+      returned as the root value, shared raw/imported aliases, result-forwarding
+      primops, and general aggregate scalar replacement remain conservative.
 - [x] Current escape fact-table validation hardening:
       `annotate_escape` now rejects fact-table/node-count mismatches before
       scrubbing or producing escape facts, so overlong imported fact tables

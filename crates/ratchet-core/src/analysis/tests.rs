@@ -3,9 +3,9 @@
 use super::*;
 use crate::ir::{
     Cardinality, EffectClass, Escape, ExprFacts, Ir, IrArena, IrAttrPathId, IrAttrPathSegment,
-    IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrFacts, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrWithChain, Strictness, annotate_ir, lower,
-    lower_with_options,
+    IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrFacts, IrId,
+    IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape, IrWithChain, Strictness,
+    annotate_ir, lower, lower_with_options,
 };
 use crate::resolve;
 use crate::scope::{FrameId, FrameInfo};
@@ -915,6 +915,197 @@ fn escape_keeps_strict_and_captured_wrapping_thunks_conservative() {
     assert_eq!(strictness(&ir, argument), Strictness::Strict);
     assert_eq!(escape(&ir, body), Escape::NoEscape);
     assert_eq!(escape(&ir, argument), Escape::Escapes);
+}
+
+#[test]
+fn escape_marks_strict_unique_aggregate_scalar_primop_arguments_no_escape() {
+    let mut length_ir = lowered("builtins.length [ (1 / 0) ]");
+    let length_args = primop_args(&length_ir, length_ir.root);
+    let list = length_args[0];
+
+    annotate_ir(&mut length_ir).expect("analysis succeeds");
+
+    assert_eq!(node(&length_ir, list).kind, IrKind::List);
+    assert_eq!(strictness(&length_ir, list), Strictness::Strict);
+    assert_eq!(escape(&length_ir, list), Escape::NoEscape);
+
+    let mut has_attr_ir = lowered(r#"builtins.hasAttr "a" { a = 1; }"#);
+    let has_attr_args = primop_args(&has_attr_ir, has_attr_ir.root);
+    let attrset = has_attr_args[1];
+
+    annotate_ir(&mut has_attr_ir).expect("analysis succeeds");
+
+    assert_eq!(node(&has_attr_ir, attrset).kind, IrKind::AttrSet);
+    assert_eq!(strictness(&has_attr_ir, attrset), Strictness::Strict);
+    assert_eq!(escape(&has_attr_ir, attrset), Escape::NoEscape);
+}
+
+#[test]
+fn escape_keeps_lazy_aggregate_scalar_primop_arguments_conservative() {
+    let mut ir = lowered("let x = [ ]; in 1");
+    let binding = let_binding_values(&ir, ir.root)[0];
+    let IrData::Node(list) = node(&ir, binding).data else {
+        panic!("thunk body expected");
+    };
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(node(&ir, list).kind, IrKind::List);
+    assert_eq!(strictness(&ir, list), Strictness::Unknown);
+    assert_eq!(escape(&ir, list), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_shared_aggregate_scalar_primop_arguments_conservative() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: list,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, list), Escape::Escapes);
+    assert_eq!(escape(&ir, primop), Escape::NoEscape);
+}
+
+#[test]
+fn escape_keeps_with_chain_aggregate_scalar_primop_arguments_conservative() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([IrWithChain::new(Box::new([list]))]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, list), Escape::Escapes);
+    assert_eq!(escape(&ir, primop), Escape::NoEscape);
+}
+
+#[test]
+fn escape_keeps_dynamic_attr_path_aggregate_scalar_primop_arguments_conservative() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let receiver = IrId::new(2);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::Null,
+                Span::new(3, 7),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::HasAttr,
+                Span::new(0, 7),
+                EffectClass::pure(),
+                IrData::HasAttr {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver,
+                    path: IrAttrPathId::new(0),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(4),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Dynamic(list)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, list), Escape::Escapes);
+    assert_eq!(escape(&ir, primop), Escape::NoEscape);
 }
 
 #[test]
