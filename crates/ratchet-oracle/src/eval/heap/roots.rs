@@ -3255,14 +3255,14 @@ impl AllocationCollectorPollCopiedHeapFieldWrite {
     }
 }
 
-/// A record-owned old-generation heap field rewritten in place after minor GC.
+/// A record-owned old or permanent heap field rewritten in place after minor GC.
 ///
-/// The write targets an existing old-generation worker record. The strict
-/// direct writer accepts only promoted-old replacement destinations; the
-/// combined card-table-aware writer additionally accepts copied-young
-/// replacement destinations after staging a remembered-set/card-table update.
-/// Permanent shared records, shared lexical environment frame slots, and thunk
-/// fields remain outside this direct writer.
+/// The write targets an existing old-generation worker record or a
+/// permanent-shared record. The strict direct writer accepts only promoted-old
+/// replacement destinations; the combined card-table-aware writer additionally
+/// accepts copied-young replacement destinations after staging a
+/// remembered-set/card-table update. Shared lexical environment frame slots and
+/// thunk fields remain outside this direct writer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationCollectorPollDirectHeapFieldWrite {
     allocation_domain: HeapAllocationDomain,
@@ -3591,8 +3591,9 @@ impl EvalHeap {
     /// Converts a collector-poll heap graph snapshot into a minor-GC plan.
     ///
     /// Worker-domain records are treated as current young-generation objects.
-    /// Permanent shared records are treated as permanent objects and therefore
-    /// enter the plan only through remembered permanent-to-young edges. The
+    /// Permanent shared records are treated as permanent objects. Remembered-set
+    /// snapshots may carry old-worker or permanent-shared source edges to young
+    /// targets, while permanent graph edges must be remembered explicitly. The
     /// method validates that the copied poll scan still matches current heap
     /// record edges before using current worker-domain field metadata for
     /// transitive minor-GC planning.
@@ -3603,7 +3604,7 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if the poll scan is stale, if a remembered-set
-    /// edge references an unknown object or is not permanent-to-young, if a
+    /// edge references an unknown object or is not old/permanent-to-young, if a
     /// visible permanent-to-young edge is missing from the remembered set, if
     /// copying the remembered-set snapshot cannot reserve storage, or if the
     /// minor-GC planner rejects the generated roots, age metadata, or field
@@ -4739,16 +4740,14 @@ impl EvalHeap {
         write: &AllocationCollectorPollDirectHeapFieldWrite,
         record: &HeapRecord,
     ) -> Result<(), EvalHeapError> {
+        let expected = expected_direct_heap_field_write_generation(write.allocation_domain());
         let actual = generation_for_record(record);
-        if write.allocation_domain() != HeapAllocationDomain::Worker
-            || record.allocation_domain != HeapAllocationDomain::Worker
-            || actual != HeapGeneration::Old
-        {
+        if record.allocation_domain != write.allocation_domain() || actual != expected {
             return Err(
                 EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
                     allocation_domain: write.allocation_domain(),
                     writeback_object: write.writeback_object(),
-                    expected: HeapGeneration::Old,
+                    expected,
                     actual,
                 },
             );
@@ -5310,8 +5309,10 @@ impl EvalHeap {
         for edge in remembered_set.edges() {
             let source_generation = self.generation_for_address(edge.source(), "source")?;
             let target_generation = self.generation_for_address(edge.target(), "target")?;
-            if source_generation != HeapGeneration::Permanent
-                || target_generation != HeapGeneration::Young
+            if !matches!(
+                source_generation,
+                HeapGeneration::Old | HeapGeneration::Permanent
+            ) || target_generation != HeapGeneration::Young
             {
                 return Err(EvalHeapError::InvalidCollectorPollRememberedEdge {
                     source_address: edge.source(),
@@ -5762,6 +5763,15 @@ impl EvalHeap {
         Ok(generation_for_record(record))
     }
 
+    pub(crate) fn allocation_domain_for_address(
+        &self,
+        address: GcHeapAddress,
+        role: &'static str,
+    ) -> Result<HeapAllocationDomain, EvalHeapError> {
+        let record = self.record_for_gc_address(address, role)?;
+        Ok(record.allocation_domain)
+    }
+
     fn record_for_gc_address(
         &self,
         address: GcHeapAddress,
@@ -6153,6 +6163,15 @@ fn gc_address_for_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapE
 
 const fn generation_for_record(record: &HeapRecord) -> HeapGeneration {
     record.generation
+}
+
+const fn expected_direct_heap_field_write_generation(
+    allocation_domain: HeapAllocationDomain,
+) -> HeapGeneration {
+    match allocation_domain {
+        HeapAllocationDomain::Worker => HeapGeneration::Old,
+        HeapAllocationDomain::PermanentShared => HeapGeneration::Permanent,
+    }
 }
 
 fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> bool {

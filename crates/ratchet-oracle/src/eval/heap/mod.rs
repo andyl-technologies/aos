@@ -602,10 +602,10 @@ pub enum EvalHeapError {
         /// The unrecognized remembered-set address.
         address: GcHeapAddress,
     },
-    /// A remembered-set edge did not describe a permanent-to-young edge in the
-    /// current oracle heap.
+    /// A remembered-set edge did not describe an old/permanent-to-young edge in
+    /// the current oracle heap.
     #[error(
-        "collector-poll remembered-set edge is not permanent-to-young: 0x{source:x} ({source_generation:?}) -> 0x{target:x} ({target_generation:?})",
+        "collector-poll remembered-set edge is not old/permanent-to-young: 0x{source:x} ({source_generation:?}) -> 0x{target:x} ({target_generation:?})",
         source = source_address.address_bits(),
         target = target_address.address_bits()
     )]
@@ -1090,7 +1090,7 @@ pub enum EvalHeapError {
         destination = destination.address_bits()
     )]
     BoundaryMinorGcRootWritebackWriteMissingBinding {
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the root writeback.
         allocation_domain: HeapAllocationDomain,
         /// The copied root source whose replacement needs a binding.
         root_source: EvalRootSource,
@@ -1108,7 +1108,7 @@ pub enum EvalHeapError {
         actual_destination = actual_destination.address_bits()
     )]
     BoundaryMinorGcRootWritebackWriteBindingMismatch {
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the root writeback.
         allocation_domain: HeapAllocationDomain,
         /// The copied root source whose binding disagreed.
         root_source: EvalRootSource,
@@ -1132,7 +1132,7 @@ pub enum EvalHeapError {
     BoundaryMinorGcRootWritebackWriteDuplicateSource {
         /// The duplicated source index.
         index: usize,
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the root writeback.
         allocation_domain: HeapAllocationDomain,
         /// The copied root source that appears more than once.
         root_source: EvalRootSource,
@@ -1458,7 +1458,7 @@ pub enum EvalHeapError {
         replacement = replacement.address_bits()
     )]
     BoundaryMinorGcHeapFieldWritebackWriteMissingBinding {
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the heap-field source.
         allocation_domain: HeapAllocationDomain,
         /// The heap object whose field would be rewritten.
         writeback_object: GcHeapAddress,
@@ -1479,7 +1479,7 @@ pub enum EvalHeapError {
         actual_replacement = actual_replacement.address_bits()
     )]
     BoundaryMinorGcHeapFieldWritebackWriteBindingMismatch {
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the heap-field source.
         allocation_domain: HeapAllocationDomain,
         /// The heap object whose field would be rewritten.
         writeback_object: GcHeapAddress,
@@ -1504,7 +1504,7 @@ pub enum EvalHeapError {
     BoundaryMinorGcHeapFieldWritebackWriteDuplicateSource {
         /// The duplicated source index.
         index: usize,
-        /// The allocator domain whose boundary application produced the writeback.
+        /// The allocator domain assigned to the heap-field source.
         allocation_domain: HeapAllocationDomain,
         /// The heap object whose field would be rewritten.
         writeback_object: GcHeapAddress,
@@ -1661,7 +1661,7 @@ pub enum EvalHeapError {
     },
     /// A direct heap-field write targets a field kind that is not record-owned.
     #[error(
-        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not an old-generation record-owned list, attrset, or primop-argument field",
+        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not a supported record-owned list, attrset, primop-argument, or lambda capture field",
         writeback_object = writeback_object.address_bits()
     )]
     CollectorPollDirectHeapFieldWriteUnsupportedSource {
@@ -1719,7 +1719,7 @@ pub enum EvalHeapError {
         /// The current heap-record generation.
         actual: HeapGeneration,
     },
-    /// A direct heap-field writeback object is not an old-generation worker object.
+    /// A direct heap-field writeback object is not in the expected generation.
     #[error(
         "collector-poll minor-GC direct heap-field writeback object 0x{writeback_object:x} from {allocation_domain:?} has generation {actual:?}, expected {expected:?}",
         writeback_object = writeback_object.address_bits()
@@ -1734,7 +1734,7 @@ pub enum EvalHeapError {
         /// The current heap-record generation.
         actual: HeapGeneration,
     },
-    /// A direct heap-field replacement would keep an old-to-young edge live.
+    /// A direct heap-field replacement would keep an old/permanent-to-young edge live.
     #[error(
         "collector-poll minor-GC direct heap-field replacement 0x{replacement:x} for 0x{writeback_object:x}[{field_index}] {field_source:?} has generation {generation:?}; direct writes currently require promoted-old replacements",
         replacement = replacement.address_bits(),

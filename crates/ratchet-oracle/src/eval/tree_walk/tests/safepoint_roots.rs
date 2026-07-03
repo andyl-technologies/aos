@@ -2699,7 +2699,7 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
 #[test]
 fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     let ir = lower("let captured = x: x; in y: captured");
-    let outcome = eval_whnf_owned_with_options(
+    let mut outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
@@ -2826,6 +2826,51 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
             .object_byte_copies()
             .len()
     );
+
+    let _live_reference_writebacks = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("mixed boundary installs live reference writebacks");
+    let _live_destination_storage = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("mixed boundary installs live destination storage");
+    let field_bindings = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings()
+        .expect("mixed boundary heap-field destination bindings validate");
+    let copied_binding = field_bindings
+        .iter()
+        .find(|binding| binding.validation_object() != binding.writeback_object())
+        .expect("copied nursery heap-field binding records");
+    assert_eq!(
+        copied_binding.allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert!(copied_binding.writeback_object_request().is_some());
+
+    let _live_writeback_bindings = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_writeback_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("mixed boundary installs live writeback destination bindings");
+    let write_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("mixed boundary live heap-field write plan validates");
+    let copied_write = write_plan
+        .writes()
+        .iter()
+        .find(|write| write.validation_object() != write.writeback_object())
+        .expect("copied nursery heap-field write records");
+    assert_eq!(
+        copied_write.allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert!(copied_write.writeback_object_request().is_some());
 }
 
 #[test]
@@ -3175,7 +3220,7 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
 }
 
 #[test]
-fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
+fn boundary_owned_commit_buffers_publish_dirty_permanent_field_rescan_edges() {
     let ir = lower("x: x");
     let mut evaluator = TreeWalk::with_options(
         &ir,
@@ -3237,7 +3282,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             MinorGcPromotionPolicy::new(2),
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
-        .expect("dirty old-field boundary scan builds commit preflight metadata");
+        .expect("dirty permanent-field boundary scan builds commit preflight metadata");
     let worker_preflight = preflights.worker().expect("worker preflight records");
 
     assert_eq!(outcome.thunk_resolve_remembered_set().len(), 0);
@@ -3268,7 +3313,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
 
     let application = worker_preflight
         .apply_reference_writebacks_to_owned_slots()
-        .expect("dirty old-field boundary writeback slots apply");
+        .expect("dirty permanent-field boundary writeback slots apply");
     assert_eq!(application.report().root_writebacks(), 0);
     assert_eq!(application.report().heap_field_writebacks(), 1);
     assert_eq!(
@@ -3281,7 +3326,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
 
     let commit_application = worker_preflight
         .apply_commit_to_owned_buffers()
-        .expect("dirty old-field boundary commit buffers apply");
+        .expect("dirty permanent-field boundary commit buffers apply");
     assert_eq!(commit_application.report().remembered_set_source_edges(), 0);
     assert_eq!(
         commit_application.report().remembered_set_published_edges(),
@@ -3304,28 +3349,32 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
 
     let dry_run = preflights
         .apply_owned_commit_dry_run()
-        .expect("dirty old-field boundary dry-run applies");
+        .expect("dirty permanent-field boundary dry-run applies");
     let summary = dry_run.summary();
     let dry_worker_commit = dry_run
         .commit_applications()
         .worker()
-        .expect("worker dirty old-field dry-run commit records");
+        .expect("worker dirty permanent-field dry-run commit records");
     let dry_permanent_commit = dry_run
         .commit_applications()
         .permanent_shared()
-        .expect("permanent dirty old-field dry-run commit records");
+        .expect("permanent dirty permanent-field dry-run commit records");
     let dry_worker_writebacks = dry_run
         .reference_writebacks()
         .worker()
-        .expect("worker dirty old-field writebacks record");
+        .expect("worker dirty permanent-field writebacks record");
     let dry_permanent_writebacks = dry_run
         .reference_writebacks()
         .permanent_shared()
-        .expect("permanent dirty old-field writebacks record");
+        .expect("permanent dirty permanent-field writebacks record");
     let dry_worker_report = dry_worker_commit.report();
     let dry_permanent_report = dry_permanent_commit.report();
 
     assert_eq!(summary.tiers(), dry_run.len());
+    let canonical_heap_field_writebacks = 1usize;
+    let canonical_writeback_destination_bindings = summary
+        .root_writebacks()
+        .saturating_add(canonical_heap_field_writebacks);
     assert_eq!(
         summary.root_writebacks(),
         dry_worker_writebacks
@@ -3364,6 +3413,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             .card_table_dirty_cards_cleared()
             .saturating_add(dry_permanent_report.card_table_dirty_cards_cleared())
     );
+    assert_eq!(summary.heap_field_writebacks(), 2);
     assert_eq!(dry_worker_report.remembered_set_source_edges(), 0);
     assert_eq!(dry_worker_report.remembered_set_published_edges(), 1);
 
@@ -3377,7 +3427,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             MinorGcPromotionPolicy::new(2),
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
-        .expect("dirty old-field boundary installs live writeback metadata");
+        .expect("dirty permanent-field boundary installs live writeback metadata");
     assert_eq!(
         live_writeback_dry_run.reference_writebacks_installed(),
         summary.reference_writebacks()
@@ -3391,7 +3441,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     let live_writebacks = outcome.gc_stress_boundary_minor_gc_reference_writebacks();
     let live_worker_writebacks = live_writebacks
         .worker()
-        .expect("dirty old-field worker writebacks install");
+        .expect("dirty permanent-field worker writebacks install");
     assert_eq!(live_writebacks.len(), dry_run.reference_writebacks().len());
     assert_eq!(
         live_writebacks.install_report().writebacks(),
@@ -3419,7 +3469,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             MinorGcPromotionPolicy::new(2),
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
-        .expect("dirty old-field boundary installs live destination storage");
+        .expect("dirty permanent-field boundary installs live destination storage");
     let live_destination_storage = outcome.gc_stress_boundary_minor_gc_destination_storage();
     let live_object_copy = live_destination_dry_run
         .dry_run()
@@ -3436,17 +3486,17 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     let field_bindings = outcome
         .gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings()
         .expect("heap-field writeback destination bindings validate");
-    assert_eq!(field_bindings.len(), summary.heap_field_writebacks());
+    assert_eq!(field_bindings.len(), canonical_heap_field_writebacks);
     let dirty_field_binding = field_bindings
         .iter()
         .find(|binding| {
             binding.validation_object() == gc_address(permanent_parent)
                 && binding.writeback_object() == gc_address(permanent_parent)
         })
-        .expect("dirty old-field binding records");
+        .expect("dirty permanent-field binding records");
     assert_eq!(
         dirty_field_binding.allocation_domain(),
-        HeapAllocationDomain::Worker
+        HeapAllocationDomain::PermanentShared
     );
     assert_eq!(
         dirty_field_binding.validation_object(),
@@ -3489,26 +3539,26 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             MinorGcPromotionPolicy::new(2),
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
-        .expect("dirty old-field boundary installs live writeback destination bindings");
+        .expect("dirty permanent-field boundary installs live writeback destination bindings");
     assert_eq!(
         live_writeback_binding_dry_run.writeback_destination_bindings_installed(),
-        summary.reference_writebacks()
+        canonical_writeback_destination_bindings
     );
     assert_eq!(
         live_writeback_binding_dry_run.heap_field_writeback_destination_bindings_installed(),
-        summary.heap_field_writebacks()
+        canonical_heap_field_writebacks
     );
     let live_writeback_destination_bindings =
         outcome.gc_stress_boundary_minor_gc_writeback_destination_bindings();
     assert_eq!(
         live_writeback_destination_bindings.len(),
-        summary.reference_writebacks()
+        canonical_writeback_destination_bindings
     );
     assert_eq!(
         live_writeback_destination_bindings
             .install_report()
             .heap_field_writeback_bindings(),
-        summary.heap_field_writebacks()
+        canonical_heap_field_writebacks
     );
     let installed_dirty_field_binding = live_writeback_destination_bindings
         .heap_field_writeback_bindings()
@@ -3517,24 +3567,24 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             binding.validation_object() == gc_address(permanent_parent)
                 && binding.writeback_object() == gc_address(permanent_parent)
         })
-        .expect("installed dirty old-field binding records");
+        .expect("installed dirty permanent-field binding records");
     assert_eq!(installed_dirty_field_binding, dirty_field_binding);
     let heap_field_writeback_write_plan = outcome
         .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
         .expect("heap-field writeback write plan validates installed live metadata");
     assert_eq!(
         heap_field_writeback_write_plan.len(),
-        summary.heap_field_writebacks()
+        canonical_heap_field_writebacks
     );
     assert_eq!(
         heap_field_writeback_write_plan.report().fields(),
-        summary.heap_field_writebacks()
+        canonical_heap_field_writebacks
     );
     assert_eq!(
         heap_field_writeback_write_plan
             .report()
             .copied_replacements_to_nursery(),
-        summary.heap_field_writebacks()
+        canonical_heap_field_writebacks
     );
     assert_eq!(
         heap_field_writeback_write_plan
@@ -3549,7 +3599,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         live_object_copy
             .destination_bytes()
             .len()
-            .saturating_mul(summary.heap_field_writebacks())
+            .saturating_mul(canonical_heap_field_writebacks)
     );
     assert_eq!(
         heap_field_writeback_write_plan
@@ -3559,7 +3609,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
     );
     assert_eq!(
         heap_field_writeback_write_plan.writes()[0].allocation_domain(),
-        HeapAllocationDomain::Worker
+        HeapAllocationDomain::PermanentShared
     );
     assert_eq!(
         heap_field_writeback_write_plan.writes()[0].validation_object(),
@@ -3612,7 +3662,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             MinorGcPromotionPolicy::new(2),
             MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
         )
-        .expect("dirty old-field boundary dry-run clears outcome card table");
+        .expect("dirty permanent-field boundary dry-run clears outcome card table");
     assert_eq!(
         live_card_table_dry_run
             .dry_run()

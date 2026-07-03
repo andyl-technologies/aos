@@ -6058,7 +6058,7 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_wit
 }
 
 #[test]
-fn collector_poll_minor_gc_direct_heap_field_writes_reject_permanent_fields() {
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_permanent_list_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let child = heap
         .alloc_lambda(EvalLambda::new(
@@ -6108,21 +6108,18 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_permanent_fields() {
         child_request,
     );
 
-    let err = heap
+    let report = heap
         .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
-        .expect_err("permanent in-place field write is rejected");
+        .expect("permanent list field write applies");
 
-    assert!(matches!(
-        err,
-        EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
-            allocation_domain: HeapAllocationDomain::PermanentShared,
-            writeback_object,
-            expected: HeapGeneration::Old,
-            actual: HeapGeneration::Permanent,
-        } if writeback_object == gc_address(parent)
-    ));
+    assert_eq!(report.fields(), 1);
     let list = heap.get_list(parent).expect("parent list remains typed");
-    assert!(list.get(0).expect("original element exists").raw_eq(child));
+    assert!(
+        list.get(0)
+            .expect("rewritten element exists")
+            .raw_eq(child_destination)
+    );
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Permanent);
 }
 
 #[test]
@@ -6476,6 +6473,87 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
         )]
     );
     assert!(card_table.snapshot().covers_source(gc_address(parent)));
+}
+
+#[test]
+fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_permanent_young_replacement() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::PermanentShared);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::PermanentShared,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Young,
+        },
+        child_request,
+    );
+    let mut remembered_set = RememberedSet::new();
+    let mut card_table = GcCardTable::default();
+
+    let (copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+            &[],
+            &[write],
+            &mut remembered_set,
+            &mut card_table,
+        )
+        .expect("barrier-aware permanent-to-young write applies");
+
+    assert_eq!(copied_report.fields(), 0);
+    assert_eq!(direct_report.fields(), 1);
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(
+        list.get(0)
+            .expect("rewritten element exists")
+            .raw_eq(child_destination)
+    );
+    assert_eq!(
+        remembered_set.edges(),
+        &[RememberedEdge::new(
+            gc_address(parent),
+            gc_address(child_destination)
+        )]
+    );
+    assert!(card_table.snapshot().covers_source(gc_address(parent)));
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Permanent);
 }
 
 #[test]
@@ -9112,6 +9190,54 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_stale_nursery_fie
             actual: Some(HeapEdgeSource::ThunkCachedResult),
         }
     );
+}
+
+#[test]
+fn collector_poll_minor_gc_plan_uses_remembered_old_edge() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let root = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("old list allocates");
+    set_heap_generation(&mut heap, root, HeapGeneration::Old);
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, root)
+        .expect("list root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(gc_address(root), gc_address(child)))
+        .expect("remembered edge records");
+
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("old remembered edge is accepted");
+
+    assert_eq!(planned.plan().survivors().len(), 1);
+    assert_eq!(planned.plan().survivors()[0].address(), gc_address(child));
+    assert!(planned.reference_slots().iter().any(|slot| {
+        slot.source()
+            == &AllocationCollectorPollReferenceSource::RememberedEdge {
+                edge: RememberedEdge::new(gc_address(root), gc_address(child)),
+                field_index: 0,
+                source: HeapEdgeSource::ListElement { index: 0 },
+            }
+    }));
 }
 
 #[test]

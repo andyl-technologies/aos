@@ -1166,11 +1166,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejects stale copied graph snapshots when object edges, heap record count,
       or allocator safepoint state changes, generates nursery age and precise
       field metadata from the typed side table, validates remembered-set edges
-      against current oracle generations, and fails closed when any current
-      permanent-to-young edge is absent from the supplied remembered set. Tests
-      cover worker-root survivor expansion, permanent-to-worker remembered-edge
-      rejection inside and outside the explicit root graph, remembered-edge
-      success, stale thunk-state snapshots, and heap-growth staleness. This
+      against current oracle generations, accepting old/permanent-to-young
+      sources, and fails closed when any current permanent-to-young edge is
+      absent from the supplied remembered set. Tests cover worker-root survivor
+      expansion, permanent-to-worker remembered-edge rejection inside and outside
+      the explicit root graph, remembered old/permanent edge success, stale
+      thunk-state snapshots, and heap-growth staleness. This
       still does not construct roots automatically from an allocation poll,
       retain mutable root/field relocation slots, copy objects, install
       forwarding pointers, mutate references, or run GC-stress collection.
@@ -1492,25 +1493,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       categories before mutating live heap records. Copied fields still require
       the writeback object body and replacement object body to have already been
       bound through `EvalHeap::apply_collector_poll_minor_gc_object_body_writes`;
-      direct fields are limited to old-generation worker records whose
-      replacements are either promoted to old or copied to young with a staged
-      remembered-set/card-table publication. The applicator revalidates one
+      direct fields are limited to old-generation worker records or
+      permanent-shared records whose replacements are either promoted to old or
+      copied to young with a staged remembered-set/card-table publication. The
+      applicator revalidates one
       combined copied/direct deduplicated object-copy request set before
       staging any heap mutation, verifies destination generations, validates
       that the current field still contains the expected young from-space value,
       merges copied and direct field edits into one staged object per target
       record, rewrites record-owned list elements, attrset bindings, primop
       arguments, and lambda dynamic/global capture arrays, publishes direct
-      old-to-young remembered edges and dirty cards through cloned outcome-owned
+      old/permanent-to-young remembered edges and dirty cards through cloned outcome-owned
       side tables, and clears stale hash caches on mutated records. Tests cover
       copied list/attr/primop-argument/lambda-capture writes, same-object
       copied-field staging, mixed copied/direct same-record staging, malformed
       copied and cross-branch request sets, direct old
       list/attr/primop-argument/lambda-capture writes, stale direct-field
-      rejection without mutation, permanent-field rejection, strict-path direct
-      old-to-young rejection, barrier-aware direct old-to-young publication,
-      attr symbol-slot stale metadata rejection, and outcome-level direct-write
-      routing. Permanent shared in-place field mutation, shared lexical frame
+      rejection without mutation, permanent-shared direct list writes,
+      strict-path direct old-to-young rejection, barrier-aware direct
+      old/permanent-to-young publication, attr symbol-slot stale metadata
+      rejection, and outcome-level direct-write routing. Shared lexical frame
       slots, thunk fields, synthetic destination allocation, ABI object headers,
       semispace storage, and Tier-B dispatch remain open, and copied destination
       records inherit the current unaliased collector-owned scratch record
