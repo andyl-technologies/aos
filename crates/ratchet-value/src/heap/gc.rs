@@ -559,6 +559,26 @@ impl RememberedSet {
         RememberedSetSnapshot::new(self.epoch, &self.edges)
     }
 
+    /// Clones this remembered set while reporting allocation failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::RememberedSetAllocationFailed`] if cloned
+    /// edge storage cannot be reserved.
+    pub fn try_clone(&self) -> Result<Self, GenerationalGcError> {
+        let mut edges = Vec::new();
+        edges.try_reserve_exact(self.edges.len()).map_err(|_| {
+            GenerationalGcError::RememberedSetAllocationFailed {
+                edges: self.edges.len(),
+            }
+        })?;
+        edges.extend(self.edges.iter().copied());
+        Ok(Self {
+            epoch: self.epoch,
+            edges,
+        })
+    }
+
     /// Returns the number of remembered edges.
     pub fn len(&self) -> usize {
         self.edges.len()
@@ -4273,6 +4293,22 @@ mod tests {
         assert_eq!(set.edges(), &[edge]);
         assert_eq!(set.len(), 1);
         assert!(!set.is_empty());
+    }
+
+    #[test]
+    fn remembered_set_try_clone_preserves_epoch_and_edges() {
+        let epoch = RememberedSetEpoch::new(11);
+        let first = RememberedEdge::new(address(0x1000), address(0x2000));
+        let second = RememberedEdge::new(address(0x3000), address(0x4000));
+        let mut set = RememberedSet::with_epoch(epoch);
+        set.record(first).expect("first edge records");
+        set.record(second).expect("second edge records");
+
+        let cloned = set.try_clone().expect("remembered set clones");
+
+        assert_eq!(cloned.epoch(), epoch);
+        assert_eq!(cloned.edges(), &[first, second]);
+        assert_eq!(cloned, set);
     }
 
     #[test]

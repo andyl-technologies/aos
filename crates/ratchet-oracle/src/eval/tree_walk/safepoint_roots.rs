@@ -195,6 +195,8 @@ pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
     scanned_objects: usize,
     survivors: usize,
     reference_slots: usize,
+    remembered_set_refreshes: usize,
+    next_remembered_set: RememberedSet,
     object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
     writebacks: AllocationCollectorPollReferenceWritebackPlan,
 }
@@ -206,6 +208,8 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
         scanned_objects: usize,
         survivors: usize,
         reference_slots: usize,
+        remembered_set_refreshes: usize,
+        next_remembered_set: RememberedSet,
         object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
         writebacks: AllocationCollectorPollReferenceWritebackPlan,
     ) -> Self {
@@ -215,6 +219,8 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
             scanned_objects,
             survivors,
             reference_slots,
+            remembered_set_refreshes,
+            next_remembered_set,
             object_body_plan,
             writebacks,
         }
@@ -243,6 +249,24 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
     /// Returns the number of reference slots in the commit plan.
     pub const fn reference_slots(&self) -> usize {
         self.reference_slots
+    }
+
+    /// Returns the number of remembered-set refresh decisions in the commit plan.
+    pub const fn remembered_set_refreshes(&self) -> usize {
+        self.remembered_set_refreshes
+    }
+
+    /// Returns the rebuilt remembered set that a later commit would publish.
+    ///
+    /// This is retained planning metadata only; accessing it does not publish
+    /// the set into evaluator state.
+    pub const fn next_remembered_set(&self) -> &RememberedSet {
+        &self.next_remembered_set
+    }
+
+    /// Returns the number of remembered edges in the rebuilt next-epoch set.
+    pub fn next_remembered_set_edges(&self) -> usize {
+        self.next_remembered_set.len()
     }
 
     /// Returns the object-copy plan for relocated destination records.
@@ -979,6 +1003,12 @@ impl TreeWalk {
         let commit_plan = minor_gc
             .commit_plan(&destinations)
             .map_err(EvalHeapError::from)?;
+        let remembered_set_refreshes = commit_plan.commit_plan().remembered_set_refresh().len();
+        let next_remembered_set = commit_plan
+            .commit_plan()
+            .next_remembered_set()
+            .try_clone()
+            .map_err(EvalHeapError::from)?;
         let object_body_plan = self
             .heap
             .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
@@ -991,6 +1021,8 @@ impl TreeWalk {
             scanned_objects,
             survivors,
             reference_slots,
+            remembered_set_refreshes,
+            next_remembered_set,
             object_body_plan,
             writebacks,
         ))

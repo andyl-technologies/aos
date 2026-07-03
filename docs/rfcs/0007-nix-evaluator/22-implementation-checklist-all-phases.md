@@ -6803,8 +6803,9 @@ and helps the oracle directly.
       delegates the root partition to the typed tree-walk root adaptor above.
       `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
       exposes the complete root+heap-field writeback partition with scan,
-      survivor, and reference-slot counts for the future full live-reference
-      writer. `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
+      survivor, reference-slot, remembered-set refresh counts, and the rebuilt
+      next remembered set for the future full live-reference writer.
+      `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
       and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
       now prevalidate and apply the complete root+heap-field partition to
