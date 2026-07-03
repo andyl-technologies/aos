@@ -6820,9 +6820,10 @@ and helps the oracle directly.
       tables.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       carries the same current-poll object-copy plan into the
-      existing-destination live heap-field writer, prevalidates typed roots and
-      live heap-field slots, applies paired object-body/generation writes to
-      already-bound destination records, rewrites supported tree-walk root
+      existing-destination live heap-field writer, runs the read-only
+      existing-destination preflight and validates supported mutable root targets
+      before committing heap state, applies paired object-body/generation writes
+      to already-bound destination records, rewrites supported tree-walk root
       storage and record-owned heap fields, and stages direct
       old/permanent-to-young write barriers into the evaluator remembered/card
       side tables. Unit tests cover a real poll rewriting every supported
@@ -6836,9 +6837,10 @@ and helps the oracle directly.
       live heap-field preflight without mutating roots, destination
       body/generation, or remembered/card side tables, mixed root-storage plus
       live heap-field application through a pre-existing scratch destination,
-      synthetic destination rejection in both the preflight and applicator before
-      root or field mutation, stale live heap-field rejection before root
-      mutation, and a dirty permanent-list
+      active-frame borrow rejection before destination body/generation or field
+      mutation, synthetic destination rejection in both the preflight and
+      applicator before root or field mutation, stale live heap-field rejection
+      before root mutation, and a dirty permanent-list
       remembered edge whose mixed root/field plan is rejected without touching
       the value stack, active frame root, or ready import-cache root. This is
       still not automatic allocation-site dispatch and still does not allocate
@@ -7191,10 +7193,11 @@ and helps the oracle directly.
       mutating roots, heap records, remembered-set state, or card-table state.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       now carries the current-poll object-copy plan into an existing-destination
-      live applicator that binds paired object bodies/generations, rewrites
+      live applicator that first runs the read-only preflight and validates
+      mutable root targets, then binds paired object bodies/generations, rewrites
       supported tree-walk roots and record-owned heap fields, and stages direct
-      old/permanent-to-young barriers against the evaluator remembered/card
-      side tables.
+      old/permanent-to-young barriers against the evaluator remembered/card side
+      tables.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

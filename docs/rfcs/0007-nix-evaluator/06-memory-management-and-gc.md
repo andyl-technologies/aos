@@ -2599,7 +2599,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       side tables.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       carries the same current-poll object-copy plan into the existing-destination
-      live heap-field writer, prevalidates typed roots and live heap-field slots,
+      live heap-field writer, runs the read-only existing-destination preflight
+      and validates supported mutable root targets before committing heap state,
       applies paired object-body/generation writes to already-bound destination
       records, rewrites supported tree-walk root storage and record-owned heap
       fields, and stages direct old/permanent-to-young write barriers into the
@@ -2613,7 +2614,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       heap-field-buffer application, mixed root-storage plus live heap-field
       preflight without mutating roots, destination body/generation, or
       remembered/card side tables, mixed root-storage plus live heap-field
-      application through a pre-existing scratch destination, synthetic
+      application through a pre-existing scratch destination, active-frame borrow
+      rejection before destination body/generation or field mutation, synthetic
       destination rejection in both the preflight and applicator before root or
       field mutation, stale live heap-field
       rejection before root mutation, and dirty permanent-list mixed-plan
@@ -2796,10 +2798,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       mutating roots, heap records, remembered-set state, or card-table state.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
       now carries the current-poll object-copy plan into an existing-destination
-      live applicator that binds paired object bodies/generations, rewrites
+      live applicator that first runs the read-only preflight and validates
+      mutable root targets, then binds paired object bodies/generations, rewrites
       supported tree-walk roots and record-owned heap fields, and stages direct
-      old/permanent-to-young barriers against the evaluator remembered/card
-      side tables. The
+      old/permanent-to-young barriers against the evaluator remembered/card side
+      tables. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints beyond this explicit

@@ -215,6 +215,27 @@ impl EvalFrame {
         Ok(())
     }
 
+    /// Validates that a slot can be written without changing its value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::BorrowConflict`] if the frame cannot be mutably
+    /// borrowed. Returns [`EvalEnvError::SlotOutOfBounds`] if `slot` is outside
+    /// this frame.
+    pub(crate) fn validate_set(&self, slot: u32) -> Result<(), EvalEnvError> {
+        let slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| EvalEnvError::BorrowConflict)?;
+        if slot as usize >= slots.len() {
+            return Err(EvalEnvError::SlotOutOfBounds {
+                slot,
+                slots: slots.len(),
+            });
+        }
+        Ok(())
+    }
+
     /// Returns a copied snapshot of every slot in this frame.
     ///
     /// # Errors
@@ -233,6 +254,18 @@ impl EvalFrame {
             .map_err(|_| EvalEnvError::FrameSnapshotAllocationFailed { slots: slots.len() })?;
         snapshot.extend_from_slice(&slots);
         Ok(snapshot)
+    }
+
+    /// Borrows frame slots for tests that need to hold a borrow open.
+    #[cfg(test)]
+    pub(crate) fn borrow_slots_for_test(
+        &self,
+    ) -> Result<std::cell::Ref<'_, [Value]>, EvalEnvError> {
+        let slots = self
+            .slots
+            .try_borrow()
+            .map_err(|_| EvalEnvError::BorrowConflict)?;
+        Ok(std::cell::Ref::map(slots, Vec::as_slice))
     }
 }
 

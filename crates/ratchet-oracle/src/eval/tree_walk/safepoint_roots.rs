@@ -1243,9 +1243,12 @@ impl TreeWalk {
     /// Applies complete reference writebacks to roots and live heap fields.
     ///
     /// This is a narrow existing-destination live-reference bridge for
-    /// tree-walk allocation safepoints. It first validates and applies the
-    /// complete root+heap-field partition to caller-owned typed root slots and
-    /// live heap-field slots. It then binds the plan's paired object
+    /// tree-walk allocation safepoints. It first runs the read-only
+    /// existing-destination live-reference preflight, validating the complete
+    /// root+heap-field partition, paired object body/generation staging, live
+    /// heap-field writes, and remembered/card-table barrier staging. It also
+    /// validates that supported root writeback targets can be written before
+    /// committing heap state. It then binds the plan's paired object
     /// body/generation writes to already-existing destination records, applies
     /// supported record-owned heap-field writes with remembered/card-table
     /// barrier staging, and finally writes the prevalidated root slots back to
@@ -1273,8 +1276,19 @@ impl TreeWalk {
         TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
         TreeWalkSafepointRootWritebackError,
     > {
-        let application =
-            self.apply_reference_writebacks_to_safepoint_buffers(plan, value_stack)?;
+        let preflight = self
+            .validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
+                plan,
+                value_stack,
+            )?;
+        let TreeWalkSafepointMinorGcLiveReferenceWritebackPreflight {
+            buffers: application,
+            live_heap_field_writebacks: preflight_live_heap_field_writebacks,
+            ..
+        } = preflight;
+        for slot in application.root_value_writeback_slots() {
+            self.validate_safepoint_root_writeback_target(slot.source(), value_stack)?;
+        }
         let (copied_writes, direct_writes) = self
             .heap
             .collector_poll_minor_gc_live_heap_field_write_inputs(
@@ -1299,6 +1313,10 @@ impl TreeWalk {
         let live_heap_field_writebacks = copied_report
             .fields()
             .saturating_add(direct_report.fields());
+        debug_assert_eq!(
+            live_heap_field_writebacks,
+            preflight_live_heap_field_writebacks
+        );
         debug_assert_eq!(
             live_heap_field_writebacks,
             planned_live_heap_field_writebacks
@@ -1469,6 +1487,103 @@ impl TreeWalk {
             }
             EvalRootSource::ImportCache { index } => {
                 read_import_cache_root(&self.import_cache, *index, source)
+            }
+            EvalRootSource::PrimopArgument { .. }
+            | EvalRootSource::Interned { .. }
+            | EvalRootSource::StackMap { .. } => Err(root_writeback_source_unsupported(source)),
+        }
+    }
+
+    fn validate_safepoint_root_writeback_target(
+        &self,
+        source: &EvalRootSource,
+        value_stack: &[Value],
+    ) -> Result<(), TreeWalkSafepointRootWritebackError> {
+        match source {
+            EvalRootSource::ValueStack { slot } => value_stack
+                .get(*slot)
+                .map(|_| ())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
+            EvalRootSource::TreeWalkFrame { frame, slot } => self
+                .env
+                .get(*frame)
+                .ok_or_else(|| root_writeback_source_unavailable(source))?
+                .validate_set(root_writeback_frame_slot(source, *slot)?)
+                .map_err(TreeWalkSafepointRootWritebackError::Environment),
+            EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot } => {
+                let suspended = self
+                    .suspended_env_roots
+                    .get(suspended_root_index(
+                        self.suspended_env_roots.len(),
+                        *depth,
+                        source,
+                    )?)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
+                suspended
+                    .env
+                    .get(*frame)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))?
+                    .validate_set(root_writeback_frame_slot(source, *slot)?)
+                    .map_err(TreeWalkSafepointRootWritebackError::Environment)
+            }
+            EvalRootSource::WithScope { depth } => self
+                .with_scopes
+                .get(*depth)
+                .map(|_| ())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
+            EvalRootSource::SuspendedWithScope { depth, scope_depth } => {
+                let suspended = self
+                    .suspended_env_roots
+                    .get(suspended_root_index(
+                        self.suspended_env_roots.len(),
+                        *depth,
+                        source,
+                    )?)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
+                suspended
+                    .with_scopes
+                    .get(*scope_depth)
+                    .map(|_| ())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
+            }
+            EvalRootSource::ScopedGlobal { depth } => self
+                .scoped_globals
+                .get(*depth)
+                .map(|_| ())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
+            EvalRootSource::SuspendedScopedGlobal { depth, scope_depth } => {
+                let suspended = self
+                    .suspended_env_roots
+                    .get(suspended_root_index(
+                        self.suspended_env_roots.len(),
+                        *depth,
+                        source,
+                    )?)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
+                suspended
+                    .scoped_globals
+                    .get(*scope_depth)
+                    .map(|_| ())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
+            }
+            EvalRootSource::ForceContinuation { depth } => self
+                .active_force_roots
+                .get(reverse_root_index(
+                    self.active_force_roots.len(),
+                    *depth,
+                    source,
+                )?)
+                .map(|_| ())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
+            EvalRootSource::TreeWalkPrimopArgument { call_depth, index } => {
+                let root_index = active_primop_arg_root_index(self, *call_depth, *index, source)?;
+                self.active_primop_arg_roots
+                    .get(root_index)
+                    .map(|_| ())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
+            }
+            EvalRootSource::ImportCache { index } => {
+                read_import_cache_root(&self.import_cache, *index, source).map(|_| ())
             }
             EvalRootSource::PrimopArgument { .. }
             | EvalRootSource::Interned { .. }
