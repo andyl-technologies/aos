@@ -812,8 +812,17 @@ carries findings across an incompatible build.
     makes `checks.crucible.phase7.gates.campaignContinuity` depend on this
     provenance check while leaving the full distributed campaign-continuity gate
     red until the DCE campaign store and continuity tests are implemented.
-- [ ] **T-PKG-23** Extend the `crucible-cas` ratchet-seam merge marker to name the
+- [x] **T-PKG-23** Extend the `crucible-cas` ratchet-seam merge marker to name the
   fleet-visible store + dependency-gated invalidation as the SAME seam behind the
   unchanged narrow interface (merge bar = gate:content-address /
   gate:replay-oracle / gate:e2e-determinism), keeping Crucible standalone (no
   RFC-0007 dependency). — satisfies [PKG-45]; spec §26.9, §26.11.
+  - Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`: the
+    `crucible-cas` module docs and constants now name `SharedDagStore` and
+    `InvalidationQuery::evaluate` as the same future ratchet seam behind
+    `DagStore::put`/`DagStore::get`/`DagStore::has`. The check preserves the
+    merge bar (`gate:content-address`, `gate:replay-oracle`,
+    `gate:e2e-determinism`), forbids any RFC-0007/ratchet dependency, and makes
+    `checks.crucible.phase7.gates.fleetEquivalence` depend on the same-seam proof.
+    The later distributed work-stealing and persistent campaign store remain the
+    DCE tasks in §35.
