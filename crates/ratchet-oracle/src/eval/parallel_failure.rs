@@ -600,6 +600,114 @@ mod tests {
     }
 
     #[test]
+    fn nursery_ownership_bridge_rejects_inconsistent_completed_outcome_count() {
+        let report = ParallelFallibleTopLevelReport {
+            worker_count: 2,
+            task_count: 2,
+            completed_task_count: 2,
+            cancelled_before_start_count: 0,
+            cancelled: false,
+            outcomes: vec![ParallelTaskOutcome {
+                task_index: 0,
+                initial_worker: 0,
+                worker_id: 0,
+                outcome: Ok::<_, &'static str>(10),
+            }],
+            worker_reports: vec![
+                ParallelFailureWorkerReport::new(0),
+                ParallelFailureWorkerReport::new(1),
+            ],
+        };
+        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(2, workers(2));
+
+        let error =
+            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
+                &plan, &report,
+            )
+            .expect_err("inconsistent completed outcome count rejects");
+
+        assert_eq!(
+            error,
+            super::super::parallel_heap::ParallelNurseryOwnershipError::CompletedOutcomeCountMismatch {
+                completed_task_count: 2,
+                outcome_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_bridge_rejects_under_accounted_fallible_report() {
+        let report = ParallelFallibleTopLevelReport {
+            worker_count: 2,
+            task_count: 5,
+            completed_task_count: 1,
+            cancelled_before_start_count: 0,
+            cancelled: false,
+            outcomes: vec![ParallelTaskOutcome {
+                task_index: 0,
+                initial_worker: 0,
+                worker_id: 0,
+                outcome: Ok::<_, &'static str>(10),
+            }],
+            worker_reports: vec![
+                ParallelFailureWorkerReport::new(0),
+                ParallelFailureWorkerReport::new(1),
+            ],
+        };
+        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(5, workers(2));
+
+        let error =
+            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
+                &plan, &report,
+            )
+            .expect_err("under-accounted fallible report rejects");
+
+        assert_eq!(
+            error,
+            super::super::parallel_heap::ParallelNurseryOwnershipError::FallibleTaskAccountingMismatch {
+                task_count: 5,
+                completed_task_count: 1,
+                cancelled_before_start_count: 0
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_bridge_rejects_skips_without_cancellation() {
+        let report = ParallelFallibleTopLevelReport {
+            worker_count: 2,
+            task_count: 2,
+            completed_task_count: 1,
+            cancelled_before_start_count: 1,
+            cancelled: false,
+            outcomes: vec![ParallelTaskOutcome {
+                task_index: 0,
+                initial_worker: 0,
+                worker_id: 0,
+                outcome: Ok::<_, &'static str>(10),
+            }],
+            worker_reports: vec![
+                ParallelFailureWorkerReport::new(0),
+                ParallelFailureWorkerReport::new(1),
+            ],
+        };
+        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(2, workers(2));
+
+        let error =
+            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
+                &plan, &report,
+            )
+            .expect_err("non-cancelled skipped tasks reject");
+
+        assert_eq!(
+            error,
+            super::super::parallel_heap::ParallelNurseryOwnershipError::SkippedTasksWithoutCancellation {
+                cancelled_before_start_count: 1
+            }
+        );
+    }
+
+    #[test]
     fn fail_fast_canonical_error_is_over_observed_failures() {
         use std::sync::{Arc, Barrier};
 

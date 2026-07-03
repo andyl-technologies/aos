@@ -6692,10 +6692,25 @@ nurseries build on the bump arena.
       rejection, task-count mismatch rejection, and internally malformed
       incomplete-report rejection. This is the scheduler report bridge only: it
       does not embed ownership records into the scheduler report type, allocate
-      through live worker-local `EvalHeap` instances, handle the
-      fallible/cancelled root-execution report, expose a public partial-report
-      constructor, distinguish cancellation from completions, publish into
-      hash-cons tables, or satisfy the loom/Miri/TSan gate.
+      through live worker-local `EvalHeap` instances, expose a public
+      partial-report constructor, distinguish cancellation from completions,
+      publish into hash-cons tables, or satisfy the loom/Miri/TSan gate.
+- [x] Current fallible scheduler-to-nursery ownership bridge:
+      `parallel_task_nursery_ownership_from_fallible_top_level_report` derives
+      allocation ownership for completed root outcomes from the fallible L1
+      scheduler report while permitting fail-fast cancellation to leave queued
+      roots with no ownership record. The bridge validates worker count, task
+      count, completed-outcome vector length, and completed-plus-skipped
+      accounting before assigning allocation nurseries from each completing
+      worker. Tests cover complete collect-all fallible reports, cancelled
+      fail-fast reports, worker-count mismatch rejection, and internally
+      malformed completed-outcome count rejection, under-accounted report
+      rejection, and skipped-without-cancellation rejection. This is the
+      fallible report bridge only: it does not embed ownership records into the
+      fallible report, allocate through live worker-local `EvalHeap` instances,
+      attach cancellation causes to missing ownership records, interrupt
+      in-flight work, publish into hash-cons tables, or satisfy the
+      loom/Miri/TSan gate.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.

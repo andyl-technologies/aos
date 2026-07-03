@@ -18,7 +18,9 @@ use std::{collections::BTreeMap, fmt, num::NonZeroUsize};
 
 use thiserror::Error;
 
-use super::parallel::ParallelTopLevelExecutionReport;
+use super::{
+    parallel::ParallelTopLevelExecutionReport, parallel_failure::ParallelFallibleTopLevelReport,
+};
 
 /// Builds the deterministic initial per-worker nursery plan for top-level work.
 ///
@@ -180,6 +182,87 @@ pub fn parallel_task_nursery_ownership_from_top_level_report<R>(
             Ok(ParallelTaskNurseryExecution::new(
                 execution.task_index(),
                 execution.worker_id(),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    parallel_task_nursery_ownership_plan(nursery_plan, executions)
+}
+
+/// Builds allocation ownership from a fallible top-level scheduler report.
+///
+/// The fallible report may be partial when fail-fast cancellation skips queued
+/// roots before they start. This bridge therefore assigns ownership only for
+/// completed outcomes while validating that the report and nursery seed plan
+/// agree on the submitted task and worker counts.
+///
+/// # Errors
+///
+/// Returns [`ParallelNurseryOwnershipError`] if the report does not match the
+/// seed nursery plan, if completed outcome accounting is inconsistent, or if any
+/// reported task outcome is invalid for that plan.
+pub fn parallel_task_nursery_ownership_from_fallible_top_level_report<R, E>(
+    nursery_plan: &ParallelWorkerNurseryPlan,
+    report: &ParallelFallibleTopLevelReport<R, E>,
+) -> Result<ParallelTaskNurseryOwnershipPlan, ParallelNurseryOwnershipError> {
+    if nursery_plan.worker_count != report.worker_count() {
+        return Err(ParallelNurseryOwnershipError::WorkerCountMismatch {
+            planned_worker_count: nursery_plan.worker_count,
+            reported_worker_count: report.worker_count(),
+        });
+    }
+    if nursery_plan.task_count != report.task_count() {
+        return Err(ParallelNurseryOwnershipError::TaskCountMismatch {
+            planned_task_count: nursery_plan.task_count,
+            reported_task_count: report.task_count(),
+        });
+    }
+    if report.outcomes().len() != report.completed_task_count() {
+        return Err(
+            ParallelNurseryOwnershipError::CompletedOutcomeCountMismatch {
+                completed_task_count: report.completed_task_count(),
+                outcome_count: report.outcomes().len(),
+            },
+        );
+    }
+    if report.completed_task_count() + report.cancelled_before_start_count() != report.task_count()
+    {
+        return Err(
+            ParallelNurseryOwnershipError::FallibleTaskAccountingMismatch {
+                task_count: report.task_count(),
+                completed_task_count: report.completed_task_count(),
+                cancelled_before_start_count: report.cancelled_before_start_count(),
+            },
+        );
+    }
+    if !report.cancelled() && report.cancelled_before_start_count() > 0 {
+        return Err(
+            ParallelNurseryOwnershipError::SkippedTasksWithoutCancellation {
+                cancelled_before_start_count: report.cancelled_before_start_count(),
+            },
+        );
+    }
+
+    let executions = report
+        .outcomes()
+        .iter()
+        .map(|outcome| {
+            let assignment = nursery_plan.assignments.get(outcome.task_index()).ok_or(
+                ParallelNurseryOwnershipError::UnknownTask {
+                    task_index: outcome.task_index(),
+                    task_count: nursery_plan.task_count,
+                },
+            )?;
+            if assignment.worker_id != outcome.initial_worker() {
+                return Err(ParallelNurseryOwnershipError::InitialWorkerMismatch {
+                    task_index: outcome.task_index(),
+                    planned_worker: assignment.worker_id,
+                    reported_worker: outcome.initial_worker(),
+                });
+            }
+            Ok(ParallelTaskNurseryExecution::new(
+                outcome.task_index(),
+                outcome.worker_id(),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -606,6 +689,36 @@ pub enum ParallelNurseryOwnershipError {
         /// The number of completed task results in the scheduler report.
         completed_task_count: usize,
     },
+    /// A fallible report's outcome vector did not match its completed count.
+    #[error(
+        "parallel nursery ownership fallible report has {outcome_count} outcome(s) for {completed_task_count} completed task(s)"
+    )]
+    CompletedOutcomeCountMismatch {
+        /// The completed task count reported by the fallible scheduler.
+        completed_task_count: usize,
+        /// The number of stored outcomes in the fallible scheduler report.
+        outcome_count: usize,
+    },
+    /// A fallible report did not account for every submitted root exactly once.
+    #[error(
+        "parallel nursery ownership fallible report accounted for {completed_task_count} completed and {cancelled_before_start_count} skipped task(s) out of {task_count}"
+    )]
+    FallibleTaskAccountingMismatch {
+        /// The number of submitted tasks in the fallible scheduler report.
+        task_count: usize,
+        /// The number of completed tasks in the fallible scheduler report.
+        completed_task_count: usize,
+        /// The number of queued tasks skipped before start.
+        cancelled_before_start_count: usize,
+    },
+    /// A fallible report skipped queued roots without reporting cancellation.
+    #[error(
+        "parallel nursery ownership fallible report skipped {cancelled_before_start_count} task(s) without cancellation"
+    )]
+    SkippedTasksWithoutCancellation {
+        /// The number of queued tasks skipped before start.
+        cancelled_before_start_count: usize,
+    },
     /// A completion record referenced a task outside the seed plan.
     #[error(
         "parallel nursery ownership referenced task {task_index} with only {task_count} task(s) planned"
@@ -658,7 +771,10 @@ impl fmt::Display for ParallelWorkerNurseryPlan {
 
 #[cfg(test)]
 mod tests {
-    use super::super::parallel::execute_parallel_top_level;
+    use super::super::{
+        parallel::execute_parallel_top_level,
+        parallel_failure::{ParallelFailurePolicy, execute_parallel_top_level_fallible},
+    };
     use super::*;
 
     fn workers(count: usize) -> NonZeroUsize {
@@ -934,6 +1050,109 @@ mod tests {
             ParallelNurseryOwnershipError::TaskCountMismatch {
                 planned_task_count: 2,
                 reported_task_count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_derives_from_complete_fallible_scheduler_report() {
+        let worker_count = workers(3);
+        let report = execute_parallel_top_level_fallible(
+            0..6,
+            worker_count,
+            ParallelFailurePolicy::CollectAll,
+            |value| {
+                if value == 4 {
+                    Err(value)
+                } else {
+                    Ok(value * 2)
+                }
+            },
+        )
+        .expect("fallible execution succeeds");
+        let plan = parallel_worker_nursery_plan(report.task_count(), worker_count);
+
+        let ownership =
+            parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+                .expect("fallible scheduler ownership succeeds");
+
+        assert_eq!(
+            ownership.completed_task_count(),
+            report.completed_task_count()
+        );
+        assert_eq!(ownership.completed_task_count(), report.outcomes().len());
+        assert_eq!(
+            ownership
+                .records()
+                .iter()
+                .map(|record| (
+                    record.task_index(),
+                    record.initial_worker(),
+                    record.executing_worker(),
+                    record.allocation_nursery_id(),
+                ))
+                .collect::<Vec<_>>(),
+            report
+                .outcomes()
+                .iter()
+                .map(|outcome| (
+                    outcome.task_index(),
+                    outcome.initial_worker(),
+                    outcome.worker_id(),
+                    outcome.worker_id(),
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_derives_from_cancelled_fallible_scheduler_report() {
+        let worker_count = workers(1);
+        let report = execute_parallel_top_level_fallible(
+            0..5,
+            worker_count,
+            ParallelFailurePolicy::CancelQueuedAfterFirstError,
+            |value| {
+                if value == 4 { Err(value) } else { Ok(value) }
+            },
+        )
+        .expect("fallible execution succeeds");
+        let plan = parallel_worker_nursery_plan(report.task_count(), worker_count);
+
+        let ownership =
+            parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+                .expect("cancelled fallible scheduler ownership succeeds");
+
+        assert!(report.cancelled());
+        assert_eq!(report.completed_task_count(), 1);
+        assert_eq!(report.cancelled_before_start_count(), 4);
+        assert_eq!(ownership.completed_task_count(), 1);
+        assert_eq!(
+            ownership.records()[0].task_index(),
+            report.outcomes()[0].task_index()
+        );
+        assert_eq!(ownership.records()[0].allocation_nursery_id(), 0);
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_worker_count_mismatch() {
+        let report = execute_parallel_top_level_fallible(
+            0..3,
+            workers(3),
+            ParallelFailurePolicy::CollectAll,
+            |value| Ok::<_, &'static str>(value),
+        )
+        .expect("fallible execution succeeds");
+        let plan = parallel_worker_nursery_plan(report.task_count(), workers(2));
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("worker count mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::WorkerCountMismatch {
+                planned_worker_count: 2,
+                reported_worker_count: 3
             }
         );
     }
