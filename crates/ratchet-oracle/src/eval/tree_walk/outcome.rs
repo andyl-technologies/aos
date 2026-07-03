@@ -7,7 +7,7 @@ use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
 use crate::eval::heap::{
     AllocationCollectorPollObjectBodyAndGenerationWriteReport,
-    AllocationCollectorPollObjectBodyWriteReport,
+    AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectGenerationWritePlan,
     AllocationCollectorPollObjectGenerationWriteReport, EvalRootSource,
 };
 use crate::heap::HeapGeneration;
@@ -3200,6 +3200,37 @@ fn object_generation_write_matches_binding(
         && write.action() == binding.action()
         && write.generation() == binding.generation()
         && write.request() == binding.request()
+}
+
+fn apply_boundary_minor_gc_live_object_generations(
+    heap: &mut EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
+) -> Result<AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError> {
+    let heap_plan = boundary_minor_gc_object_generation_heap_write_plan(plan)?;
+    let report = heap.apply_collector_poll_minor_gc_object_generation_writes(&heap_plan)?;
+    debug_assert_eq!(report.objects(), plan.report().objects());
+    debug_assert_eq!(
+        report.copied_to_nursery(),
+        plan.report().copied_to_nursery()
+    );
+    debug_assert_eq!(report.promoted_to_old(), plan.report().promoted_to_old());
+    debug_assert_eq!(report.payload_bytes(), plan.report().payload_bytes());
+    Ok(report)
+}
+
+fn boundary_minor_gc_object_generation_heap_write_plan(
+    plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
+) -> Result<AllocationCollectorPollObjectGenerationWritePlan, EvalHeapError> {
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(plan.writes().len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_GENERATION_WRITES_TABLE,
+            entries: plan.writes().len(),
+        })?;
+    requests.extend(plan.writes().iter().map(|write| write.request()));
+    AllocationCollectorPollObjectByteCopyPlan::from_requests(requests)
+        .object_generation_write_plan()
 }
 
 fn validate_boundary_minor_gc_destination_generation_objects(
@@ -10090,6 +10121,30 @@ impl EvalOutcome {
         )
     }
 
+    /// Applies installed object-generation metadata to live heap records.
+    ///
+    /// This consumes the installed boundary object-generation write plan,
+    /// lowers it to the heap-level generation writer, and mutates only existing
+    /// destination heap records. It still does not bind destination object
+    /// bodies, allocate synthetic destination records, reserve semispace
+    /// storage, mutate roots or heap fields, write ABI object headers, or
+    /// invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed object-generation metadata is
+    /// inconsistent, if a source is no longer a young survivor, if a destination
+    /// address does not belong to the evaluator heap, if a request's action and
+    /// generation disagree, or if the heap-level generation write plan cannot
+    /// reserve storage. When an error is returned, heap-record generation
+    /// metadata is left unchanged.
+    pub fn apply_gc_stress_boundary_minor_gc_live_object_generations(
+        &mut self,
+    ) -> Result<AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError> {
+        let plan = self.gc_stress_boundary_minor_gc_object_generation_write_plan()?;
+        apply_boundary_minor_gc_live_object_generations(&mut self.heap, &plan)
+    }
+
     /// Matches installed forwarding values to destination-byte snapshots.
     ///
     /// This validates outcome-owned GC-stress bridge metadata only. Each
@@ -10273,12 +10328,15 @@ impl EvalOutcome {
     /// destination generations must already be installed. It revalidates the
     /// combined copied/direct object-copy request set before staging any record
     /// mutation. The applicator rewrites record-owned list elements, attrset
-    /// bindings, primop arguments, and lambda dynamic/global capture arrays.
+    /// bindings, primop arguments, lambda dynamic/global capture arrays,
+    /// suspended thunk deferred-work fields, and suspended thunk dynamic/global
+    /// capture arrays.
     /// Direct old/permanent-to-young write barriers are staged against cloned
     /// outcome-owned remembered/card side tables before live side-table
     /// publication and heap mutation. Copied destinations still assume unaliased
     /// collector-owned scratch records because the side table cannot prove
-    /// semispace ownership yet. Shared lexical frame slots, thunk fields, ABI
+    /// semispace ownership yet. Shared lexical frame slots, blackholed thunk
+    /// deferred-work/capture fields, forced thunk cached-result fields, ABI
     /// headers, semispace storage, and Tier-B dispatch remain unsupported.
     ///
     /// # Errors
@@ -10289,8 +10347,9 @@ impl EvalOutcome {
     /// a direct old/permanent-to-young replacement, if a copied writeback or
     /// replacement body/generation is not already bound, if the field no longer
     /// contains the expected from-space value, or if the field source is not a
-    /// supported record-owned list element, attrset binding, primop argument, or
-    /// lambda dynamic/global capture array slot.
+    /// supported record-owned list element, attrset binding, primop argument,
+    /// lambda dynamic/global capture array slot, suspended thunk deferred-work
+    /// field, or suspended thunk dynamic/global capture array slot.
     pub fn apply_gc_stress_boundary_minor_gc_heap_field_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
@@ -10318,8 +10377,9 @@ impl EvalOutcome {
     /// This is a narrow live-field bridge for GC-stress experiments. It still
     /// requires destination heap records to pre-exist, and it does not allocate
     /// destination records, reserve semispace storage, mutate shared lexical
-    /// frame slots, rewrite thunk fields, write ABI forwarding headers, or invoke
-    /// Tier B.
+    /// frame slots, rewrite blackholed thunk deferred-work/capture fields or
+    /// forced thunk cached-result fields, write ABI forwarding headers, or
+    /// invoke Tier B.
     ///
     /// # Errors
     ///
@@ -10361,7 +10421,8 @@ impl EvalOutcome {
     /// still requires destination heap records to pre-exist, and it does not
     /// allocate destination records, reserve semispace storage, mutate active
     /// evaluator frames or import caches, update JIT stack maps, rewrite shared
-    /// lexical frame slots or thunk fields, write ABI forwarding headers, or
+    /// lexical frame slots, blackholed thunk deferred-work/capture fields, or
+    /// forced thunk cached-result fields, write ABI forwarding headers, or
     /// invoke Tier B.
     ///
     /// # Errors

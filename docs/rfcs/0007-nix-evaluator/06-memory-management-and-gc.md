@@ -1187,7 +1187,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejection, dirty-card success, and the existing boundary remembered-edge
       dry-run. This remains validation metadata only: it does not clear the live
       daemon card-table storage after remembered-set publication, mutate object
-      generations, or install the Tier-B collector body.
+      generations for synthetic destinations, or install the Tier-B collector
+      body.
 - [x] Current allocation-poll dirty old-field rescan bridge precursor:
       card-table-aware `AllocationCollectorPollMinorGcPlan`s now capture an
       owned dirty-card snapshot plus current old/permanent field metadata.
@@ -1236,8 +1237,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       behavior, and a missing-dirty-card failure that preserves the original live
       dirty-card marker. This is still not a full live collector commit: live
       root/field mutation, live heap-object byte binding, real object-header
-      forwarding metadata, real heap-record object-generation mutation,
-      semispace ownership, and Tier-B dispatch remain open.
+      forwarding metadata, full heap-record object-generation mutation for
+      synthetic destinations, semispace ownership, and Tier-B dispatch remain
+      open.
 - [x] Current boundary live remembered-set publication bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_remembered_set`
       derives the same boundary commit dry run, leaves empty outcomes unchanged,
@@ -1255,8 +1257,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       coherence and live-card clearing, and empty-boundary no-mutation behavior.
       This is still not a full live collector commit: live root/field mutation,
       live heap-object byte binding, real object-header forwarding metadata,
-      real heap-record object-generation mutation, semispace ownership, and
-      Tier-B dispatch remain open.
+      full heap-record object-generation mutation for synthetic destinations,
+      semispace ownership, and Tier-B dispatch remain open.
 - [x] Current boundary live forwarding-slot bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
       derives the same owned boundary commit dry run, merges sibling
@@ -1330,11 +1332,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       mutation. Tests cover copied-young installation, repeat-install
       rejection/no-mutation, all-in-one live metadata installation and
       atomicity, and empty-boundary no-op behavior. This is still not a full
-      live collector commit: object-generation metadata is not written back to
-      evaluator heap records or semispace ownership, and live root/field
-      mutation, live heap-object byte binding, real ABI object-header forwarding
-      writes, remembered-source field mutation, and Tier-B dispatch remain
-      open.
+      live collector commit: the metadata is not written back to evaluator heap
+      records unless the narrow existing-destination applicator below is called,
+      synthetic destination allocation and semispace ownership remain open, and
+      live root/field mutation, live heap-object byte binding, real ABI
+      object-header forwarding writes, remembered-source field mutation, and
+      Tier-B dispatch remain open.
 - [x] Current boundary live object-generation write-plan bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_object_generation_write_plan`
       validates installed live object-generation metadata against installed
@@ -1352,6 +1355,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       it does not mutate heap-record generations, bind destination bytes to
       heap-object bodies, manage semispaces, mutate roots/fields, write ABI
       object headers, or invoke Tier B.
+- [x] Current boundary live object-generation applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_object_generations`
+      consumes the installed live object-generation write plan, lowers it to the
+      heap-record generation writer, and mutates only destination heap records
+      that already exist in the evaluator heap side table. Tests cover promoted
+      existing-destination generation writes and synthetic destination rejection
+      without mutating unrelated heap records. This is still an
+      already-bound-record bridge: it does not bind destination object bodies,
+      allocate synthetic destination records, reserve semispace storage, mutate
+      roots/fields, write ABI object headers, or invoke Tier B.
 - [x] Current heap-record generation-state precursor:
       `EvalHeap` records now store explicit `HeapGeneration` metadata separately
       from allocator ownership. Worker allocations initialize as young,
