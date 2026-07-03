@@ -676,12 +676,23 @@ carries findings across an incompatible build.
     final kernel config to prove the single-vCPU/fixed-timer/virtio/serial/
     bootloader-entropy/no-modules/no-ACPI contract without requiring `nokaslr`,
     `CONFIG_RANDOM=n`, or RDRAND/RDSEED disabling.
-- [ ] **T-PKG-13** Build the minimal root-image fixtures `crucible-fixtures`
+- [x] **T-PKG-13** Build the minimal root-image fixtures `crucible-fixtures`
   from source (read-only base + virtio-9p host store share; `mkfs.ext4 -d` with
   `-O ^has_journal,^metadata_csum,^64bit`; CoW boot; rootfs init shebang
   exception), with a deterministic entropy-seed mechanism and node-id-derived guest
   MACs, plus one unmodified third-party guest path. — satisfies [PKG-25], [PKG-26],
   [PKG-40], [PKG-41], [PKG-42]; spec §26.7.
+  - Completed by `checks.crucible.phase7.crucibleFixtures`: `pkgs.crucible-fixtures`
+    builds a minimal source-generated ext4 root image using `fakeroot -- mkfs.ext4
+    -d` and the required `-O ^has_journal,^metadata_csum,^64bit` features, exports
+    a read-only base plus a qcow2 CoW preparation artifact, a launch fragment with
+    `init=/init`, and a readonly virtio-9p host-store mount. It carries the
+    `/bin/sh` rootfs-init exception backed by the AOS bash boot closure, ships a
+    deterministic 32-byte `crucible-guest-entropy-seed.bin` artifact while
+    documenting the scenario-seed fw_cfg/QEMU RNG mechanism, derives fixture node
+    IDs and MAC addresses from generated root-image SHA-256 identities, and
+    includes a separate unmodified generic AOS Linux guest root image with no
+    in-guest Crucible payload, exercised by `checks.crucible.phase2.gates.anyGuest`.
 - [ ] **T-PKG-14** Wire the determinism gates as AOS nix checks with correct
   layer ordering: eval-class L0/L1/ABI gates, package-class QEMU gates, VM/fleet
   e2e gate. — satisfies [PKG-27], [PKG-28]; spec §26.8.
