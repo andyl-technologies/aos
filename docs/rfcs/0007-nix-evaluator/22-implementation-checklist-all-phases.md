@@ -6067,18 +6067,19 @@ and helps the oracle directly.
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks`
       consumes the same installed live root-writeback metadata and
       root writeback-destination bindings, validates the outcome-owned
-      `ValueStack { slot: 0 }` source/destination generations and current
-      returned value before any body mutation, builds an object-body write plan
-      only from the replacement requests named by that root write plan, binds
-      those destination object bodies with
-      `EvalHeap::apply_collector_poll_minor_gc_object_body_writes`, and then
-      rewrites `EvalOutcome::value` through the already-bound root applicator.
-      Unit tests cover root-only body binding plus value rewrite, and stale
-      returned-value rejection before destination bodies are changed. This still
-      requires destination records to already exist as unaliased
-      collector-owned scratch records, and it does not rewrite active evaluator
-      frames, import caches, arbitrary value-stack roots, JIT stack maps, heap
-      fields, heap-record generation state, ABI forwarding headers, semispace
+      `ValueStack { slot: 0 }` source generation and current returned value
+      before any body mutation, builds an object-body/generation write plan only
+      from the replacement requests named by that root write plan, applies those
+      destination writes with
+      `EvalHeap::apply_collector_poll_minor_gc_object_body_and_generation_writes`,
+      and then rewrites `EvalOutcome::value` through the already-bound root
+      applicator. Unit tests cover copied root-only body/generation binding plus
+      value rewrite, promoted destination generation update plus value rewrite,
+      and stale returned-value rejection before destination bodies or
+      generations are changed. This still requires destination records to
+      already exist as unaliased collector-owned scratch records, and it does
+      not rewrite active evaluator frames, import caches, arbitrary value-stack
+      roots, JIT stack maps, heap fields, ABI forwarding headers, semispace
       storage, or Tier-B dispatch.
 - [x] Current boundary live heap-field writeback write-plan bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_write_plan`
@@ -6833,11 +6834,11 @@ and helps the oracle directly.
       destination allocation/binding open.
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks`
       narrows that bridge further by validating the same outcome-owned root
-      source/destination state before any body mutation, binding only the
-      replacement object bodies named by the root writeback plan, and then
-      rewriting the outcome value through the already-bound applicator; it still
-      requires destination heap records to pre-exist and does not rewrite active
-      evaluator root storage.
+      source/current returned value before any destination mutation, applying
+      paired object-body/generation writes only for the replacement requests
+      named by the root writeback plan, and then rewriting the outcome value
+      through the already-bound applicator; it still requires destination heap
+      records to pre-exist and does not rewrite active evaluator root storage.
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
       validates installed heap-field writebacks against their replacement
       destination snapshots, and requires copied nursery-field writes to target

@@ -2096,13 +2096,78 @@ fn live_outcome_root_writebacks_bind_body_and_update_value_stack_root() {
         report.object_body_write_report().payload_bytes(),
         root_writeback.destination_bytes().len()
     );
+    assert_eq!(report.object_generations_written(), 1);
+    assert_eq!(report.object_generation_write_report().objects(), 1);
+    assert_eq!(
+        report.object_generation_write_report().copied_to_nursery(),
+        1
+    );
     assert_eq!(report.value_stack_roots(), 1);
     assert_eq!(report.roots(), 1);
     assert!(outcome.value().raw_eq(destination_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("destination value remains heap-bound"),
+        HeapGeneration::Young
+    );
     outcome
         .heap()
         .validate_collector_poll_minor_gc_object_body_binding(
             request,
+            root_writeback.replacement_tag(),
+        )
+        .expect("root replacement destination body is bound");
+}
+
+#[test]
+fn live_outcome_root_writebacks_promote_destination_generation_and_update_value_stack_root() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), destination_address),
+        )
+        .expect("live metadata installs with an existing old destination");
+    assert_eq!(live_metadata.reference_writebacks_installed(), 1);
+    let root_writeback_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_writeback = &root_writeback_plan.writes()[0];
+    assert_eq!(root_writeback.generation(), HeapGeneration::Old);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("destination value starts heap-bound"),
+        HeapGeneration::Young
+    );
+    assert!(outcome.value().raw_eq(original_value));
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks()
+        .expect("live outcome root writeback promotes destination and rewrites value");
+
+    assert_eq!(report.object_bodies_written(), 1);
+    assert_eq!(report.object_generations_written(), 1);
+    assert_eq!(report.object_generation_write_report().promoted_to_old(), 1);
+    assert_eq!(report.value_stack_roots(), 1);
+    assert!(outcome.value().raw_eq(destination_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("destination value remains heap-bound"),
+        HeapGeneration::Old
+    );
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(
+            root_writeback.request(),
             root_writeback.replacement_tag(),
         )
         .expect("root replacement destination body is bound");
@@ -2214,6 +2279,13 @@ fn live_outcome_root_writebacks_reject_stale_value_before_body_write() {
         }
     ));
     assert!(outcome.value().raw_eq(stale_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("destination value remains heap-bound"),
+        HeapGeneration::Young
+    );
     assert!(matches!(
         outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
             request,

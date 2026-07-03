@@ -56,6 +56,7 @@ pub use roots::{
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
+    AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
     AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollObjectGenerationWrite,
     AllocationCollectorPollObjectGenerationWritePlan,

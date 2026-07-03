@@ -5,7 +5,11 @@ use std::ptr::NonNull;
 use super::*;
 use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
-use crate::eval::heap::{AllocationCollectorPollObjectBodyWriteReport, EvalRootSource};
+use crate::eval::heap::{
+    AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    AllocationCollectorPollObjectBodyWriteReport,
+    AllocationCollectorPollObjectGenerationWriteReport, EvalRootSource,
+};
 use crate::heap::HeapGeneration;
 use crate::value::HeapObject;
 
@@ -2086,29 +2090,52 @@ impl EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
 /// Counts for live object-body writes and outcome-owned root rewrites.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveOutcomeRootWritebackReport {
-    object_body_write_report: AllocationCollectorPollObjectBodyWriteReport,
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     outcome_root_writeback_report: EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport,
 }
 
 impl EvalGcStressBoundaryMinorGcLiveOutcomeRootWritebackReport {
     const fn new(
-        object_body_write_report: AllocationCollectorPollObjectBodyWriteReport,
+        object_body_and_generation_write_report:
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
         outcome_root_writeback_report: EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport,
     ) -> Self {
         Self {
-            object_body_write_report,
+            object_body_and_generation_write_report,
             outcome_root_writeback_report,
         }
     }
 
+    /// Returns the paired object-body and object-generation write report.
+    pub const fn object_body_and_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
     /// Returns the destination object-body write report.
     pub const fn object_body_write_report(self) -> AllocationCollectorPollObjectBodyWriteReport {
-        self.object_body_write_report
+        self.object_body_and_generation_write_report
+            .body_write_report()
     }
 
     /// Returns how many destination object bodies were written.
     pub const fn object_bodies_written(self) -> usize {
-        self.object_body_write_report.objects()
+        self.object_body_write_report().objects()
+    }
+
+    /// Returns the destination object-generation write report.
+    pub const fn object_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.object_body_and_generation_write_report
+            .generation_write_report()
+    }
+
+    /// Returns how many destination object generations were written.
+    pub const fn object_generations_written(self) -> usize {
+        self.object_generation_write_report().objects()
     }
 
     /// Returns the outcome-root writeback report.
@@ -3567,20 +3594,16 @@ fn apply_boundary_minor_gc_live_outcome_root_writebacks(
     heap: &mut EvalHeap,
     plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
 ) -> Result<EvalGcStressBoundaryMinorGcLiveOutcomeRootWritebackReport, EvalHeapError> {
-    validate_boundary_minor_gc_outcome_root_writeback_source_destinations(
-        outcome_value,
-        heap,
-        plan,
-    )?;
+    validate_boundary_minor_gc_outcome_root_writeback_source_values(outcome_value, heap, plan)?;
     let object_body_plan = boundary_minor_gc_outcome_root_object_body_write_plan(plan)?;
-    let object_body_write_report =
-        heap.apply_collector_poll_minor_gc_object_body_writes(&object_body_plan)?;
+    let object_body_and_generation_write_report =
+        heap.apply_collector_poll_minor_gc_object_body_and_generation_writes(&object_body_plan)?;
     let outcome_root_writeback_report =
         apply_boundary_minor_gc_outcome_root_writebacks(outcome_value, heap, plan)?;
 
     Ok(
         EvalGcStressBoundaryMinorGcLiveOutcomeRootWritebackReport::new(
-            object_body_write_report,
+            object_body_and_generation_write_report,
             outcome_root_writeback_report,
         ),
     )
@@ -3652,6 +3675,30 @@ fn validate_boundary_minor_gc_outcome_root_writeback_source_destinations(
     heap: &EvalHeap,
     plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
 ) -> Result<usize, EvalHeapError> {
+    let value_stack_roots =
+        validate_boundary_minor_gc_outcome_root_writeback_source_values(outcome_value, heap, plan)?;
+    for write in plan.writes() {
+        let destination_generation = heap.generation(write.replacement_value())?;
+        if destination_generation != write.generation() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackDestinationGenerationMismatch {
+                    root_source: write.root_source().clone(),
+                    destination: write.destination(),
+                    expected: write.generation(),
+                    actual: destination_generation,
+                },
+            );
+        }
+    }
+
+    Ok(value_stack_roots)
+}
+
+fn validate_boundary_minor_gc_outcome_root_writeback_source_values(
+    outcome_value: &Value,
+    heap: &EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+) -> Result<usize, EvalHeapError> {
     let value_stack_roots = validate_boundary_minor_gc_outcome_root_writeback_sources(plan)?;
     for write in plan.writes() {
         let expected =
@@ -3674,18 +3721,6 @@ fn validate_boundary_minor_gc_outcome_root_writeback_source_destinations(
                     source_address: write.request().source(),
                     expected: HeapGeneration::Young,
                     actual: source_generation,
-                },
-            );
-        }
-
-        let destination_generation = heap.generation(write.replacement_value())?;
-        if destination_generation != write.generation() {
-            return Err(
-                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackDestinationGenerationMismatch {
-                    root_source: write.root_source().clone(),
-                    destination: write.destination(),
-                    expected: write.generation(),
-                    actual: destination_generation,
                 },
             );
         }
@@ -9788,30 +9823,29 @@ impl EvalOutcome {
     /// This consumes the installed live root-writeback metadata and installed
     /// root writeback-destination bindings for the outcome-owned
     /// `ValueStack { slot: 0 }` root. It first validates that the current returned
-    /// value still holds the expected young from-space object and that the typed
-    /// replacement destination already belongs to this outcome's heap with the
-    /// planned generation. It then applies object-body writes only for the
-    /// replacement requests named by that outcome-root write plan, and finally
-    /// rewrites [`Self::value`] through
+    /// value still holds the expected young from-space object. It then applies
+    /// paired object-body/generation writes only for the replacement requests
+    /// named by that outcome-root write plan, and finally rewrites
+    /// [`Self::value`] through
     /// [`Self::apply_gc_stress_boundary_minor_gc_outcome_root_writebacks`]'s
     /// binding checks.
     ///
     /// This is a narrow live-root bridge for GC-stress experiments. It does not
     /// install live metadata, allocate destination records, reserve semispace
     /// storage, mutate active evaluator frames or import caches, update JIT stack
-    /// maps, mutate heap fields, write heap-record generation state, write ABI
-    /// forwarding headers, or invoke Tier B.
+    /// maps, mutate heap fields, write ABI forwarding headers, or invoke Tier B.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if installed root-writeback metadata is
     /// inconsistent, if the write plan contains an unsupported root source, if the
-    /// returned value no longer holds the expected from-space source, if either
-    /// source or destination heap record is missing or has the wrong generation, if
-    /// the root-only object-body write plan cannot be built or applied, or if the
+    /// returned value no longer holds the expected from-space source, if a source
+    /// heap record is missing or has the wrong generation, if a destination heap
+    /// record is missing or rejects the paired body/generation write, or if the
     /// final outcome-root binding check fails. Root prevalidation happens before
-    /// destination object bodies are written; when a body-write error is returned,
-    /// the object-body writer leaves destination bodies unchanged.
+    /// destination object bodies or generations are written; when a paired-write
+    /// error is returned, the paired writer leaves destination bodies and
+    /// generations unchanged.
     pub fn apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcLiveOutcomeRootWritebackReport, EvalHeapError> {
