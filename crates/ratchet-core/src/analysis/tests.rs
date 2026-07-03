@@ -836,3 +836,4 @@ mod escape_signature;
 mod scalar_replacement;
 mod strictness;
 mod thunk_sharing;
+mod worker_wrapper;

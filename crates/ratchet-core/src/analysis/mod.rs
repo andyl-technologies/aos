@@ -12,6 +12,7 @@ pub mod full_laziness;
 pub mod scalar_replacement;
 pub mod strictness;
 pub mod thunk_sharing;
+pub mod worker_wrapper;
 
 pub use cardinality::{CardinalityAnalysisError, CardinalityAnalysisReport, annotate_cardinality};
 pub use dead_binding::{
@@ -33,6 +34,10 @@ pub use strictness::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate
 pub use thunk_sharing::{
     FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
     FrameLocalThunkUpdateReason, frame_local_single_entry_thunk_downgrade,
+};
+pub use worker_wrapper::{
+    WorkerWrapperArgumentMode, WorkerWrapperPlan, WorkerWrapperPlanError, WorkerWrapperRetention,
+    WorkerWrapperRetentionReason, WorkerWrapperSplit, worker_wrapper_plan,
 };
 
 #[cfg(test)]
