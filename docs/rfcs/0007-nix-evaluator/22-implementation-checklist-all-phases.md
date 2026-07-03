@@ -5963,6 +5963,18 @@ and helps the oracle directly.
       already-bound-record bridge: it does not bind destination object bodies,
       allocate synthetic destination records, reserve semispace storage, mutate
       roots/fields, write ABI object headers, or invoke Tier B.
+- [x] Current boundary live paired object body/generation applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_object_bodies_and_generations`
+      consumes the installed live object-generation write plan, lowers its
+      object-copy requests to the heap-record paired body/generation writer, and
+      stages destination body and generation updates together before committing
+      either side. Unit tests cover copied and promoted existing-destination
+      body/generation writes plus synthetic destination rejection without
+      mutating unrelated heap records. This remains an already-bound-record
+      bridge: it clones current source record bodies rather than writing stored
+      byte buffers directly, does not allocate synthetic destination records,
+      reserve semispace storage, mutate roots/fields, write ABI object headers,
+      or invoke Tier B.
 - [x] Current heap-record generation-state precursor:
       `EvalHeap` records store explicit `HeapGeneration` metadata separately
       from allocator ownership. Worker allocations initialize as young,
