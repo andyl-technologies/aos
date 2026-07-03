@@ -1,4 +1,5 @@
 [
+  "crucible-cas"
   "crucible-sim"
   "crucible-assert"
   "crucible-shmem"
