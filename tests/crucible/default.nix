@@ -2404,6 +2404,13 @@ in rec {
       attrPath = "checks.crucible.phase7.cruciblePackageAbiVersioning";
       taskIds = ["T-PKG-10"];
     };
+    cruciblePackageAbiConformance = import ./phase7-crucible-package-abi-conformance.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.cruciblePackageAbiConformance";
+      taskIds = ["T-PKG-11"];
+      rawAbiGate = phase2.abiConformance;
+      gatedAbiGate = phase2.gates.abiConformance;
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";
