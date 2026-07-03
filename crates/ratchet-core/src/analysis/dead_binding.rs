@@ -35,13 +35,16 @@ pub fn dead_binding_elimination_plan(
             continue;
         }
         let let_node = IrId::new(index as u32);
-        let IrData::Let { bindings, .. } = node.data else {
+        let IrData::Let { bindings, body, .. } = node.data else {
             return Err(DeadBindingEliminationError::InvalidPayload {
                 id: let_node,
                 kind: node.kind,
                 expected: "let payload",
             });
         };
+        ir.arena
+            .node(body)
+            .ok_or(DeadBindingEliminationError::InvalidNode { id: body })?;
         let_count += 1;
         for (binding_index, binding) in binding_values(ir, let_node, bindings)?
             .into_iter()

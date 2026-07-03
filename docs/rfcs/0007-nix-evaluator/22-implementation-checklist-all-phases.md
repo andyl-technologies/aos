@@ -6876,6 +6876,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       remove code in the tree-walk oracle, handle attrset or formal-argument
       absence, improve cardinality precision, or run the whole-program demand
       fixpoint.
+- [x] Current dead-binding planner validation hardening:
+      `dead_binding_elimination_plan` now validates each `let` body reference
+      before cardinality facts can license binding elimination, so malformed
+      raw/imported IR cannot produce an omission plan under forged absent facts.
+      This is still a planner-boundary check; it does not rewrite IR or improve
+      usage precision.
 - [x] Current single-entry-thunk preflight hardening:
       `ratchet-core::analysis::thunk_sharing` rejects self-referential
       `ThunkAlloc` payloads before facts can license a frame-local single-entry
