@@ -67,11 +67,13 @@ pub use example_corpus::{
     BUILT_IN_EXAMPLE_CORPUS_VERSION, CRASH_RESTART_SCENARIO_NAME,
     EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS, EXAMPLE_CORPUS_WHITE_BOX_REQUIRED,
     ExampleCorpusError, ExampleScenarioFixture, ExampleScenarioRunOutcome,
-    ExampleScenarioRunReport, ExampleScenarioVerifyReport, HAPPY_PATH_SCENARIO_NAME,
-    PARTITION_RECOVERY_SCENARIO_NAME, built_in_example_corpus, crash_restart_scenario,
-    happy_path_scenario, partition_recovery_scenario, run_example_scenario,
-    verify_crash_restart_default_runs, verify_example_scenario_runs,
-    verify_happy_path_default_runs, verify_partition_recovery_default_runs,
+    ExampleScenarioRunReport, ExampleScenarioVerifyReport, FAULT_CAMPAIGN_FAMILY_NAME,
+    FaultCampaignExampleReport, HAPPY_PATH_SCENARIO_NAME, PARTITION_RECOVERY_SCENARIO_NAME,
+    built_in_example_corpus, crash_restart_scenario, fault_campaign_family, happy_path_scenario,
+    partition_recovery_scenario, run_example_scenario, run_fault_campaign_example,
+    run_fault_campaign_example_default, verify_crash_restart_default_runs,
+    verify_example_scenario_runs, verify_happy_path_default_runs,
+    verify_partition_recovery_default_runs,
 };
 pub use model::{
     APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, ActiveFaultTable, ActiveNetworkEdgeDirection,

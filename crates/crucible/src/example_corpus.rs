@@ -10,25 +10,35 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    AssertionDef, AssertionId, AssertionPhase, ChoiceTag, CodePoint, ContentAddressedBlobRef,
-    ContentHash, Decision, EngineError, EventId, FaultTag, FramePredicate, GuestWorkloadBinary,
+    AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
+    Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
+    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, Decision, EngineError, EventId,
+    FamilySpace, FaultDensity, FaultDensityRange, FaultTag, FindingDiscoveryPath,
+    FindingReproductionArtifact, FramePredicate, GenesisCheckpoint, GuestWorkloadBinary,
     GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, IoEventKind, LinkId,
-    LinkLossProbability, MembershipFault, NodeCounter, NodeId, NodeLifecycle, NodeTemplate,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
-    ReproductionArtifact, RestartPolicy, ScenarioDefForm, Schedule, SchedulerNodeId,
-    SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TimerId,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    LinkLossProbability, MarkerId, MembershipFault, MemoryDagStore, NodeCounter, NodeId,
+    NodeLifecycle, NodeTemplate, OverrideDecision, Plan, Predicate, Properties, Property,
+    ReadyPoint, RegexProgram, ReproductionArtifact, RestartPolicy, ScenarioDefForm, ScenarioFamily,
+    Schedule, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration,
+    SimInstant, TemporalGraph, TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave,
+    TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
+    UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 use crate::scheduler::{
-    ExactLocalEvent, NetworkLookahead, SchedulerError, SchedulerEvaluationBoundaryKind,
-    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity,
-    SchedulerNodeCrashApplication, SchedulerNodeRestartApplication, SchedulerScenarioNode,
-    SchedulerTopologyChangeApplication, SingleScheduler, TriggerActionApplication,
+    EventLog, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ExactLocalEvent,
+    NetworkLookahead, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeCrashApplication,
+    SchedulerNodeRestartApplication, SchedulerScenarioNode, SchedulerTopologyChangeApplication,
+    SingleScheduler, TriggerActionApplication,
 };
 use crate::trigger::{
-    Action, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
-    EventFirings, EventGraph, EventGraphState, HostAssertionEvaluator, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent, ObservableEventPayload,
+    Action, AssertionViolationArtifactReplay, AssertionViolationReplayError,
+    AssertionViolationReplayReport, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, EventFirings, EventGraph, EventGraphState, HostAssertionEvaluator,
+    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent,
+    ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
+    check_assertion_violation_reproduction,
 };
 
 /// Version label for the built-in worked-example corpus.
@@ -42,6 +52,9 @@ pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
 /// Stable corpus name for the RFC-0010 A.3 crash+restart example.
 pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
+
+/// Stable built-in family name for the RFC-0010 A.4 fault-campaign example.
+pub const FAULT_CAMPAIGN_FAMILY_NAME: &str = "fault-campaign.fam";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
 pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = false;
@@ -57,9 +70,11 @@ const PARTITION_CONVERGENCE_DEADLINE_TICKS: u64 = 30_000_000_000;
 const CRASH_RESTART_DELAY_TICKS: u64 = 5_000_000_000;
 const CRASH_RESTART_DEADLINE_TICKS: u64 = 40_000_000_000;
 const CRASH_RESTART_COMMIT_TICKS: u64 = 30;
+const FAULT_CAMPAIGN_DEFAULT_RUNS: u64 = 4;
 const HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX: &str = "example-corpus/happy-path/observation/";
 const HAPPY_PATH_REPLAY_BOUNDARY_POINT: &str = "example-corpus/happy-path/boundary";
 const EXAMPLE_REPLAY_STEP_POINT_PREFIX: &str = "example-corpus/replay-step/";
+const FAULT_CAMPAIGN_VIOLATION_POINT: &str = "example-corpus/fault-campaign/violation";
 
 /// A built-in scenario fixture shipped with Crucible.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,6 +150,47 @@ pub struct ExampleScenarioVerifyReport {
     pub fingerprint_stream: Vec<u8>,
 }
 
+/// Deterministic proof report for the RFC-0010 A.4 fault-campaign example.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaultCampaignExampleReport {
+    /// Stable built-in family name used by the CLI and corpus checks.
+    pub family_name: String,
+    /// Coverage-guided fuzzing configuration used by the proof.
+    pub config: CoverageGuidedFuzzConfig,
+    /// Deterministic coverage feedback fingerprints consumed by fuzzing.
+    pub coverage_fingerprints: Vec<ContentHash>,
+    /// Complete coverage-guided fuzzing run over the built-in family.
+    pub fuzz_run: CoverageGuidedFuzzRun,
+    /// Iteration selected by the planted discoverable failure oracle.
+    pub discovered_iteration: CoverageGuidedFuzzIteration,
+    /// Black-box observations that trigger the planted no-split-brain violation.
+    pub violation_observations: Vec<ObservableEvent>,
+    /// Unified event-log bytes that carry the planted violation observations.
+    pub violation_event_log: Vec<u8>,
+    /// Host-side assertion report proving the planted violation was evaluated.
+    pub violation_report: HostAssertionReport,
+    /// Assertion-violation replay report proving the finding reproduces the violation.
+    pub violation_replay: AssertionViolationReplayReport,
+    /// Self-contained reduced finding artifact for the discovered failure.
+    pub finding: FindingReproductionArtifact,
+    /// Unified-graph validation report for the fuzzing iteration.
+    pub fuzz_report: UnifiedGraphOperationReport,
+    /// Unified-graph validation report for the finding artifact replay.
+    pub reproduction_report: UnifiedGraphOperationReport,
+    /// Save operation for the pre-failure neighborhood checkpoint.
+    pub save: TemporalGraphSave,
+    /// Unified-graph validation report for the save operation.
+    pub save_report: UnifiedGraphOperationReport,
+    /// Resume operation from the saved pre-failure neighborhood checkpoint.
+    pub resume: TemporalGraphRuntime,
+    /// Unified-graph validation report for the resume operation.
+    pub resume_report: UnifiedGraphOperationReport,
+    /// Fork operation that walks an alternate schedule from the same prefix.
+    pub fork: TemporalGraphFork,
+    /// Unified-graph validation report for the fork operation.
+    pub fork_report: UnifiedGraphOperationReport,
+}
+
 /// Error returned while building, running, or verifying a built-in example.
 #[derive(Debug)]
 pub enum ExampleCorpusError {
@@ -180,6 +236,16 @@ pub enum ExampleCorpusError {
         /// Diverging run index.
         differing_run: usize,
     },
+    /// A fault-campaign proof was requested with no fuzz iterations.
+    FaultCampaignNoIterations,
+    /// The fault-campaign proof did not produce the planted no-split-brain violation.
+    FaultCampaignViolationMissing,
+    /// The fault-campaign retained assertion log could not be folded.
+    FaultCampaignViolationLog(OfflineAssertionCheckError),
+    /// The fault-campaign assertion violation did not replay bit-identically.
+    FaultCampaignViolationReplay(AssertionViolationReplayError),
+    /// The temporal graph could not persist the savepoint closure.
+    TemporalGraphStore(TemporalGraphStoreError),
 }
 
 impl fmt::Display for ExampleCorpusError {
@@ -218,6 +284,28 @@ impl fmt::Display for ExampleCorpusError {
                 formatter,
                 "example scenario `{scenario}` diverged between run {reference_run} and {differing_run}"
             ),
+            Self::FaultCampaignNoIterations => write!(
+                formatter,
+                "fault-campaign example requires at least one fuzz iteration"
+            ),
+            Self::FaultCampaignViolationMissing => write!(
+                formatter,
+                "fault-campaign example did not evaluate the planted no-split-brain violation"
+            ),
+            Self::FaultCampaignViolationLog(error) => write!(
+                formatter,
+                "fault-campaign assertion violation log error: {error}"
+            ),
+            Self::FaultCampaignViolationReplay(error) => write!(
+                formatter,
+                "fault-campaign assertion violation replay error: {error}"
+            ),
+            Self::TemporalGraphStore(error) => {
+                write!(
+                    formatter,
+                    "fault-campaign temporal graph store error: {error}"
+                )
+            }
         }
     }
 }
@@ -232,7 +320,12 @@ impl Error for ExampleCorpusError {
             | Self::ReplayDiverged { .. }
             | Self::ReplayScheduleInvalid { .. }
             | Self::VerifyRunsZero { .. }
-            | Self::VerifyDiverged { .. } => None,
+            | Self::VerifyDiverged { .. }
+            | Self::FaultCampaignNoIterations
+            | Self::FaultCampaignViolationMissing => None,
+            Self::FaultCampaignViolationLog(error) => Some(error),
+            Self::FaultCampaignViolationReplay(error) => Some(error),
+            Self::TemporalGraphStore(error) => Some(error),
         }
     }
 }
@@ -246,6 +339,12 @@ impl From<EngineError> for ExampleCorpusError {
 impl From<SchedulerError> for ExampleCorpusError {
     fn from(error: SchedulerError) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<TemporalGraphStoreError> for ExampleCorpusError {
+    fn from(error: TemporalGraphStoreError) -> Self {
+        Self::TemporalGraphStore(error)
     }
 }
 
@@ -431,6 +530,172 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
         requires_white_box: false,
         observations: flatten_observations(&steps),
         steps,
+    })
+}
+
+/// Builds the RFC-0010 A.4 fault-campaign scenario family.
+///
+/// # Errors
+///
+/// Returns [`ExampleCorpusError::Engine`] if the family space or shared
+/// black-box property is invalid.
+pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
+    let space = FamilySpace::new(
+        crate::model::SeedSpace::generated(Seed::from_u64(0x33_a4), 8)?,
+        FaultDensityRange::new(
+            FaultDensity::from_millionths(250_000)?,
+            FaultDensity::from_millionths(250_002)?,
+        )?,
+        TopologySizeRange::new(3, 5)?,
+        vec![TopologyShape::Ring, TopologyShape::Mesh],
+    )?;
+    let template = NodeTemplate::fixed_icount(Icount { retired: 100 })
+        .cmdline("console=ttyS0 quiet store.role=replica cluster=crucible-a4");
+    Ok(ScenarioFamily::new(space, template).property(AssertionDef {
+        id: AssertionId::from_name("no-split-brain"),
+        message: String::from("the store must not publish split-brain evidence"),
+        property: Property::Always {
+            predicate: Predicate::not(Predicate::network_match(
+                None,
+                FramePredicate::contains(b"split_brain=true".to_vec()),
+            )),
+        },
+    }))
+}
+
+/// Runs the RFC-0010 A.4 fault-campaign proof with the default fuzz budget.
+///
+/// # Errors
+///
+/// Returns the errors documented by [`run_fault_campaign_example`].
+pub fn run_fault_campaign_example_default() -> Result<FaultCampaignExampleReport, ExampleCorpusError>
+{
+    run_fault_campaign_example(CoverageGuidedFuzzConfig::new(
+        Seed::from_u64(0x33_a4_f00d),
+        FAULT_CAMPAIGN_DEFAULT_RUNS,
+    ))
+}
+
+/// Runs the RFC-0010 A.4 fault-campaign proof.
+///
+/// # Errors
+///
+/// Returns [`ExampleCorpusError::Engine`] if family sampling, reproduction,
+/// replay, resume, fork, or unified-graph validation fails;
+/// [`ExampleCorpusError::Scheduler`] if the coverage feedback event log cannot
+/// be built; [`ExampleCorpusError::TemporalGraphStore`] if the savepoint closure
+/// cannot be persisted; or [`ExampleCorpusError::FaultCampaignNoIterations`] if
+/// `config` requests no fuzz iterations.
+pub fn run_fault_campaign_example(
+    config: CoverageGuidedFuzzConfig,
+) -> Result<FaultCampaignExampleReport, ExampleCorpusError> {
+    let family = fault_campaign_family()?;
+    let coverage_feedback = fault_campaign_coverage_feedback()?;
+    let coverage_fingerprints = coverage_feedback
+        .iter()
+        .map(|feedback| {
+            feedback.fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing)
+        })
+        .collect::<Vec<_>>();
+    let fuzz_run = family.fuzz_coverage_guided(config, &coverage_feedback)?;
+    let discovered_iteration = fuzz_run
+        .iterations
+        .iter()
+        .find(|iteration| iteration.new_coverage)
+        .or_else(|| fuzz_run.iterations.first())
+        .cloned()
+        .ok_or(ExampleCorpusError::FaultCampaignNoIterations)?;
+    let violation = fault_campaign_violation_evidence(discovered_iteration.scenario.form())?;
+    let finding_fingerprint =
+        fault_campaign_finding_fingerprint(&discovered_iteration, &violation.report);
+    let violation_configuration = try_step(
+        &discovered_iteration.configuration,
+        fault_campaign_violation_decision(&violation.observations)?,
+    )?;
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_fingerprint,
+        discovered_iteration.scenario.form(),
+        &violation_configuration,
+    )?;
+    let reproduced_log = fault_campaign_replayed_violation_log_from_artifact(&finding.artifact)?;
+    let replayed_violation =
+        AssertionViolationArtifactReplay::from_artifact(&finding.artifact, reproduced_log)?;
+    let violation_replay = check_assertion_violation_reproduction(
+        &finding.artifact,
+        &violation.recorded_log,
+        &replayed_violation,
+    )
+    .map_err(ExampleCorpusError::FaultCampaignViolationReplay)?;
+
+    let pre_failure = discovered_iteration
+        .scenario
+        .genesis_configuration()
+        .configuration()
+        .clone();
+    let mut graph = TemporalGraph::new(ContentHash::from_canonical_material(
+        "crucible.example-corpus.fault-campaign.graph.v1",
+        &format!(
+            "family={FAULT_CAMPAIGN_FAMILY_NAME}\nconfig={:?}\nfinding={}",
+            config,
+            finding_fingerprint.to_hex()
+        ),
+    ))
+    .with_baked_genesis(
+        &discovered_iteration.configuration.def,
+        baked_genesis_for_scenario(discovered_iteration.scenario.form())?,
+    )?;
+
+    let fuzz_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::CoverageGuidedFuzzing {
+            family: family.clone(),
+            run: fuzz_run.clone(),
+            feedback_fingerprints: coverage_fingerprints.clone(),
+            iteration: discovered_iteration.clone(),
+        },
+    )?;
+    let reproduction_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::ReproductionArtifact(finding.clone()),
+    )?;
+
+    let store = MemoryDagStore::new();
+    let save = graph.save(&store, &pre_failure)?;
+    let save_report = graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save {
+        configuration: pre_failure.clone(),
+        save: save.clone(),
+    })?;
+    let resume = graph.resume_checkpoint(save.checkpoint)?;
+    let resume_report =
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Resume {
+            configuration: pre_failure.clone(),
+            runtime: resume.clone(),
+        })?;
+    let fork = graph.fork(
+        &pre_failure,
+        vec![fault_campaign_alternate_decision(config)],
+    )?;
+    let fork_report =
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(fork.clone()))?;
+
+    Ok(FaultCampaignExampleReport {
+        family_name: FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
+        config,
+        coverage_fingerprints,
+        fuzz_run,
+        discovered_iteration,
+        violation_observations: violation.observations,
+        violation_event_log: violation.event_log,
+        violation_report: violation_replay.reproduced.clone(),
+        violation_replay,
+        finding,
+        fuzz_report,
+        reproduction_report,
+        save,
+        save_report,
+        resume,
+        resume_report,
+        fork,
+        fork_report,
     })
 }
 
@@ -997,6 +1262,195 @@ fn crash_restart_replay_steps() -> Vec<ExampleReplayStep> {
             b"committed_write_survived=true raft_log_match term=9 index=42".to_vec(),
         )]),
     ]
+}
+
+fn fault_campaign_coverage_feedback() -> Result<Vec<EventLogCoverageFeedback>, SchedulerError> {
+    let mut first = EventLog::new();
+    let first_append = first.append_observable_events(vec![
+        ObservableEvent::coverage_block(Icount { retired: 10 }, node("node-0"), 0x4010, 0x20),
+        ObservableEvent::coverage_marker(
+            Icount { retired: 11 },
+            node("node-1"),
+            MarkerId::from_name("a4-election-window"),
+        ),
+    ])?;
+    let mut second = EventLog::new();
+    let second_append = second.append_observable_events(vec![
+        ObservableEvent::coverage_block(Icount { retired: 12 }, node("node-2"), 0x5020, 0x20),
+        ObservableEvent::coverage_marker(
+            Icount { retired: 13 },
+            node("node-0"),
+            MarkerId::from_name("a4-split-brain-probe"),
+        ),
+    ])?;
+    Ok(vec![
+        EventLogCoverageFeedback::from_event_log(&first_append.entries),
+        EventLogCoverageFeedback::from_event_log(&second_append.entries),
+    ])
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FaultCampaignViolationEvidence {
+    observations: Vec<ObservableEvent>,
+    event_log: Vec<u8>,
+    recorded_log: RecordedAssertionLog,
+    report: HostAssertionReport,
+}
+
+fn fault_campaign_violation_evidence(
+    scenario: &ScenarioDefForm,
+) -> Result<FaultCampaignViolationEvidence, ExampleCorpusError> {
+    let observations = vec![ObservableEvent::network_delivered(
+        VirtualTime { ticks: 30 },
+        None,
+        b"cluster=crucible-a4 split_brain=true leader=node-0,node-2 term=7".to_vec(),
+    )];
+    let mut event_log = EventLog::new();
+    let append = event_log.append_observable_events(observations.clone())?;
+    let recorded_log = RecordedAssertionLog::from_segments(vec![append.entries.clone()])
+        .map_err(ExampleCorpusError::FaultCampaignViolationLog)?;
+    let mut oracle = BlackBoxHostOracle;
+    let mut evaluator = HostAssertionEvaluator::new(scenario.properties())
+        .with_world_white_box_policies(scenario.world());
+    let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle);
+    let no_split_brain_violated = report.outcomes().iter().any(|outcome| {
+        outcome.assertion.name == "no-split-brain"
+            && outcome.kind == HostAssertionOutcomeKind::Violated
+    });
+    if !report.verdict().is_failed() || !no_split_brain_violated {
+        return Err(ExampleCorpusError::FaultCampaignViolationMissing);
+    }
+    Ok(FaultCampaignViolationEvidence {
+        observations,
+        event_log: append.segment_bytes,
+        recorded_log,
+        report,
+    })
+}
+
+fn fault_campaign_violation_decision(
+    observations: &[ObservableEvent],
+) -> Result<Decision, ExampleCorpusError> {
+    Ok(Decision::Override(OverrideDecision {
+        point: SchedulingPoint {
+            key: String::from(FAULT_CAMPAIGN_VIOLATION_POINT),
+        },
+        choice: ChoiceTag {
+            name: encode_replay_step(
+                FAULT_CAMPAIGN_FAMILY_NAME,
+                &ExampleReplayStep::Observations(observations.to_vec()),
+            )?,
+        },
+    }))
+}
+
+fn fault_campaign_replayed_violation_log_from_artifact(
+    artifact: &ReproductionArtifact,
+) -> Result<RecordedAssertionLog, ExampleCorpusError> {
+    artifact.replay()?;
+    let observations = fault_campaign_violation_observations_from_artifact(artifact)?;
+    let mut event_log = EventLog::new();
+    let append = event_log.append_observable_events(observations)?;
+    RecordedAssertionLog::from_segments(vec![append.entries])
+        .map_err(ExampleCorpusError::FaultCampaignViolationLog)
+}
+
+fn fault_campaign_violation_observations_from_artifact(
+    artifact: &ReproductionArtifact,
+) -> Result<Vec<ObservableEvent>, ExampleCorpusError> {
+    let mut decoded = None;
+    for decision in artifact.schedule().decisions() {
+        let Decision::Override(override_decision) = decision else {
+            continue;
+        };
+        if override_decision.point.key != FAULT_CAMPAIGN_VIOLATION_POINT {
+            continue;
+        }
+        if decoded.is_some() {
+            return Err(invalid_replay_schedule(
+                FAULT_CAMPAIGN_FAMILY_NAME,
+                "fault-campaign artifact contains multiple violation observations",
+            ));
+        }
+        let ExampleReplayStep::Observations(observations) =
+            decode_replay_step(FAULT_CAMPAIGN_FAMILY_NAME, &override_decision.choice.name)?
+        else {
+            return Err(invalid_replay_schedule(
+                FAULT_CAMPAIGN_FAMILY_NAME,
+                "fault-campaign artifact violation entry must encode observations",
+            ));
+        };
+        decoded = Some(observations);
+    }
+    decoded.ok_or_else(|| {
+        invalid_replay_schedule(
+            FAULT_CAMPAIGN_FAMILY_NAME,
+            "fault-campaign artifact is missing the violation observation",
+        )
+    })
+}
+
+fn fault_campaign_finding_fingerprint(
+    iteration: &CoverageGuidedFuzzIteration,
+    violation_report: &HostAssertionReport,
+) -> ContentHash {
+    let params = iteration.params;
+    let violation_material = violation_report
+        .violations()
+        .iter()
+        .map(|violation| {
+            format!(
+                "assertion={} kind={:?} at={} detail={}",
+                violation.assertion.name,
+                violation.quantifier,
+                violation.at_virtual_time.ticks,
+                violation.detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ContentHash::from_canonical_material(
+        "crucible.example-corpus.fault-campaign.finding.v1",
+        &format!(
+            "property=no-split-brain\nsequence={}\nsample_index={}\nseed={}\nfault_density={}\ntopology_size={}\ntopology_shape={:?}\nconfiguration={}\nviolation_count={}\n{}",
+            iteration.sequence,
+            iteration.sample_index,
+            params.seed.to_hex(),
+            params.fault_density.millionths(),
+            params.topology_size,
+            params.topology_shape,
+            iteration.configuration_id().to_hex(),
+            violation_report.violations().len(),
+            violation_material
+        ),
+    )
+}
+
+fn fault_campaign_alternate_decision(config: CoverageGuidedFuzzConfig) -> Decision {
+    Decision::Override(OverrideDecision {
+        point: SchedulingPoint {
+            key: format!("fault-campaign-neighborhood/{}", config.meta_seed.to_hex()),
+        },
+        choice: ChoiceTag {
+            name: String::from("deliver-delayed-vote-first"),
+        },
+    })
+}
+
+fn baked_genesis_for_scenario(
+    scenario: &ScenarioDefForm,
+) -> Result<GenesisCheckpoint, EngineError> {
+    let baked = bake(scenario.world())?;
+    let genesis = Configuration::genesis(scenario.scenario_def());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &genesis,
+        None,
+        VirtualTime::default(),
+        baked.checkpoint.node_icounts,
+        CheckpointKind::Fat,
+        baked.checkpoint.node_blobs,
+    )?;
+    Ok(GenesisCheckpoint { checkpoint })
 }
 
 fn flatten_observations(steps: &[ExampleReplayStep]) -> Vec<ObservableEvent> {
