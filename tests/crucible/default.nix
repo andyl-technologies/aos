@@ -1541,6 +1541,17 @@ in rec {
         phase5.cliServeMultiClient
       ];
     };
+    cliExitMachineReadable = import ./phase5-cli-exit-machine-readable.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliExitMachineReadable";
+      taskIds = ["T-CLI-15"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase5.cliServeShutdown
+        phase5.cliDeterminismErgonomics
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliCompletionsHelp = import ./phase5-cli-completions-help.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";

@@ -427,6 +427,13 @@ long-held locks.
   Watch and Query clients while Control drives the same session, propagates
   shutdown to active Control/Watch streams, maps serve bind/backend failures to
   exit 3, and proves a real process exits 0 after an external shutdown signal.
+  `T-CLI-15` remains open. `checks.crucible.phase5.cliExitMachineReadable`
+  currently covers the backend-routed output path appending a machine-readable
+  final-outcome record to canonical `json`/`jsonl` traces, suppressing human
+  summary/footer lines from machine-readable stdout, and regression-testing the
+  RFC §15 exit-code classes; full closure waits for the remaining run-capable
+  command-behavior gates `T-CLI-7 … T-CLI-13` so the same contract can be
+  certified across every implemented runner.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
