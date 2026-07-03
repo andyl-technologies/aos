@@ -21,6 +21,14 @@
       && base != "result"
       && base != "target";
   };
+  parityJsonCorpusSrc = builtins.path {
+    path = ../../../fuzz/corpus/parity_json;
+    name = "aos-parity-json-corpus-src";
+    filter = path: type: let
+      base = baseNameOf path;
+    in
+      type != "directory" || base != "generated";
+  };
 
   # Shared preamble for server tests: bring up loopback, create mock Nix DB,
   # write server config, start aos serve in background.
@@ -167,6 +175,51 @@ in {
       --mode=byte \
       -- \
       ${repoSrc}/default.nix
+
+    echo "PASS" > "$out/result"
+  '';
+
+  eval-json-corpus-smoke = pkgs.runCommand "aos-eval-json-corpus-smoke" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-eval-json-corpus-smoke"
+    nix_conf="$work/nix-conf"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-diff \
+      --eval-json \
+      --eval-json-corpus \
+      ${parityJsonCorpusSrc}
 
     echo "PASS" > "$out/result"
   '';

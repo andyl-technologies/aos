@@ -7107,6 +7107,19 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       rejected during corpus loading. This closes the config-replay part of the
       source-seed corpus gate, but still does not generate the corpus, wire CI,
       or close `C-4`.
+- [x] Current `--eval --json` checked-in source-corpus check precursor:
+      the AOS package integration checks expose
+      `checks.integration.aos-eval-json-corpus-smoke` (and flake checks expose
+      it as `integration-aos-eval-json-corpus-smoke`). The check provisions a
+      throwaway local Nix store/state/log tree and native cache root under
+      `$TMPDIR`, initializes that store with AOS-built `nix-store --init`, and
+      runs the installed AOS-built CLI wrapper as
+      `aos --eval-system=<check-system> nix-diff --eval-json --eval-json-corpus
+      <checked-in parity_json corpus source>`. This wires only the checked-in
+      source seeds into the Linux check graph without host tools or nixpkgs,
+      but it still does not generate or run the ignored package/conformance
+      source corpus, consume a fuzz time budget, run scheduled CI, or close
+      `C-4`.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with
