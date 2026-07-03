@@ -6071,27 +6071,34 @@ and helps the oracle directly.
       does not mutate evaluator object fields, bind destination bytes to
       heap-object bodies, mutate heap-record generations, manage semispaces,
       mutate roots, write ABI object headers, or invoke Tier B.
-- [x] Current boundary copied heap-field writeback applicator:
-      `EvalOutcome::apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks`
-      consumes the installed heap-field writeback write plan for fields whose
-      writeback object is a relocated nursery object, requires both the
-      writeback object body and replacement object body to have already been
-      bound through `EvalHeap::apply_collector_poll_minor_gc_object_body_writes`,
-      revalidates the deduplicated writeback/replacement object-copy request set
-      against the same global identity invariants as object-body writes, verifies
-      their destination generations, validates that the copied field still
-      contains the expected young from-space value, and rewrites
-      record-owned list elements and attrset bindings in the bound destination
-      record while clearing stale hash caches on that record. Unit tests cover
-      bound list-field and attr-field writes, same-object multi-field staging,
-      malformed copy-request-set rejection, attr symbol-slot stale metadata
-      rejection, and outcome-level rejection of dirty in-place field writes.
-      This is only an already-bound copied-object field applicator: direct
-      dirty old/permanent field mutation, captured environment fields, primop
-      fields, thunk fields, synthetic destination allocation, ABI object
-      headers, semispace storage, and Tier-B dispatch remain open, and copied
-      destination records inherit the current unaliased collector-owned scratch
-      record assumption because semispace ownership is not modeled yet.
+- [x] Current boundary record-owned heap-field writeback applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_heap_field_writebacks`
+      consumes the installed heap-field writeback write plan, splits relocated
+      nursery-object writes from direct in-place writes, and plans/stages both
+      categories before mutating live heap records. Copied fields still require
+      the writeback object body and replacement object body to have already been
+      bound through `EvalHeap::apply_collector_poll_minor_gc_object_body_writes`;
+      direct fields are limited to old-generation worker records whose
+      replacement was promoted to old. The applicator revalidates one combined
+      copied/direct deduplicated object-copy request set before staging any heap
+      mutation, verifies destination generations, validates that the current
+      field still contains the expected young from-space value, merges copied
+      and direct field edits into one staged object per target record, rewrites
+      only record-owned list elements and attrset bindings, and clears stale
+      hash caches on mutated records. Unit tests cover copied list/attr writes,
+      same-object copied-field staging, mixed copied/direct same-record staging,
+      malformed copied and cross-branch request sets, direct old list/attr
+      writes, stale direct-field rejection without mutation, permanent-field
+      rejection, direct old-to-young rejection, attr symbol-slot stale metadata
+      rejection, and outcome-level direct-write routing. Permanent shared
+      in-place field mutation, direct old-to-young mutation plus remembered-set
+      publication, captured environment fields, primop fields, thunk fields,
+      synthetic destination allocation, ABI object headers, semispace storage,
+      and Tier-B dispatch remain open, and copied destination records inherit
+      the current unaliased collector-owned scratch record assumption because
+      semispace ownership is not modeled yet. The historical copied-only
+      `apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks` method now
+      delegates to the broader applicator.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from

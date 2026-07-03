@@ -55,6 +55,7 @@ const MINOR_GC_FORWARDING_VALUES_TABLE: &str = "minor-GC forwarding values";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 const MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC copied heap field writes";
+const MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC direct heap field writes";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
 
 /// A write-barrier adapter for publishing a forced thunk result.
@@ -2006,7 +2007,15 @@ struct CollectorPollCopiedHeapFieldWrite {
     replacement: Value,
 }
 
-enum CopiedHeapFieldWriteObjectError {
+struct CollectorPollDirectHeapFieldWrite {
+    record_index: usize,
+    writeback_object: GcHeapAddress,
+    field_index: usize,
+    source: HeapEdgeSource,
+    replacement: Value,
+}
+
+enum RecordOwnedHeapFieldWriteObjectError {
     UnsupportedSource,
     Attr(AttrError),
 }
@@ -2217,11 +2226,8 @@ fn validate_collector_poll_minor_gc_copied_heap_field_write_request_invariants(
         })?;
 
     for write in writes {
-        push_unique_copied_heap_field_write_request(
-            &mut requests,
-            write.writeback_object_request(),
-        );
-        push_unique_copied_heap_field_write_request(&mut requests, write.replacement_request());
+        push_unique_heap_field_write_request(&mut requests, write.writeback_object_request());
+        push_unique_heap_field_write_request(&mut requests, write.replacement_request());
     }
 
     let _ =
@@ -2229,7 +2235,64 @@ fn validate_collector_poll_minor_gc_copied_heap_field_write_request_invariants(
     Ok(())
 }
 
-fn push_unique_copied_heap_field_write_request(
+fn validate_collector_poll_minor_gc_direct_heap_field_write_request_invariants(
+    writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+) -> Result<(), EvalHeapError> {
+    let mut requests = Vec::new();
+    requests.try_reserve_exact(writes.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+            entries: writes.len(),
+        }
+    })?;
+
+    for write in writes {
+        push_unique_heap_field_write_request(&mut requests, write.replacement_request());
+    }
+
+    let _ =
+        AllocationCollectorPollObjectByteCopyPlan::new(requests).object_generation_write_plan()?;
+    Ok(())
+}
+
+fn validate_collector_poll_minor_gc_heap_field_write_request_invariants(
+    copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+    direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+) -> Result<(), EvalHeapError> {
+    let copied_entries =
+        copied_writes
+            .len()
+            .checked_mul(2)
+            .ok_or(EvalHeapError::RootScanLengthOverflow {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+            })?;
+    let entries = copied_entries.checked_add(direct_writes.len()).ok_or(
+        EvalHeapError::RootScanLengthOverflow {
+            table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+        },
+    )?;
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(entries)
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+            entries,
+        })?;
+
+    for write in copied_writes {
+        push_unique_heap_field_write_request(&mut requests, write.writeback_object_request());
+        push_unique_heap_field_write_request(&mut requests, write.replacement_request());
+    }
+    for write in direct_writes {
+        push_unique_heap_field_write_request(&mut requests, write.replacement_request());
+    }
+
+    let _ =
+        AllocationCollectorPollObjectByteCopyPlan::new(requests).object_generation_write_plan()?;
+    Ok(())
+}
+
+fn push_unique_heap_field_write_request(
     requests: &mut Vec<AllocationCollectorPollObjectByteCopyRequest>,
     request: AllocationCollectorPollObjectByteCopyRequest,
 ) {
@@ -3151,6 +3214,66 @@ impl AllocationCollectorPollCopiedHeapFieldWrite {
     }
 }
 
+/// A record-owned old-generation heap field rewritten in place after minor GC.
+///
+/// The write targets an existing old-generation worker record and currently
+/// accepts only promoted-old replacement destinations. Permanent shared records,
+/// copied nursery replacements, captured environment fields, primop fields, and
+/// thunk fields remain outside this direct writer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AllocationCollectorPollDirectHeapFieldWrite {
+    allocation_domain: HeapAllocationDomain,
+    writeback_object: GcHeapAddress,
+    field_index: usize,
+    source: HeapEdgeSource,
+    replacement: ResolvedValueGeneration,
+    replacement_request: AllocationCollectorPollObjectByteCopyRequest,
+}
+
+impl AllocationCollectorPollDirectHeapFieldWrite {
+    pub(crate) fn new(
+        allocation_domain: HeapAllocationDomain,
+        writeback_object: GcHeapAddress,
+        field_index: usize,
+        source: HeapEdgeSource,
+        replacement: ResolvedValueGeneration,
+        replacement_request: AllocationCollectorPollObjectByteCopyRequest,
+    ) -> Self {
+        Self {
+            allocation_domain,
+            writeback_object,
+            field_index,
+            source,
+            replacement,
+            replacement_request,
+        }
+    }
+
+    const fn allocation_domain(&self) -> HeapAllocationDomain {
+        self.allocation_domain
+    }
+
+    const fn writeback_object(&self) -> GcHeapAddress {
+        self.writeback_object
+    }
+
+    const fn field_index(&self) -> usize {
+        self.field_index
+    }
+
+    const fn source(&self) -> &HeapEdgeSource {
+        &self.source
+    }
+
+    const fn replacement(&self) -> ResolvedValueGeneration {
+        self.replacement
+    }
+
+    const fn replacement_request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.replacement_request
+    }
+}
+
 /// A summary of copied-object heap fields rewritten in evaluator storage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AllocationCollectorPollCopiedHeapFieldWriteReport {
@@ -3163,6 +3286,23 @@ impl AllocationCollectorPollCopiedHeapFieldWriteReport {
     }
 
     /// Returns the number of copied heap fields rewritten.
+    pub(crate) const fn fields(self) -> usize {
+        self.fields
+    }
+}
+
+/// A summary of direct old-generation heap fields rewritten in evaluator storage.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AllocationCollectorPollDirectHeapFieldWriteReport {
+    fields: usize,
+}
+
+impl AllocationCollectorPollDirectHeapFieldWriteReport {
+    fn record(&mut self) {
+        self.fields = self.fields.saturating_add(1);
+    }
+
+    /// Returns the number of direct heap fields rewritten.
     pub(crate) const fn fields(self) -> usize {
         self.fields
     }
@@ -3811,10 +3951,29 @@ impl EvalHeap {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_collector_poll_minor_gc_copied_heap_field_writes(
         &mut self,
         writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
     ) -> Result<AllocationCollectorPollCopiedHeapFieldWriteReport, EvalHeapError> {
+        let (planned, report) =
+            self.plan_collector_poll_minor_gc_copied_heap_field_writes(writes)?;
+        let staged = self.stage_collector_poll_minor_gc_copied_heap_field_writes(&planned)?;
+        self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+
+        Ok(report)
+    }
+
+    fn plan_collector_poll_minor_gc_copied_heap_field_writes(
+        &self,
+        writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+    ) -> Result<
+        (
+            Vec<CollectorPollCopiedHeapFieldWrite>,
+            AllocationCollectorPollCopiedHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
         validate_collector_poll_minor_gc_copied_heap_field_write_request_invariants(writes)?;
 
         let mut planned = Vec::new();
@@ -3845,16 +4004,7 @@ impl EvalHeap {
             report.record();
         }
 
-        let staged = self.stage_collector_poll_minor_gc_copied_heap_field_writes(&planned)?;
-        for (record_index, object) in staged {
-            let record = &mut self.records[record_index];
-            record.object = object;
-            record.structural_hash = None;
-            record.value_hash.set(None);
-            record.captured_value_hash.set(None);
-        }
-
-        Ok(report)
+        Ok((planned, report))
     }
 
     fn plan_collector_poll_minor_gc_copied_heap_field_write(
@@ -3925,6 +4075,7 @@ impl EvalHeap {
         })
     }
 
+    #[cfg(test)]
     fn stage_collector_poll_minor_gc_copied_heap_field_writes(
         &self,
         writes: &[CollectorPollCopiedHeapFieldWrite],
@@ -3937,31 +4088,34 @@ impl EvalHeap {
             }
         })?;
 
-        for write in writes {
-            let object = match staged
-                .iter_mut()
-                .find(|(record_index, _)| *record_index == write.record_index)
-            {
-                Some((_, object)) => object,
-                None => {
-                    staged.push((
-                        write.record_index,
-                        self.records[write.record_index].object.clone(),
-                    ));
-                    let Some((_, object)) = staged.last_mut() else {
-                        return Err(EvalHeapError::RootScanAllocationFailed {
-                            table: MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE,
-                            entries: writes.len(),
-                        });
-                    };
-                    object
-                }
-            };
-            *object = copied_heap_field_write_object(object, &write.source, write.replacement)
-                .map_err(|error| copied_heap_field_write_object_error(write, error))?;
-        }
+        self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
+            writes,
+            &mut staged,
+            writes.len(),
+        )?;
 
         Ok(staged)
+    }
+
+    fn stage_collector_poll_minor_gc_copied_heap_field_writes_into(
+        &self,
+        writes: &[CollectorPollCopiedHeapFieldWrite],
+        staged: &mut Vec<(usize, HeapObjectValue)>,
+        entries: usize,
+    ) -> Result<(), EvalHeapError> {
+        for write in writes {
+            let object = self.staged_collector_poll_minor_gc_heap_field_write_object_mut(
+                staged,
+                write.record_index,
+                MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE,
+                entries,
+            )?;
+            *object =
+                record_owned_heap_field_write_object(object, &write.source, write.replacement)
+                    .map_err(|error| copied_heap_field_write_object_error(write, error))?;
+        }
+
+        Ok(())
     }
 
     fn validate_copied_heap_field_write_requests(
@@ -4037,7 +4191,6 @@ impl EvalHeap {
                 },
             );
         }
-
         Ok(())
     }
 
@@ -4082,6 +4235,367 @@ impl EvalHeap {
         if actual != expected {
             return Err(
                 EvalHeapError::CollectorPollCopiedHeapFieldWriteReplacementGenerationMismatch {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    replacement,
+                    expected,
+                    actual,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_collector_poll_minor_gc_direct_heap_field_writes(
+        &mut self,
+        writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+    ) -> Result<AllocationCollectorPollDirectHeapFieldWriteReport, EvalHeapError> {
+        let (planned, report) =
+            self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes)?;
+        let staged = self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
+        self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+
+        Ok(report)
+    }
+
+    pub(crate) fn apply_collector_poll_minor_gc_heap_field_writes(
+        &mut self,
+        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+    ) -> Result<
+        (
+            AllocationCollectorPollCopiedHeapFieldWriteReport,
+            AllocationCollectorPollDirectHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
+        validate_collector_poll_minor_gc_heap_field_write_request_invariants(
+            copied_writes,
+            direct_writes,
+        )?;
+        let (planned_copied, copied_report) =
+            self.plan_collector_poll_minor_gc_copied_heap_field_writes(copied_writes)?;
+        let (planned_direct, direct_report) =
+            self.plan_collector_poll_minor_gc_direct_heap_field_writes(direct_writes)?;
+
+        let entries = copied_writes.len().checked_add(direct_writes.len()).ok_or(
+            EvalHeapError::RootScanLengthOverflow {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+            },
+        )?;
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(entries)
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                entries,
+            })?;
+        self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
+            &planned_copied,
+            &mut staged,
+            entries,
+        )?;
+        self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+            &planned_direct,
+            &mut staged,
+            entries,
+        )?;
+
+        self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+
+        Ok((copied_report, direct_report))
+    }
+
+    fn plan_collector_poll_minor_gc_direct_heap_field_writes(
+        &self,
+        writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+    ) -> Result<
+        (
+            Vec<CollectorPollDirectHeapFieldWrite>,
+            AllocationCollectorPollDirectHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
+        validate_collector_poll_minor_gc_direct_heap_field_write_request_invariants(writes)?;
+
+        let mut planned = Vec::new();
+        planned.try_reserve_exact(writes.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries: writes.len(),
+            }
+        })?;
+
+        let mut report = AllocationCollectorPollDirectHeapFieldWriteReport::default();
+        for (index, write) in writes.iter().enumerate() {
+            if writes[..index]
+                .iter()
+                .any(|existing| direct_heap_field_write_identity_matches(existing, write))
+            {
+                return Err(
+                    EvalHeapError::BoundaryMinorGcHeapFieldWritebackWriteDuplicateSource {
+                        index,
+                        allocation_domain: write.allocation_domain(),
+                        writeback_object: write.writeback_object(),
+                        field_index: write.field_index(),
+                        field_source: write.source().clone(),
+                    },
+                );
+            }
+            planned.push(self.plan_collector_poll_minor_gc_direct_heap_field_write(write)?);
+            report.record();
+        }
+
+        Ok((planned, report))
+    }
+
+    fn plan_collector_poll_minor_gc_direct_heap_field_write(
+        &self,
+        write: &AllocationCollectorPollDirectHeapFieldWrite,
+    ) -> Result<CollectorPollDirectHeapFieldWrite, EvalHeapError> {
+        self.validate_direct_heap_field_write_requests(write)?;
+
+        let record_index = self.record_index_for_reference_slot_object(write.writeback_object())?;
+        let record = &self.records[record_index];
+        self.validate_direct_heap_field_writeback_generation(write, record)?;
+
+        let edges = self.scan_record_edges(record)?;
+        let Some(edge) = edges.get(write.field_index()) else {
+            return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+                index: write.field_index(),
+                expected: write.source().clone(),
+                actual: None,
+            });
+        };
+        if edge.source() != write.source() {
+            return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+                index: write.field_index(),
+                expected: write.source().clone(),
+                actual: Some(edge.source().clone()),
+            });
+        }
+
+        let expected = ResolvedValueGeneration::Heap {
+            address: write.replacement_request().source(),
+            generation: HeapGeneration::Young,
+        };
+        let actual = self.resolved_generation_for_value(edge.value())?;
+        if actual != expected {
+            return Err(
+                EvalHeapError::CollectorPollDirectHeapFieldWriteValueMismatch {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    expected,
+                    actual,
+                },
+            );
+        }
+
+        let replacement_tag = edge.value().tag();
+        self.validate_collector_poll_minor_gc_object_body_binding(
+            write.replacement_request(),
+            replacement_tag,
+        )?;
+        self.validate_direct_heap_field_replacement_generation(write)?;
+        let replacement_value =
+            value_for_resolved_generation(replacement_tag, write.replacement())?;
+        validate_direct_heap_field_write_object_source(&record.object, write)?;
+
+        Ok(CollectorPollDirectHeapFieldWrite {
+            record_index,
+            writeback_object: write.writeback_object(),
+            field_index: write.field_index(),
+            source: write.source().clone(),
+            replacement: replacement_value,
+        })
+    }
+
+    #[cfg(test)]
+    fn stage_collector_poll_minor_gc_direct_heap_field_writes(
+        &self,
+        writes: &[CollectorPollDirectHeapFieldWrite],
+    ) -> Result<Vec<(usize, HeapObjectValue)>, EvalHeapError> {
+        let mut staged: Vec<(usize, HeapObjectValue)> = Vec::new();
+        staged.try_reserve_exact(writes.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries: writes.len(),
+            }
+        })?;
+
+        self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+            writes,
+            &mut staged,
+            writes.len(),
+        )?;
+
+        Ok(staged)
+    }
+
+    fn stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+        &self,
+        writes: &[CollectorPollDirectHeapFieldWrite],
+        staged: &mut Vec<(usize, HeapObjectValue)>,
+        entries: usize,
+    ) -> Result<(), EvalHeapError> {
+        for write in writes {
+            let object = self.staged_collector_poll_minor_gc_heap_field_write_object_mut(
+                staged,
+                write.record_index,
+                MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries,
+            )?;
+            *object =
+                record_owned_heap_field_write_object(object, &write.source, write.replacement)
+                    .map_err(|error| direct_heap_field_write_object_error(write, error))?;
+        }
+
+        Ok(())
+    }
+
+    fn staged_collector_poll_minor_gc_heap_field_write_object_mut<'a>(
+        &self,
+        staged: &'a mut Vec<(usize, HeapObjectValue)>,
+        record_index: usize,
+        table: &'static str,
+        entries: usize,
+    ) -> Result<&'a mut HeapObjectValue, EvalHeapError> {
+        if let Some(index) = staged
+            .iter()
+            .position(|(existing, _)| *existing == record_index)
+        {
+            return Ok(&mut staged[index].1);
+        }
+
+        staged.push((record_index, self.records[record_index].object.clone()));
+        let Some((_, object)) = staged.last_mut() else {
+            return Err(EvalHeapError::RootScanAllocationFailed { table, entries });
+        };
+        Ok(object)
+    }
+
+    fn commit_collector_poll_minor_gc_staged_heap_field_writes(
+        &mut self,
+        staged: Vec<(usize, HeapObjectValue)>,
+    ) {
+        for (record_index, object) in staged {
+            let record = &mut self.records[record_index];
+            record.object = object;
+            record.structural_hash = None;
+            record.value_hash.set(None);
+            record.captured_value_hash.set(None);
+        }
+    }
+
+    fn validate_direct_heap_field_write_requests(
+        &self,
+        write: &AllocationCollectorPollDirectHeapFieldWrite,
+    ) -> Result<(), EvalHeapError> {
+        let replacement_request = write.replacement_request();
+        let ResolvedValueGeneration::Heap {
+            address: replacement,
+            generation,
+        } = write.replacement()
+        else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcHeapFieldWritebackReplacementNonHeap {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    value: write.replacement(),
+                },
+            );
+        };
+        if replacement_request.destination() != replacement {
+            return Err(
+                EvalHeapError::BoundaryMinorGcHeapFieldWritebackWriteReplacementRequestDestinationMismatch {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    binding_replacement: replacement,
+                    request_destination: replacement_request.destination(),
+                },
+            );
+        }
+        let expected_generation =
+            validate_object_byte_copy_request_destination_generation(replacement_request)?;
+        if generation != expected_generation {
+            return Err(
+                EvalHeapError::BoundaryMinorGcHeapFieldWritebackReplacementGenerationMismatch {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    replacement,
+                    expected: expected_generation,
+                    actual: generation,
+                    action: replacement_request.action(),
+                },
+            );
+        }
+        if generation != HeapGeneration::Old {
+            return Err(
+                EvalHeapError::CollectorPollDirectHeapFieldWriteYoungReplacementUnsupported {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    replacement,
+                    generation,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_direct_heap_field_writeback_generation(
+        &self,
+        write: &AllocationCollectorPollDirectHeapFieldWrite,
+        record: &HeapRecord,
+    ) -> Result<(), EvalHeapError> {
+        let actual = generation_for_record(record);
+        if write.allocation_domain() != HeapAllocationDomain::Worker
+            || record.allocation_domain != HeapAllocationDomain::Worker
+            || actual != HeapGeneration::Old
+        {
+            return Err(
+                EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    expected: HeapGeneration::Old,
+                    actual,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_direct_heap_field_replacement_generation(
+        &self,
+        write: &AllocationCollectorPollDirectHeapFieldWrite,
+    ) -> Result<(), EvalHeapError> {
+        let ResolvedValueGeneration::Heap {
+            address: replacement,
+            generation: expected,
+        } = write.replacement()
+        else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcHeapFieldWritebackReplacementNonHeap {
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    value: write.replacement(),
+                },
+            );
+        };
+        let actual = self.generation_for_address(replacement, "heap-field replacement")?;
+        if actual != expected {
+            return Err(
+                EvalHeapError::CollectorPollDirectHeapFieldWriteReplacementGenerationMismatch {
                     writeback_object: write.writeback_object(),
                     field_index: write.field_index(),
                     field_source: write.source().clone(),
@@ -5497,6 +6011,16 @@ fn copied_heap_field_write_identity_matches(
         && left.source() == right.source()
 }
 
+fn direct_heap_field_write_identity_matches(
+    left: &AllocationCollectorPollDirectHeapFieldWrite,
+    right: &AllocationCollectorPollDirectHeapFieldWrite,
+) -> bool {
+    left.allocation_domain() == right.allocation_domain()
+        && left.writeback_object() == right.writeback_object()
+        && left.field_index() == right.field_index()
+        && left.source() == right.source()
+}
+
 fn validate_copied_heap_field_write_object_source(
     object: &HeapObjectValue,
     write: &AllocationCollectorPollCopiedHeapFieldWrite,
@@ -5520,32 +6044,71 @@ fn validate_copied_heap_field_write_object_source(
     }
 }
 
+fn validate_direct_heap_field_write_object_source(
+    object: &HeapObjectValue,
+    write: &AllocationCollectorPollDirectHeapFieldWrite,
+) -> Result<(), EvalHeapError> {
+    match (object, write.source()) {
+        (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
+        (
+            HeapObjectValue::Attrs { shape, .. },
+            HeapEdgeSource::AttrBinding {
+                shape: expected_shape,
+                ..
+            },
+        ) if shape == expected_shape => Ok(()),
+        _ => Err(
+            EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+                writeback_object: write.writeback_object(),
+                field_index: write.field_index(),
+                field_source: write.source().clone(),
+            },
+        ),
+    }
+}
+
 fn copied_heap_field_write_object_error(
     write: &CollectorPollCopiedHeapFieldWrite,
-    error: CopiedHeapFieldWriteObjectError,
+    error: RecordOwnedHeapFieldWriteObjectError,
 ) -> EvalHeapError {
     match error {
-        CopiedHeapFieldWriteObjectError::UnsupportedSource => {
+        RecordOwnedHeapFieldWriteObjectError::UnsupportedSource => {
             EvalHeapError::CollectorPollCopiedHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object,
                 field_index: write.field_index,
                 field_source: write.source.clone(),
             }
         }
-        CopiedHeapFieldWriteObjectError::Attr(source) => EvalHeapError::Attr(source),
+        RecordOwnedHeapFieldWriteObjectError::Attr(source) => EvalHeapError::Attr(source),
     }
 }
 
-fn copied_heap_field_write_object(
+fn direct_heap_field_write_object_error(
+    write: &CollectorPollDirectHeapFieldWrite,
+    error: RecordOwnedHeapFieldWriteObjectError,
+) -> EvalHeapError {
+    match error {
+        RecordOwnedHeapFieldWriteObjectError::UnsupportedSource => {
+            EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+                writeback_object: write.writeback_object,
+                field_index: write.field_index,
+                field_source: write.source.clone(),
+            }
+        }
+        RecordOwnedHeapFieldWriteObjectError::Attr(source) => EvalHeapError::Attr(source),
+    }
+}
+
+fn record_owned_heap_field_write_object(
     object: &HeapObjectValue,
     source: &HeapEdgeSource,
     replacement: Value,
-) -> Result<HeapObjectValue, CopiedHeapFieldWriteObjectError> {
+) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
     match (object, source) {
         (HeapObjectValue::List(list), HeapEdgeSource::ListElement { index }) => {
             let mut elements = list.clone().into_vec();
             let Some(slot) = elements.get_mut(*index) else {
-                return Err(CopiedHeapFieldWriteObjectError::UnsupportedSource);
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             *slot = replacement;
             Ok(HeapObjectValue::List(NixList::new(elements)))
@@ -5563,8 +6126,8 @@ fn copied_heap_field_write_object(
                 shape: *shape,
                 attrs,
             })
-            .map_err(CopiedHeapFieldWriteObjectError::Attr),
-        _ => Err(CopiedHeapFieldWriteObjectError::UnsupportedSource),
+            .map_err(RecordOwnedHeapFieldWriteObjectError::Attr),
+        _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
     }
 }
 

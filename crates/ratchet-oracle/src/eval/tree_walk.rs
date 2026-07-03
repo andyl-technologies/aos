@@ -46,10 +46,10 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollForwardingInstallReport,
-    AllocationCollectorPollHeapFieldWritebackSlot, AllocationCollectorPollMinorGcCommitBuffers,
-    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
-    AllocationCollectorPollMinorGcRelocationDestinations,
+    AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,
+    AllocationCollectorPollForwardingInstallReport, AllocationCollectorPollHeapFieldWritebackSlot,
+    AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,

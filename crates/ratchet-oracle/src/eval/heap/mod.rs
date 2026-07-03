@@ -46,7 +46,9 @@ pub use arena::{
     EvalHeapColdHashConsedAdviceReport, EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction,
     EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
-pub(crate) use roots::AllocationCollectorPollCopiedHeapFieldWrite;
+pub(crate) use roots::{
+    AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,
+};
 pub use roots::{
     AllocationCollectorPollForwardingInstallReport, AllocationCollectorPollForwardingValue,
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
@@ -1657,6 +1659,19 @@ pub enum EvalHeapError {
         /// The copied field source label.
         field_source: HeapEdgeSource,
     },
+    /// A direct heap-field write targets a field kind that is not record-owned.
+    #[error(
+        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not an old-generation record-owned list or attrset field",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollDirectHeapFieldWriteUnsupportedSource {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The direct field source label.
+        field_source: HeapEdgeSource,
+    },
     /// A copied heap-field write found a stale from-space field value.
     #[error(
         "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} expected {expected:?}, found {actual:?}",
@@ -1668,6 +1683,23 @@ pub enum EvalHeapError {
         /// The field index in precise scanner order.
         field_index: usize,
         /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The from-space field value expected before mutation.
+        expected: ResolvedValueGeneration,
+        /// The current field value.
+        actual: ResolvedValueGeneration,
+    },
+    /// A direct heap-field write found a stale from-space field value.
+    #[error(
+        "collector-poll minor-GC direct heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} expected {expected:?}, found {actual:?}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollDirectHeapFieldWriteValueMismatch {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The direct field source label.
         field_source: HeapEdgeSource,
         /// The from-space field value expected before mutation.
         expected: ResolvedValueGeneration,
@@ -1687,6 +1719,39 @@ pub enum EvalHeapError {
         /// The current heap-record generation.
         actual: HeapGeneration,
     },
+    /// A direct heap-field writeback object is not an old-generation worker object.
+    #[error(
+        "collector-poll minor-GC direct heap-field writeback object 0x{writeback_object:x} from {allocation_domain:?} has generation {actual:?}, expected {expected:?}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+        /// The allocator domain recorded by the write plan.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The generation required for direct in-place mutation.
+        expected: HeapGeneration,
+        /// The current heap-record generation.
+        actual: HeapGeneration,
+    },
+    /// A direct heap-field replacement would keep an old-to-young edge live.
+    #[error(
+        "collector-poll minor-GC direct heap-field replacement 0x{replacement:x} for 0x{writeback_object:x}[{field_index}] {field_source:?} has generation {generation:?}; direct writes currently require promoted-old replacements",
+        replacement = replacement.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollDirectHeapFieldWriteYoungReplacementUnsupported {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The direct field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address.
+        replacement: GcHeapAddress,
+        /// The replacement generation carried by the write plan.
+        generation: HeapGeneration,
+    },
     /// A copied heap-field replacement object has not received its destination generation.
     #[error(
         "collector-poll minor-GC copied heap-field replacement 0x{replacement:x} for 0x{writeback_object:x}[{field_index}] {field_source:?} has generation {actual:?}, expected {expected:?}",
@@ -1699,6 +1764,26 @@ pub enum EvalHeapError {
         /// The field index in precise scanner order.
         field_index: usize,
         /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address.
+        replacement: GcHeapAddress,
+        /// The generation carried by the write plan.
+        expected: HeapGeneration,
+        /// The current heap-record generation.
+        actual: HeapGeneration,
+    },
+    /// A direct heap-field replacement object has not received its destination generation.
+    #[error(
+        "collector-poll minor-GC direct heap-field replacement 0x{replacement:x} for 0x{writeback_object:x}[{field_index}] {field_source:?} has generation {actual:?}, expected {expected:?}",
+        replacement = replacement.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollDirectHeapFieldWriteReplacementGenerationMismatch {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The direct field source label.
         field_source: HeapEdgeSource,
         /// The replacement destination address.
         replacement: GcHeapAddress,

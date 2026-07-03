@@ -88,6 +88,16 @@ fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocati
     record.generation = initial_generation_for_allocation_domain(domain);
 }
 
+fn set_heap_generation(heap: &mut EvalHeap, value: Value, generation: HeapGeneration) {
+    let address = gc_address(value);
+    let record = heap
+        .records
+        .iter_mut()
+        .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+        .expect("heap record exists");
+    record.generation = generation;
+}
+
 fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
     let address = gc_address(value);
     heap.records
@@ -5029,6 +5039,577 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() 
             .expect("rewritten binding exists")
             .raw_eq(child_destination)
     );
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct old list field write applies");
+
+    assert_eq!(report.fields(), 1);
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(
+        list.get(0)
+            .expect("rewritten element exists")
+            .raw_eq(child_destination)
+    );
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_attr_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"name").expect("symbol interns");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent_attrs =
+        FlatAttrs::new(vec![AttrEntry::new(key, child)], &symbols).expect("attrs build");
+    let parent = heap
+        .alloc_attrs(0, parent_attrs)
+        .expect("parent attrs allocate");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::AttrBinding {
+            shape: 0,
+            slot: 0,
+            key,
+        },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct old attr field write applies");
+
+    assert_eq!(report.fields(), 1);
+    let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
+    assert!(
+        attrs
+            .get(key)
+            .expect("rewritten binding exists")
+            .raw_eq(child_destination)
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_without_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let stale_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("stale child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(3),
+            FrameId::new(3),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![stale_child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("stale old field is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteValueMismatch {
+            writeback_object,
+            field_index: 0,
+            field_source,
+            expected,
+            actual,
+        } if writeback_object == gc_address(parent)
+            && field_source == (HeapEdgeSource::ListElement { index: 0 })
+            && expected == (ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            })
+            && actual == (ResolvedValueGeneration::Heap {
+                address: gc_address(stale_child),
+                generation: HeapGeneration::Young,
+            })
+    ));
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(
+        list.get(0)
+            .expect("original element exists")
+            .raw_eq(stale_child)
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_permanent_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::PermanentShared);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::PermanentShared,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Old,
+        },
+        child_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("permanent in-place field write is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+            allocation_domain: HeapAllocationDomain::PermanentShared,
+            writeback_object,
+            expected: HeapGeneration::Old,
+            actual: HeapGeneration::Permanent,
+        } if writeback_object == gc_address(parent)
+    ));
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(list.get(0).expect("original element exists").raw_eq(child));
+}
+
+#[test]
+fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    let first_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("first child lambda allocates");
+    let second_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("second child lambda allocates");
+    let first_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(3),
+            FrameId::new(3),
+            EvalEnv::default(),
+        ))
+        .expect("first destination lambda allocates");
+    let second_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(4),
+            FrameId::new(4),
+            EvalEnv::default(),
+        ))
+        .expect("second destination lambda allocates");
+    let copied_source_parent = heap
+        .alloc_list(NixList::new(vec![first_child, Value::int(0)]))
+        .expect("copied source parent list allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![first_child, second_child]))
+        .expect("parent list allocates");
+    replace_list_record(
+        &mut heap,
+        copied_source_parent,
+        NixList::new(vec![first_child, second_child]),
+    );
+    set_allocation_domain(
+        &mut heap,
+        copied_source_parent,
+        HeapAllocationDomain::Worker,
+    );
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        copied_source_parent,
+        parent,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let first_request = object_copy_request_for_values(
+        &heap,
+        first_child,
+        first_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let second_request = object_copy_request_for_values(
+        &heap,
+        second_child,
+        second_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        first_request,
+        second_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let copied_write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(copied_source_parent),
+        gc_address(parent),
+        1,
+        HeapEdgeSource::ListElement { index: 1 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(second_destination),
+            generation: HeapGeneration::Old,
+        },
+        second_request,
+        parent_request,
+    );
+    let direct_write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(first_destination),
+            generation: HeapGeneration::Old,
+        },
+        first_request,
+    );
+
+    let (copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_heap_field_writes(&[copied_write], &[direct_write])
+        .expect("mixed same-record heap field writes apply");
+
+    assert_eq!(copied_report.fields(), 1);
+    assert_eq!(direct_report.fields(), 1);
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(
+        list.get(0)
+            .expect("first rewritten element exists")
+            .raw_eq(first_destination)
+    );
+    assert!(
+        list.get(1)
+            .expect("second rewritten element exists")
+            .raw_eq(second_destination)
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_heap_field_writes_reject_cross_branch_malformed_request_set() {
+    let mut heap = EvalHeap::new();
+    let parent_source = static_gc_address(0x1000_0000);
+    let parent_destination = static_gc_address(0x2000_0000);
+    let copied_child = static_gc_address(0x3000_0000);
+    let direct_child = static_gc_address(0x4000_0000);
+    let shared_child_destination = static_gc_address(0x5000_0000);
+    let parent_request = AllocationCollectorPollObjectByteCopyRequest::for_test(
+        parent_source,
+        parent_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+        HeapGeneration::Old,
+        16,
+        8,
+    );
+    let copied_child_request = AllocationCollectorPollObjectByteCopyRequest::for_test(
+        copied_child,
+        shared_child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+        HeapGeneration::Old,
+        24,
+        8,
+    );
+    let direct_child_request = AllocationCollectorPollObjectByteCopyRequest::for_test(
+        direct_child,
+        shared_child_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+        HeapGeneration::Old,
+        24,
+        8,
+    );
+    let copied_write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        parent_source,
+        parent_destination,
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: shared_child_destination,
+            generation: HeapGeneration::Old,
+        },
+        copied_child_request,
+        parent_request,
+    );
+    let direct_write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        parent_destination,
+        1,
+        HeapEdgeSource::ListElement { index: 1 },
+        ResolvedValueGeneration::Heap {
+            address: shared_child_destination,
+            generation: HeapGeneration::Old,
+        },
+        direct_child_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_heap_field_writes(&[copied_write], &[direct_write])
+        .expect_err("cross-branch duplicate destination rejects before heap mutation");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollObjectGenerationWriteDuplicateDestination {
+            index: 2,
+            source_address: direct_child,
+            existing_source_address: copied_child,
+            destination: shared_child_destination,
+        }
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_without_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("child lambda allocates");
+    let child_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("child destination lambda allocates");
+    let parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("parent list allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let child_request = object_copy_request_for_values(
+        &heap,
+        child,
+        child_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child_destination),
+            generation: HeapGeneration::Young,
+        },
+        child_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("direct old-to-young field write is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteYoungReplacementUnsupported {
+            writeback_object,
+            field_index: 0,
+            field_source,
+            replacement,
+            generation: HeapGeneration::Young,
+        } if writeback_object == gc_address(parent)
+            && field_source == (HeapEdgeSource::ListElement { index: 0 })
+            && replacement == gc_address(child_destination)
+    ));
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(list.get(0).expect("original element exists").raw_eq(child));
 }
 
 #[test]
