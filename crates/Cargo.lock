@@ -1573,6 +1573,7 @@ name = "crucible-cas"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror",
 ]

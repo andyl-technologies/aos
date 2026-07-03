@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+rustix = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

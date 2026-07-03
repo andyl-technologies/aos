@@ -276,6 +276,7 @@
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
       fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;
+      campaignManifestGate = crucibleChecks.phase7.crucibleCampaignManifest;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -292,6 +293,7 @@
           sharedDagStoreGate
           frontierLeaseGate
           fourLayerDedupGate
+          campaignManifestGate
         ];
 
         phases = [
@@ -331,6 +333,17 @@
               grep -q '^coverage_map_repair=entry-markers-before-fingerprint$' "$four_layer_dedup_result"
               grep -q '^reduction_fingerprint=shared-prune$' "$four_layer_dedup_result"
 
+              campaign_manifest_result="${campaignManifestGate}/result"
+              grep -q '^PASS$' "$campaign_manifest_result"
+              grep -q '^tasks=T-DCE-4$' "$campaign_manifest_result"
+              grep -q '^campaign_manifest=content-addressed$' "$campaign_manifest_result"
+              grep -q '^campaign_head=cas-advanced$' "$campaign_manifest_result"
+              grep -q '^campaign_head_lock=advisory-head-file$' "$campaign_manifest_result"
+              grep -q '^campaign_head_log=append-only-checksummed$' "$campaign_manifest_result"
+              grep -q '^manifest_root_objects=required$' "$campaign_manifest_result"
+              grep -q '^lost_cas=bookkeeping-only$' "$campaign_manifest_result"
+              grep -q '^merge_roots=materialized-objects$' "$campaign_manifest_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -356,6 +369,16 @@
               grep -q '^coverage_map_duplicate=skipped$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^reduction_fingerprint=shared-prune$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^claim_set_anti_redundancy=unclaimed-first$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_store=persistent-dagstore$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_manifest=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_head=cas-advanced$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_head_lock=advisory-head-file$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_head_log=append-only-checksummed$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^manifest_head_only_mutable=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^manifest_root_objects=required$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^lost_cas=bookkeeping-only$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^read_merge_retry=enabled$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^merge_roots=materialized-objects$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -369,6 +392,7 @@
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
               frontier_lease_gate_result=${frontierLeaseGate}/result
               four_layer_dedup_gate_result=${fourLayerDedupGate}/result
+              campaign_manifest_gate_result=${campaignManifestGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -399,6 +423,16 @@
               coverage_map_duplicate=skipped
               reduction_fingerprint=shared-prune
               claim_set_anti_redundancy=unclaimed-first
+              campaign_store=persistent-dagstore
+              campaign_manifest=content-addressed
+              campaign_head=cas-advanced
+              campaign_head_lock=advisory-head-file
+              campaign_head_log=append-only-checksummed
+              manifest_head_only_mutable=true
+              manifest_root_objects=required
+              lost_cas=bookkeeping-only
+              read_merge_retry=enabled
+              merge_roots=materialized-objects
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

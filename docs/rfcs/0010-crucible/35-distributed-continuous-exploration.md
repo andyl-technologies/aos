@@ -284,21 +284,28 @@ manifest is a tiny ref that points at:
   bookkeeping — the nodes it would have named are independently re-discoverable.
 ```
 
-Each field is itself a content hash of an immutable object, so the manifest is a
-~few-hundred-byte mutable ref over an entirely immutable graph. Advancing the
-campaign is a **compare-and-swap** on this head (§35.5). A lost CAS update (two
-runs advancing the head concurrently) loses only the bookkeeping of *which* roots
-were named — the underlying nodes, findings, and corpus entries are already in
-the content-addressed store and are independently re-discoverable, so a lost head
+The corpus, coverage-map, and findings roots are content hashes of immutable
+objects; the genesis pin is the content hash of the baked checkpoint; and the
+provenance triple is immutable manifest data. The manifest is a ~few-hundred-byte
+mutable ref over an otherwise immutable graph. Advancing the campaign is a
+**compare-and-swap** on this head (§35.5). The head path itself may be protected
+by an advisory lock while it is read or advanced; no separate durable campaign
+lock object is required. A lost CAS update (two runs advancing the head
+concurrently) loses only the bookkeeping of *which* roots were named — the
+underlying nodes, findings, and corpus entries are already in the
+content-addressed store and are independently re-discoverable, so a lost head
 update never loses a finding (§35.4, §35.5).
 
 - **[DCE-9]** A campaign MUST be a persistent `DagStore` instance (07 §7) plus a
   small **campaign manifest**: a mutable head pointer naming the campaign's
   `corpus_root`, `coverage_map_root`, `findings_root`, `genesis_pin`, and
-  `provenance` triple (§35.6), each itself a content hash of an immutable object.
-  The manifest head MUST be the **only mutable, non-content-addressed object** in
-  Crucible; everything it names MUST be immutable and content-addressed (07
-  [TEMP-4], [INV-6]). *Gate:* `gate:content-address`, `gate:campaign-continuity`.
+  `provenance` triple (§35.6). The corpus, coverage-map, and findings roots MUST
+  each be a content hash of an immutable object. The manifest head MUST be the
+  **only mutable, non-content-addressed object** in Crucible; implementations may
+  serialize CAS by advisory-locking the head path itself, but MUST NOT add a
+  second durable mutable campaign object. Everything the head names MUST be
+  immutable and content-addressed (07 [TEMP-4], [INV-6]). *Gate:*
+  `gate:content-address`, `gate:campaign-continuity`.
   *Spec:* §35.3.1; cross-ref 07 §7, §35.5.
 
 - **[DCE-10]** The campaign head MUST be advanced by **compare-and-swap** (§35.5).
@@ -995,11 +1002,25 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     anti-redundancy sends a second host to an unleased frontier node.
     Full single-host-vs-fleet equivalence and divergence localization remain
     T-DCE-8.
-- [ ] **T-DCE-4** Implement the persistent campaign store + the CAS-advanced
+- [x] **T-DCE-4** Implement the persistent campaign store + the CAS-advanced
   campaign manifest (the only mutable, non-content-addressed object) naming
   corpus/coverage/findings roots, genesis pin, and provenance, with read-merge-retry
   CAS and lost-update-loses-only-bookkeeping. — satisfies [DCE-9], [DCE-10],
   [DCE-23]; spec §35.3.1, §35.5.2.
+  - Completed by `checks.crucible.phase7.crucibleCampaignManifest`: `crucible-cas`
+    now exposes `SharedCampaignStore`, `CampaignManifest`, `CampaignProvenance`,
+    `CampaignHead`, and `CampaignCasOutcome`. Campaign manifests are persisted as
+    immutable `SharedDagStore` objects, while `campaign-head` is the single durable
+    mutable ref; head CAS is serialized by an advisory lock on that same file and
+    recorded as an append-only checksummed head log so a torn final entry preserves
+    the previous valid head.
+    The packaged `crucible-fleet-store probe` proves manifest identity is
+    content-addressed across store roots, stale CAS attempts retain their proposed
+    manifest objects, and read-merge-retry writes immutable merge-root records for
+    corpus, coverage, and findings before advancing a manifest without changing
+    genesis pin or provenance.
+    Corpus seeding, monotone accumulated coverage, and the findings ledger remain
+    T-DCE-5/T-DCE-9.
 - [ ] **T-DCE-5** Implement seeding run N+1 from the prior corpus (each entry a
   self-contained artifact replaying bit-identically) and the grow-only accumulated
   coverage map (union CRDT) driving the monotone continuous coverage ratchet, plus

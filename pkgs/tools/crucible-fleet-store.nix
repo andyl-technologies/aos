@@ -54,6 +54,16 @@ in
       grep -q '^coverage_map_duplicate=skipped$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^reduction_fingerprint=shared-prune$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^claim_set_anti_redundancy=unclaimed-first$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_store=persistent-dagstore$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_manifest=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_head=cas-advanced$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_head_lock=advisory-head-file$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_head_log=append-only-checksummed$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^manifest_head_only_mutable=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^manifest_root_objects=required$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^lost_cas=bookkeeping-only$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^read_merge_retry=enabled$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^merge_roots=materialized-objects$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -71,12 +81,19 @@ in
       dce_task=T-DCE-1
       dce_claim_lease_task=T-DCE-2
       dce_four_layer_dedup_task=T-DCE-3
+      dce_campaign_manifest_task=T-DCE-4
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable
       soft_hash_affinity=priority-only
       four_layer_dedup=exists,coverage-map,reduction-fingerprint,claim-set
       coverage_map_repair=entry-markers-before-fingerprint
+      campaign_manifest=content-addressed
+      campaign_head=cas-advanced
+      campaign_head_lock=advisory-head-file
+      campaign_head_log=append-only-checksummed
+      manifest_root_objects=required
+      merge_roots=materialized-objects
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"
