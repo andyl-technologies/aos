@@ -59,6 +59,8 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         gc_stress_boundary_scans: EvalGcStressBoundaryScans::default(),
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:

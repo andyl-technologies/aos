@@ -749,6 +749,14 @@ pub enum EvalHeapError {
         /// The number of previously installed reference-writeback slots.
         existing: usize,
     },
+    /// Boundary live forwarding destination bindings have already been installed.
+    #[error(
+        "boundary minor-GC live forwarding destination bindings already contain {existing} binding records"
+    )]
+    BoundaryMinorGcLiveForwardingDestinationBindingsAlreadyInstalled {
+        /// The number of previously installed forwarding destination bindings.
+        existing: usize,
+    },
     /// Boundary live writeback destination bindings have already been installed.
     #[error(
         "boundary minor-GC live writeback destination bindings already contain {existing} binding records"

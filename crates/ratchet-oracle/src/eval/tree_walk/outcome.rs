@@ -1237,6 +1237,106 @@ impl EvalGcStressBoundaryMinorGcLiveObjectGenerations {
     }
 }
 
+/// Outcome-owned forwarding destination-binding installation counts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+    bindings: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+    const fn new(bindings: usize) -> Self {
+        Self { bindings }
+    }
+
+    /// Returns how many forwarding destination bindings were installed.
+    pub const fn bindings(self) -> usize {
+        self.bindings
+    }
+}
+
+/// Outcome-owned forwarding-to-destination binding metadata.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings {
+    install_report: EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+    forwarding_destination_bindings: Vec<EvalGcStressBoundaryMinorGcForwardingDestinationBinding>,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings {
+    fn can_install(
+        &self,
+        install_report: EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+    ) -> Result<(), EvalHeapError> {
+        if install_report.bindings() != 0 && !self.forwarding_destination_bindings.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveForwardingDestinationBindingsAlreadyInstalled {
+                    existing: self.forwarding_destination_bindings.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn install(
+        &mut self,
+        forwarding_destination_bindings: Vec<
+            EvalGcStressBoundaryMinorGcForwardingDestinationBinding,
+        >,
+    ) -> Result<
+        EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+        EvalHeapError,
+    > {
+        if forwarding_destination_bindings.is_empty() {
+            return Ok(
+                EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport::default(),
+            );
+        }
+        let install_report =
+            live_forwarding_destination_binding_install_report(&forwarding_destination_bindings);
+        self.can_install(install_report)?;
+        self.install_prevalidated(forwarding_destination_bindings, install_report);
+        Ok(install_report)
+    }
+
+    fn install_prevalidated(
+        &mut self,
+        forwarding_destination_bindings: Vec<
+            EvalGcStressBoundaryMinorGcForwardingDestinationBinding,
+        >,
+        install_report: EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+    ) {
+        if install_report.bindings() == 0 {
+            return;
+        }
+
+        self.forwarding_destination_bindings = forwarding_destination_bindings;
+        self.install_report = install_report;
+    }
+
+    /// Returns whether no forwarding destination-binding metadata is installed.
+    pub fn is_empty(&self) -> bool {
+        self.forwarding_destination_bindings.is_empty()
+    }
+
+    /// Returns how many forwarding destination-binding records are installed.
+    pub fn len(&self) -> usize {
+        self.forwarding_destination_bindings.len()
+    }
+
+    /// Returns the install report for the forwarding destination bindings.
+    pub const fn install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+        self.install_report
+    }
+
+    /// Returns installed forwarding destination-binding records.
+    pub fn forwarding_destination_bindings(
+        &self,
+    ) -> &[EvalGcStressBoundaryMinorGcForwardingDestinationBinding] {
+        &self.forwarding_destination_bindings
+    }
+}
+
 /// A destination byte snapshot matched to its future object generation.
 ///
 /// The binding is validation metadata for a future object-generation writer. It
@@ -1828,6 +1928,14 @@ fn live_object_generation_install_report(
         report.record(generation);
     }
     report
+}
+
+fn live_forwarding_destination_binding_install_report(
+    forwarding_destination_bindings: &[EvalGcStressBoundaryMinorGcForwardingDestinationBinding],
+) -> EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+    EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport::new(
+        forwarding_destination_bindings.len(),
+    )
 }
 
 fn live_reference_writeback_install_report(
@@ -4420,6 +4528,51 @@ impl EvalGcStressBoundaryMinorGcLiveForwardingCommitDryRun {
     }
 }
 
+/// Boundary commit dry run plus outcome-owned forwarding binding installation.
+///
+/// This report preserves the owned dry-run artifacts and records
+/// forwarding-to-destination metadata installed into [`EvalOutcome`]. It is a
+/// GC-stress bridge only: it does not write ABI object headers, bind payload
+/// bytes to live object bodies, mutate heap-record object generations, or
+/// manage semispaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingCommitDryRun {
+    dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+    forwarding_destination_binding_install_report:
+        EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingCommitDryRun {
+    const fn new(
+        dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
+        forwarding_destination_binding_install_report:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
+    ) -> Self {
+        Self {
+            dry_run,
+            forwarding_destination_binding_install_report,
+        }
+    }
+
+    /// Returns the owned dry run that gated forwarding binding installation.
+    pub const fn dry_run(&self) -> &EvalGcStressBoundaryMinorGcCommitDryRun {
+        &self.dry_run
+    }
+
+    /// Returns the live forwarding destination-binding installation report.
+    pub const fn forwarding_destination_binding_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+        self.forwarding_destination_binding_install_report
+    }
+
+    /// Returns how many forwarding destination bindings were installed.
+    pub const fn forwarding_destination_bindings_installed(&self) -> usize {
+        self.forwarding_destination_binding_install_report
+            .bindings()
+    }
+}
+
 /// Boundary commit dry run plus outcome-owned destination-byte installation.
 ///
 /// This report preserves the owned dry-run artifacts and records the object
@@ -4658,18 +4811,20 @@ impl EvalGcStressBoundaryMinorGcLiveRememberedSetCommitDryRun {
 /// This report preserves the owned dry-run artifacts and records the live
 /// metadata installed into [`EvalOutcome`] after all derived side-table payloads
 /// validated against the same dry run. It installs evaluator forwarding
-/// side-table values, destination-byte snapshots, reference-writeback metadata,
-/// object-generation metadata, writeback destination-binding metadata, the
-/// merged next remembered set, and the daemon card-table clear together. It
-/// also validates destination generation, forwarding-destination, and root/
-/// heap-field writeback destination bindings before the first live metadata
-/// mutation. It still does not mutate live root variables, heap fields, object
-/// bytes, ABI forwarding headers, evaluator heap-record generations, or
-/// semispace pages.
+/// side-table values, forwarding-destination binding metadata, destination-byte
+/// snapshots, reference-writeback metadata, object-generation metadata,
+/// writeback destination-binding metadata, the merged next remembered set, and
+/// the daemon card-table clear together. It also validates destination
+/// generation, forwarding-destination, and root/heap-field writeback destination
+/// bindings before the first live metadata mutation. It still does not mutate
+/// live root variables, heap fields, object bytes, ABI forwarding headers,
+/// evaluator heap-record generations, or semispace pages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
     forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+    forwarding_destination_binding_install_report:
+        EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
     destination_storage_install_report:
         EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
     object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
@@ -4685,6 +4840,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     const fn new(
         dry_run: EvalGcStressBoundaryMinorGcCommitDryRun,
         forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+        forwarding_destination_binding_install_report: EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport,
         destination_storage_install_report: EvalGcStressBoundaryMinorGcLiveDestinationStorageInstallReport,
         object_generation_install_report: EvalGcStressBoundaryMinorGcLiveObjectGenerationInstallReport,
         reference_writeback_install_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackInstallReport,
@@ -4695,6 +4851,7 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
         Self {
             dry_run,
             forwarding_install_report,
+            forwarding_destination_binding_install_report,
             destination_storage_install_report,
             object_generation_install_report,
             reference_writeback_install_report,
@@ -4719,6 +4876,19 @@ impl EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun {
     /// Returns how many live side-table forwarding values were installed.
     pub const fn forwarding_pointers_installed(&self) -> usize {
         self.forwarding_install_report.forwarding_pointers()
+    }
+
+    /// Returns the live forwarding destination-binding installation report.
+    pub const fn forwarding_destination_binding_install_report(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingInstallReport {
+        self.forwarding_destination_binding_install_report
+    }
+
+    /// Returns how many forwarding destination bindings were installed.
+    pub const fn forwarding_destination_bindings_installed(&self) -> usize {
+        self.forwarding_destination_binding_install_report
+            .bindings()
     }
 
     /// Returns the live destination-byte installation report.
@@ -5214,6 +5384,8 @@ pub struct EvalOutcome {
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
     pub(crate) gc_stress_boundary_minor_gc_reference_writebacks:
         EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
+    pub(crate) gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+        EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings,
     pub(crate) gc_stress_boundary_minor_gc_destination_storage:
         EvalGcStressBoundaryMinorGcLiveDestinationStorage,
     pub(crate) gc_stress_boundary_minor_gc_object_generations:
@@ -5257,6 +5429,10 @@ impl std::fmt::Debug for EvalOutcome {
             .field(
                 "gc_stress_boundary_minor_gc_reference_writebacks",
                 &self.gc_stress_boundary_minor_gc_reference_writebacks,
+            )
+            .field(
+                "gc_stress_boundary_minor_gc_forwarding_destination_bindings",
+                &self.gc_stress_boundary_minor_gc_forwarding_destination_bindings,
             )
             .field(
                 "gc_stress_boundary_minor_gc_destination_storage",
@@ -5385,6 +5561,17 @@ impl EvalOutcome {
         &self,
     ) -> &EvalGcStressBoundaryMinorGcLiveReferenceWritebacks {
         &self.gc_stress_boundary_minor_gc_reference_writebacks
+    }
+
+    /// Returns outcome-owned forwarding destination bindings installed by live dry runs.
+    ///
+    /// These records are GC-stress bridge metadata. They bind planned
+    /// forwarding values to destination-byte snapshots, but they are not ABI
+    /// object headers and ordinary evaluation does not read them.
+    pub const fn gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings {
+        &self.gc_stress_boundary_minor_gc_forwarding_destination_bindings
     }
 
     /// Returns outcome-owned destination byte snapshots installed by live dry runs.
@@ -5758,6 +5945,61 @@ impl EvalOutcome {
         ))
     }
 
+    /// Runs a boundary dry run and installs forwarding destination bindings.
+    ///
+    /// The method derives the same owned commit dry run as
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run`], validates sibling
+    /// survivor relocations, merges destination-byte snapshots, matches the
+    /// planned forwarding values to those snapshots, and installs the resulting
+    /// binding records into outcome-owned metadata. Empty boundaries, or
+    /// non-empty boundaries with no copied/promoted survivors, leave the side
+    /// table unchanged.
+    ///
+    /// This is a live forwarding destination-binding metadata bridge for
+    /// GC-stress experiments, not a full collector commit. It does not install
+    /// forwarding slots, write ABI object headers, bind bytes to live object
+    /// bodies, mutate heap-record object generations, reserve semispace storage,
+    /// or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
+    /// buffer application fails, if sibling applications do not form one
+    /// coherent survivor relocation map, if forwarding values do not match the
+    /// merged destination snapshots, or if forwarding destination-binding
+    /// metadata has already been installed for this outcome. When an error is
+    /// returned, the forwarding destination-binding side table is left
+    /// unchanged.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<
+        EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingCommitDryRun,
+        EvalHeapError,
+    > {
+        let dry_run = self.gc_stress_boundary_minor_gc_commit_dry_run(promotion_policy, bases)?;
+        let forwarding_slots =
+            boundary_minor_gc_merged_forwarding_slots(dry_run.commit_applications())?;
+        let object_bytes =
+            boundary_minor_gc_merged_destination_object_bytes(dry_run.commit_applications())?;
+        let forwarding_destination_bindings =
+            boundary_minor_gc_forwarding_destination_bindings_from_slots(
+                &forwarding_slots,
+                &object_bytes,
+            )?;
+        let forwarding_destination_binding_install_report = self
+            .gc_stress_boundary_minor_gc_forwarding_destination_bindings
+            .install(forwarding_destination_bindings)?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindingCommitDryRun::new(
+                dry_run,
+                forwarding_destination_binding_install_report,
+            ),
+        )
+    }
+
     /// Runs a boundary dry run and installs outcome-owned destination bytes.
     ///
     /// The method derives the same owned commit dry run as
@@ -5964,11 +6206,11 @@ impl EvalOutcome {
     /// combined installed and planned forwarding cells, reference-writeback
     /// metadata, root/heap-field destination bindings, remembered-set
     /// publication, and live forwarding slots. After those checks pass, it
-    /// installs evaluator side-table forwarding values, destination-byte
-    /// snapshots, object-generation metadata, reference-writeback metadata,
-    /// writeback destination-binding metadata, the merged next remembered set,
-    /// and clears the daemon card table. Empty boundaries leave the outcome
-    /// unchanged.
+    /// installs evaluator side-table forwarding values, forwarding-destination
+    /// binding metadata, destination-byte snapshots, object-generation metadata,
+    /// reference-writeback metadata, writeback destination-binding metadata, the
+    /// merged next remembered set, and clears the daemon card table. Empty
+    /// boundaries leave the outcome unchanged.
     ///
     /// This is a staged live-metadata bridge for GC-stress experiments, not a
     /// full collector commit. It does not mutate live root variables, heap
@@ -5980,17 +6222,18 @@ impl EvalOutcome {
     /// Returns [`EvalHeapError`] if boundary commit dry-run derivation or owned
     /// buffer application fails, if sibling applications do not form one
     /// coherent survivor relocation map, if destination-byte snapshots or
-    /// object-generation, reference-writeback, or writeback destination-binding
-    /// metadata have already been installed, if remembered set publication
-    /// cannot be merged, if destination generation or writeback destination
-    /// bindings do not match the dry-run destination snapshots, if the combined
-    /// installed and planned forwarding cells do not match the final destination
-    /// snapshot view, or if forwarding installation fails.
+    /// forwarding-destination, object-generation, reference-writeback, or
+    /// writeback destination-binding metadata have already been installed, if
+    /// remembered set publication cannot be merged, if destination generation or
+    /// writeback destination bindings do not match the dry-run destination
+    /// snapshots, if the combined installed and planned forwarding cells do not
+    /// match the final destination snapshot view, or if forwarding installation
+    /// fails.
     /// All installable side-table payloads are validated before the first live
-    /// mutation; if forwarding installation fails, destination storage,
-    /// object-generation metadata, reference-writeback metadata, writeback
-    /// destination-binding metadata, remembered-set state, and card-table state
-    /// are left unchanged.
+    /// mutation; if forwarding installation fails, forwarding-destination
+    /// binding metadata, destination storage, object-generation metadata,
+    /// reference-writeback metadata, writeback destination-binding metadata,
+    /// remembered-set state, and card-table state are left unchanged.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
         &mut self,
         promotion_policy: MinorGcPromotionPolicy,
@@ -6023,6 +6266,15 @@ impl EvalOutcome {
                 &forwarding_slots,
                 forwarding_destination_objects,
             )?;
+        let forwarding_destination_bindings =
+            boundary_minor_gc_forwarding_destination_bindings_from_slots(
+                &forwarding_slots,
+                &object_bytes,
+            )?;
+        let forwarding_destination_binding_install_report =
+            live_forwarding_destination_binding_install_report(&forwarding_destination_bindings);
+        self.gc_stress_boundary_minor_gc_forwarding_destination_bindings
+            .can_install(forwarding_destination_binding_install_report)?;
         let writebacks =
             clone_boundary_reference_writeback_applications(dry_run.reference_writebacks())?;
         let reference_writeback_install_report =
@@ -6057,6 +6309,11 @@ impl EvalOutcome {
 
         self.gc_stress_boundary_minor_gc_destination_storage
             .install_prevalidated(object_bytes, destination_storage_install_report);
+        self.gc_stress_boundary_minor_gc_forwarding_destination_bindings
+            .install_prevalidated(
+                forwarding_destination_bindings,
+                forwarding_destination_binding_install_report,
+            );
         self.gc_stress_boundary_minor_gc_object_generations
             .install_prevalidated(object_generations, object_generation_install_report);
         self.gc_stress_boundary_minor_gc_reference_writebacks
@@ -6078,6 +6335,7 @@ impl EvalOutcome {
         Ok(EvalGcStressBoundaryMinorGcLiveMetadataCommitDryRun::new(
             dry_run,
             forwarding_install_report,
+            forwarding_destination_binding_install_report,
             destination_storage_install_report,
             object_generation_install_report,
             reference_writeback_install_report,

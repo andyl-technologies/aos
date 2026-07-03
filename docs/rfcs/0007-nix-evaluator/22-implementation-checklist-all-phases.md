@@ -5856,6 +5856,22 @@ and helps the oracle directly.
       object-header forwarding writes, real heap-record object-generation
       mutation, semispace ownership, remembered-source field mutation, and
       Tier-B dispatch remain open.
+- [x] Current boundary live forwarding-destination binding side-table bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings`
+      derives the same owned boundary commit dry run, validates sibling
+      worker/permanent applications through the shared raw relocation-map
+      coherence checks, merges destination object-copy snapshots, matches the
+      planned forwarding values to those snapshots, and installs the resulting
+      forwarding-to-destination records into an outcome-owned side table.
+      Empty/no-survivor boundaries leave the side table unchanged, and repeat
+      installs reject without partial mutation. Unit tests cover copied-young
+      planned binding installation without mutating heap forwarding cells,
+      repeat-install rejection/no-mutation, all-in-one live metadata
+      installation and atomicity, and empty-boundary no-op behavior. This is
+      still not a full live collector commit: installed bindings are not ABI
+      object headers or live heap-object bodies, and live root/field mutation,
+      real ABI object-header forwarding writes, remembered-source field
+      mutation, and Tier-B dispatch remain open.
 - [x] Current boundary live destination-byte side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       derives the same owned boundary commit dry run, verifies sibling
@@ -6520,7 +6536,10 @@ and helps the oracle directly.
       sibling worker/permanent next sets when both tiers produced applications;
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots`
       installs evaluator-owned side-table forwarding values after the same dry
-      run; and
+      run;
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings`
+      installs outcome-owned forwarding-to-destination binding metadata from the
+      same validated planned forwarding values and destination snapshots; and
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage`
       installs deduplicated outcome-owned destination-byte snapshots from the
       same validated commit applications.
@@ -6531,9 +6550,10 @@ and helps the oracle directly.
       installs outcome-owned root/heap-field destination-binding metadata from
       the same validated writeback and destination snapshots.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata`
-      stages forwarding, destination-byte, outcome-owned object-generation
-      metadata, forwarding-destination binding over the combined installed and
-      planned forwarding cells against the final destination snapshot view,
+      stages forwarding, outcome-owned forwarding-destination binding metadata,
+      destination-byte, outcome-owned object-generation metadata,
+      forwarding-destination binding over the combined installed and planned
+      forwarding cells against the final destination snapshot view,
       reference-writeback, outcome-owned root/heap-field destination-binding
       metadata, remembered-set, and card-table-clear projections from one owned
       dry run, validates every installable side-table payload and
@@ -6554,8 +6574,8 @@ and helps the oracle directly.
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without
       destination snapshots, producing forwarding-to-destination binding
-      metadata for a later ABI object-header writer without mutating object
-      headers.
+      metadata for the live forwarding-destination binding side-table bridge and
+      a later ABI object-header writer without mutating object headers.
       `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_destination_bindings`
       then validates installed typed/generation root writebacks against
       installed destination-byte snapshots, producing root-to-destination binding

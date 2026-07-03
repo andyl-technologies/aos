@@ -102,6 +102,8 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
             gc_stress_boundary_scans,
             gc_stress_boundary_minor_gc_reference_writebacks:
                 EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+            gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
             gc_stress_boundary_minor_gc_destination_storage:
                 EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
             gc_stress_boundary_minor_gc_object_generations:
@@ -1206,6 +1208,102 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         &writeback_destination_bindings_before_repeat
     );
 
+    let mut forwarding_binding_outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress for live forwarding destination bindings");
+    let forwarding_binding_source = gc_address(forwarding_binding_outcome.value());
+    assert!(
+        forwarding_binding_outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+            .is_empty()
+    );
+    assert_eq!(
+        forwarding_binding_outcome
+            .heap()
+            .minor_gc_forwarding_value_at(forwarding_binding_source)
+            .expect("forwarding binding source is known"),
+        None
+    );
+    let live_forwarding_binding_dry_run = forwarding_binding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("single-tier worker dry-run installs live forwarding destination bindings");
+    let live_forwarding_binding_commit = live_forwarding_binding_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("live forwarding destination-binding worker commit records");
+    let live_forwarding_binding_slot = live_forwarding_binding_commit.forwarding_slots()[0];
+    let live_forwarding_binding_copy = &live_forwarding_binding_commit.object_byte_copies()[0];
+    let live_forwarding_destination_bindings = forwarding_binding_outcome
+        .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata();
+    assert_eq!(
+        live_forwarding_binding_dry_run.forwarding_destination_bindings_installed(),
+        1
+    );
+    assert_eq!(live_forwarding_destination_bindings.len(), 1);
+    assert_eq!(
+        live_forwarding_destination_bindings.install_report(),
+        live_forwarding_binding_dry_run.forwarding_destination_binding_install_report()
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0].source(),
+        live_forwarding_binding_slot.source()
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0].forwarded_value(),
+        live_forwarding_binding_slot
+            .forwarded_value()
+            .expect("planned forwarding value is installed in metadata")
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0].request(),
+        live_forwarding_binding_copy.request()
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0]
+            .destination_bytes(),
+        live_forwarding_binding_copy.destination_bytes()
+    );
+    assert_eq!(
+        forwarding_binding_outcome
+            .heap()
+            .minor_gc_forwarding_value_at(forwarding_binding_source)
+            .expect("forwarding binding source remains known"),
+        None
+    );
+    let forwarding_destination_bindings_before_repeat =
+        live_forwarding_destination_bindings.clone();
+    let repeat_error = forwarding_binding_outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect_err("occupied live forwarding destination bindings reject repeat install");
+    assert_eq!(
+        repeat_error,
+        EvalHeapError::BoundaryMinorGcLiveForwardingDestinationBindingsAlreadyInstalled {
+            existing: 1
+        }
+    );
+    assert_eq!(
+        forwarding_binding_outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata(),
+        &forwarding_destination_bindings_before_repeat
+    );
+
     let mut forwarding_outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
@@ -1303,6 +1401,11 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
     assert!(
         outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+            .is_empty()
+    );
+    assert!(
+        outcome
             .gc_stress_boundary_minor_gc_destination_storage()
             .is_empty()
     );
@@ -1352,6 +1455,10 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(live_metadata.forwarding_pointers_installed(), 1);
     assert_eq!(
         live_metadata.forwarding_pointers_installed(),
+        summary.forwarding_pointers()
+    );
+    assert_eq!(
+        live_metadata.forwarding_destination_bindings_installed(),
         summary.forwarding_pointers()
     );
     assert_eq!(live_metadata.object_copies_installed(), 1);
@@ -1504,6 +1611,19 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
         forwarding_destination_bindings[0].destination_bytes(),
         live_object_copy.destination_bytes()
     );
+    let live_forwarding_destination_bindings =
+        outcome.gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata();
+    assert_eq!(live_forwarding_destination_bindings.len(), 1);
+    assert_eq!(
+        live_forwarding_destination_bindings
+            .install_report()
+            .bindings(),
+        summary.forwarding_pointers()
+    );
+    assert_eq!(
+        live_forwarding_destination_bindings.forwarding_destination_bindings()[0],
+        forwarding_destination_bindings[0]
+    );
 
     let live_writebacks = outcome.gc_stress_boundary_minor_gc_reference_writebacks();
     let live_worker_writebacks = live_writebacks
@@ -1592,6 +1712,8 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     );
 
     let destination_storage_before_repeat = live_destination_storage.clone();
+    let forwarding_destination_bindings_before_repeat =
+        live_forwarding_destination_bindings.clone();
     let object_generations_before_repeat = live_object_generations.clone();
     let writebacks_before_repeat = live_writebacks.clone();
     let writeback_destination_bindings_before_repeat = live_writeback_destination_bindings.clone();
@@ -1609,6 +1731,10 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_destination_storage(),
         &destination_storage_before_repeat
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata(),
+        &forwarding_destination_bindings_before_repeat
     );
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_object_generations(),
@@ -1721,6 +1847,8 @@ fn live_metadata_rejects_preexisting_extra_forwarding_cell_before_mutation() {
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
@@ -1819,6 +1947,9 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     let destination_storage_before = outcome
         .gc_stress_boundary_minor_gc_destination_storage()
         .clone();
+    let forwarding_destination_bindings_before = outcome
+        .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+        .clone();
     let object_generations_before = outcome
         .gc_stress_boundary_minor_gc_object_generations()
         .clone();
@@ -1841,6 +1972,10 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
         .expect("empty boundary validates existing coherent metadata");
 
     assert_eq!(empty_live_metadata.forwarding_pointers_installed(), 0);
+    assert_eq!(
+        empty_live_metadata.forwarding_destination_bindings_installed(),
+        0
+    );
     assert_eq!(empty_live_metadata.object_copies_installed(), 0);
     assert_eq!(empty_live_metadata.object_generations_installed(), 0);
     assert_eq!(empty_live_metadata.reference_writebacks_installed(), 0);
@@ -1853,6 +1988,10 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_destination_storage(),
         &destination_storage_before
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata(),
+        &forwarding_destination_bindings_before
     );
     assert_eq!(
         outcome.gc_stress_boundary_minor_gc_object_generations(),
@@ -2712,6 +2851,8 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
@@ -3078,6 +3219,8 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
@@ -3159,6 +3302,8 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
         gc_stress_boundary_minor_gc_destination_storage:
             EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
         gc_stress_boundary_minor_gc_object_generations:
