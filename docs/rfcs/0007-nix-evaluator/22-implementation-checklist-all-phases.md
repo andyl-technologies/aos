@@ -5949,6 +5949,23 @@ and helps the oracle directly.
       evaluator roots or heap object fields, and live root/field mutation, live
       heap-object byte binding, real ABI object-header forwarding writes,
       remembered-source field mutation, and Tier-B dispatch remain open.
+- [x] Current boundary live root-writeback write-plan bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_write_plan`
+      validates installed live root writeback slots against installed
+      root writeback-destination binding metadata, rejects writebacks without
+      bindings, rejects stale binding metadata for the same root source, rejects
+      bindings without installed live writebacks, and returns immutable
+      root-source/domain, typed replacement value, generation metadata,
+      destination, request, and payload records that a later live root writer
+      would consume. Empty boundaries return an empty plan. Unit tests cover
+      coherent all-in-one live metadata, direct plan generation,
+      missing-binding rejection, stale-binding mismatch rejection,
+      unbound-binding rejection, duplicate-source/binding rejection, stale
+      request/payload rejection, and empty-boundary no-op behavior. This remains
+      write planning only: it does not mutate evaluator roots, bind destination
+      bytes to heap-object bodies, mutate heap-record generations, manage
+      semispaces, mutate heap fields, write ABI object headers, or invoke
+      Tier B.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6599,6 +6616,12 @@ and helps the oracle directly.
       installed destination-byte snapshots, producing root-to-destination binding
       metadata for the live writeback-destination binding side-table bridge and
       a later live root writer without mutating evaluator roots.
+      `EvalOutcome::gc_stress_boundary_minor_gc_root_writeback_write_plan`
+      then validates that installed live root writebacks and installed
+      root writeback-destination binding metadata are exact mirrors before
+      producing the immutable root-source/domain, typed replacement value,
+      generation metadata, destination, request, and payload records for a
+      future live root writer.
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
       validates installed heap-field writebacks against their replacement
       destination snapshots, and requires copied nursery-field writes to target

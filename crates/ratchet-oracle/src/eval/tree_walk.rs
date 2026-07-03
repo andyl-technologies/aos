@@ -366,7 +366,10 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
     EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryMinorGcRelocationPlan,
     EvalGcStressBoundaryMinorGcRelocationPlans,
-    EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding, EvalGcStressBoundaryScans,
+    EvalGcStressBoundaryMinorGcRootWritebackDestinationBinding,
+    EvalGcStressBoundaryMinorGcRootWritebackWrite,
+    EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+    EvalGcStressBoundaryMinorGcRootWritebackWritePlanReport, EvalGcStressBoundaryScans,
     EvalOutcome, EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail,
     IfdRealization, IfdRealizationError, IfdRealizer,
 };

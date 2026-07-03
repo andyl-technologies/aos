@@ -836,6 +836,104 @@ pub enum EvalHeapError {
         /// The object-copy action that implied the expected generation.
         action: MinorGcSurvivorAction,
     },
+    /// A root-writeback write plan has no installed destination binding.
+    #[error(
+        "boundary minor-GC root writeback write for {allocation_domain:?} {root_source:?} -> 0x{destination:x}/{generation:?}/{replacement_tag:?} has no installed destination binding",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackWriteMissingBinding {
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source whose replacement needs a binding.
+        root_source: EvalRootSource,
+        /// The tag carried by the typed root replacement.
+        replacement_tag: ValueTag,
+        /// The replacement destination address.
+        destination: GcHeapAddress,
+        /// The generation carried by the generation-style root slot.
+        generation: HeapGeneration,
+    },
+    /// A root-writeback write plan found stale destination-binding metadata.
+    #[error(
+        "boundary minor-GC root writeback write for {allocation_domain:?} {root_source:?} expected {expected_tag:?}/0x{expected_destination:x}/{expected_generation:?}, found {actual_tag:?}/0x{actual_destination:x}/{actual_generation:?}",
+        expected_destination = expected_destination.address_bits(),
+        actual_destination = actual_destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackWriteBindingMismatch {
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source whose binding disagreed.
+        root_source: EvalRootSource,
+        /// The tag carried by the installed root writeback.
+        expected_tag: ValueTag,
+        /// The destination carried by the installed root writeback.
+        expected_destination: GcHeapAddress,
+        /// The generation carried by the installed root writeback.
+        expected_generation: HeapGeneration,
+        /// The tag carried by the installed destination binding.
+        actual_tag: ValueTag,
+        /// The destination carried by the installed destination binding.
+        actual_destination: GcHeapAddress,
+        /// The generation carried by the installed destination binding.
+        actual_generation: HeapGeneration,
+    },
+    /// A root-writeback write plan found duplicated live writeback metadata.
+    #[error(
+        "boundary minor-GC root writeback write for {allocation_domain:?} {root_source:?} appears more than once at index {index}"
+    )]
+    BoundaryMinorGcRootWritebackWriteDuplicateSource {
+        /// The duplicated source index.
+        index: usize,
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source that appears more than once.
+        root_source: EvalRootSource,
+    },
+    /// A root-writeback write plan found duplicated destination-binding metadata.
+    #[error(
+        "boundary minor-GC root writeback binding for {allocation_domain:?} {root_source:?} appears more than once at index {index}"
+    )]
+    BoundaryMinorGcRootWritebackWriteDuplicateBinding {
+        /// The duplicated binding index.
+        index: usize,
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source recorded by the destination binding.
+        root_source: EvalRootSource,
+    },
+    /// A root-writeback destination binding's request points at a different destination.
+    #[error(
+        "boundary minor-GC root writeback binding for {allocation_domain:?} {root_source:?} expected request destination 0x{binding_destination:x}, found 0x{request_destination:x}",
+        binding_destination = binding_destination.address_bits(),
+        request_destination = request_destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackWriteRequestDestinationMismatch {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source recorded by the destination binding.
+        root_source: EvalRootSource,
+        /// The destination carried by the installed destination binding.
+        binding_destination: GcHeapAddress,
+        /// The destination carried by the binding's byte-copy request.
+        request_destination: GcHeapAddress,
+    },
+    /// A root-writeback destination binding has no installed live writeback.
+    #[error(
+        "boundary minor-GC root writeback binding for {allocation_domain:?} {root_source:?} -> 0x{destination:x}/{generation:?}/{replacement_tag:?} has no installed live writeback",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcRootWritebackWriteUnboundBinding {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The copied root source recorded by the destination binding.
+        root_source: EvalRootSource,
+        /// The tag carried by the destination binding.
+        replacement_tag: ValueTag,
+        /// The replacement destination address carried by the binding.
+        destination: GcHeapAddress,
+        /// The generation carried by the destination binding.
+        generation: HeapGeneration,
+    },
     /// A destination byte-copy request disagrees with its own survivor action.
     #[error(
         "boundary minor-GC destination request for 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",

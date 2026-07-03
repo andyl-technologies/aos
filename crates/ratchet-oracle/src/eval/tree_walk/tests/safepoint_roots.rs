@@ -1797,6 +1797,63 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
         bindings[0].destination_bytes(),
         live_object_copy.destination_bytes()
     );
+    let root_writeback_write_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback write plan validates installed live metadata");
+    assert_eq!(root_writeback_write_plan.len(), 1);
+    assert_eq!(
+        root_writeback_write_plan.report().roots(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(
+        root_writeback_write_plan.report().copied_to_nursery(),
+        summary.reference_writebacks()
+    );
+    assert_eq!(root_writeback_write_plan.report().promoted_to_old(), 0);
+    assert_eq!(
+        root_writeback_write_plan.report().payload_bytes(),
+        live_object_copy.destination_bytes().len()
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].root_source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].replacement_tag(),
+        ValueTag::Lambda
+    );
+    assert!(
+        root_writeback_write_plan.writes()[0]
+            .replacement_value()
+            .raw_eq(relocated_value(ValueTag::Lambda, nursery_base))
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].replacement_metadata(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        root_writeback_write_plan.writes()[0].destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
 
     let destination_storage_before_repeat = live_destination_storage.clone();
     let forwarding_destination_bindings_before_repeat =
@@ -3671,6 +3728,12 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         outcome
             .gc_stress_boundary_minor_gc_forwarding_header_write_plan()
             .expect("empty boundary has no forwarding header writes")
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+            .expect("empty boundary has no root writeback writes")
             .is_empty()
     );
     let empty_live_destination_dry_run = outcome
