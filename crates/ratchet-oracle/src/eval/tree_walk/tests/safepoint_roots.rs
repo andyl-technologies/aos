@@ -11,8 +11,8 @@ use crate::eval::heap::{
 use crate::eval::tree_walk::safepoint_roots::TreeWalkSafepointRootWritebackError;
 use crate::heap::{
     GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcPromotionPolicy, MinorGcSurvivorAction, RememberedSet,
-    ResolvedValueGeneration,
+    MinorGcForwardingSlot, MinorGcPromotionPolicy, MinorGcSurvivorAction, RememberedEdge,
+    RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
@@ -887,6 +887,154 @@ fn root_value_writebacks_update_supported_tree_walk_roots() {
         &value_stack,
         relocated_value(ValueTag::Lambda, nursery_base),
     );
+}
+
+#[test]
+fn collector_poll_minor_gc_root_writebacks_apply_to_safepoint_roots() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let report = evaluator
+        .apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+        )
+        .expect("collector-poll root writebacks apply");
+
+    assert_eq!(report.poll(), poll);
+    assert_eq!(report.scanned_roots(), 10);
+    assert_eq!(report.scanned_objects(), 1);
+    assert_eq!(report.survivors(), 1);
+    assert_eq!(report.reference_slots(), 10);
+    assert_eq!(report.root_writebacks(), 10);
+    assert_eq!(report.heap_field_writebacks(), 0);
+    assert_eq!(report.applied_root_writebacks(), 10);
+    assert_supported_mutable_roots_eq(
+        &evaluator,
+        &value_stack,
+        relocated_value(ValueTag::Lambda, nursery_base),
+    );
+    assert!(!value_stack[0].raw_eq(live));
+}
+
+#[test]
+fn collector_poll_minor_gc_root_writebacks_reject_stale_poll_before_mutation() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let later = alloc_test_lambda(&mut evaluator, 99);
+    assert!(!later.raw_eq(live));
+    let current = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("later allocation requested a collector poll");
+
+    let err = evaluator
+        .apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+            &mut value_stack,
+        )
+        .expect_err("stale poll is rejected");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Scan(TreeWalkSafepointScanError::StaleCollectorPoll {
+            poll,
+            current: Some(current),
+        },)
+    );
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+}
+
+#[test]
+fn collector_poll_minor_gc_root_writebacks_reject_heap_field_partition_before_mutation() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let parent = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent parent list allocates");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(parent, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark parent permanent");
+    evaluator
+        .thunk_resolve_remembered_set
+        .record(RememberedEdge::new(gc_address(parent), gc_address(child)))
+        .expect("remembered edge records");
+    evaluator
+        .thunk_resolve_card_table
+        .mark_source(gc_address(parent))
+        .expect("parent dirty card marks");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, child).expect("frame slot sets");
+    evaluator.env.push(frame);
+    evaluator.import_cache.insert(
+        PathBuf::from("/tmp/safepoint-root-writeback-mixed-import.nix"),
+        ImportCacheEntry::Ready {
+            value: child,
+            trace: Some(Vec::new()),
+            force_cache_trace_complete: true,
+        },
+    );
+    let poll = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requested a collector poll");
+    let mut value_stack = vec![child];
+
+    let err = evaluator
+        .apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+            &mut value_stack,
+        )
+        .expect_err("root-only helper rejects mixed root/field writebacks");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::UnsupportedHeapFieldWritebacks {
+            heap_field_writebacks: 1,
+        }
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
 }
 
 #[test]

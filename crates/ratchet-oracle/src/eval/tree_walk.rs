@@ -1155,7 +1155,8 @@ mod safepoint_roots;
 mod serialize_xml;
 
 pub use safepoint_roots::{
-    TreeWalkSafepointRootError, TreeWalkSafepointRootWritebackError, TreeWalkSafepointScanError,
+    TreeWalkSafepointMinorGcRootWritebackReport, TreeWalkSafepointRootError,
+    TreeWalkSafepointRootWritebackError, TreeWalkSafepointScanError,
 };
 
 #[cfg(test)]

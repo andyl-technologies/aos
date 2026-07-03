@@ -2414,10 +2414,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       force continuations, and active first-class primop argument frames,
       ready-import indexing that skips evaluating entries, and stale value-stack
       plus stale active-frame rejection that leaves tree-walk-owned roots
-      unchanged. These helpers still do not validate object liveness, bind
-      semispace storage, mutate interned roots, detached primop metadata, or JIT
-      stack-map slots, or wire root writebacks into automatic allocation-safepoint
-      collection.
+      unchanged.
+      `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
+      now derives that root partition from a current collector poll, live
+      remembered-set/card-table snapshots, caller-supplied destination bases, and
+      the transient value stack, then delegates to the tree-walk root adaptor only
+      after rejecting mixed plans with heap-field writebacks. Tests cover the
+      poll-derived all-root rewrite, direct stale-poll rejection before mutation,
+      and dirty permanent-list mixed-plan rejection before mutating the value
+      stack, active frame root, or ready import-cache root. These helpers still
+      do not validate object liveness, bind semispace storage, mutate interned
+      roots, detached primop metadata, or JIT stack-map slots, copy object
+      bodies, update heap fields, publish remembered/card-table state, or wire
+      root writebacks into automatic allocation-safepoint collection.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;
@@ -2545,7 +2554,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       covering value-stack roots, active/suspended frames and dynamic scopes,
       force continuations, active first-class primop arguments, and ready
       import-cache roots while leaving interned roots, detached primop metadata,
-      and JIT stack maps unsupported. The
+      and JIT stack maps unsupported.
+      `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
+      derives the same root partition from a current collector poll and the live
+      remembered-set/card-table snapshots, and rejects plans that also require
+      heap-field writebacks before mutating root storage. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints, and do not cover

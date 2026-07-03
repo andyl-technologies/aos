@@ -6634,6 +6634,23 @@ and helps the oracle directly.
       interned roots, detached primop-argument metadata, JIT stack-map slots,
       heap fields, object bytes, forwarding headers, remembered/card state, or
       semispace storage.
+- [x] Current tree-walk poll-derived root-writeback bridge precursor:
+      `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
+      now derives live root writebacks from a current collector poll instead of
+      a caller-hand-built root plan. It validates the poll, scans the explicit
+      tree-walk roots plus transient value-stack slots, plans card-table-aware
+      minor GC from the evaluator's live remembered-set/card-table state, derives
+      relocation destinations and commit reference writebacks, rejects mixed
+      plans that contain heap-field writebacks before mutating any root, and then
+      delegates the root partition to the typed tree-walk root adaptor above.
+      Tests cover a real poll rewriting every supported mutable tree-walk root
+      kind, direct stale-poll rejection before mutation, and a dirty
+      permanent-list remembered edge whose mixed root/field plan is rejected
+      without touching the value stack, active frame root, or ready import-cache
+      root. This is still not automatic allocation-site dispatch and still does
+      not allocate destination records, copy object bodies, mutate heap fields,
+      install forwarding headers, publish remembered/card-table state, reserve
+      semispace storage, or consume JIT stack maps.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -6934,6 +6951,12 @@ and helps the oracle directly.
       continuations, active first-class primop arguments, and ready import-cache
       roots while leaving interned roots, detached primop metadata, and JIT stack
       maps unsupported.
+      `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
+      derives that root partition from a current collector poll, the live
+      remembered-set/card-table snapshots, caller-supplied destination bases, and
+      the transient value stack; it rejects mixed plans with heap-field
+      writebacks before root mutation so a root-only bridge cannot publish a
+      partial live collection.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
