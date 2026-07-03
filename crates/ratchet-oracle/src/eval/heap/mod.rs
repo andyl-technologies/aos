@@ -56,11 +56,11 @@ pub use roots::{
     AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollReferenceSlot,
     AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
     AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
-    AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
-    AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
-    EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
-    InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollRootValueWritebackSlot, AllocationCollectorPollRootWriteback,
+    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollRootWritebackReport,
+    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, CapturedRootOwner,
+    EvalHeapThunkResolveBarrier, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
+    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -847,6 +847,23 @@ pub enum EvalHeapError {
         tag: ValueTag,
         /// The generation metadata that should have carried a heap address.
         value: ResolvedValueGeneration,
+    },
+    /// A caller-owned root `Value` slot no longer contains the expected raw
+    /// evaluator value.
+    #[error(
+        "collector-poll minor-GC root value writeback slot {index} value mismatch: expected {expected_tag:?}/0x{expected_payload:016x}, found {actual_tag:?}/0x{actual_payload:016x}"
+    )]
+    CollectorPollRootValueWritebackSlotMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The tag expected in the caller-owned slot.
+        expected_tag: ValueTag,
+        /// The payload expected in the caller-owned slot.
+        expected_payload: u64,
+        /// The actual tag supplied by the caller-owned slot.
+        actual_tag: ValueTag,
+        /// The actual payload supplied by the caller-owned slot.
+        actual_payload: u64,
     },
     /// A live reference buffer cannot be derived for copied root-only slots yet.
     #[error(

@@ -6426,8 +6426,11 @@ and helps the oracle directly.
       to reconstruct typed relocated `Value` handles from address/generation
       metadata. `AllocationCollectorPollRootWriteback::expected_value` and
       `replacement_value` run that reconstruction through the checked
-      `Value::heap` path for preflight metadata; they still do not validate
-      object liveness, bind semispace storage, or mutate live root slots.
+      `Value::heap` path for preflight metadata, and
+      `AllocationCollectorPollRootWritebackPlan::apply_to_value_slots` can
+      validate and rewrite caller-owned typed root-slot buffers with those
+      reconstructed values. These helpers still do not validate object
+      liveness, bind semispace storage, or mutate live root slots.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live heap-object byte slices, semispace
       destination storage, tree-walk root writeback, live object-field mutation,

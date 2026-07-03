@@ -2034,6 +2034,35 @@ impl AllocationCollectorPollRootWritebackPlan {
             writebacks: self.writebacks.len(),
         })
     }
+
+    /// Applies planned root writebacks to caller-owned typed value slots.
+    ///
+    /// The supplied slots must match this plan's root writeback count and order.
+    /// Each slot must name the copied root source and still contain the exact
+    /// raw [`Value`] reconstructed by [`AllocationCollectorPollRootWriteback::expected_value`].
+    /// The method validates every slot before rewriting any slot, so validation
+    /// failures leave the caller-owned buffer unchanged. This mutates only the
+    /// supplied buffer; it does not bind to active tree-walk value stacks,
+    /// frames, import caches, or JIT stack maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the supplied slot count differs from the
+    /// plan, if a slot names a different copied root source, if a planned
+    /// expected or replacement value cannot be reconstructed from root-writeback
+    /// metadata, or if a caller-owned value no longer contains the expected raw
+    /// value.
+    pub fn apply_to_value_slots(
+        &self,
+        slots: &mut [AllocationCollectorPollRootValueWritebackSlot],
+    ) -> Result<AllocationCollectorPollRootWritebackReport, EvalHeapError> {
+        validate_root_value_writeback_slots(self, slots)?;
+        apply_root_value_writeback_slots(self, slots)?;
+
+        Ok(AllocationCollectorPollRootWritebackReport {
+            writebacks: self.writebacks.len(),
+        })
+    }
 }
 
 fn validate_root_writeback_slots(
@@ -2079,6 +2108,54 @@ fn apply_root_writeback_slots(
     }
 }
 
+fn validate_root_value_writeback_slots(
+    plan: &AllocationCollectorPollRootWritebackPlan,
+    slots: &[AllocationCollectorPollRootValueWritebackSlot],
+) -> Result<(), EvalHeapError> {
+    if slots.len() != plan.writebacks.len() {
+        return Err(
+            EvalHeapError::CollectorPollRootWritebackSlotLengthMismatch {
+                expected: plan.writebacks.len(),
+                actual: slots.len(),
+            },
+        );
+    }
+
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter()) {
+        if slot.source() != writeback.source() {
+            return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+                index: writeback.slot(),
+                expected: writeback.source().clone(),
+                actual: slot.source().clone(),
+            });
+        }
+        let expected = writeback.expected_value()?;
+        let actual = slot.value();
+        if !actual.raw_eq(expected) {
+            return Err(EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+                index: writeback.slot(),
+                expected_tag: expected.tag(),
+                expected_payload: expected.payload_bits(),
+                actual_tag: actual.tag(),
+                actual_payload: actual.payload_bits(),
+            });
+        }
+        let _ = writeback.replacement_value()?;
+    }
+
+    Ok(())
+}
+
+fn apply_root_value_writeback_slots(
+    plan: &AllocationCollectorPollRootWritebackPlan,
+    slots: &mut [AllocationCollectorPollRootValueWritebackSlot],
+) -> Result<(), EvalHeapError> {
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter_mut()) {
+        slot.value = writeback.replacement_value()?;
+    }
+    Ok(())
+}
+
 /// Caller-owned mutable storage for one root writeback.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollRootWritebackSlot {
@@ -2102,6 +2179,41 @@ impl AllocationCollectorPollRootWritebackSlot {
         self.value
     }
 }
+
+/// Caller-owned mutable typed storage for one root writeback.
+///
+/// Equality compares copied root sources and raw [`Value`] representations; it
+/// is not evaluator-level Nix semantic equality.
+#[derive(Clone, Debug)]
+pub struct AllocationCollectorPollRootValueWritebackSlot {
+    source: EvalRootSource,
+    value: Value,
+}
+
+impl AllocationCollectorPollRootValueWritebackSlot {
+    /// Creates a caller-owned typed root slot for writeback application.
+    pub fn new(source: EvalRootSource, value: Value) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the copied tree-walk/JIT root source represented by this slot.
+    pub const fn source(&self) -> &EvalRootSource {
+        &self.source
+    }
+
+    /// Returns the current typed evaluator value in this slot.
+    pub const fn value(&self) -> Value {
+        self.value
+    }
+}
+
+impl PartialEq for AllocationCollectorPollRootValueWritebackSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source && self.value.raw_eq(other.value)
+    }
+}
+
+impl Eq for AllocationCollectorPollRootValueWritebackSlot {}
 
 /// A summary of caller-owned root slots rewritten by a writeback plan.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

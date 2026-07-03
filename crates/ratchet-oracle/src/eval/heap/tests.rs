@@ -5594,6 +5594,17 @@ fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
         }
     );
 
+    let mut no_value_slots = Vec::new();
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_value_slots(&mut no_value_slots)
+            .expect_err("short typed root writeback buffer rejects"),
+        EvalHeapError::CollectorPollRootWritebackSlotLengthMismatch {
+            expected: 2,
+            actual: 0,
+        }
+    );
+
     let mut stale_slots = [
         AllocationCollectorPollRootWritebackSlot::new(
             EvalRootSource::ValueStack { slot: 0 },
@@ -5713,6 +5724,86 @@ fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
             generation: HeapGeneration::Young,
         }
     );
+
+    let mut later_wrong_source_value_slots = [
+        AllocationCollectorPollRootValueWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 0 },
+            first,
+        ),
+        AllocationCollectorPollRootValueWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 2 },
+            second,
+        ),
+    ];
+    let unchanged_later_wrong_source_value_slots = later_wrong_source_value_slots.clone();
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_value_slots(&mut later_wrong_source_value_slots)
+            .expect_err("later wrong typed root source rejects"),
+        EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+            index: 1,
+            expected: EvalRootSource::ValueStack { slot: 1 },
+            actual: EvalRootSource::ValueStack { slot: 2 },
+        }
+    );
+    assert_eq!(
+        later_wrong_source_value_slots,
+        unchanged_later_wrong_source_value_slots
+    );
+
+    let mut stale_value_slots = [
+        AllocationCollectorPollRootValueWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 0 },
+            first,
+        ),
+        AllocationCollectorPollRootValueWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 1 },
+            first,
+        ),
+    ];
+    let unchanged_stale_value_slots = stale_value_slots.clone();
+    let expected_second_value = root_writeback_plan.writebacks()[1]
+        .expected_value()
+        .expect("second expected value rebuilds");
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_value_slots(&mut stale_value_slots)
+            .expect_err("stale typed second root rejects"),
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+            index: 1,
+            expected_tag: expected_second_value.tag(),
+            expected_payload: expected_second_value.payload_bits(),
+            actual_tag: first.tag(),
+            actual_payload: first.payload_bits(),
+        }
+    );
+    assert_eq!(stale_value_slots, unchanged_stale_value_slots);
+
+    let mut value_slots = root_writeback_plan
+        .writebacks()
+        .iter()
+        .map(|writeback| {
+            AllocationCollectorPollRootValueWritebackSlot::new(
+                writeback.source().clone(),
+                writeback
+                    .expected_value()
+                    .expect("expected typed value rebuilds"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let value_report = root_writeback_plan
+        .apply_to_value_slots(&mut value_slots)
+        .expect("typed root writebacks apply");
+    assert_eq!(value_report.writebacks(), 2);
+    for (slot, writeback) in value_slots.iter().zip(root_writeback_plan.writebacks()) {
+        assert!(
+            slot.value().raw_eq(
+                writeback
+                    .replacement_value()
+                    .expect("replacement typed value rebuilds")
+            )
+        );
+    }
 }
 
 #[test]
