@@ -1046,3 +1046,95 @@ fn captured_inline_forced_thunks_include_free_variable_hashes_in_cache_key() {
         "different inline free-variable hashes should create distinct demand nodes"
     );
 }
+
+#[test]
+fn cold_hash_consed_values_materialize_to_indexed_value_pack_and_replay() {
+    let ir = lower("null");
+    let persist_root = unique_temp_dir("cold-hash-consed-value-pack");
+    let options = TreeWalkOptions::with_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let name = evaluator.symbols.intern(b"name").expect("symbol interns");
+    let list_name = evaluator
+        .symbols
+        .intern(b"list")
+        .expect("list symbol interns");
+
+    let string = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"cold-string".to_vec()))
+        .expect("string allocates");
+    let path = evaluator
+        .heap
+        .alloc_path(NixString::from_bytes(b"/tmp/cold-path".to_vec()))
+        .expect("path allocates");
+    let list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![string, Value::int(7)]))
+        .expect("list allocates");
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::new(name, path), AttrEntry::new(list_name, list)],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(ir.root))
+        .expect("worker thunk allocates");
+
+    let cold_values = evaluator
+        .heap()
+        .cold_hash_consed_values(1)
+        .expect("cold values snapshot succeeds");
+    let candidate_bytes = cold_values.iter().fold(0usize, |bytes, cold| {
+        bytes.saturating_add(cold.size_bytes())
+    });
+
+    assert_eq!(cold_values.len(), 4);
+    assert!(cold_values.iter().any(|cold| cold.value().raw_eq(string)));
+    assert!(cold_values.iter().any(|cold| cold.value().raw_eq(path)));
+    assert!(cold_values.iter().any(|cold| cold.value().raw_eq(list)));
+    assert!(cold_values.iter().any(|cold| cold.value().raw_eq(attrs)));
+
+    let report = evaluator.materialize_cold_hash_consed_values_indexed(1);
+    assert_eq!(report.candidates(), 4);
+    assert_eq!(report.candidate_bytes(), candidate_bytes);
+    assert_eq!(report.captured(), 4);
+    assert_eq!(report.uncapturable(), 0);
+    assert_eq!(report.materialized(), 4);
+    assert_eq!(report.skipped(), 0);
+    assert_eq!(report.errors(), 0);
+    assert_eq!(report.cache_unavailable(), 0);
+    assert!(report.persistent_payload_bytes() > 0);
+    assert_eq!(report.materialized_hashes().len(), 4);
+
+    drop(evaluator);
+
+    let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
+    for value_hash in report.materialized_hashes() {
+        let payload = persist_cache
+            .load_cached_expression_value_indexed(*value_hash)
+            .expect("indexed value load succeeds")
+            .expect("indexed value exists");
+        assert_eq!(payload.value_hash().expect("payload hashes"), *value_hash);
+
+        let mut replay = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+        let value = replay
+            .value_for_cached_expression_payload_for_test(payload)
+            .expect("payload replays");
+        let replayed_payload = replay
+            .force_cache_payload_for_value(value)
+            .expect("replayed value captures");
+        assert_eq!(
+            replayed_payload
+                .value_hash()
+                .expect("replayed payload hashes"),
+            *value_hash
+        );
+    }
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+}

@@ -13,6 +13,14 @@ impl TreeWalk {
         self.value_for_cached_expression_payload_with_depth(payload, 0, position_remap)
     }
 
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) fn value_for_cached_expression_payload_for_test(
+        &mut self,
+        payload: CachedExpressionValue,
+    ) -> Option<Value> {
+        self.value_for_cached_expression_payload_with_depth(payload, 0, None)
+    }
+
     pub(super) fn prepare_observable_payload_for_subject(
         &self,
         payload: CachedExpressionValue,

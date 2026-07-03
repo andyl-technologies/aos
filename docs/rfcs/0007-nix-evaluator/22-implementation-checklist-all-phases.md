@@ -6162,6 +6162,21 @@ and helps the oracle directly.
       reclaim. This is still not CA-store spill and not proof of resident-byte
       reclaim: it installs no CA-store handle, evicts or rematerializes no
       value, and does not change automatic memory-budget actions.
+- [x] Current cold value CA-store materialization precursor:
+      `EvalHeap::cold_hash_consed_values(min_idle_epochs)` snapshots permanent
+      shared structural-hash records without refreshing their access epochs and
+      returns the checked `Value`, logical allocation bytes, and idle epochs for
+      each candidate. `TreeWalk::materialize_cold_hash_consed_values_indexed`
+      captures replayable cold candidates through the existing force-cache value
+      payload encoder and ensures they are addressable in the persistent
+      cache's indexed `values/` pack, keyed by `ValueHash`. Tests cover
+      non-touching snapshot selection, indexed value-pack materialization,
+      loading by value hash, and replaying decoded payloads into a fresh
+      evaluator heap. This remains a precursor: resident heap records are not
+      replaced by content-hash handles, no bytes are reclaimed, the capture pass
+      uses normal heap reads that may refresh candidate access epochs,
+      automatic budget actions do not call it, and value access does not yet
+      rematerialize spilled handles.
 - [x] Current `madvise` portability closure:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

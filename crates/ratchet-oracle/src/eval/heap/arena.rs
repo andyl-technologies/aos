@@ -761,6 +761,48 @@ impl EvalHeap {
         })
     }
 
+    /// Returns cold hash-consed values selected by the idle-epoch policy.
+    ///
+    /// The snapshot is a non-destructive bridge for future CA-store spill work:
+    /// it reconstructs checked [`Value`] words from permanent shared,
+    /// structurally interned records without refreshing their access epochs,
+    /// evicting resident objects, installing content-hash handles, or replaying
+    /// spilled values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the snapshot vector cannot be reserved or a
+    /// selected record cannot be represented as a checked heap value.
+    pub fn cold_hash_consed_values(
+        &self,
+        min_idle_epochs: u64,
+    ) -> Result<Vec<EvalHeapColdHashConsedValue>, EvalHeapError> {
+        let current_epoch = self.access_epoch();
+        let values = self
+            .records
+            .iter()
+            .filter(|record| {
+                Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs)
+            })
+            .count();
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(values)
+            .map_err(|_| EvalHeapError::RecordAllocationFailed { records: values })?;
+        for record in &self.records {
+            if !Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs) {
+                continue;
+            }
+            let idle_epochs = Self::cold_hash_consed_record_idle_epochs(record, current_epoch);
+            snapshot.push(EvalHeapColdHashConsedValue::new(
+                Self::value_for_record(record)?,
+                record.layout.size_bytes,
+                idle_epochs,
+            ));
+        }
+        Ok(snapshot)
+    }
+
     /// Classifies the whole heap using current cold hash-consed byte estimates.
     ///
     /// This helper feeds cold-value capacity into the budget classifier for the
@@ -2105,6 +2147,10 @@ impl EvalHeap {
         record.last_touch_epoch.set(self.next_access_epoch());
     }
 
+    fn value_for_record(record: &HeapRecord) -> Result<Value, EvalHeapError> {
+        Ok(Value::heap(record.object.tag(), record.ptr)?)
+    }
+
     pub(super) fn advance_worker_region_epoch(&mut self) {
         if let Some(next) = self.worker_region_epoch.checked_add(1) {
             self.worker_region_epoch = next;
@@ -2146,6 +2192,10 @@ impl EvalHeap {
         }
         let idle_epochs = current_epoch.saturating_sub(record.last_touch_epoch.get());
         idle_epochs >= min_idle_epochs
+    }
+
+    fn cold_hash_consed_record_idle_epochs(record: &HeapRecord, current_epoch: u64) -> u64 {
+        current_epoch.saturating_sub(record.last_touch_epoch.get())
     }
 
     pub(super) fn record_or_unknown(

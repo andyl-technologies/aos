@@ -366,6 +366,39 @@ impl EvalHeapWorkerRegionPopReport {
     }
 }
 
+/// A cold permanent hash-consed value selected for future CA-store spill work.
+#[derive(Clone, Copy, Debug)]
+pub struct EvalHeapColdHashConsedValue {
+    value: Value,
+    size_bytes: usize,
+    idle_epochs: u64,
+}
+
+impl EvalHeapColdHashConsedValue {
+    const fn new(value: Value, size_bytes: usize, idle_epochs: u64) -> Self {
+        Self {
+            value,
+            size_bytes,
+            idle_epochs,
+        }
+    }
+
+    /// Returns the heap value selected by the cold hash-cons policy.
+    pub const fn value(self) -> Value {
+        self.value
+    }
+
+    /// Returns the requested allocation size for this heap record.
+    pub const fn size_bytes(self) -> usize {
+        self.size_bytes
+    }
+
+    /// Returns the number of access epochs elapsed since this record was touched.
+    pub const fn idle_epochs(self) -> u64 {
+        self.idle_epochs
+    }
+}
+
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),

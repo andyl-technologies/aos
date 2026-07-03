@@ -1022,6 +1022,38 @@ fn cold_hash_consed_bytes_follow_permanent_record_touches() {
 }
 
 #[test]
+fn cold_hash_consed_values_snapshot_does_not_refresh_touch_epoch() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"snapshot-cold".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    let values = heap
+        .cold_hash_consed_values(1)
+        .expect("cold values snapshot succeeds");
+
+    assert_eq!(values.len(), 1);
+    assert!(values[0].value().raw_eq(string));
+    assert_eq!(values[0].size_bytes(), string_size);
+    assert_eq!(values[0].idle_epochs(), 1);
+    assert_eq!(
+        heap.cold_hash_consed_bytes(1),
+        string_size,
+        "snapshotting must not make the cold value hot"
+    );
+
+    assert_eq!(
+        heap.get_string(string).expect("string exists").bytes(),
+        b"snapshot-cold"
+    );
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
+}
+
+#[test]
 fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
     let first = heap

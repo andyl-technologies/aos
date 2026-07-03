@@ -1619,6 +1619,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       CA-store spill and not proof of resident-byte reclaim: no handle is
       installed, no value is evicted or rematerialized, and automatic budget
       actions still do not credit cold hash-cons reclaim.
+- [x] Current cold value CA-store materialization precursor:
+      `EvalHeap::cold_hash_consed_values(min_idle_epochs)` snapshots the same
+      permanent-shared structural-hash records without refreshing their access
+      epochs, returning the checked `Value`, logical allocation bytes, and idle
+      epochs for each candidate. `TreeWalk::materialize_cold_hash_consed_values_indexed`
+      captures replayable cold candidates through the existing force-cache value
+      payload encoder and ensures they are addressable in the persistent cache's
+      indexed `values/` pack with `ValueHash` as the content address. Tests
+      cover the non-touching snapshot contract, materialization into the
+      indexed value pack, loading by value hash, and replaying the decoded
+      payload into a fresh evaluator heap. This is still a spill precursor only:
+      resident heap records are not replaced by content-hash handles, no bytes
+      are reclaimed, the capture pass uses normal heap reads that may refresh
+      candidate access epochs, automatic budget actions do not invoke it, and
+      on-demand rematerialization is not wired into value access.
 - [x] `madvise` portability shim (`advise_dead`/`advise_free`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
 - [x] Current `madvise`/arena-tail closure:
       `ratchet-value::heap::advice` provides the advisory memory API over

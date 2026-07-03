@@ -54,9 +54,9 @@ use super::heap::{
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
     AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWritebackSlot,
     AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport,
-    EvalHeapCheapMemoryBudgetPlan, EvalHeapError, EvalHeapMemoryBudgetAction,
-    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue, EvalHeapError,
+    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
+    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -890,6 +890,98 @@ pub struct TreeWalk {
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
     // must still demand it when coercing to an attrset.
     lazy_foldl_initial_thunks: BTreeSet<u64>,
+}
+
+/// Reports cold hash-consed values ensured in the indexed persistent value pack.
+///
+/// This is an explicit out-of-core spill precursor report. It describes cold
+/// permanent values that were captured as replayable force-cache payloads and
+/// made addressable in the persistent cache's indexed `values/` pack. It does
+/// not imply that evaluator heap records were evicted or replaced with
+/// content-hash handles.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColdHashConsedValueMaterializationReport {
+    candidates: usize,
+    candidate_bytes: usize,
+    captured: usize,
+    uncapturable: usize,
+    materialized: usize,
+    skipped: usize,
+    errors: usize,
+    cache_unavailable: usize,
+    persistent_payload_bytes: u128,
+    materialized_hashes: Vec<ValueHash>,
+}
+
+impl ColdHashConsedValueMaterializationReport {
+    fn record_candidates(&mut self, values: &[EvalHeapColdHashConsedValue]) {
+        self.candidates = values.len();
+        self.candidate_bytes = values.iter().fold(0usize, |bytes, value| {
+            bytes.saturating_add(value.size_bytes())
+        });
+    }
+
+    fn record_captured(&mut self, payload: &CachedExpressionValue) {
+        self.captured = self.captured.saturating_add(1);
+        self.persistent_payload_bytes = self
+            .persistent_payload_bytes
+            .saturating_add(payload.persistent_payload_len());
+    }
+
+    fn record_materialized(&mut self, value_hash: ValueHash) {
+        self.materialized = self.materialized.saturating_add(1);
+        self.materialized_hashes.push(value_hash);
+    }
+
+    /// Returns the number of cold hash-consed records selected before capture.
+    pub const fn candidates(&self) -> usize {
+        self.candidates
+    }
+
+    /// Returns the logical allocation bytes covered by selected candidates.
+    pub const fn candidate_bytes(&self) -> usize {
+        self.candidate_bytes
+    }
+
+    /// Returns the number of candidates captured as replayable value payloads.
+    pub const fn captured(&self) -> usize {
+        self.captured
+    }
+
+    /// Returns the number of candidates that could not be captured.
+    pub const fn uncapturable(&self) -> usize {
+        self.uncapturable
+    }
+
+    /// Returns the number of captured payloads ensured in the indexed value pack.
+    pub const fn materialized(&self) -> usize {
+        self.materialized
+    }
+
+    /// Returns the number of captured payloads skipped by the materializer.
+    pub const fn skipped(&self) -> usize {
+        self.skipped
+    }
+
+    /// Returns the number of snapshot, hashing, or write errors observed.
+    pub const fn errors(&self) -> usize {
+        self.errors
+    }
+
+    /// Returns the number of candidates skipped because no persistent cache opened.
+    pub const fn cache_unavailable(&self) -> usize {
+        self.cache_unavailable
+    }
+
+    /// Returns the replayable payload bytes represented by captured candidates.
+    pub const fn persistent_payload_bytes(&self) -> u128 {
+        self.persistent_payload_bytes
+    }
+
+    /// Returns the value hashes ensured in the indexed value pack.
+    pub fn materialized_hashes(&self) -> &[ValueHash] {
+        &self.materialized_hashes
+    }
 }
 
 /// The *derivation hash modulo* (`hashDerivationModulo`) of a derivation.

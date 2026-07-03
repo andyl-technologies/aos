@@ -283,6 +283,94 @@ impl TreeWalk {
         }
     }
 
+    /// Materializes cold permanent hash-consed values into the indexed value pack.
+    ///
+    /// This scans the evaluator heap with [`EvalHeap::cold_hash_consed_values`],
+    /// captures replayable candidates through the existing force-cache payload
+    /// encoder, and ensures those payloads are addressable in the persistent
+    /// cache's indexed `values/` pack under their [`ValueHash`] content address.
+    /// Payload capture uses ordinary heap reads and can refresh selected
+    /// records' access epochs after the cold snapshot has been taken. The
+    /// operation is advisory: failures are logged and counted in the returned
+    /// report rather than propagated to evaluation.
+    ///
+    /// This method does not evict resident heap records, install content-hash
+    /// handles, reclaim mapped bytes, or wire on-demand rematerialization into
+    /// value access. Callers must configure a persistent cache root on
+    /// [`TreeWalkOptions`] for materialization to occur.
+    pub fn materialize_cold_hash_consed_values_indexed(
+        &mut self,
+        min_idle_epochs: u64,
+    ) -> ColdHashConsedValueMaterializationReport {
+        let mut report = ColdHashConsedValueMaterializationReport::default();
+        let values = match self.heap.cold_hash_consed_values(min_idle_epochs) {
+            Ok(values) => values,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator cold hash-consed value snapshot failed"
+                );
+                report.errors = report.errors.saturating_add(1);
+                return report;
+            }
+        };
+        report.record_candidates(&values);
+        if values.is_empty() {
+            return report;
+        }
+
+        self.open_persist_eval_cache();
+        if self.persist_cache.is_none() {
+            report.cache_unavailable = report.candidates;
+            return report;
+        }
+
+        for cold_value in values {
+            let Some(payload) = self.force_cache_payload_for_value(cold_value.value()) else {
+                report.uncapturable = report.uncapturable.saturating_add(1);
+                continue;
+            };
+            report.record_captured(&payload);
+            let value_hash = match payload.value_hash() {
+                Ok(value_hash) => value_hash,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator cold hash-consed value hashing failed"
+                    );
+                    report.errors = report.errors.saturating_add(1);
+                    continue;
+                }
+            };
+            let Some(persist_cache) = &self.persist_cache else {
+                report.cache_unavailable = report.cache_unavailable.saturating_add(1);
+                continue;
+            };
+            match persist_cache.materialize_cached_expression_value_indexed(
+                &payload,
+                MaterializationDecision::Materialize,
+            ) {
+                Ok(PersistMaterialization::Materialized(_)) => {
+                    report.record_materialized(value_hash);
+                }
+                Ok(PersistMaterialization::Skipped) => {
+                    report.skipped = report.skipped.saturating_add(1);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator cold hash-consed value materialization failed"
+                    );
+                    report.errors = report.errors.saturating_add(1);
+                }
+            }
+        }
+        report
+    }
+
     fn materialization_cost_observation_for_payload(
         &self,
         payload: &CachedExpressionValue,
