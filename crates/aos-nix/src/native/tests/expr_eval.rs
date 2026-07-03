@@ -39,6 +39,30 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_reports_tier_a_heap_stats_without_gc_work() -> Result<()> {
+    let native = NixNative::new(0)?;
+
+    let (json, stats) =
+        native.eval_expr_with_stats(r#"let f = x: { a = [ x "tier-a" ]; }; in f 1"#)?;
+
+    assert_eq!(json, r#"{"a":[1,"tier-a"]}"#);
+    assert!(stats.heap_chunks() > 0);
+    assert!(stats.heap_mapped_bytes() >= stats.heap_reserved_bytes());
+    assert!(stats.heap_reserved_bytes() >= stats.heap_used_bytes());
+    assert!(stats.heap_used_bytes() > 0);
+    assert!(stats.permanent_heap_chunks() > 0);
+    assert!(stats.permanent_heap_mapped_bytes() >= stats.permanent_heap_reserved_bytes());
+    assert!(stats.permanent_heap_reserved_bytes() >= stats.permanent_heap_used_bytes());
+    assert!(stats.permanent_heap_used_bytes() > 0);
+    assert_eq!(stats.gc_bytes(), 0);
+    assert_eq!(stats.gc_pause_us(), 0);
+    assert_eq!(stats.tier_promotions(), 0);
+    assert_eq!(stats.deopts(), 0);
+
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_forces_empty_foldl_initial_for_attrs_consumers() -> Result<()> {
     let native = NixNative::new(0)?;
 

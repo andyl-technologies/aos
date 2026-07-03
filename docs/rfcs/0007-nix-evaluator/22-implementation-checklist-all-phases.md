@@ -4946,6 +4946,15 @@ and helps the oracle directly.
       reserved bytes and page-rounded mapped bytes, and exposes
       `ThreadLocalBumpArena` for per-worker never-free arenas. Full Tier-A
       closure proof and benchmark evidence remain open in the row above.
+- [x] Current Tier-A strict-JSON stats precursor: `EvalStats` now mirrors worker
+      and permanent-shared arena chunk counts, logical reserved bytes,
+      page-rounded mapped bytes, and used bytes from the default tree-walk heap,
+      emits them in the stats trace, and `NixNative::eval_expr_with_stats` has a
+      strict-JSON test proving a heap-allocating expression maps Tier-A worker
+      and permanent-shared arena pages while reporting zero GC bytes, zero GC
+      pause time, zero tier promotions, and zero deopts. This remains a focused
+      expression-level proof; it does not close the final Tier-A row's
+      full-closure byte-green and benchmark requirements.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).

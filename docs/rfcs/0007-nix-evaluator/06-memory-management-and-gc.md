@@ -1507,6 +1507,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       `ThreadLocalBumpArena` for per-worker Tier-A arenas. The full Tier-A row
       below remains open until CLI-wide/full-closure byte-green proof and
       benchmark evidence are recorded under the runtime default.
+- [x] Current Tier-A strict-JSON stats precursor: `EvalStats` mirrors worker and
+      permanent-shared arena chunk counts, logical reserved bytes,
+      page-rounded mapped bytes, and used bytes from the default tree-walk heap,
+      emits them in the stats trace, and `NixNative::eval_expr_with_stats` has a
+      strict-JSON test proving a heap-allocating expression maps Tier-A worker
+      and permanent-shared arena pages while reporting zero GC bytes, zero GC
+      pause time, zero tier promotions, and zero deopts. This is still a
+      focused expression-level proof, not the full closure-wide
+      byte-green/benchmark evidence required by the final row.
 - [ ] Final Tier-A runtime arena still open: geometric `mmap` chunk growth,
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A

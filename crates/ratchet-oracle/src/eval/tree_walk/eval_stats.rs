@@ -5,6 +5,7 @@ use super::*;
 impl TreeWalk {
     pub(super) fn stats_snapshot(&self) -> EvalStats {
         let arena = self.heap.arena_stats();
+        let permanent_arena = self.heap.permanent_arena_stats();
         EvalStats {
             thunks_forced: self.stats.thunks_forced,
             thunks_allocated: self.stats.thunks_allocated,
@@ -51,7 +52,12 @@ impl TreeWalk {
             derivation_text_path_calculations: self.stats.derivation_text_path_calculations,
             heap_chunks: arena.chunks as u64,
             heap_reserved_bytes: arena.reserved_bytes as u64,
+            heap_mapped_bytes: arena.mapped_bytes as u64,
             heap_used_bytes: arena.used_bytes as u64,
+            permanent_heap_chunks: permanent_arena.chunks as u64,
+            permanent_heap_reserved_bytes: permanent_arena.reserved_bytes as u64,
+            permanent_heap_mapped_bytes: permanent_arena.mapped_bytes as u64,
+            permanent_heap_used_bytes: permanent_arena.used_bytes as u64,
         }
     }
 
@@ -95,7 +101,12 @@ impl TreeWalk {
             derivation_text_path_calculations = stats.derivation_text_path_calculations(),
             heap_chunks = stats.heap_chunks(),
             heap_reserved_bytes = stats.heap_reserved_bytes(),
+            heap_mapped_bytes = stats.heap_mapped_bytes(),
             heap_used_bytes = stats.heap_used_bytes(),
+            permanent_heap_chunks = stats.permanent_heap_chunks(),
+            permanent_heap_reserved_bytes = stats.permanent_heap_reserved_bytes(),
+            permanent_heap_mapped_bytes = stats.permanent_heap_mapped_bytes(),
+            permanent_heap_used_bytes = stats.permanent_heap_used_bytes(),
             "aos-nix tree-walk evaluation stats"
         );
     }

@@ -2,6 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::runtime::alloc::RuntimeAllocatorTier;
+
 use super::*;
 use tracing::field::{Field, Visit};
 use tracing::metadata::LevelFilter;
@@ -90,17 +92,70 @@ impl Visit for EventFields {
     }
 }
 
+fn assert_trace_field(event: &str, field: &str) {
+    let prefix = format!("{field}=");
+    assert!(
+        event
+            .split_whitespace()
+            .any(|recorded| recorded.starts_with(&prefix)),
+        "missing trace field {field}: {event}"
+    );
+}
+
+fn assert_trace_field_value(event: &str, field: &str, value: u64) {
+    let expected = format!("{field}={value}");
+    assert!(
+        event
+            .split_whitespace()
+            .any(|recorded| recorded == expected),
+        "missing trace field value {expected}: {event}"
+    );
+}
+
 #[test]
 fn eval_outcome_reports_mirrored_stats() {
     let outcome =
         eval_whnf_owned(&lower("let x = 1 + 1; in x + x")).expect("thunked expression evaluates");
     let stats = outcome.stats();
+    let worker_stats = outcome.heap().arena_stats();
+    let permanent_stats = outcome.heap().permanent_arena_stats();
 
+    assert_eq!(
+        outcome.heap().allocator_tier(),
+        RuntimeAllocatorTier::TierAOneShot
+    );
+    assert_eq!(
+        outcome.heap().permanent_allocator_tier(),
+        RuntimeAllocatorTier::PermanentShared
+    );
     assert!(stats.thunks_allocated() > 0);
     assert!(stats.thunks_forced() > 0);
-    assert!(stats.heap_chunks() > 0);
-    assert!(stats.heap_reserved_bytes() >= stats.heap_used_bytes());
-    assert!(stats.heap_used_bytes() > 0);
+    assert_eq!(stats.heap_chunks(), worker_stats.chunks as u64);
+    assert_eq!(
+        stats.heap_reserved_bytes(),
+        worker_stats.reserved_bytes as u64
+    );
+    assert_eq!(stats.heap_mapped_bytes(), worker_stats.mapped_bytes as u64);
+    assert_eq!(stats.heap_used_bytes(), worker_stats.used_bytes as u64);
+    assert_eq!(stats.permanent_heap_chunks(), permanent_stats.chunks as u64);
+    assert_eq!(
+        stats.permanent_heap_reserved_bytes(),
+        permanent_stats.reserved_bytes as u64
+    );
+    assert_eq!(
+        stats.permanent_heap_mapped_bytes(),
+        permanent_stats.mapped_bytes as u64
+    );
+    assert_eq!(
+        stats.permanent_heap_used_bytes(),
+        permanent_stats.used_bytes as u64
+    );
+    assert!(worker_stats.chunks > 0);
+    assert!(worker_stats.mapped_bytes >= worker_stats.reserved_bytes);
+    assert!(worker_stats.reserved_bytes >= worker_stats.used_bytes);
+    assert!(worker_stats.used_bytes > 0);
+    assert!(permanent_stats.mapped_bytes >= permanent_stats.reserved_bytes);
+    assert!(permanent_stats.reserved_bytes >= permanent_stats.used_bytes);
     assert_eq!(stats.thunks_elided(), 0);
     assert_eq!(stats.inline_cache_hits(), 0);
     assert_eq!(stats.inline_cache_misses(), 0);
@@ -154,25 +209,38 @@ fn eval_stats_are_emitted_through_tracing() {
         .iter()
         .find(|event| event.contains("aos-nix tree-walk evaluation stats"))
         .expect("stats event recorded");
-    assert!(stats_event.contains("thunks_allocated="));
-    assert!(stats_event.contains("thunks_forced="));
-    assert!(stats_event.contains("force_cache_hits="));
-    assert!(stats_event.contains("force_cache_misses="));
-    assert!(stats_event.contains("force_cache_probes="));
-    assert!(stats_event.contains("force_cache_memoization_admits="));
-    assert!(stats_event.contains("force_cache_memoization_bypasses="));
-    assert!(stats_event.contains("force_cache_memoization_demands="));
-    assert!(stats_event.contains("force_cache_materialization_materializes="));
-    assert!(stats_event.contains("force_cache_materialization_keeps_in_memory="));
-    assert!(stats_event.contains("force_cache_materialization_decisions="));
-    assert!(stats_event.contains("source_thunk_region_plan_decisions="));
-    assert!(stats_event.contains("source_thunk_region_plan_lexical_subregion_decisions="));
-    assert!(stats_event.contains("source_thunk_region_plan_conservative_fallbacks="));
-    assert!(stats_event.contains("cache_hits="));
-    assert!(stats_event.contains("early_cutoffs=0"));
-    assert!(stats_event.contains("derivation_aterm_path_reuses=0"));
-    assert!(stats_event.contains("static_derivation_output_path_reuses=0"));
-    assert!(stats_event.contains("derivation_hash_calculations=0"));
-    assert!(stats_event.contains("derivation_text_path_calculations=0"));
-    assert!(stats_event.contains("heap_used_bytes="));
+    assert_trace_field(stats_event, "thunks_allocated");
+    assert_trace_field(stats_event, "thunks_forced");
+    assert_trace_field(stats_event, "force_cache_hits");
+    assert_trace_field(stats_event, "force_cache_misses");
+    assert_trace_field(stats_event, "force_cache_probes");
+    assert_trace_field(stats_event, "force_cache_memoization_admits");
+    assert_trace_field(stats_event, "force_cache_memoization_bypasses");
+    assert_trace_field(stats_event, "force_cache_memoization_demands");
+    assert_trace_field(stats_event, "force_cache_materialization_materializes");
+    assert_trace_field(stats_event, "force_cache_materialization_keeps_in_memory");
+    assert_trace_field(stats_event, "force_cache_materialization_decisions");
+    assert_trace_field(stats_event, "source_thunk_region_plan_decisions");
+    assert_trace_field(
+        stats_event,
+        "source_thunk_region_plan_lexical_subregion_decisions",
+    );
+    assert_trace_field(
+        stats_event,
+        "source_thunk_region_plan_conservative_fallbacks",
+    );
+    assert_trace_field(stats_event, "cache_hits");
+    assert_trace_field_value(stats_event, "early_cutoffs", 0);
+    assert_trace_field_value(stats_event, "derivation_aterm_path_reuses", 0);
+    assert_trace_field_value(stats_event, "static_derivation_output_path_reuses", 0);
+    assert_trace_field_value(stats_event, "derivation_hash_calculations", 0);
+    assert_trace_field_value(stats_event, "derivation_text_path_calculations", 0);
+    assert_trace_field(stats_event, "heap_chunks");
+    assert_trace_field(stats_event, "heap_reserved_bytes");
+    assert_trace_field(stats_event, "heap_mapped_bytes");
+    assert_trace_field(stats_event, "heap_used_bytes");
+    assert_trace_field(stats_event, "permanent_heap_chunks");
+    assert_trace_field(stats_event, "permanent_heap_reserved_bytes");
+    assert_trace_field(stats_event, "permanent_heap_mapped_bytes");
+    assert_trace_field(stats_event, "permanent_heap_used_bytes");
 }

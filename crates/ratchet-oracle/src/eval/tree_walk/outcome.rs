@@ -3181,7 +3181,12 @@ pub struct EvalStats {
     pub(crate) derivation_text_path_calculations: u64,
     pub(crate) heap_chunks: u64,
     pub(crate) heap_reserved_bytes: u64,
+    pub(crate) heap_mapped_bytes: u64,
     pub(crate) heap_used_bytes: u64,
+    pub(crate) permanent_heap_chunks: u64,
+    pub(crate) permanent_heap_reserved_bytes: u64,
+    pub(crate) permanent_heap_mapped_bytes: u64,
+    pub(crate) permanent_heap_used_bytes: u64,
 }
 
 impl EvalStats {
@@ -3338,19 +3343,44 @@ impl EvalStats {
         self.derivation_text_path_calculations
     }
 
-    /// Returns the number of bump-arena chunks allocated by the evaluator heap.
+    /// Returns the number of worker bump-arena chunks allocated by the evaluator heap.
     pub const fn heap_chunks(&self) -> u64 {
         self.heap_chunks
     }
 
-    /// Returns bytes reserved by evaluator heap chunks.
+    /// Returns bytes reserved by worker evaluator heap chunks.
     pub const fn heap_reserved_bytes(&self) -> u64 {
         self.heap_reserved_bytes
     }
 
-    /// Returns bytes consumed by evaluator heap allocations.
+    /// Returns page-rounded bytes mapped by the worker evaluator heap arena.
+    pub const fn heap_mapped_bytes(&self) -> u64 {
+        self.heap_mapped_bytes
+    }
+
+    /// Returns bytes consumed by worker evaluator heap allocations.
     pub const fn heap_used_bytes(&self) -> u64 {
         self.heap_used_bytes
+    }
+
+    /// Returns the number of permanent shared bump-arena chunks allocated.
+    pub const fn permanent_heap_chunks(&self) -> u64 {
+        self.permanent_heap_chunks
+    }
+
+    /// Returns bytes reserved by permanent shared evaluator heap chunks.
+    pub const fn permanent_heap_reserved_bytes(&self) -> u64 {
+        self.permanent_heap_reserved_bytes
+    }
+
+    /// Returns page-rounded bytes mapped by the permanent shared evaluator heap arena.
+    pub const fn permanent_heap_mapped_bytes(&self) -> u64 {
+        self.permanent_heap_mapped_bytes
+    }
+
+    /// Returns bytes consumed by permanent shared evaluator heap allocations.
+    pub const fn permanent_heap_used_bytes(&self) -> u64 {
+        self.permanent_heap_used_bytes
     }
 }
 
