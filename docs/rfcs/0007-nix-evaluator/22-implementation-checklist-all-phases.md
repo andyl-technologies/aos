@@ -7095,8 +7095,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       inputs can be combined with corpus paths, and failures keep seed-path
       names in the human and machine-readable reports. This lets the command
       consume the source-seed portion of the `parity_json` corpus budget, but it
-      does not generate the corpus, apply per-seed eval config metadata instead
-      of the command's global eval flags, wire CI, or close `C-4`.
+      does not generate the corpus, wire CI, or close `C-4`.
+- [x] Current `--eval --json` source-seed config precursor:
+      `--eval-json-corpus` now applies each source seed's
+      `# aos-nix-fuzz-config` metadata to both nix-cli and the native candidate
+      before comparing that seed. Seed-local eval mode, target system,
+      restricted-eval paths, and URI allowlists override the command's global
+      eval flags while preserving unrelated evaluator settings such as store
+      directories, trace verbosity, and native memory/cache limits; reproduction
+      commands render the effective per-seed config, and malformed metadata is
+      rejected during corpus loading. This closes the config-replay part of the
+      source-seed corpus gate, but still does not generate the corpus, wire CI,
+      or close `C-4`.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with

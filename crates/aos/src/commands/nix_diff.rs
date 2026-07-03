@@ -271,21 +271,12 @@ pub fn run(
         mode,
         NixRunner::ensure_nix_instantiate_available,
     )?;
-    let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
 
     if eval_json {
-        let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
-        let candidate_name = candidate.name();
-        return run_eval_json(
-            printer,
-            &oracle,
-            candidate.as_ref(),
-            candidate_name,
-            &eval_config,
-            exprs,
-            eval_json_corpus,
-        );
+        return run_eval_json(printer, verbose, &eval_config, exprs, eval_json_corpus);
     }
+
+    let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
 
     if cache_validation {
         return run_cache_validation(
@@ -743,29 +734,46 @@ fn run_all(
 
 fn run_eval_json(
     printer: &Printer,
-    oracle: &NixCli,
-    candidate: &dyn NixEval,
-    candidate_name: &str,
+    verbose: u8,
     eval_config: &NixEvalConfig,
     exprs: &[String],
     eval_json_corpus: &[PathBuf],
 ) -> Result<()> {
-    let entries = eval_json_entries(exprs, eval_json_corpus)?;
+    let entries = eval_json_entries(exprs, eval_json_corpus, eval_config)?;
+    let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
+    let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
+    let candidate_name = candidate.name();
     printer.info(&format!(
         "Comparing {} strict JSON expression(s)...",
         entries.len()
     ));
 
-    let reports = entries
-        .iter()
-        .map(|entry| eval_json_report(oracle, candidate, entry))
-        .collect::<Vec<_>>();
+    let mut reports = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let Some(entry_eval_config) = entry.eval_config.as_ref() else {
+            reports.push(eval_json_report(
+                &oracle,
+                candidate.as_ref(),
+                entry,
+                eval_config,
+            ));
+            continue;
+        };
+        let entry_oracle = NixCli::with_eval_config(verbose, entry_eval_config.clone());
+        let entry_candidate =
+            select_native_diff_candidate_with_config(verbose, entry_eval_config.clone())?;
+        reports.push(eval_json_report(
+            &entry_oracle,
+            entry_candidate.as_ref(),
+            entry,
+            entry_eval_config,
+        ));
+    }
     let failure = eval_json_failure(&reports);
 
     if printer.json_if_active(&eval_json_report_json(
         &reports,
         candidate_name,
-        eval_config,
         failure.as_ref(),
     )) {
         if let Some(failure) = failure {
@@ -802,7 +810,7 @@ fn run_eval_json(
             printer.plain(&format!("  - {}: {failure}", report.name));
             printer.plain(&format!(
                 "      reproduce: {}",
-                eval_json_reproduction_command(eval_config, &report.expr)
+                eval_json_reproduction_command(&report.eval_config, &report.expr)
             ));
             if let (EvalJsonResult::Value(oracle), EvalJsonResult::Value(candidate)) =
                 (&report.oracle, &report.candidate)
@@ -815,7 +823,11 @@ fn run_eval_json(
     Err(failure.into())
 }
 
-fn eval_json_entries(exprs: &[String], eval_json_corpus: &[PathBuf]) -> Result<Vec<EvalJsonEntry>> {
+fn eval_json_entries(
+    exprs: &[String],
+    eval_json_corpus: &[PathBuf],
+    eval_config: &NixEvalConfig,
+) -> Result<Vec<EvalJsonEntry>> {
     if exprs.is_empty() && eval_json_corpus.is_empty() {
         return Ok(default_eval_json_entries());
     }
@@ -826,11 +838,12 @@ fn eval_json_entries(exprs: &[String], eval_json_corpus: &[PathBuf]) -> Result<V
         .map(|(index, expr)| EvalJsonEntry {
             name: format!("expr[{index}]"),
             expr: expr.clone(),
+            eval_config: None,
         })
         .collect::<Vec<_>>();
 
     for path in eval_json_corpus {
-        entries.extend(eval_json_corpus_entries(path)?);
+        entries.extend(eval_json_corpus_entries(path, eval_config)?);
     }
 
     if entries.is_empty() {
@@ -869,13 +882,17 @@ in builtins.getContext "${x}""#,
     .map(|(name, expr)| EvalJsonEntry {
         name: name.to_string(),
         expr: expr.to_string(),
+        eval_config: None,
     })
     .collect()
 }
 
-fn eval_json_corpus_entries(path: &Path) -> Result<Vec<EvalJsonEntry>> {
+fn eval_json_corpus_entries(
+    path: &Path,
+    eval_config: &NixEvalConfig,
+) -> Result<Vec<EvalJsonEntry>> {
     if path.is_file() {
-        return eval_json_seed_entry(path).map(|entry| vec![entry]);
+        return eval_json_seed_entry(path, eval_config).map(|entry| vec![entry]);
     }
     if !path.exists() {
         return Err(AosError::InvalidArgument {
@@ -924,35 +941,38 @@ fn eval_json_corpus_entries(path: &Path) -> Result<Vec<EvalJsonEntry>> {
 
     seed_paths
         .iter()
-        .map(|seed_path| eval_json_seed_entry(seed_path))
+        .map(|seed_path| eval_json_seed_entry(seed_path, eval_config))
         .collect()
 }
 
-fn eval_json_seed_entry(path: &Path) -> Result<EvalJsonEntry> {
+fn eval_json_seed_entry(path: &Path, eval_config: &NixEvalConfig) -> Result<EvalJsonEntry> {
     let seed = fs::read_to_string(path)
         .with_context(|| format!("reading eval-json source seed {}", path.display()))?;
-    let expr = eval_json_source_seed_expr(&seed).map_err(|error| AosError::InvalidArgument {
-        message: format!(
-            "eval-json source seed {}: {}",
-            error.description(),
-            path.display()
-        ),
-    })?;
+    let seed =
+        eval_json_source_seed(&seed, eval_config).map_err(|error| AosError::InvalidArgument {
+            message: format!("eval-json source seed {error}: {}", path.display()),
+        })?;
     Ok(EvalJsonEntry {
         name: format!("seed:{}", path.display()),
-        expr,
+        expr: seed.expr,
+        eval_config: seed.eval_config,
     })
 }
 
-fn eval_json_source_seed_expr(seed: &str) -> std::result::Result<String, EvalJsonSourceSeedError> {
+fn eval_json_source_seed(
+    seed: &str,
+    eval_config: &NixEvalConfig,
+) -> std::result::Result<EvalJsonSourceSeed, EvalJsonSourceSeedError> {
     let seed = seed
         .strip_prefix(SOURCE_SEED_PREFIX)
         .ok_or(EvalJsonSourceSeedError::MissingPrefix)?;
+    let mut metadata = EvalJsonSourceSeedMetadata::default();
     let mut source_lines = Vec::new();
     let mut reading_config = true;
     for line in seed.lines() {
         if reading_config {
-            if line.starts_with(SOURCE_SEED_CONFIG_PREFIX) {
+            if let Some(raw_config) = line.strip_prefix(SOURCE_SEED_CONFIG_PREFIX) {
+                metadata.apply_config_line(raw_config)?;
                 continue;
             }
             if line.trim().is_empty() {
@@ -963,25 +983,144 @@ fn eval_json_source_seed_expr(seed: &str) -> std::result::Result<String, EvalJso
         source_lines.push(line);
     }
 
-    let source = source_lines.join("\n").trim().to_string();
-    if source.is_empty() {
-        Err(EvalJsonSourceSeedError::EmptySource)
-    } else {
-        Ok(source)
+    let expr = source_lines.join("\n").trim().to_string();
+    if expr.is_empty() {
+        return Err(EvalJsonSourceSeedError::EmptySource);
+    }
+
+    let eval_config = metadata.eval_config(eval_config)?;
+    Ok(EvalJsonSourceSeed { expr, eval_config })
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct EvalJsonSourceSeed {
+    expr: String,
+    eval_config: Option<NixEvalConfig>,
+}
+
+#[derive(Debug, Default)]
+struct EvalJsonSourceSeedMetadata {
+    has_metadata: bool,
+    eval_mode: Option<NixEvalMode>,
+    current_system: Option<String>,
+    allowed_paths: Vec<String>,
+    allowed_uris: Vec<String>,
+}
+
+impl EvalJsonSourceSeedMetadata {
+    fn apply_config_line(
+        &mut self,
+        line: &str,
+    ) -> std::result::Result<(), EvalJsonSourceSeedError> {
+        self.has_metadata = true;
+        let (key, value) =
+            line.split_once('=')
+                .ok_or_else(|| EvalJsonSourceSeedError::InvalidConfig {
+                    message: format!("metadata line {line:?} is missing '='"),
+                })?;
+        let key = key.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(EvalJsonSourceSeedError::InvalidConfig {
+                message: format!("metadata key {key:?} has an empty value"),
+            });
+        }
+
+        match key {
+            "eval-mode" => {
+                self.eval_mode = Some(match value {
+                    "ambient" => {
+                        return Err(EvalJsonSourceSeedError::InvalidConfig {
+                            message: "eval-mode \"ambient\" is not supported by eval-json diff"
+                                .to_string(),
+                        });
+                    }
+                    "impure" => NixEvalMode::Impure,
+                    "restricted" => NixEvalMode::Restricted,
+                    "pure" => NixEvalMode::Pure,
+                    _ => {
+                        return Err(EvalJsonSourceSeedError::InvalidConfig {
+                            message: format!("unknown eval-mode {value:?}"),
+                        });
+                    }
+                });
+            }
+            "current-system" | "system" => self.current_system = Some(value.to_string()),
+            "allowed-path" => self.allowed_paths.push(value.to_string()),
+            "allowed-uri" => self.allowed_uris.push(value.to_string()),
+            _ => {
+                return Err(EvalJsonSourceSeedError::InvalidConfig {
+                    message: format!("unknown metadata key {key:?}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_config(
+        self,
+        base: &NixEvalConfig,
+    ) -> std::result::Result<Option<NixEvalConfig>, EvalJsonSourceSeedError> {
+        if !self.has_metadata {
+            return Ok(None);
+        }
+
+        let mut config = base.clone();
+        if let Some(eval_mode) = self.eval_mode {
+            config.set_eval_mode(eval_mode);
+            config.clear_allowed_paths();
+            config.clear_allowed_uris();
+        }
+        if !self.allowed_paths.is_empty() || !self.allowed_uris.is_empty() {
+            config.clear_allowed_paths();
+            config.clear_allowed_uris();
+        }
+        if let Some(current_system) = self.current_system {
+            config
+                .set_current_system(current_system)
+                .map_err(EvalJsonSourceSeedError::invalid_config)?;
+        }
+        for path in self.allowed_paths {
+            config
+                .add_allowed_path(path)
+                .map_err(EvalJsonSourceSeedError::invalid_config)?;
+        }
+        for uri in self.allowed_uris {
+            config
+                .add_allowed_uri(uri)
+                .map_err(EvalJsonSourceSeedError::invalid_config)?;
+        }
+        Ok(Some(config))
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 enum EvalJsonSourceSeedError {
     MissingPrefix,
     EmptySource,
+    InvalidConfig { message: String },
 }
 
 impl EvalJsonSourceSeedError {
-    fn description(self) -> &'static str {
+    fn invalid_config(error: anyhow::Error) -> Self {
+        Self::InvalidConfig {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for EvalJsonSourceSeedError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingPrefix => "must start with \"# aos-nix-fuzz-source\\n\"",
-            Self::EmptySource => "contains no source expression after metadata",
+            Self::MissingPrefix => {
+                formatter.write_str("must start with \"# aos-nix-fuzz-source\\n\"")
+            }
+            Self::EmptySource => {
+                formatter.write_str("contains no source expression after metadata")
+            }
+            Self::InvalidConfig { message } => {
+                write!(formatter, "has invalid metadata: {message}")
+            }
         }
     }
 }
@@ -990,6 +1129,7 @@ fn eval_json_report(
     oracle: &dyn NixEval,
     candidate: &dyn NixEval,
     entry: &EvalJsonEntry,
+    eval_config: &NixEvalConfig,
 ) -> EvalJsonReport {
     let oracle_result = eval_json_side(oracle, &entry.expr);
     let candidate_result = eval_json_side(candidate, &entry.expr);
@@ -998,6 +1138,7 @@ fn eval_json_report(
     EvalJsonReport {
         name: entry.name.clone(),
         expr: entry.expr.clone(),
+        eval_config: eval_config.clone(),
         oracle: oracle_result,
         candidate: candidate_result,
         failure,
@@ -1067,12 +1208,14 @@ struct AttrDiffReport {
 struct EvalJsonEntry {
     name: String,
     expr: String,
+    eval_config: Option<NixEvalConfig>,
 }
 
 #[derive(Debug)]
 struct EvalJsonReport {
     name: String,
     expr: String,
+    eval_config: NixEvalConfig,
     oracle: EvalJsonResult,
     candidate: EvalJsonResult,
     failure: Option<NixDiffReportedFailure>,
@@ -2323,7 +2466,6 @@ fn corpus_json(
 fn eval_json_report_json(
     reports: &[EvalJsonReport],
     candidate_name: &str,
-    eval_config: &NixEvalConfig,
     failure: Option<&NixDiffReportedFailure>,
 ) -> serde_json::Value {
     let failed_exprs = reports
@@ -2342,20 +2484,16 @@ fn eval_json_report_json(
         "expressions_failed": failed_exprs,
         "divergence_count": divergence_count,
         "reports": reports.iter()
-            .map(|report| eval_json_entry_json(report, candidate_name, eval_config))
+            .map(|report| eval_json_entry_json(report, candidate_name))
             .collect::<Vec<_>>(),
     })
 }
 
-fn eval_json_entry_json(
-    report: &EvalJsonReport,
-    candidate_name: &str,
-    eval_config: &NixEvalConfig,
-) -> serde_json::Value {
+fn eval_json_entry_json(report: &EvalJsonReport, candidate_name: &str) -> serde_json::Value {
     serde_json::json!({
         "name": report.name,
         "expr": report.expr,
-        "reproduce": eval_json_reproduction_command(eval_config, &report.expr),
+        "reproduce": eval_json_reproduction_command(&report.eval_config, &report.expr),
         "oracle": "nix-cli",
         "candidate": candidate_name,
         "matched": report.failure.is_none(),
@@ -3548,7 +3686,7 @@ mod tests {
         fs::write(dir.join("a.seed"), "# aos-nix-fuzz-source\n{ a = 1; }\n")?;
         fs::write(dir.join("ignored.txt"), "# aos-nix-fuzz-source\n0\n")?;
 
-        let entries = eval_json_entries(&[], &[dir.to_path_buf()])?;
+        let entries = eval_json_entries(&[], &[dir.to_path_buf()], &repro_config())?;
 
         assert_eq!(entries.len(), 2);
         assert!(entries[0].name.ends_with("a.seed"));
@@ -3567,7 +3705,7 @@ mod tests {
             "# aos-nix-fuzz-source\nbuiltins.length [ (1 / 0) ]\n",
         )?;
 
-        let entries = eval_json_entries(&["1 + 1".to_string()], &[seed])?;
+        let entries = eval_json_entries(&["1 + 1".to_string()], &[seed], &repro_config())?;
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "expr[0]");
@@ -3578,18 +3716,163 @@ mod tests {
     }
 
     #[test]
+    fn eval_json_entries_applies_source_seed_eval_config_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("restricted.seed");
+        let allowed_path = temp.path().join("allowed");
+        fs::create_dir(&allowed_path)?;
+        fs::write(
+            &seed,
+            format!(
+                "# aos-nix-fuzz-source\n\
+                 # aos-nix-fuzz-config eval-mode=restricted\n\
+                 # aos-nix-fuzz-config current-system=aos-seed-target\n\
+                 # aos-nix-fuzz-config allowed-path={}\n\
+                 # aos-nix-fuzz-config allowed-uri=https://cache.example/\n\
+                 builtins.currentSystem\n",
+                allowed_path.display()
+            ),
+        )?;
+        let mut base = repro_config();
+        base.set_eval_mode(NixEvalMode::Pure);
+        base.set_current_system("aos-global-target")?;
+        base.add_allowed_path(temp.path().to_string_lossy().into_owned())?;
+
+        let entries = eval_json_entries(&[], &[seed], &base)?;
+
+        let seed_config = entries[0]
+            .eval_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata should produce a seed-local config"))?;
+        assert_eq!(entries[0].expr, "builtins.currentSystem");
+        assert_eq!(seed_config.eval_mode(), NixEvalMode::Restricted);
+        assert_eq!(seed_config.current_system(), Some("aos-seed-target"));
+        assert_eq!(
+            seed_config.allowed_paths(),
+            [allowed_path.to_string_lossy().into_owned()]
+        );
+        assert_eq!(seed_config.allowed_uris(), ["https://cache.example/"]);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_source_seed_allowlists_override_without_eval_mode() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("allowlist-only.seed");
+        let global_path = temp.path().join("global");
+        let seed_path = temp.path().join("seed");
+        fs::create_dir(&global_path)?;
+        fs::create_dir(&seed_path)?;
+        fs::write(
+            &seed,
+            format!(
+                "# aos-nix-fuzz-source\n\
+                 # aos-nix-fuzz-config allowed-path={}\n\
+                 # aos-nix-fuzz-config allowed-uri=https://seed.example/\n\
+                 1\n",
+                seed_path.display()
+            ),
+        )?;
+        let mut base = repro_config();
+        base.set_eval_mode(NixEvalMode::Restricted);
+        base.add_allowed_path(global_path.to_string_lossy().into_owned())?;
+        base.add_allowed_uri("https://global.example/")?;
+
+        let entries = eval_json_entries(&[], &[seed], &base)?;
+
+        let seed_config = entries[0]
+            .eval_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata should produce a seed-local config"))?;
+        assert_eq!(seed_config.eval_mode(), NixEvalMode::Restricted);
+        assert_eq!(
+            seed_config.allowed_paths(),
+            [seed_path.to_string_lossy().into_owned()]
+        );
+        assert_eq!(seed_config.allowed_uris(), ["https://seed.example/"]);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_accepts_source_seed_system_alias() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("system-alias.seed");
+        fs::write(
+            &seed,
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config system=aos-system-alias\n\
+             builtins.currentSystem\n",
+        )?;
+
+        let entries = eval_json_entries(&[], &[seed], &repro_config())?;
+
+        let seed_config = entries[0]
+            .eval_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata should produce a seed-local config"))?;
+        assert_eq!(seed_config.current_system(), Some("aos-system-alias"));
+        Ok(())
+    }
+
+    #[test]
     fn eval_json_entries_rejects_non_source_seed_files() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let seed = temp.path().join("opaque.seed");
         fs::write(&seed, "not a source seed")?;
 
-        let error = eval_json_entries(&[], &[seed])
+        let error = eval_json_entries(&[], &[seed], &repro_config())
             .expect_err("opaque fuzz bytes are not replayable as eval-json source seeds");
 
         assert!(
             error
                 .to_string()
                 .contains("source seed must start with \"# aos-nix-fuzz-source"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_rejects_invalid_source_seed_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("bad-config.seed");
+        fs::write(
+            &seed,
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config allowed-path=relative\n\
+             1\n",
+        )?;
+
+        let error = eval_json_entries(&[], &[seed], &repro_config())
+            .expect_err("relative allowed paths should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("has invalid metadata: allowed evaluation path must be absolute"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_entries_rejects_unknown_source_seed_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let seed = temp.path().join("unknown-config.seed");
+        fs::write(
+            &seed,
+            "# aos-nix-fuzz-source\n\
+             # aos-nix-fuzz-config allowed-urii=https://cache.example/\n\
+             1\n",
+        )?;
+
+        let error = eval_json_entries(&[], &[seed], &repro_config())
+            .expect_err("unknown metadata keys should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("has invalid metadata: unknown metadata key \"allowed-urii\""),
             "{error}"
         );
         Ok(())
@@ -3605,8 +3888,8 @@ mod tests {
              # aos-nix-fuzz-config eval-mode=impure\n",
         )?;
 
-        let error =
-            eval_json_entries(&[], &[seed]).expect_err("empty source seeds should be rejected");
+        let error = eval_json_entries(&[], &[seed], &repro_config())
+            .expect_err("empty source seeds should be rejected");
 
         assert!(
             error
@@ -4106,15 +4389,17 @@ mod tests {
     fn eval_json_report_json_renders_matching_expression() {
         let oracle = FixedJsonEval::value("oracle", r#"{"a":1}"#);
         let candidate = FixedJsonEval::value("candidate", r#"{"a":1}"#);
+        let config = repro_config();
         let entry = EvalJsonEntry {
             name: "sample".to_string(),
             expr: "1".to_string(),
+            eval_config: None,
         };
-        let report = eval_json_report(&oracle, &candidate, &entry);
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
 
         assert_eq!(oracle.eval_expr_calls(), 1);
         assert_eq!(candidate.eval_expr_calls(), 1);
@@ -4140,15 +4425,17 @@ mod tests {
     fn eval_json_report_json_renders_value_divergence() {
         let oracle = FixedJsonEval::value("oracle", "1");
         let candidate = FixedJsonEval::value("candidate", "2");
+        let config = repro_config();
         let entry = EvalJsonEntry {
             name: "seed:/tmp/parity_json/number.seed".to_string(),
             expr: "1 + 1".to_string(),
+            eval_config: None,
         };
-        let report = eval_json_report(&oracle, &candidate, &entry);
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
 
         assert_eq!(
             failure.as_ref().map(ToString::to_string).as_deref(),
@@ -4168,18 +4455,49 @@ mod tests {
     }
 
     #[test]
-    fn eval_json_report_json_renders_candidate_error() {
+    fn eval_json_report_json_renders_seed_effective_config() -> Result<()> {
         let oracle = FixedJsonEval::value("oracle", "1");
-        let candidate = FixedJsonEval::error("candidate", "unsupported builtin");
+        let candidate = FixedJsonEval::value("candidate", "1");
+        let mut config = repro_config();
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.set_current_system("aos-seed-target")?;
+        config.add_allowed_path("/aos/seed")?;
+        config.add_allowed_uri("https://seed.example/")?;
         let entry = EvalJsonEntry {
-            name: "unsupported".to_string(),
-            expr: "builtins.currentTime".to_string(),
+            name: "seed:/tmp/parity_json/config.seed".to_string(),
+            expr: "builtins.currentSystem".to_string(),
+            eval_config: Some(config.clone()),
         };
-        let report = eval_json_report(&oracle, &candidate, &entry);
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", &repro_config(), failure.as_ref());
+        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+
+        assert_eq!(
+            value["reports"][0]["reproduce"],
+            "aos --eval-system=aos-seed-target --restrict-eval \
+             --eval-allow-path=/aos/seed --eval-allow-uri=https://seed.example/ \
+             nix-diff --eval-json --expr=builtins.currentSystem"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_candidate_error() {
+        let oracle = FixedJsonEval::value("oracle", "1");
+        let candidate = FixedJsonEval::error("candidate", "unsupported builtin");
+        let config = repro_config();
+        let entry = EvalJsonEntry {
+            name: "unsupported".to_string(),
+            expr: "builtins.currentTime".to_string(),
+            eval_config: None,
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
 
         assert_eq!(
             failure.as_ref().map(ToString::to_string).as_deref(),

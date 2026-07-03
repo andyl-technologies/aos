@@ -42,9 +42,10 @@ aos nix-diff --eval-json --eval-json-corpus fuzz/corpus/parity_json
 aos nix-diff --eval-json --eval-json-corpus fuzz/corpus/parity_json/generated
 ```
 
-The CLI loader accepts only `# aos-nix-fuzz-source` seed files, strips
-`# aos-nix-fuzz-config ...` metadata comments, and uses the command's global
-eval flags for both evaluators.
+The CLI loader accepts only `# aos-nix-fuzz-source` seed files and applies
+`# aos-nix-fuzz-config ...` metadata to both evaluators. Seed-local eval mode,
+target system, and restricted-eval allowlists override the command's global eval
+flags; older source seeds without metadata still use the command flags.
 
 `internal_diff_raw` currently uses a tree-walk mirror candidate so the fuzz
 target and corpus are live before optimized tiers exist. P6/P7 tiers replace
