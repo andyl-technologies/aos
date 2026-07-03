@@ -4,11 +4,10 @@
   attrPath ? "checks.crucible.phase2.gates.qemuInert",
   taskIds ? ["T-HARN-21" "T-PATCH-3"],
   patchMicrotests ? import ./phase2-patch-microtests.nix {inherit pkgs lib;},
+  referenceQemu ? pkgs.qemu-crucible-reference,
+  patchedQemu ? pkgs.qemu-crucible,
   dependencies ? [],
 }: let
-  referenceQemu = pkgs.qemu-crucible-reference;
-  patchedQemu = pkgs.qemu-crucible;
-
   workload = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-inert-workload";
     version = "0";

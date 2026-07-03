@@ -339,6 +339,29 @@ in
         ;
     };
 
+    checks = {testing, self, pkgs}:
+      if pname == "qemu-crucible"
+      then let
+        patchMicrotests = import ../../tests/crucible/phase2-patch-microtests.nix {
+          inherit pkgs lib;
+          qemuPackage = self;
+          attrPath = "checks.integration.qemu-crucible-patch-microtests";
+          taskIds = ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+        };
+      in {
+        patch-microtests = patchMicrotests;
+        qemu-inert = import ../../tests/crucible/phase2-qemu-inert.nix {
+          inherit pkgs lib;
+          inherit patchMicrotests;
+          patchedQemu = self;
+          referenceQemu = pkgs.qemu-crucible-reference;
+          attrPath = "checks.integration.qemu-crucible-qemu-inert";
+          taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
+          dependencies = [patchMicrotests];
+        };
+      }
+      else {};
+
     meta = {
       description = "qemu — machine emulator and virtualizer (minimal KVM build)";
       homepage = "https://www.qemu.org";

@@ -224,6 +224,51 @@
       })
       fleetFiles
     );
+
+  crucibleChecks = import ./tests/crucible {inherit pkgs lib;};
+
+  crucibleFleetChecks = {
+    crucible-e2e-determinism = let
+      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+    in
+      pkgs.mkDerivation {
+        pname = "crucible-fleet-e2e-determinism-surface";
+        version = "0";
+        src = null;
+
+        buildDeps = [
+          pkgs.coreutils
+          pkgs.grep
+          e2eGate
+        ];
+
+        phases = [
+          {
+            name = "check-fleet-e2e-surface";
+            script = ''
+              set -eu
+
+              result="${e2eGate}/result"
+              grep -q '^PASS$' "$result"
+              grep -q '^gate=gate:e2e-determinism$' "$result"
+              grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$' "$result"
+
+              mkdir -p "$out"
+              cat > "$out/result" <<'RESULT'
+              PASS
+              check=checks.fleet.crucible-e2e-determinism
+              gate=gate:e2e-determinism
+              source_check=checks.crucible.phase7.gates.e2eDeterminism
+              e2e_gate_result=${e2eGate}/result
+              fleet_surface=true
+              lib_testing_runner=deferred-to-T-PKG-15
+              tcg_only_vm_runner=deferred-to-T-PKG-15
+              RESULT
+            '';
+          }
+        ];
+      };
+  };
 in {
   inherit lib pkgs stdenv modules mkSystem;
 
@@ -271,7 +316,7 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
-    crucible = import ./tests/crucible {inherit pkgs lib;};
+    crucible = crucibleChecks;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
@@ -279,6 +324,6 @@ in {
         apm = apmTests;
       };
     integration = packageChecks // stdenvChecks;
-    fleet = discoverFleetTests;
+    fleet = discoverFleetTests // crucibleFleetChecks;
   };
 }

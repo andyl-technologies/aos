@@ -293,7 +293,7 @@
       }
       {
         label = "phase7 e2e determinism consumes fixture proof";
-        needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures];";
+        needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring];";
       }
     ];
 in
