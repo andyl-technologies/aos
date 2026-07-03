@@ -450,6 +450,16 @@ long-held locks.
   rejection of `--to`/`--bisect`; full closure waits for content-addressed
   component resolution, replay-to-savepoint, on-mismatch bisection, and
   machine-independent backend replay coverage.
+  `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
+  currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
+  concrete scenario resolution for search, family reference resolution for fuzz,
+  search strategy/budget/violation-mode validation, seeded coverage-guided fuzz
+  config construction, and an explicit backend error until the
+  exploration-engine driver over phase-6 search/fuzz policies is wired; full
+  closure waits for invoking phase-6 search/fuzz runners through the selected
+  backend, in-search replay-oracle sampling, self-contained counterexample
+  artifact emission with repro commands, budget/outcome exit-code handling,
+  corpus persistence, and real-QEMU coverage.
   `T-CLI-14` is complete under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and
