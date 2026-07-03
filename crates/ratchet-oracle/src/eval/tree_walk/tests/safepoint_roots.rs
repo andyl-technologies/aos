@@ -2056,6 +2056,59 @@ fn outcome_root_writebacks_update_bound_value_stack_root() {
 }
 
 #[test]
+fn live_outcome_root_writebacks_bind_body_and_update_value_stack_root() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with an existing destination");
+    assert_eq!(live_metadata.reference_writebacks_installed(), 1);
+    let root_writeback_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_writeback = &root_writeback_plan.writes()[0];
+    let request = root_writeback.request();
+    assert!(matches!(
+        outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
+            request,
+            root_writeback.replacement_tag(),
+        ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(original_value) && destination == destination_address
+    ));
+    assert!(outcome.value().raw_eq(original_value));
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks()
+        .expect("live outcome root writeback binds body and rewrites value");
+
+    assert_eq!(report.object_bodies_written(), 1);
+    assert_eq!(report.object_body_write_report().objects(), 1);
+    assert_eq!(
+        report.object_body_write_report().payload_bytes(),
+        root_writeback.destination_bytes().len()
+    );
+    assert_eq!(report.value_stack_roots(), 1);
+    assert_eq!(report.roots(), 1);
+    assert!(outcome.value().raw_eq(destination_value));
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(
+            request,
+            root_writeback.replacement_tag(),
+        )
+        .expect("root replacement destination body is bound");
+}
+
+#[test]
 fn outcome_root_writebacks_reject_unbound_destination_body_without_mutation() {
     let (mut outcome, original_value, destination_value) =
         boundary_lambda_outcome_with_existing_destination();
@@ -2114,6 +2167,64 @@ fn outcome_root_writebacks_reject_stale_value_without_mutation() {
         }
     ));
     assert!(outcome.value().raw_eq(stale_value));
+}
+
+#[test]
+fn live_outcome_root_writebacks_reject_stale_value_before_body_write() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+    let stale_value = Value::int(1);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with an existing destination");
+    let root_writeback_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_writeback = &root_writeback_plan.writes()[0];
+    let request = root_writeback.request();
+    assert!(matches!(
+        outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
+            request,
+            root_writeback.replacement_tag(),
+        ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(original_value) && destination == destination_address
+    ));
+    outcome.value = stale_value;
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_outcome_root_writebacks()
+        .expect_err("stale outcome value is rejected before body writes");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+            index: 0,
+            expected_tag: ValueTag::Lambda,
+            actual_tag: ValueTag::Int,
+            ..
+        }
+    ));
+    assert!(outcome.value().raw_eq(stale_value));
+    assert!(matches!(
+        outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
+            request,
+            root_writeback.replacement_tag(),
+        ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(original_value) && destination == destination_address
+    ));
 }
 
 #[test]

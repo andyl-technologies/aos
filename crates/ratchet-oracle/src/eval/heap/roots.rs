@@ -1901,6 +1901,17 @@ impl AllocationCollectorPollObjectByteCopyPlan {
         Self { requests }
     }
 
+    /// Creates an object byte-copy plan from already-derived copy requests.
+    ///
+    /// This constructor preserves the caller's commit order. The returned plan
+    /// still validates duplicate, overlap, generation, and layout invariants when
+    /// it is lowered into a concrete generation or object-body writer.
+    pub(crate) fn from_requests(
+        requests: Vec<AllocationCollectorPollObjectByteCopyRequest>,
+    ) -> Self {
+        Self::new(requests)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_requests_for_test(
         requests: Vec<AllocationCollectorPollObjectByteCopyRequest>,
@@ -3963,6 +3974,30 @@ impl EvalHeap {
         }
 
         Ok(report)
+    }
+
+    /// Creates object-copy metadata for existing test heap records.
+    ///
+    /// The request uses the source record's current layout and the destination
+    /// implied by `action`, so tests can exercise object-body writers without
+    /// reaching into heap record internals.
+    #[cfg(test)]
+    pub(crate) fn collector_poll_minor_gc_object_byte_copy_request_for_test(
+        &self,
+        source: Value,
+        destination: Value,
+        action: MinorGcSurvivorAction,
+    ) -> Result<AllocationCollectorPollObjectByteCopyRequest, EvalHeapError> {
+        let source_record = self.record_for_scannable_value(source)?;
+        let destination_record = self.record_for_scannable_value(destination)?;
+        Ok(AllocationCollectorPollObjectByteCopyRequest::for_test(
+            gc_address_for_record(source_record)?,
+            gc_address_for_record(destination_record)?,
+            action,
+            generation_for_destination_action(action),
+            source_record.layout.size_bytes,
+            source_record.layout.align,
+        ))
     }
 
     /// Validates that a relocated destination heap record has a bound object body.
