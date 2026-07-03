@@ -1019,7 +1019,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     manifest objects, and read-merge-retry writes immutable merge-root records for
     corpus, coverage, and findings before advancing a manifest without changing
     genesis pin or provenance.
-    The full campaign-continuity gate remains T-DCE-9.
+    `gate:campaign-continuity` composes this manifest proof with campaign
+    seeding, storage bounding, and provenance gating.
 - [x] **T-DCE-5** Implement seeding run N+1 from the prior corpus (each entry a
   self-contained artifact replaying bit-identically) and the grow-only accumulated
   coverage map (union CRDT) driving the monotone continuous coverage ratchet, plus
@@ -1034,8 +1035,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     evaluated against the campaign-lifetime map, coverage-root merge is
     commutative/idempotent grow-only union, and findings ledger entries replay from
     their stored artifacts while rediscovery deduplicates by content. Fleet
-    equivalence is checked by `gate:fleet-equivalence`, and the full
-    campaign-continuity gate remains T-DCE-9.
+    equivalence is checked by `gate:fleet-equivalence`; `gate:campaign-continuity`
+    composes the run-to-run seed and accumulated coverage proof.
 - [x] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
   roots, fat→thin eviction (value preserved), and deterministic seeded corpus
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies
@@ -1056,8 +1057,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     fat→thin realization through `TemporalGraph::garbage_collect`,
     `TemporalGraph::garbage_collect_store`, and
     `TemporalGraph::evict_fat_checkpoint_to_thin`. Fleet equivalence is checked
-    by `gate:fleet-equivalence`, and the full campaign-continuity gate remains
-    T-DCE-9.
+    by `gate:fleet-equivalence`; `gate:campaign-continuity` composes the retained
+    corpus, coverage, and findings roots with provenance-keyed seeding.
 - [x] **T-DCE-7** Enforce the determinism distinction guardrail: distribution
   metadata MUST NOT flow into reduce/Decision/identity/artifact; extend
   `gate:harness-lint` to ban host id / lease timestamps / fleet size / peer count on
@@ -1071,7 +1072,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     Claim/lease/affinity/telemetry/progress coordination remains allowed, the
     phase7 `gate:fleet-equivalence` wrapper depends on this guard, and the fleet
     surface records the guard result before advertising distributed continuous
-    exploration. Campaign continuity remains T-DCE-9.
+    exploration. `gate:campaign-continuity` depends on the same distinction when
+    refusing cross-provenance seed reuse.
 - [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
@@ -1095,11 +1097,23 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     exploration, and the gate is dependency-ordered after
     `checks.crucible.phase2.gates.singleVmFingerprint` as its real-QEMU fidelity
     slice.
-- [ ] **T-DCE-9** Implement `gate:campaign-continuity` (seed-reproducibility of
+- [x] **T-DCE-9** Implement `gate:campaign-continuity` (seed-reproducibility of
   corpus entries across runs, monotone-non-decreasing accumulated coverage, and
   cross-provenance reuse refused / fresh-lineage fork), plus provenance gating of
   seeding keyed to the provenance triple. — satisfies [DCE-26], [DCE-27]; spec
   §35.6.1; cross-ref 26 §26.10.
+  - Completed by `checks.crucible.phase7.gates.campaignContinuity`:
+    `crucible-cas` now exposes provenance-keyed seeding through
+    `SharedCampaignStore::seed_next_run_for_provenance`,
+    `CampaignContinuitySeedDecision`, `CampaignFreshLineageRoots`, and
+    `CampaignFreshLineageBaselineEvent`. The gate seeds run N+1 from the prior
+    corpus only when the campaign and run provenance triples match, proving every
+    seed artifact replays bit-identically; it advances the campaign with grow-only
+    corpus, coverage, and findings roots and rejects coverage regression. Changed
+    provenance refuses corpus reuse, persists a fresh manifest with new corpus,
+    coverage, findings, and genesis roots, records a content-addressed
+    fresh-lineage baseline event, installs the fresh manifest as the campaign head,
+    and leaves prior ledger findings reproducible.
 - [ ] **T-DCE-10** Add `gate:fleet-equivalence` and `gate:campaign-continuity` to
   the canonical gate catalog (24 §1.1) verbatim and wire them into the phase plan
   after the search/fuzzing + replay-oracle gates; document the ratchet seam

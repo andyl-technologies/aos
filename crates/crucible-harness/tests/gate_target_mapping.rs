@@ -265,6 +265,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible",
                 "gate_fleet_equivalence"
             ),
+            (
+                "gate:campaign-continuity",
+                "crucible-cas",
+                "gate_campaign_continuity"
+            ),
         ])
     );
 }

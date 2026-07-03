@@ -360,6 +360,12 @@
       testTarget = "gate_fleet_equivalence";
       requiredFeatures = ["test-double"];
     }
+    {
+      gate = "gate:campaign-continuity";
+      package = "crucible-cas";
+      testTarget = "gate_campaign_continuity";
+      requiredFeatures = [];
+    }
   ];
 
   standards = [
@@ -475,6 +481,13 @@
       shape = "fleet-equivalence";
       backend = "mixed";
     }
+    {
+      gate = "gate:campaign-continuity";
+      ownerPackages = ["crucible-cas"];
+      layers = ["L3"];
+      shape = "campaign-continuity";
+      backend = "in-process";
+    }
   ];
 
   hashCompareGates = [
@@ -530,6 +543,10 @@
       gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:adversarial-determinism" "gate:e2e-determinism" "gate:fleet-equivalence"];
     }
     {
+      package = "crucible-cas";
+      gates = ["gate:campaign-continuity"];
+    }
+    {
       package = "crucible-session";
       gates = ["gate:control-responsive"];
     }
@@ -558,7 +575,7 @@
     then "L1"
     else if builtins.elem package ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"]
     then "L2"
-    else if package == "crucible"
+    else if builtins.elem package ["crucible" "crucible-cas"]
     then "L3"
     else if builtins.elem package ["crucible-session" "crucible-api" "crucible-daemon" "crucible-cli"]
     then "L4"
@@ -608,6 +625,19 @@
     ]
     ++ lib.optionals (!placeholder && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
       "${target.package}:${target.testTarget} must compare canonical digests, not formatted dumps"
+    ]
+    ++ lib.optionals (!placeholder && standard.shape == "campaign-continuity" && (
+      !(hasInfix "seed_next_run_for_provenance" code)
+      || !(hasInfix "CampaignContinuitySeedDecision" code)
+      || !(hasInfix "SeedPriorCorpus" code)
+      || !(hasInfix "RefuseCrossProvenanceReuse" code)
+      || !(hasInfix "baseline_event_hash" code)
+      || !(hasInfix "read_fresh_lineage_baseline_event" code)
+      || !(hasInfix "seed_next_run(&prior_manifest" code)
+      || !(hasInfix "accumulated_coverage_delta" code)
+      || !(hasInfix "compare_and_swap_head" code)
+    )) [
+      "${target.package}:${target.testTarget} must prove seed replay, coverage monotonicity, and provenance refusal for campaign continuity"
     ]
     ++ lib.optionals (!placeholder && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
       "${target.package}:${target.testTarget} must exercise the SimDouble backend"

@@ -346,7 +346,7 @@ in
             read_merge_retry=enabled
             merge_roots=materialized-objects
             gate_dependency=checks.crucible.phase7.gates.campaignContinuity
-            campaign_continuity_gate_status=red-pending
+            campaign_continuity_gate_status=implemented
             RESULT
           '';
         }

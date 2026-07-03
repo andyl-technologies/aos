@@ -266,6 +266,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &["test-double"],
         placeholder: false,
     },
+    GateTargetSpec {
+        gate: "gate:campaign-continuity",
+        package: "crucible-cas",
+        test_target: "gate_campaign_continuity",
+        required_features: &[],
+        placeholder: false,
+    },
 ];
 
 /// Returns every mapped gate target in RFC table order.

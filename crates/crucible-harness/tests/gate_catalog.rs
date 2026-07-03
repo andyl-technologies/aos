@@ -37,7 +37,7 @@ fn architecture_red_placeholder_gates_are_wired() {
             }
         })
         .collect();
-    let expected = BTreeSet::from(["gate:campaign-continuity", "gate:perf-bench"]);
+    let expected = BTreeSet::from(["gate:perf-bench"]);
 
     assert_eq!(placeholders, expected);
 
@@ -109,6 +109,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:fleet-equivalence").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:campaign-continuity").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

@@ -49,6 +49,7 @@ enum TestShape {
     DivergenceBisect,
     AdversarialCompare,
     FleetEquivalence,
+    CampaignContinuity,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +199,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         shape: TestShape::FleetEquivalence,
         backend: TestBackend::Mixed,
     },
+    GateTestingStandard {
+        gate: "gate:campaign-continuity",
+        owner_packages: &["crucible-cas"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignContinuity,
+        backend: TestBackend::InProcess,
+    },
 ];
 
 const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
@@ -255,6 +263,10 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:e2e-determinism",
             "gate:fleet-equivalence",
         ],
+    },
+    CrateTestingOwnership {
+        package: "crucible-cas",
+        gates: &["gate:campaign-continuity"],
     },
     CrateTestingOwnership {
         package: "crucible-session",

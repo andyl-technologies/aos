@@ -2597,13 +2597,10 @@ in rec {
       };
       campaignContinuity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.campaignContinuity";
-        gate = redGate {
+        gate = import ./phase7-crucible-campaign-continuity.nix {
+          inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.campaignContinuity";
-          gateName = "gate:campaign-continuity";
-          owner = "crucible-harness";
-          phase = "phase7";
           taskIds = ["T-PLAN-3" "T-DCE-9"];
-          reason = "campaign continuity gate is intentionally pending";
           dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];
         };
         dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];

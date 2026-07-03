@@ -279,8 +279,10 @@
       campaignManifestGate = crucibleChecks.phase7.crucibleCampaignManifest;
       campaignSeedingGate = crucibleChecks.phase7.crucibleCampaignSeeding;
       campaignStorageBoundingGate = crucibleChecks.phase7.crucibleCampaignStorageBounding;
+      campaignProvenanceGate = crucibleChecks.phase7.crucibleCampaignProvenance;
       determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;
       fleetEquivalenceGate = crucibleChecks.phase7.gates.fleetEquivalence.rawGate;
+      campaignContinuityGate = crucibleChecks.phase7.gates.campaignContinuity.rawGate;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -300,8 +302,10 @@
           campaignManifestGate
           campaignSeedingGate
           campaignStorageBoundingGate
+          campaignProvenanceGate
           determinismGuardrailGate
           fleetEquivalenceGate
+          campaignContinuityGate
         ];
 
         phases = [
@@ -379,6 +383,14 @@
               grep -q '^corpus_retention_reproducible=true$' "$campaign_storage_bounding_result"
               grep -q '^findings_ledger_retention=never-evict$' "$campaign_storage_bounding_result"
 
+              campaign_provenance_result="${campaignProvenanceGate}/result"
+              grep -q '^PASS$' "$campaign_provenance_result"
+              grep -q '^tasks=T-PKG-22$' "$campaign_provenance_result"
+              grep -q '^provenance_key=campaign_provenance_key$' "$campaign_provenance_result"
+              grep -q '^refusal=RefuseCrossProvenanceReuse$' "$campaign_provenance_result"
+              grep -q '^baseline_event=crucible.campaign.fresh-lineage-baseline.v1$' "$campaign_provenance_result"
+              grep -q '^refusal_reason=cross-provenance-corpus-reuse-refused$' "$campaign_provenance_result"
+
               determinism_guardrail_result="${determinismGuardrailGate}/result"
               grep -q '^PASS$' "$determinism_guardrail_result"
               grep -q '^tasks=T-DCE-7$' "$determinism_guardrail_result"
@@ -395,6 +407,18 @@
               grep -q '^discovery_order=diagnostic-only$' "$fleet_equivalence_result"
               grep -q '^real_qemu_slice_source=checks.crucible.phase2.gates.singleVmFingerprint$' "$fleet_equivalence_result"
               grep -q '^divergence_bisection=SearchReplayOracleBisectionRequest$' "$fleet_equivalence_result"
+
+              campaign_continuity_result="${campaignContinuityGate}/result"
+              grep -q '^PASS$' "$campaign_continuity_result"
+              grep -q '^gate=gate:campaign-continuity$' "$campaign_continuity_result"
+              grep -q '^tasks=T-PLAN-3,T-DCE-9$' "$campaign_continuity_result"
+              grep -q '^seed_reproducibility=bit-identical-prior-corpus$' "$campaign_continuity_result"
+              grep -q '^coverage_ratchet=monotone-non-decreasing$' "$campaign_continuity_result"
+              grep -q '^accumulated_coverage=grow-only-union-crdt$' "$campaign_continuity_result"
+              grep -q '^cross_provenance_reuse=refused$' "$campaign_continuity_result"
+              grep -q '^fresh_lineage=forked$' "$campaign_continuity_result"
+              grep -q '^provenance_seed_gate=triple-keyed$' "$campaign_continuity_result"
+              grep -q '^prior_findings=reproducible$' "$campaign_continuity_result"
 
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
@@ -453,6 +477,13 @@
               grep -q '^corpus_retention_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^corpus_retention_root=source-cap-seed-proof$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^findings_ledger_retention=never-evict$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity=implemented$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity_seed_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity_coverage_monotone=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity_cross_provenance_refused=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity_fresh_lineage=forked$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_continuity_prior_findings_reproducible=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^provenance_seed_gate=triple-keyed$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -469,8 +500,10 @@
               campaign_manifest_gate_result=${campaignManifestGate}/result
               campaign_seeding_gate_result=${campaignSeedingGate}/result
               campaign_storage_bounding_gate_result=${campaignStorageBoundingGate}/result
+              campaign_provenance_gate_result=${campaignProvenanceGate}/result
               determinism_guardrail_gate_result=${determinismGuardrailGate}/result
               fleet_equivalence_gate_result=${fleetEquivalenceGate}/result
+              campaign_continuity_gate_result=${campaignContinuityGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -543,6 +576,14 @@
               fleet_equivalence_order=diagnostic-only
               fleet_equivalence_real_qemu_slice=checks.crucible.phase2.gates.singleVmFingerprint
               fleet_equivalence_bisection=SearchReplayOracleBisectionRequest
+              campaign_provenance_key=campaign_provenance_key
+              campaign_gate=gate:campaign-continuity
+              campaign_continuity_seed_reproducible=bit-identical-prior-corpus
+              campaign_continuity_coverage_monotone=true
+              campaign_continuity_cross_provenance_refused=true
+              campaign_continuity_fresh_lineage=forked
+              campaign_continuity_prior_findings_reproducible=true
+              provenance_seed_gate=triple-keyed
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

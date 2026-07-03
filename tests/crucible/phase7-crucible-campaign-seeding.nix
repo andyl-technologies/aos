@@ -111,8 +111,8 @@
         needle = "pub fn persist_replay_artifact";
       }
       {
-        label = "seed next run API";
-        needle = "pub fn seed_next_run_from_prior_corpus";
+        label = "provenance-keyed seed next run API";
+        needle = "pub fn seed_next_run(\n        &self,\n        manifest: &CampaignManifest,\n        run_provenance: &CampaignProvenance,";
       }
       {
         label = "campaign corpus persistence API";
@@ -342,7 +342,7 @@ in
             findings_ledger_dedup=content-addressed
             finding_replay=bit-identical-from-ledger
             gate_dependency=checks.crucible.phase7.gates.campaignContinuity
-            campaign_continuity_gate_status=red-pending
+            campaign_continuity_gate_status=implemented
             RESULT
           '';
         }
