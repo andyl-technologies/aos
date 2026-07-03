@@ -5,6 +5,7 @@
   cratesDir = ../../crates;
 
   packages = [
+    "crucible-cas"
     "crucible-sim"
     "crucible-assert"
     "crucible-shmem"
@@ -22,8 +23,10 @@
   ];
 
   forbiddenPrefixes = ["ratchet-" "aos-nix-"];
+  forbiddenExactNames = ["ratchet" "aos-nix"];
   hasForbiddenPrefix = name:
-    builtins.any (prefix: lib.hasPrefix prefix name) forbiddenPrefixes;
+    builtins.elem name forbiddenExactNames
+    || builtins.any (prefix: lib.hasPrefix prefix name) forbiddenPrefixes;
 
   readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
 
@@ -127,7 +130,7 @@
   regressionFailures = let
     directFindings = findingsFor workspaceDependencies {
       crucible-sim = {
-        dependencies."ratchet-store" = "0.1";
+        dependencies.ratchet = "0.1";
       };
     };
     aliasFindings = findingsFor workspaceDependencies {
@@ -150,8 +153,8 @@
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in
-    lib.optionals (!(hasFinding "ratchet-store" directFindings)) [
-      "standalone dependency regression failed to reject direct ratchet dependency"
+    lib.optionals (!(hasFinding "ratchet" directFindings)) [
+      "standalone dependency regression failed to reject direct exact ratchet dependency"
     ]
     ++ lib.optionals (!(hasFinding "aos-nix-graph" aliasFindings)) [
       "standalone dependency regression failed to reject package-renamed aos-nix dependency"

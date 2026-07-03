@@ -733,10 +733,17 @@ carries findings across an incompatible build.
     backends, and an invalidation query that marks a node invalid iff an input's
     content hash changed. The crate's unit tests cover deduplicating writes,
     two-level layout and integrity validation, and dependency-gated invalidation.
-- [ ] **T-PKG-18** Write the ratchet-seam merge marker (module docs: future home,
+- [x] **T-PKG-18** Write the ratchet-seam merge marker (module docs: future home,
   narrow interface, conformance bar) and the future-merge plan (thin adapter behind
   the unchanged interface, gate-gated), keeping Crucible standalone with no
   RFC-0007 dependency. — satisfies [PKG-34], [PKG-35], [NG-7]; spec §26.9.
+  - Completed by `checks.crucible.phase7.crucibleCasRatchetSeam`: the
+    `crucible-cas` module docs name RFC-0007 as the future home, enumerate the
+    narrow `put`/`get`/`has` plus invalidation-query interface, record the thin
+    adapter merge plan behind that unchanged interface, and state the required
+    gate bar (`gate:content-address`, `gate:replay-oracle`, and
+    `gate:e2e-determinism`) while preserving the current no-RFC-0007 dependency
+    rule.
 - [ ] **T-PKG-19** Produce the release manifest versioning the three things
   (Crucible version, QEMU tag + series hash, three ABI versions) and ensure
   per-package reproducibility (pinned hashes, vendored deps, no embedded
