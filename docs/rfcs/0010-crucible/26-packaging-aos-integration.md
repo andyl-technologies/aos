@@ -707,9 +707,22 @@ carries findings across an incompatible build.
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies
   [PKG-29], [PKG-30]; spec §26.8.
-- [ ] **T-PKG-16** Implement the packaging conformance check (catalog↔package
+- [x] **T-PKG-16** Implement the packaging conformance check (catalog↔package
   correspondence, dev-only exclusion, requirement mapping). — satisfies [PKG-31];
   spec §26.8.
+  - Completed by `checks.crucible.phase7.cruciblePackagingConformance`: the
+    phase7 package check imports `pkgs/emulation/qemu-patches/_series.nix`,
+    compares the shipped `pkgs/emulation/qemu-patches/*.patch` set to
+    `series.patchFiles`, parses the §11.3 catalog rows, verifies every shipped
+    manifest `catalogName` has a catalog row, verifies the documented
+    catalog-only capability rows are mapped to their carrier patches, rejects
+    dev-only diagnostic patches in the shipped directory/manifest/package wiring,
+    and requires every manifest patch and catalog-only capability to carry a
+    stated requirement token whose class/enforcement metadata matches the catalog
+    row. It consumes the direct `phase2-patch-microtests.nix` aggregate for
+    `checks.crucible.phase2.gates.patchMicrotests`, keeping the catalog audit
+    attached to the package patch build/test gate without pulling unrelated
+    green-before-advance wrappers into instantiation.
 - [ ] **T-PKG-17** Implement the `crucible-cas` self-contained content-addressed
   store + dependency-gated invalidation crate, depending on nothing from RFC-0007.
   — satisfies [PKG-32], [PKG-33]; spec §26.9.

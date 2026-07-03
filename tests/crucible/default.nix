@@ -2430,6 +2430,16 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
       taskIds = ["T-PKG-14"];
     };
+    cruciblePackagingConformance = import ./phase7-crucible-packaging-conformance.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.cruciblePackagingConformance";
+      taskIds = ["T-PKG-16"];
+      patchMicrotestsGate = import ./phase2-patch-microtests.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
+        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+      };
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";

@@ -10,7 +10,7 @@
   hostPlatform,
 }: let
   src = builtins.fetchTarball {
-    url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz";
+    url = "https://git.kernel.org/torvalds/t/linux-6.12.tar.gz";
     sha256 = "1dnxa60qxkjb8yqadbb1aglj8p57pqkmmg8ikdmlqxlb4vh7vnz3";
   };
 in

@@ -148,7 +148,7 @@ let
       branchTree = "be9d9a0613760f22056adbcd7e284b6a4bad9560";
       catalogName = "crucible-blk-shmem";
       class = "F";
-      enforces = "PATCH-26,E19";
+      enforces = "PATCH-26,DET-16,E19,SHM-13";
       capability = "crucible-shmem block driver and plugin submit/poll callback ABI";
     }
     {
@@ -157,7 +157,7 @@ let
       branchTree = "64f07c75d937bdf4dbc46d98f1829c3d687923f5";
       catalogName = "crucible-blk-shmem-io-fixes";
       class = "D";
-      enforces = "PATCH-27,E19";
+      enforces = "PATCH-27,DET-16,E19";
       capability = "bounded coroutine reschedule cadence for deterministic block completions";
     }
     {
@@ -166,7 +166,7 @@ let
       branchTree = "682ae5807e749ffc4f520cf0d61fa39dab2ef439";
       catalogName = "crucible-blk-write-sentinel";
       class = "D";
-      enforces = "PATCH-28,E19";
+      enforces = "PATCH-28,DET-16,E19";
       capability = "pending sentinel distinct from zero-length success";
     }
     {
@@ -184,7 +184,7 @@ let
       branchTree = "3da901f1bff5b25f97d6fc0b6e7ac4a0e42cd9d1";
       catalogName = "crucible-9p-shmem";
       class = "F";
-      enforces = "PATCH-29,E19";
+      enforces = "PATCH-29,DET-16,E19";
       capability = "virtio-9p raw-message shmem forwarding path with upstream fallback";
     }
     {
@@ -193,7 +193,7 @@ let
       branchTree = "435f24602798297cd896446762a9eb593493f2c8";
       catalogName = "crucible-net-tx-callback";
       class = "F";
-      enforces = "PATCH-31,E18,SHM-17";
+      enforces = "PATCH-31,DET-18,E18,SHM-17";
       capability = "guest network TX callback interception with upstream fallback";
     }
     {
@@ -256,7 +256,7 @@ let
       branchTree = "602b1cc28070164551e41837dd2bb6ffcec7915a";
       catalogName = "crucible-sim-batch-tcg-exec";
       class = "F";
-      enforces = "PATCH-35,DET-1,INV-10";
+      enforces = "PATCH-35,DET-1,INV-10,PERF";
       capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
     }
     {
@@ -287,6 +287,36 @@ let
       capability = "sim-mode commanded vCPU-switch and interrupt preemption injection";
     }
   ];
+  catalogOnlyCapabilities = [
+    {
+      catalogName = "crucible-rr-quantum-icount";
+      carriedBy = "0002-crucible-rr-fingerprint-helpers.patch";
+      class = "D";
+      enforces = "PATCH-44,DET-1,QEMU-43";
+      capability = "round-robin vCPU switch boundary pinned to node-icount";
+    }
+    {
+      catalogName = "crucible-plugin-advance-drain";
+      carriedBy = "0010-crucible-plugin-time-advance.patch";
+      class = "D";
+      enforces = "PATCH-19,DET-1,INV-10";
+      capability = "bottom-half drain after synchronous virtual-time advance";
+    }
+    {
+      catalogName = "crucible-plugin-drain-mainloop";
+      carriedBy = "0010-crucible-plugin-time-advance.patch";
+      class = "D";
+      enforces = "PATCH-20,DET-1,INV-10";
+      capability = "nonblocking main-loop drain callable from plugin callbacks";
+    }
+    {
+      catalogName = "crucible-net-flush-api";
+      carriedBy = "0009-crucible-net-deterministic.patch";
+      class = "F";
+      enforces = "PATCH-32,DET-18,E18";
+      capability = "lossless RX queue flush API over deterministic network delivery";
+    }
+  ];
 in {
   inherit
     qemuVersion
@@ -304,6 +334,7 @@ in {
     deterministicBaseDate
     deterministicPatchDate
     patches
+    catalogOnlyCapabilities
     ;
   patchFiles = builtins.map (patch: patch.file) patches;
 }

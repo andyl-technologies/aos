@@ -170,44 +170,44 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-sim-accel ............ sim-mode TCG event loop  D    DET-1, TIME-23, E14
   crucible-no-warp-with-plugin .. suppress idle warp        D    DET-10, TIME-21, E2
   crucible-icount-no-realtime ... drop realtime from budget D    DET-9,  TIME-22, E3
-  crucible-block-rtc-read ....... seed/pin guest RTC base   D    DET-8,  E5  (launch+patch)
+  crucible-block-rtc-read ....... seed/pin guest RTC base   D    DET-8, TIME-20, E5
   crucible-det-glib-prng ........ seed global GRand (1-line) D    DET-21, E9
-  crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, E9
+  crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, DET-19, E9
   crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, DET-13, E18
-  crucible-rr-quantum-icount .... RR switch @ node-icount    D    DET-1, QEMU-43 (RR)
-  crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    DET-1  (multi-vCPU)
+  crucible-rr-quantum-icount .... RR switch @ node-icount    D    PATCH-44, DET-1, QEMU-43
+  crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    PATCH-45, DET-1, INV-7
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-rr-fingerprint-helpers phase-1 fp helper ABI F    DET-29, QEMU-43
-  crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27
-  crucible-plugin-advance-drain . drain BHs after advance   D    DET-1,  INV-10
-  crucible-plugin-drain-mainloop  drain main loop in cb      D    DET-1,  INV-10
+  crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27, DET-1, INV-10
+  crucible-plugin-advance-drain . drain BHs after advance   D    PATCH-19, DET-1, INV-10
+  crucible-plugin-drain-mainloop  drain main loop in cb      D    PATCH-20, DET-1, INV-10
   crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
-  crucible-plugin-icount-raw .... raw icount read           F    DET-29 (fingerprint)
-  crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    DET-29 (N-vCPU fp)
-  crucible-preemption-inject .... commanded vCPU switch/IRQ  D    DET-1, PLUG-50
-  crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1  (phase norm)
+  crucible-plugin-icount-raw .... raw icount read           F    DET-29, INV-10
+  crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    PATCH-46, DET-29, INV-10
+  crucible-preemption-inject .... commanded vCPU switch/IRQ  D    PATCH-47, DET-1, PLUG-50
+  crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
-  crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage (fwd 22)
+  crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
-  crucible-blk-shmem ............ virtio-blk over shmem      F    DET-16, E19, SHM-13
-  crucible-blk-shmem-io-fixes ... blk I/O correctness        F    DET-16, E19
-  crucible-blk-write-sentinel ... write/flush 0-len sentinel F    DET-16 (correctness)
-  crucible-9p-shmem ............. virtio-9p over shmem       F    DET-16, E19
-  crucible-dev-cb-api ........... register blk/9p callbacks  F    PLUG, SHM-17
-  crucible-net-tx-callback ...... intercept guest TX         F    DET-18, E18, SHM-17
-  crucible-net-flush-api ........ lossless RX inject + flush F    DET-18, E18
+  crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
+  crucible-blk-shmem-io-fixes ... blk I/O correctness        D    PATCH-27, DET-16, E19
+  crucible-blk-write-sentinel ... write/flush 0-len sentinel D    PATCH-28, DET-16, E19
+  crucible-9p-shmem ............. virtio-9p over shmem       F    PATCH-29, DET-16, E19
+  crucible-dev-cb-api ........... register blk/9p callbacks  F    PATCH-30, PLUG, SHM-17
+  crucible-net-tx-callback ...... intercept guest TX         F    PATCH-31, DET-18, E18, SHM-17
+  crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
 
 TCG SIM CORRECTNESS / PERF                             class  enforces
-  crucible-sim-loop-fix ......... single-vCPU loop fixes     D    DET-1, NG-1
-  crucible-sim-first-exit ....... normalize first exit phase D    DET-1,  INV-10
-  crucible-sim-skip-second-events  drop redundant 2nd events D    DET-1  (perf+det)
-  crucible-sim-poll-immediate ... immediate shmem poll        D    DET-13, E19
-  crucible-sim-batch-tcg-exec ... batch TCG exec calls        F    PERF (det-preserving)
-  crucible-sim-idle-callbacks ... idle/resume cb wiring       D    TIME-24, INV-8
-  crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    SHM-1
+  crucible-sim-loop-fix ......... single-vCPU loop fixes     D    PATCH-34, DET-1, NG-1
+  crucible-sim-first-exit ....... normalize first exit phase D    PATCH-34, DET-1, INV-10
+  crucible-sim-skip-second-events  drop redundant 2nd events D    PATCH-34, DET-1
+  crucible-sim-poll-immediate ... immediate shmem poll        D    PATCH-34, DET-13, E19
+  crucible-sim-batch-tcg-exec ... batch TCG exec calls        F    PATCH-35, DET-1, INV-10, PERF
+  crucible-sim-idle-callbacks ... idle/resume cb wiring       D    PATCH-34, TIME-24, INV-8
+  crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    PATCH-34, SHM-1
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -216,6 +216,17 @@ DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
   crucible-virtserial-socket .... raw serial socket framing  dev  white-box debug
 ```
+
+The shipped patch-file inventory is the `patches` list in
+`pkgs/emulation/qemu-patches/_series.nix`; each shipped patch-file row above
+appears there with its `catalogName`, risk class, and `enforces` mapping. Four
+catalog rows are capability subentries implemented by broader shipped patches,
+not additional files:
+
+- `crucible-rr-quantum-icount` -> `0002-crucible-rr-fingerprint-helpers.patch`
+- `crucible-plugin-advance-drain` -> `0010-crucible-plugin-time-advance.patch`
+- `crucible-plugin-drain-mainloop` -> `0010-crucible-plugin-time-advance.patch`
+- `crucible-net-flush-api` -> `0009-crucible-net-deterministic.patch`
 
 - **[PATCH-10]** The catalog above is the **authoritative inventory** of the
   series. A patch present in the AOS QEMU package but absent from this catalog, or
