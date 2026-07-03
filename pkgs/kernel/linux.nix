@@ -118,7 +118,10 @@ in
           # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
           # libgcc_s.so.1 for stack unwinding at runtime.
           export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target} modules
+          make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target}
+          if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
+            make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} modules
+          fi
         '';
       }
       {
@@ -132,11 +135,13 @@ in
           cp System.map $out/boot/System.map-${linuxSource.version}
           cp .config $out/boot/config-${linuxSource.version}
 
-          # Install modules
-          make modules_install \
-            INSTALL_MOD_PATH=$out \
-            DEPMOD=${kmod}/sbin/depmod \
-            ARCH=${kernelArch.karch}
+          # Install modules only when the final config supports loadable modules.
+          if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
+            make modules_install \
+              INSTALL_MOD_PATH=$out \
+              DEPMOD=${kmod}/sbin/depmod \
+              ARCH=${kernelArch.karch}
+          fi
 
           # Remove build/source symlinks (they point to the build dir)
           rm -f $out/lib/modules/*/build $out/lib/modules/*/source

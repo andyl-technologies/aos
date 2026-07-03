@@ -662,11 +662,20 @@ carries findings across an incompatible build.
     suite, the protocol and doorbell golden-vector suites, the RPC semantic
     version/golden-vector/major-mismatch suite, and the engine test-double
     aggregate to stay wired.
-- [ ] **T-PKG-12** Build the determinism guest kernel `linux-crucible` via
+- [x] **T-PKG-12** Build the determinism guest kernel `linux-crucible` via
   `pkgs.linuxWith` extraConfig (single-vCPU, fixed timer, virtio drivers,
   `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, no auto-module-load, no ACPI; no
   nokaslr/`CONFIG_RANDOM=n`/RDRAND-disable), as a fixture, not a guest
   precondition. — satisfies [PKG-24], [PKG-39]; spec §26.7.
+  - Completed by `checks.crucible.phase7.crucibleLinuxKernel`: `pkgs.linux-crucible`
+    is a distinct package built through `pkgs.linuxWith` extraConfig, marks itself
+    fixture-only, exports the fixture kernel config/cmdline contract, keeps the
+    generic `system.build.kernel = pkgs.linux` default intact, requires the
+    `checks.crucible.phase2.gates.anyGuest` proof, feeds
+    `checks.crucible.phase7.gates.e2eDeterminism`, and inspects the installed
+    final kernel config to prove the single-vCPU/fixed-timer/virtio/serial/
+    bootloader-entropy/no-modules/no-ACPI contract without requiring `nokaslr`,
+    `CONFIG_RANDOM=n`, or RDRAND/RDSEED disabling.
 - [ ] **T-PKG-13** Build the minimal root-image fixtures `crucible-fixtures`
   from source (read-only base + virtio-9p host store share; `mkfs.ext4 -d` with
   `-O ^has_journal,^metadata_csum,^64bit`; CoW boot; rootfs init shebang
