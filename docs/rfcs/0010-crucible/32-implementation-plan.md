@@ -420,13 +420,14 @@ long-held locks.
   example corpus execution, and per-gate PASS rows with runner/QEMU identity
   metadata.
   `T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently
-  covers `save <SCENARIO> --at quiescence`, live double-backed terminal
-  savepoint export as a `.crucible-savepoint` handle, default `--artifact-dir`
-  and explicit `--out` destinations, handle labels, and usage errors for
-  virtual-time/property/marker stop points until concrete coordinates and
-  boundary commands are implemented; full closure waits for label-bearing
-  `create_savepoint`, replay-oracle `fat==thin` validation, real-QEMU coverage,
-  and all `--at` forms.
+  covers `save <SCENARIO> --at quiescence` and `--at virtual-time
+  --max-virtual-time <dur>`, creates a label-bearing savepoint at the paused
+  boundary, validates the returned materialized checkpoint through
+  replay-oracle `fat==thin` before exporting a `.crucible-savepoint` handle,
+  supports default `--artifact-dir` and explicit `--out` destinations, and
+  fails local QEMU saves clearly until the real-QEMU savepoint export runner
+  lands; full closure waits for concrete property and marker selector syntax
+  plus their breakpoint wiring and real-QEMU savepoint coverage.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding, direct `blake3:<hash>` checkpoint references, virtual-time budget
