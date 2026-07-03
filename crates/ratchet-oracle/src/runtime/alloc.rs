@@ -421,6 +421,118 @@ const TIER_A_ONE_SHOT_ALLOCATION_VTABLE: RuntimeAllocationVTable = RuntimeAlloca
     alloc_thunk: tier_a_alloc_thunk,
 };
 
+const PERMANENT_SHARED_ALLOCATION_ENTRYPOINTS: &[RuntimeAllocationEntryPoint] = &[
+    RuntimeAllocationEntryPoint::AosAllocAttrs,
+    RuntimeAllocationEntryPoint::AosAllocList,
+    RuntimeAllocationEntryPoint::AosAllocString,
+];
+
+const PERMANENT_SHARED_ALLOCATION_ABI_SIGNATURES: &[RuntimeAllocationAbiSignature] = &[
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocAttrs,
+        ALLOC_ATTRS_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::AttrsPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocList,
+        ALLOC_LIST_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::ListPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocString,
+        ALLOC_STRING_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::StringHeaderPointer,
+    ),
+];
+
+type PermanentSharedAllocationAttrsFn = fn(
+    &mut PermanentSharedAllocator,
+    shape: u32,
+    slots: u32,
+) -> Result<ArenaAllocation, ArenaError>;
+type PermanentSharedAllocationListFn =
+    fn(&mut PermanentSharedAllocator, len: usize) -> Result<ArenaAllocation, ArenaError>;
+type PermanentSharedAllocationStringFn =
+    fn(&mut PermanentSharedAllocator, len: usize) -> Result<ArenaAllocation, ArenaError>;
+
+/// A selected safe dispatch table for permanent-shared reusable allocation routes.
+#[derive(Clone, Copy)]
+pub(crate) struct PermanentSharedAllocationVTable {
+    tier: RuntimeAllocatorTier,
+    entrypoints: &'static [RuntimeAllocationEntryPoint],
+    abi_signatures: &'static [RuntimeAllocationAbiSignature],
+    alloc_attrs: PermanentSharedAllocationAttrsFn,
+    alloc_list: PermanentSharedAllocationListFn,
+    alloc_string: PermanentSharedAllocationStringFn,
+}
+
+impl PermanentSharedAllocationVTable {
+    /// Returns the allocator tier served by this dispatch table.
+    pub(crate) const fn tier(&self) -> RuntimeAllocatorTier {
+        self.tier
+    }
+
+    /// Returns the reusable allocation entry points implemented by this table.
+    pub(crate) const fn entrypoints(&self) -> &'static [RuntimeAllocationEntryPoint] {
+        self.entrypoints
+    }
+
+    /// Returns the future ABI-signature metadata associated with these reusable routes.
+    pub(crate) const fn abi_signatures(&self) -> &'static [RuntimeAllocationAbiSignature] {
+        self.abi_signatures
+    }
+
+    /// Allocates a permanent-shared attribute-set object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_attrs(
+        &self,
+        allocator: &mut PermanentSharedAllocator,
+        shape: u32,
+        slots: u32,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_attrs)(allocator, shape, slots)
+    }
+
+    /// Allocates a permanent-shared contiguous list object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_list(
+        &self,
+        allocator: &mut PermanentSharedAllocator,
+        len: usize,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_list)(allocator, len)
+    }
+
+    /// Allocates a permanent-shared string or path object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_string(
+        &self,
+        allocator: &mut PermanentSharedAllocator,
+        len: usize,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_string)(allocator, len)
+    }
+}
+
+const PERMANENT_SHARED_ALLOCATION_VTABLE: PermanentSharedAllocationVTable =
+    PermanentSharedAllocationVTable {
+        tier: RuntimeAllocatorTier::PermanentShared,
+        entrypoints: PERMANENT_SHARED_ALLOCATION_ENTRYPOINTS,
+        abi_signatures: PERMANENT_SHARED_ALLOCATION_ABI_SIGNATURES,
+        alloc_attrs: permanent_shared_alloc_attrs,
+        alloc_list: permanent_shared_alloc_list,
+        alloc_string: permanent_shared_alloc_string,
+    };
+
 impl RuntimeAllocationEntryPoint {
     /// Returns the stable runtime symbol name for this allocation entry point.
     pub const fn symbol_name(self) -> &'static str {
@@ -1772,6 +1884,21 @@ impl PermanentSharedAllocator {
         RuntimeAllocatorTier::PermanentShared
     }
 
+    /// Returns the safe allocation dispatch table for permanent shared storage.
+    fn allocation_vtable(&self) -> &'static PermanentSharedAllocationVTable {
+        let vtable = &PERMANENT_SHARED_ALLOCATION_VTABLE;
+        debug_assert_eq!(vtable.tier(), self.tier());
+        debug_assert_eq!(
+            vtable.entrypoints(),
+            PERMANENT_SHARED_ALLOCATION_ENTRYPOINTS
+        );
+        debug_assert_eq!(
+            vtable.abi_signatures(),
+            PERMANENT_SHARED_ALLOCATION_ABI_SIGNATURES
+        );
+        vtable
+    }
+
     /// Returns current permanent shared allocation accounting.
     pub(crate) fn stats(&self) -> ArenaStats {
         self.arena.stats()
@@ -1802,12 +1929,7 @@ impl PermanentSharedAllocator {
         shape: u32,
         slots: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena.aos_alloc_attrs(shape, slots)?;
-        self.record_allocation_safepoint(
-            RuntimeAllocationRequest::Attrs { shape, slots },
-            allocation,
-        );
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_attrs(self, shape, slots)
     }
 
     /// Allocates a permanent-shared contiguous list heap object.
@@ -1816,9 +1938,7 @@ impl PermanentSharedAllocator {
     ///
     /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
     pub(crate) fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena.aos_alloc_list(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_list(self, len)
     }
 
     /// Allocates a permanent-shared string or path heap object.
@@ -1827,9 +1947,7 @@ impl PermanentSharedAllocator {
     ///
     /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
     pub(crate) fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena.aos_alloc_string(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_string(self, len)
     }
 
     fn record_allocation_safepoint(
@@ -1843,6 +1961,35 @@ impl PermanentSharedAllocator {
         self.safepoints
             .record(tier, request, allocation, stats, gc_stress_policy);
     }
+}
+
+fn permanent_shared_alloc_attrs(
+    allocator: &mut PermanentSharedAllocator,
+    shape: u32,
+    slots: u32,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena.aos_alloc_attrs(shape, slots)?;
+    allocator
+        .record_allocation_safepoint(RuntimeAllocationRequest::Attrs { shape, slots }, allocation);
+    Ok(allocation)
+}
+
+fn permanent_shared_alloc_list(
+    allocator: &mut PermanentSharedAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena.aos_alloc_list(len)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
+    Ok(allocation)
+}
+
+fn permanent_shared_alloc_string(
+    allocator: &mut PermanentSharedAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena.aos_alloc_string(len)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
+    Ok(allocation)
 }
 
 #[cfg(test)]
@@ -2124,6 +2271,82 @@ mod tests {
         let stats = allocator.stats();
         assert_eq!(stats.chunks, 1);
         assert!(stats.used_bytes > 0);
+    }
+
+    #[test]
+    fn permanent_shared_allocator_selects_permanent_allocation_vtable() {
+        let allocator =
+            PermanentSharedAllocator::with_initial_chunk_bytes(512).expect("allocator creates");
+        let vtable = allocator.allocation_vtable();
+
+        assert_eq!(vtable.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert_eq!(
+            vtable.entrypoints(),
+            PERMANENT_SHARED_ALLOCATION_ENTRYPOINTS
+        );
+        assert_eq!(
+            vtable.abi_signatures(),
+            PERMANENT_SHARED_ALLOCATION_ABI_SIGNATURES
+        );
+        assert_eq!(
+            vtable
+                .entrypoints()
+                .iter()
+                .copied()
+                .map(RuntimeAllocationEntryPoint::abi_signature)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            vtable.abi_signatures()
+        );
+    }
+
+    #[test]
+    fn permanent_shared_allocation_vtable_routes_reusable_entrypoints() {
+        let mut allocator =
+            PermanentSharedAllocator::with_initial_chunk_bytes(256).expect("allocator creates");
+        let vtable = allocator.allocation_vtable();
+
+        let allocation = vtable
+            .aos_alloc_attrs(&mut allocator, 7, 2)
+            .expect("attrs allocates");
+        assert_eq!(
+            allocation.kind,
+            HeapObjectKind::Attrs { shape: 7, slots: 2 }
+        );
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            1,
+            RuntimeAllocatorTier::PermanentShared,
+            RuntimeAllocationEntryPoint::AosAllocAttrs,
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation = vtable
+            .aos_alloc_list(&mut allocator, 3)
+            .expect("list allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::List { len: 3 });
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            2,
+            RuntimeAllocatorTier::PermanentShared,
+            RuntimeAllocationEntryPoint::AosAllocList,
+            allocation,
+            allocator.stats(),
+        );
+
+        let allocation = vtable
+            .aos_alloc_string(&mut allocator, 5)
+            .expect("string allocates");
+        assert_eq!(allocation.kind, HeapObjectKind::String { len: 5 });
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            3,
+            RuntimeAllocatorTier::PermanentShared,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            allocation,
+            allocator.stats(),
+        );
     }
 
     #[test]

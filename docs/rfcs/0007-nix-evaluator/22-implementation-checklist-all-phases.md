@@ -5531,11 +5531,15 @@ and helps the oracle directly.
       `RuntimeAllocator` backend and carries typed safe Rust function pointers for
       every frozen `aos_alloc_*` route. The existing public allocator entry
       points now dispatch through that table before reaching the Tier-A
-      `BumpArena` bodies, and tests assert both default/configured allocator
-      construction and direct crate-internal vtable calls preserve the expected
-      safepoint entry points. This is internal safe Rust startup dispatch only; no
-      unsafe C exports, native trap transfer, Cranelift symbol registration,
-      Tier-B table, or compiled-artifact relinking is implemented here.
+      `BumpArena` bodies. `PermanentSharedAllocator` now has a matching
+      permanent-shared dispatch table for the reusable `aos_alloc_attrs`,
+      `aos_alloc_list`, and `aos_alloc_string` routes before reaching its
+      permanent arena. Tests assert both default/configured worker allocator
+      construction, permanent-shared table selection, and direct crate-internal
+      worker/permanent vtable calls preserve the expected safepoint entry points.
+      This is internal safe Rust startup dispatch only; no unsafe C exports,
+      native trap transfer, Cranelift symbol registration, Tier-B table, or
+      compiled-artifact relinking is implemented here.
 - [x] Current allocation-request dispatch precursor:
       `RuntimeAllocationRequest` now captures the safe storage-reservation
       payload for each frozen `aos_alloc_*` entry point, exposes its entry-point
