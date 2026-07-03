@@ -1,5 +1,6 @@
 ##! qemu — Minimal QEMU for KVM-accelerated virtual machines (headless)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -55,6 +56,22 @@
   patchBranchMaterialHash = builtins.hashString "sha256" patchBranchMaterial;
   patchCount = builtins.length series.patchFiles;
   qemuNixHash = builtins.hashFile "sha256" ./qemu.nix;
+  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
+  shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
+  firstLineWith = label: prefix: content: let
+    matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
+  in
+    if matches == []
+    then throw "qemu-crucible package failed to read ${label}"
+    else builtins.head matches;
+  shmemAbiVersion =
+    lib.removeSuffix ";"
+    (lib.removePrefix "pub const ABI_VERSION: u32 = " (
+      firstLineWith "Crucible shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib
+    ));
+  shmemAbi = "crucible-shmem-abi-v${shmemAbiVersion}";
   pluginFlag =
     if enablePlugins
     then "--enable-plugins"
@@ -114,6 +131,11 @@
     qemu_patch_branch_material_hash=${patchBranchMaterialHash}
     qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
     qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+    qemu_sim_capability=qemu-crucible
+    qemu_shmem_abi_version=${shmemAbiVersion}
+    qemu_shmem_abi=${shmemAbi}
+    qemu_shmem_header=${shmemHeaderInstallPath}
+    qemu_shmem_header_hash=${shmemHeaderHash}
   '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
   patchCommand = file: "      patch -p1 < ${patchPath file}\n";
@@ -189,6 +211,37 @@ in
         script = ''
           tar xf $src
           cd qemu-${version}
+          mkdir -p include/aos/crucible
+          cp ${shmemGeneratedHeader} include/aos/crucible/crucible_shmem_abi.h
+          grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION ${shmemAbiVersion}u' \
+            include/aos/crucible/crucible_shmem_abi.h
+          cat > "$TMPDIR/qemu-crucible-shmem-abi-probe.c" <<'EOF'
+          #include <aos/crucible/crucible_shmem_abi.h>
+
+          #ifndef CRUCIBLE_SHMEM_ABI_VERSION
+          #error "qemu-crucible generated shmem header must expose an ABI version"
+          #endif
+
+          #if CRUCIBLE_SHMEM_ABI_VERSION != CRUCIBLE_EXPECTED_SHMEM_ABI_VERSION
+          #error "qemu-crucible generated shmem header ABI version drifted"
+          #endif
+
+          CRUCIBLE_SHMEM_STATIC_ASSERT(
+              sizeof(crucible_shmem_region_header) == CRUCIBLE_SHMEM_REGION_HEADER_SIZE,
+              "qemu-crucible region header layout");
+          CRUCIBLE_SHMEM_STATIC_ASSERT(
+              offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET,
+              "qemu-crucible frame data offset");
+
+          int qemu_crucible_shmem_abi_probe(void)
+          {
+              return (int)CRUCIBLE_SHMEM_ABI_VERSION;
+          }
+          EOF
+          cc -std=c11 -Iinclude \
+            -DCRUCIBLE_EXPECTED_SHMEM_ABI_VERSION=${shmemAbiVersion} \
+            -c "$TMPDIR/qemu-crucible-shmem-abi-probe.c" \
+            -o "$TMPDIR/qemu-crucible-shmem-abi-probe.o"
           ${patchPhase}
           # Patch Python shebangs for Nix sandbox
           find . -type f -name '*.py' | while read f; do
@@ -224,6 +277,9 @@ in
             mkdir -p "$out/include/qemu"
             install -m 644 include/qemu/qemu-plugin.h "$out/include/qemu/qemu-plugin.h"
           fi
+          mkdir -p "$out/include/aos/crucible"
+          install -m 644 include/aos/crucible/crucible_shmem_abi.h \
+            "$out/${shmemHeaderInstallPath}"
 
           # Create qemu-kvm symlink for compatibility
           if [ -f "$out/bin/qemu-system-x86_64" ]; then
@@ -249,6 +305,11 @@ in
           qemu_patch_branch_material_hash=${patchBranchMaterialHash}
           qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
           qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+          qemu_sim_capability=qemu-crucible
+          qemu_shmem_abi_version=${shmemAbiVersion}
+          qemu_shmem_abi=${shmemAbi}
+          qemu_shmem_header=${shmemHeaderInstallPath}
+          qemu_shmem_header_hash=${shmemHeaderHash}
           qemu_build_id=${qemuBuildIdentity}
           QEMU_BUILD_IDENTITY
         '';
@@ -263,6 +324,11 @@ in
         qemuConfigureFlagsHash
         qemuConfigureFlagsMaterial
         qemuNixHash
+        shmemAbi
+        shmemAbiVersion
+        shmemGeneratedHeader
+        shmemHeaderHash
+        shmemHeaderInstallPath
         patchBranchBundleHash
         patchBranchCommits
         patchBranchMaterial

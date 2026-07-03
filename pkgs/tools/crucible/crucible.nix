@@ -30,6 +30,27 @@
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli" && package != "crucible-qemu-plugin") packages;
   doctestPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") doctestPackages);
+  shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
+  protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
+  apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
+  firstLineWith = label: prefix: content: let
+    matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
+  in
+    if matches == []
+    then throw "crucible package failed to read ${label}"
+    else builtins.head matches;
+  sourceConst = label: prefix: content:
+    lib.removeSuffix ";"
+    (lib.removePrefix prefix (firstLineWith label prefix content));
+  sourceStringConst = label: prefix: content:
+    lib.removeSuffix "\";"
+    (lib.removePrefix prefix (firstLineWith label prefix content));
+  shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
+  guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
+  rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
+  rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
+  rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
 in
   mkCargoPackage {
     pname = "crucible";
@@ -109,6 +130,12 @@ in
       plugin_package=crucible-qemu-plugin
       plugin_path=${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       discovery_hint=compile-time-aos-package-set
+      shmem_abi_version=${shmemAbiVersion}
+      shmem_abi=crucible-shmem-abi-v${shmemAbiVersion}
+      guest_host_protocol_version=${guestHostProtocolVersion}
+      guest_host_protocol_abi=crucible-guest-host-channel-v${guestHostProtocolVersion}
+      rpc_abi_version=${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}
+      rpc_abi_build=${rpcProtocolBuild}
       INFO
     '';
 

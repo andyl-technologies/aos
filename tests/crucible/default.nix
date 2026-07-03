@@ -2399,6 +2399,11 @@ in rec {
       attrPath = "checks.crucible.phase7.cruciblePackageHermeticDiscovery";
       taskIds = ["T-PKG-9"];
     };
+    cruciblePackageAbiVersioning = import ./phase7-crucible-package-abi-versioning.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.cruciblePackageAbiVersioning";
+      taskIds = ["T-PKG-10"];
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";

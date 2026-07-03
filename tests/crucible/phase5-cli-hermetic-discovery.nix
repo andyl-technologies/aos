@@ -333,12 +333,20 @@ in
           {
             printf 'qemu_plugins_enabled=true\n'
             printf 'qemu_crucible_patches_applied=true\n'
+            printf 'qemu_sim_capability=qemu-crucible\n'
+            printf 'qemu_shmem_abi_version=1\n'
+            printf 'qemu_shmem_abi=crucible-shmem-abi-v1\n'
+            printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'
+            printf 'qemu_shmem_header_hash=sha256-test-shmem-header\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
           } > "$qemu_fixture/share/aos/crucible/qemu-build-identity.env"
           {
             printf 'package=crucible-qemu-plugin\n'
             printf 'qemu_package=qemu-crucible\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
+            printf 'shmem_abi_version=1\n'
+            printf 'shmem_abi=crucible-shmem-abi-v1\n'
+            printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
             printf 'plugin_abi=crucible-shmem-abi-v1\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
@@ -359,8 +367,7 @@ in
     meta = {
       description = "RFC-0010 phase 5 CLI hermetic QEMU discovery gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
-        failureText = failureText;
+        inherit attrPath dependencies failureText taskIds;
       };
     };
   }

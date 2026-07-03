@@ -634,10 +634,23 @@ carries findings across an incompatible build.
     checked for QEMU/plugin identity and plugin ABI compatibility, and host
     `$PATH` QEMU is never a fallback. `checks.crucible.phase1.aosWorkspaceBuild`
     is the package-output smoke verifier for the emitted discovery metadata.
-- [ ] **T-PKG-10** Version the three ABIs independently in the artifacts that speak
+- [x] **T-PKG-10** Version the three ABIs independently in the artifacts that speak
   them, with loud mismatch failure; emit the `qemu-crucible` sim-capability marker;
   share the generated shmem header across C and Rust. — satisfies [PKG-21],
   [PKG-22], [PKG-23]; spec §26.6.
+  - Completed by `checks.crucible.phase7.cruciblePackageAbiVersioning`: the
+    package gate verifies that `qemu-crucible`, `crucible-qemu-plugin`, and
+    `crucible` stamp the shmem ABI, guest-host channel ABI, and RPC ABI from
+    their Rust source constants; QEMU's sim-capability marker records the QEMU
+    tag/build identity, patch-series material, shmem ABI label, generated-header
+    install path, and generated-header hash; the plugin C probe compiles against
+    the same generated `crucible_shmem_abi.h` installed by QEMU; and CLI
+    discovery rejects QEMU/plugin shmem ABI disagreement loudly. The gate also
+    ties the package-output proof to `checks.crucible.phase1.aosWorkspaceBuild`,
+    the golden-vector/version-field proof to `checks.crucible.phase2.abiConformance`,
+    and the QEMU marker/build-identity proof to
+    `checks.crucible.phase2.qemuPatchRegeneration` plus the patch-microtest
+    aggregate.
 - [ ] **T-PKG-11** Wire `gate:abi-conformance` (shmem/protocol/RPC golden vectors,
   version-field checks) as an eval/double-backed AOS check. — satisfies [PKG-19],
   [PKG-21], [PKG-23]; spec §26.6, §26.8.
