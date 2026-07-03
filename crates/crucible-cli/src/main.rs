@@ -340,7 +340,34 @@ struct ResumeArgs {
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct ForkArgs {}
+struct ForkArgs {
+    /// Savepoint handle or checkpoint hash.
+    #[arg(value_name = "SAVEPOINT")]
+    savepoint: Option<String>,
+    /// Override a post-fork decision.
+    #[arg(long = "override", value_name = "decision=value", action = ArgAction::Append)]
+    overrides: Vec<String>,
+    /// Stop at this terminal condition.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "quiescence|virtual-time|property|stopped",
+        default_value_t = RunUntilArg::Quiescence
+    )]
+    until: RunUntilArg,
+    /// Stop past this virtual time.
+    #[arg(long, value_name = "dur")]
+    max_virtual_time: Option<String>,
+    /// Human label for the forked branch.
+    #[arg(long, value_name = "name")]
+    label: Option<String>,
+    /// Pause the forked child for control commands.
+    #[arg(long, action = ArgAction::SetTrue)]
+    interactive: bool,
+    /// Stream live status.
+    #[arg(long, action = ArgAction::SetTrue)]
+    watch: bool,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ReplayArgs {
@@ -1218,6 +1245,27 @@ struct ResumeInvocationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ForkInvocationPlan {
+    source: ResumeSavepointRef,
+    label: String,
+    decision_overrides: Vec<ForkDecisionOverride>,
+    terminal_condition: RunTerminalCondition,
+    max_virtual_time: Option<String>,
+    max_virtual_time_ticks: Option<u64>,
+    execution_mode: RunExecutionMode,
+    watch_streams_live_status: bool,
+    startup_commands: Vec<SessionCommandKind>,
+    initial_control_commands: Vec<SessionCommandKind>,
+    accepted_interactive_commands: Vec<SessionCommandKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ForkDecisionOverride {
+    decision: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ResumeSavepointRef {
     CheckpointHash(crucible::ContentHash),
     Handle {
@@ -1694,7 +1742,15 @@ fn plan_save_invocation(
 }
 
 fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
-    let label = label.unwrap_or("savepoint").trim();
+    plan_nonempty_label(label, "savepoint")
+}
+
+fn plan_fork_label(label: Option<&str>) -> Result<String, CliError> {
+    plan_nonempty_label(label, "fork")
+}
+
+fn plan_nonempty_label(label: Option<&str>, default: &'static str) -> Result<String, CliError> {
+    let label = label.unwrap_or(default).trim();
     if label.is_empty()
         || label
             .bytes()
@@ -1756,8 +1812,115 @@ fn plan_resume_invocation(args: &ResumeArgs) -> Result<ResumeInvocationPlan, Cli
 }
 
 fn resolve_resume_savepoint(savepoint: Option<&str>) -> Result<ResumeSavepointRef, CliError> {
+    resolve_savepoint_ref("resume", savepoint)
+}
+
+fn plan_fork_invocation(
+    args: &ForkArgs,
+    explicit_seed_requested: bool,
+) -> Result<ForkInvocationPlan, CliError> {
+    let source = resolve_savepoint_ref("fork", args.savepoint.as_deref())?;
+    if explicit_seed_requested && !args.overrides.is_empty() {
+        return Err(usage_error(
+            "fork does not accept both --seed and --override; choose one post-fork decision source",
+        ));
+    }
+    let label = plan_fork_label(args.label.as_deref())?;
+    let decision_overrides = args
+        .overrides
+        .iter()
+        .map(|raw| parse_fork_decision_override(raw))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(duration) = &args.max_virtual_time {
+        if parse_run_duration_budget_ticks(duration).is_none() {
+            return Err(usage_error(
+                "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
+            ));
+        }
+    }
+    let terminal_condition = RunTerminalCondition::from_arg(args.until);
+    if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
+        return Err(usage_error(
+            "--until virtual-time requires --max-virtual-time",
+        ));
+    }
+    let execution_mode = if args.interactive {
+        RunExecutionMode::Interactive
+    } else {
+        RunExecutionMode::ToCompletion
+    };
+    let startup_commands = match execution_mode {
+        RunExecutionMode::ToCompletion => {
+            vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
+        }
+        RunExecutionMode::Interactive => vec![SessionCommandKind::Fork],
+    };
+    let accepted_interactive_commands = if args.interactive {
+        run_interactive_session_command_set()
+    } else {
+        Vec::new()
+    };
+
+    Ok(ForkInvocationPlan {
+        source,
+        label,
+        decision_overrides,
+        terminal_condition,
+        max_virtual_time: args.max_virtual_time.clone(),
+        max_virtual_time_ticks: args
+            .max_virtual_time
+            .as_deref()
+            .and_then(parse_run_duration_budget_ticks),
+        execution_mode,
+        watch_streams_live_status: args.watch,
+        startup_commands,
+        initial_control_commands: vec![SessionCommandKind::Query],
+        accepted_interactive_commands,
+    })
+}
+
+fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(usage_error(
+            "--override must be a single-line decision=value pair",
+        ));
+    }
+    if value.bytes().filter(|byte| *byte == b'=').count() != 1 {
+        return Err(usage_error(
+            "--override must contain exactly one `=` separator",
+        ));
+    }
+    let Some((decision, pinned_value)) = value.split_once('=') else {
+        return Err(usage_error(
+            "--override must contain exactly one `=` separator",
+        ));
+    };
+    let decision = decision.trim();
+    let pinned_value = pinned_value.trim();
+    if decision.is_empty() || pinned_value.is_empty() {
+        return Err(usage_error(
+            "--override decision and value must both be non-empty",
+        ));
+    }
+    Ok(ForkDecisionOverride {
+        decision: decision.to_string(),
+        value: pinned_value.to_string(),
+    })
+}
+
+fn resolve_savepoint_ref(
+    command_name: &'static str,
+    savepoint: Option<&str>,
+) -> Result<ResumeSavepointRef, CliError> {
     let Some(raw) = savepoint else {
-        return Err(usage_error("resume requires a SAVEPOINT argument"));
+        return Err(usage_error(format!(
+            "{command_name} requires a SAVEPOINT argument"
+        )));
     };
     let value = raw.trim();
     if value.is_empty()
@@ -5886,6 +6049,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Resume(args) => Some(plan_resume_invocation(args)?),
         _ => None,
     };
+    let fork_plan = match &cli.command {
+        Commands::Fork(args) => Some(plan_fork_invocation(args, cli.seed.is_some())?),
+        _ => None,
+    };
     let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
@@ -5900,6 +6067,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
         if let Some(resume_plan) = &resume_plan {
             return Err(unsupported_resume_backend_error(resume_plan));
+        }
+        if let Some(fork_plan) = &fork_plan {
+            return Err(unsupported_fork_backend_error(fork_plan));
         }
         let mut outcome = execute_backend_routed_command(
             &thin_plan,
@@ -6219,6 +6389,15 @@ fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
         "resume from checkpoint {} ({}) requires the checkpoint-instantiation runner tracked by T-CLI-10",
         format_content_hash_ref(plan.savepoint.checkpoint()),
         plan.savepoint.label()
+    ))
+}
+
+fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
+    backend_error(format!(
+        "fork from checkpoint {} ({}) as branch `{}` requires the independent child checkpoint-instantiation runner tracked by T-CLI-11",
+        format_content_hash_ref(plan.source.checkpoint()),
+        plan.source.label(),
+        plan.label
     ))
 }
 
@@ -9995,6 +10174,222 @@ mod tests {
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
         assert!(error.to_string().contains("T-CLI-10"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format_content_hash_ref(checkpoint))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_fork_help_surface_lists_wip_flags() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("fork")
+            .expect("fork subcommand must be registered")
+            .render_long_help()
+            .to_string();
+        for needle in [
+            "SAVEPOINT",
+            "--override <decision=value>",
+            "--until <quiescence|virtual-time|property|stopped>",
+            "--max-virtual-time <dur>",
+            "--label <name>",
+            "--interactive",
+            "--watch",
+        ] {
+            assert!(
+                help.contains(needle),
+                "fork help is missing `{needle}`:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let checkpoint = crucible::ContentHash::from_bytes(b"fork-checkpoint");
+        let scenario = crucible::ContentHash::from_bytes(b"fork-scenario");
+        let canonical_log = content_address_bytes(b"fork-log");
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "fork-source",
+            checkpoint,
+            scenario,
+            &canonical_log,
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--override"),
+            String::from("node-a.boot=alternate"),
+            String::from("--override"),
+            String::from("scheduler.step=5"),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("child-a"),
+            String::from("--interactive"),
+            String::from("--watch"),
+        ]);
+        let Commands::Fork(args) = &cli.command else {
+            panic!("expected fork command");
+        };
+        let plan = plan_fork_invocation(args, false)?;
+
+        assert!(matches!(plan.source, ResumeSavepointRef::Handle { .. }));
+        assert_eq!(plan.source.checkpoint(), checkpoint);
+        assert_eq!(plan.label, "child-a");
+        assert_eq!(
+            plan.decision_overrides,
+            vec![
+                ForkDecisionOverride {
+                    decision: String::from("node-a.boot"),
+                    value: String::from("alternate"),
+                },
+                ForkDecisionOverride {
+                    decision: String::from("scheduler.step"),
+                    value: String::from("5"),
+                },
+            ]
+        );
+        assert_eq!(plan.terminal_condition, RunTerminalCondition::VirtualTime);
+        assert_eq!(plan.max_virtual_time.as_deref(), Some("2ticks"));
+        assert_eq!(plan.max_virtual_time_ticks, Some(2));
+        assert_eq!(plan.execution_mode, RunExecutionMode::Interactive);
+        assert!(plan.watch_streams_live_status);
+        assert_eq!(plan.startup_commands, vec![SessionCommandKind::Fork]);
+        assert_eq!(
+            plan.initial_control_commands,
+            vec![SessionCommandKind::Query]
+        );
+        assert!(
+            plan.accepted_interactive_commands
+                .contains(&SessionCommandKind::Continue)
+        );
+
+        let reference = format_content_hash_ref(checkpoint);
+        let hash_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("fork"),
+            reference.clone(),
+            String::from("--label"),
+            String::from("hash-child"),
+        ]);
+        let Commands::Fork(args) = &hash_cli.command else {
+            panic!("expected fork command");
+        };
+        let hash_plan = plan_fork_invocation(args, false)?;
+        assert_eq!(hash_plan.source.checkpoint(), checkpoint);
+        assert_eq!(hash_plan.label, "hash-child");
+        assert_eq!(
+            hash_plan.startup_commands,
+            vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
+        );
+
+        let missing = ForkArgs::default();
+        let error = match plan_fork_invocation(&missing, false) {
+            Ok(_) => panic!("fork without savepoint must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("fork requires"));
+
+        let no_budget =
+            Cli::parse_from(["crucible", "fork", &reference, "--until", "virtual-time"]);
+        let Commands::Fork(args) = &no_budget.command else {
+            panic!("expected fork command");
+        };
+        let error = match plan_fork_invocation(args, false) {
+            Ok(_) => panic!("virtual-time fork requires a duration budget"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+
+        for malformed in ["missing-equals", "=value", "decision=", "a=b=c", "a\nb=c"] {
+            let args = ForkArgs {
+                savepoint: Some(reference.clone()),
+                overrides: vec![String::from(malformed)],
+                ..ForkArgs::default()
+            };
+            let error = match plan_fork_invocation(&args, false) {
+                Ok(_) => panic!("malformed fork override `{malformed}` must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, CliError::Usage(_)));
+            assert_eq!(error.exit_code(), 64);
+        }
+
+        let seed_conflict = Cli::parse_from([
+            "crucible",
+            "--seed",
+            "1",
+            "fork",
+            &reference,
+            "--override",
+            "decision=value",
+        ]);
+        let Commands::Fork(args) = &seed_conflict.command else {
+            panic!("expected fork command");
+        };
+        let error = match plan_fork_invocation(args, true) {
+            Ok(_) => panic!("fork must reject explicit seed plus override"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert_eq!(error.exit_code(), 64);
+        assert!(error.to_string().contains("--seed and --override"));
+
+        let malformed = temp.path().join("malformed-fork.crucible-savepoint");
+        fs::write(&malformed, "schema\tcrucible.savepoint-handle.v1\n")?;
+        let malformed_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("fork"),
+            malformed.display().to_string(),
+        ]);
+        let Commands::Fork(args) = &malformed_cli.command else {
+            panic!("expected fork command");
+        };
+        let error = match plan_fork_invocation(args, false) {
+            Ok(_) => panic!("malformed fork savepoint handle must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert_eq!(error.exit_code(), 5);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_fork_workflow_rejects_execution_until_child_runner_exists() -> Result<(), Box<dyn Error>>
+    {
+        let checkpoint = crucible::ContentHash::from_bytes(b"fork-execution");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            format_content_hash_ref(checkpoint),
+            String::from("--label"),
+            String::from("branch-a"),
+        ]);
+        let error = match dispatch(&cli) {
+            Ok(_) => panic!("fork must not silently pass before child instantiation exists"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("T-CLI-11"));
+        assert!(error.to_string().contains("branch-a"));
         assert!(
             error
                 .to_string()

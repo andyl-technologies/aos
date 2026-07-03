@@ -1501,6 +1501,17 @@ in rec {
         phase5.gates.controlResponsive.rawGate
       ];
     };
+    cliForkWorkflow = import ./phase5-cli-fork-workflow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliForkWorkflow";
+      taskIds = ["T-CLI-11"];
+      dependencies = [
+        phase5.cliSaveWorkflow
+        phase5.cliResumeWorkflow
+        phase5.sessionSaveResumeFork
+        phase5.gates.controlResponsive.rawGate
+      ];
+    };
     cliVerifyWorkflow = import ./phase5-cli-verify-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
