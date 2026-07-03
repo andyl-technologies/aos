@@ -2,7 +2,7 @@
 //!
 //! This module owns the deterministic collation boundary that the future
 //! parallel evaluator must preserve after tasks complete in nondeterministic
-//! order. It models three RFC-0007 output rules before the real scheduler is
+//! order. It models three RFC-0007 output rules before the real evaluator is
 //! wired in:
 //!
 //! ```text
@@ -13,14 +13,107 @@
 //!
 //! The implementation is a planning and test surface. It does not execute
 //! thunks, materialize derivations, iterate live attrsets, or run the final
-//! thread-count differential harness.
+//! full-closure `.drv` differential harness.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::string::{NixStringError, StringContext};
+
+use super::parallel::{ParallelTopLevelError, execute_parallel_top_level};
+
+/// Compares scheduler-backed output collation across worker counts.
+///
+/// The first worker count is the baseline. Each run executes the same cloned
+/// top-level task payloads through the safe L1 scheduler precursor, stamps task
+/// outputs with scheduler-observed task and worker metadata, collates the
+/// fragments, and compares the resulting canonical output against the baseline.
+///
+/// # Errors
+///
+/// Returns [`ParallelOutputDifferentialError::NoWorkerCounts`] if no worker
+/// counts are supplied. Returns [`ParallelOutputDifferentialError::Scheduler`]
+/// if the safe scheduler fails, [`ParallelOutputDifferentialError::Collation`]
+/// if one run emits invalid fragments, or
+/// [`ParallelOutputDifferentialError::Divergence`] if any candidate worker count
+/// produces canonical output that differs from the baseline.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped scheduler
+/// worker threads.
+pub fn compare_parallel_output_across_worker_counts<I, T, W, F>(
+    tasks: I,
+    worker_counts: W,
+    worker: F,
+) -> Result<ParallelOutputDifferentialReport, ParallelOutputDifferentialError>
+where
+    I: IntoIterator<Item = T>,
+    T: Clone + Send,
+    W: IntoIterator<Item = NonZeroUsize>,
+    F: Fn(T) -> ParallelOutputTaskResult + Sync,
+{
+    let tasks = tasks.into_iter().collect::<Vec<_>>();
+    let worker_counts = worker_counts.into_iter().collect::<Vec<_>>();
+    let Some((&baseline_worker_count, candidate_worker_counts)) = worker_counts.split_first()
+    else {
+        return Err(ParallelOutputDifferentialError::NoWorkerCounts);
+    };
+
+    let baseline = run_parallel_output_collation(&tasks, baseline_worker_count, &worker)?;
+    for &candidate_worker_count in candidate_worker_counts {
+        let candidate = run_parallel_output_collation(&tasks, candidate_worker_count, &worker)?;
+        if candidate != baseline {
+            return Err(ParallelOutputDifferentialError::Divergence {
+                baseline_worker_count: baseline_worker_count.get(),
+                candidate_worker_count: candidate_worker_count.get(),
+                baseline,
+                candidate,
+            });
+        }
+    }
+
+    Ok(ParallelOutputDifferentialReport {
+        task_count: tasks.len(),
+        baseline_worker_count: baseline_worker_count.get(),
+        worker_counts: worker_counts.iter().map(|count| count.get()).collect(),
+        collation: baseline,
+    })
+}
+
+fn run_parallel_output_collation<T, F>(
+    tasks: &[T],
+    worker_count: NonZeroUsize,
+    worker: &F,
+) -> Result<ParallelOutputCollation, ParallelOutputDifferentialError>
+where
+    T: Clone + Send,
+    F: Fn(T) -> ParallelOutputTaskResult + Sync,
+{
+    let report = execute_parallel_top_level(tasks.iter().cloned(), worker_count, worker).map_err(
+        |source| ParallelOutputDifferentialError::Scheduler {
+            worker_count: worker_count.get(),
+            source,
+        },
+    )?;
+    let fragments = report.results().iter().map(|execution| {
+        let result = execution.result();
+        ParallelOutputFragment::new(
+            execution.task_index(),
+            execution.worker_id(),
+            result.string_context.clone(),
+            result.drv_outputs.clone(),
+        )
+    });
+    collate_parallel_output_fragments(fragments).map_err(|source| {
+        ParallelOutputDifferentialError::Collation {
+            worker_count: worker_count.get(),
+            source,
+        }
+    })
+}
 
 /// Collates worker-emitted output fragments into canonical output order.
 ///
@@ -89,6 +182,33 @@ pub fn parallel_drv_output_content_sha256(bytes: &[u8]) -> [u8; 32] {
     let mut fixed = [0_u8; 32];
     fixed.copy_from_slice(&digest);
     fixed
+}
+
+/// Output produced by one top-level task before scheduler metadata is attached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelOutputTaskResult {
+    string_context: StringContext,
+    drv_outputs: Vec<ParallelDrvOutput>,
+}
+
+impl ParallelOutputTaskResult {
+    /// Builds one task-local output result.
+    pub fn new(string_context: StringContext, drv_outputs: Vec<ParallelDrvOutput>) -> Self {
+        Self {
+            string_context,
+            drv_outputs,
+        }
+    }
+
+    /// Returns the string context contributed by this task.
+    pub const fn string_context(&self) -> &StringContext {
+        &self.string_context
+    }
+
+    /// Returns `.drv` outputs contributed by this task.
+    pub fn drv_outputs(&self) -> &[ParallelDrvOutput] {
+        &self.drv_outputs
+    }
 }
 
 /// One output fragment emitted after a top-level task completes.
@@ -214,6 +334,37 @@ impl ParallelOutputCollation {
     }
 }
 
+/// Successful scheduler-backed thread-count output comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelOutputDifferentialReport {
+    task_count: usize,
+    baseline_worker_count: usize,
+    worker_counts: Vec<usize>,
+    collation: ParallelOutputCollation,
+}
+
+impl ParallelOutputDifferentialReport {
+    /// Returns the number of top-level tasks compared in every run.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns the worker count used as the baseline run.
+    pub const fn baseline_worker_count(&self) -> usize {
+        self.baseline_worker_count
+    }
+
+    /// Returns all worker counts compared, with the baseline first.
+    pub fn worker_counts(&self) -> &[usize] {
+        &self.worker_counts
+    }
+
+    /// Returns the canonical output shared by all compared worker counts.
+    pub const fn collation(&self) -> &ParallelOutputCollation {
+        &self.collation
+    }
+}
+
 /// A failure while collating parallel output fragments.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ParallelOutputDeterminismError {
@@ -241,10 +392,55 @@ pub enum ParallelOutputDeterminismError {
     StringContext(#[from] NixStringError),
 }
 
+/// A failure while comparing scheduler-backed output across worker counts.
+#[derive(Debug, Error)]
+pub enum ParallelOutputDifferentialError {
+    /// No worker counts were supplied for comparison.
+    #[error("parallel output differential requires at least one worker count")]
+    NoWorkerCounts,
+    /// The safe top-level scheduler failed for one worker count.
+    #[error(
+        "parallel output differential failed while executing {worker_count} worker(s): {source}"
+    )]
+    Scheduler {
+        /// The worker count used by the failed run.
+        worker_count: usize,
+        /// The scheduler failure.
+        #[source]
+        source: ParallelTopLevelError,
+    },
+    /// Output collation failed for one worker count.
+    #[error(
+        "parallel output differential failed while collating {worker_count} worker(s): {source}"
+    )]
+    Collation {
+        /// The worker count used by the failed run.
+        worker_count: usize,
+        /// The output collation failure.
+        #[source]
+        source: ParallelOutputDeterminismError,
+    },
+    /// A candidate worker count produced output that differed from the baseline.
+    #[error(
+        "parallel output differential diverged between {baseline_worker_count} and {candidate_worker_count} worker(s)"
+    )]
+    Divergence {
+        /// The baseline worker count.
+        baseline_worker_count: usize,
+        /// The worker count that differed from the baseline.
+        candidate_worker_count: usize,
+        /// The canonical output produced by the baseline run.
+        baseline: ParallelOutputCollation,
+        /// The canonical output produced by the candidate run.
+        candidate: ParallelOutputCollation,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::string::ContextElement;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn opaque(path: &[u8]) -> ContextElement {
         ContextElement::opaque_path(path.to_vec()).expect("opaque context builds")
@@ -266,6 +462,13 @@ mod tests {
         ParallelDrvOutput::try_new(path.to_vec(), bytes.to_vec()).expect("drv output builds")
     }
 
+    fn task_result(
+        string_context: StringContext,
+        drv_outputs: Vec<ParallelDrvOutput>,
+    ) -> ParallelOutputTaskResult {
+        ParallelOutputTaskResult::new(string_context, drv_outputs)
+    }
+
     fn fragment(
         task_index: usize,
         worker_id: usize,
@@ -273,6 +476,112 @@ mod tests {
         drv_outputs: Vec<ParallelDrvOutput>,
     ) -> ParallelOutputFragment {
         ParallelOutputFragment::new(task_index, worker_id, string_context, drv_outputs)
+    }
+
+    fn workers(count: usize) -> NonZeroUsize {
+        NonZeroUsize::new(count).expect("test worker count is nonzero")
+    }
+
+    #[test]
+    fn scheduler_backed_differential_matches_across_worker_counts() {
+        let source = opaque(b"/nix/store/aaa-source");
+        let dep = output(b"/nix/store/bbb-pkg.drv", b"out");
+        let report = compare_parallel_output_across_worker_counts(
+            0..6,
+            [workers(1), workers(2), workers(4)],
+            |task| {
+                let context = if task % 2 == 0 {
+                    context(vec![source.clone()])
+                } else {
+                    context(vec![dep.clone()])
+                };
+                task_result(
+                    context,
+                    vec![drv(
+                        format!("/nix/store/task-{task}.drv").as_bytes(),
+                        format!("drv-bytes-{task}").as_bytes(),
+                    )],
+                )
+            },
+        )
+        .expect("thread-count output comparison succeeds");
+
+        assert_eq!(report.task_count(), 6);
+        assert_eq!(report.baseline_worker_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 2, 4]);
+        assert_eq!(report.collation().fragment_count(), 6);
+        assert_eq!(
+            report.collation().string_context().elements(),
+            &[source, dep]
+        );
+        assert_eq!(report.collation().drv_output_count(), 6);
+    }
+
+    #[test]
+    fn scheduler_backed_differential_rejects_empty_worker_counts() {
+        let error = compare_parallel_output_across_worker_counts(0..1, [], |_| {
+            task_result(StringContext::empty(), Vec::new())
+        })
+        .expect_err("empty worker-count list rejects");
+
+        assert!(matches!(
+            error,
+            ParallelOutputDifferentialError::NoWorkerCounts
+        ));
+    }
+
+    #[test]
+    fn scheduler_backed_differential_reports_collation_failures() {
+        let error = compare_parallel_output_across_worker_counts(0..2, [workers(2)], |task| {
+            task_result(
+                StringContext::empty(),
+                vec![drv(
+                    b"/nix/store/shared.drv",
+                    format!("bytes-{task}").as_bytes(),
+                )],
+            )
+        })
+        .expect_err("conflicting drv outputs reject");
+
+        assert!(matches!(
+            error,
+            ParallelOutputDifferentialError::Collation {
+                worker_count: 2,
+                source: ParallelOutputDeterminismError::ConflictingDrvOutput { .. },
+            }
+        ));
+    }
+
+    #[test]
+    fn scheduler_backed_differential_reports_thread_count_divergence() {
+        let serial = AtomicUsize::new(0);
+
+        let error =
+            compare_parallel_output_across_worker_counts(0..2, [workers(1), workers(2)], |task| {
+                let observed = serial.fetch_add(1, Ordering::SeqCst);
+                task_result(
+                    StringContext::empty(),
+                    vec![drv(
+                        format!("/nix/store/task-{task}.drv").as_bytes(),
+                        format!("observed-{observed}").as_bytes(),
+                    )],
+                )
+            })
+            .expect_err("stateful task output diverges across runs");
+
+        match error {
+            ParallelOutputDifferentialError::Divergence {
+                baseline_worker_count,
+                candidate_worker_count,
+                baseline,
+                candidate,
+            } => {
+                assert_eq!(baseline_worker_count, 1);
+                assert_eq!(candidate_worker_count, 2);
+                assert_ne!(baseline, candidate);
+            }
+            other => panic!("unexpected differential error: {other}"),
+        }
     }
 
     #[test]

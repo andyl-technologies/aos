@@ -49,7 +49,9 @@ pub use parallel_heap::{
 };
 pub use parallel_output::{
     ParallelDrvOutput, ParallelOutputCollation, ParallelOutputDeterminismError,
-    ParallelOutputFragment, collate_parallel_output_fragments, parallel_drv_output_content_sha256,
+    ParallelOutputDifferentialError, ParallelOutputDifferentialReport, ParallelOutputFragment,
+    ParallelOutputTaskResult, collate_parallel_output_fragments,
+    compare_parallel_output_across_worker_counts, parallel_drv_output_content_sha256,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,

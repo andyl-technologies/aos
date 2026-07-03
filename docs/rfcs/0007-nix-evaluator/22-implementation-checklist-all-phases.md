@@ -6769,6 +6769,20 @@ nurseries build on the bump arena.
       scheduling ([13](13-parallel-evaluation.md) §4.4); the
       [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md)
       surface stays byte-green.
+- [x] Current scheduler-backed thread-count output differential precursor:
+      `ratchet-oracle::eval::compare_parallel_output_across_worker_counts`
+      executes cloned top-level output tasks through the safe L1 scheduler at
+      multiple worker counts, stamps each task-local output with the
+      scheduler-observed task index and completing worker, collates fragments
+      with the canonical `parallel_output` rules, and rejects any worker count
+      whose canonical output differs from the baseline. Tests cover stable
+      collation across 1/2/4 worker runs, missing worker-count rejection,
+      scheduler-run collation conflict reporting, and detected divergence from
+      stateful output. This is a thread-count output harness precursor only: it
+      does not evaluate Nix derivations, materialize live `.drv` outputs, compare
+      against the sequential tree-walk oracle, run the full closure, audit live
+      attrset iteration under nondeterminism, or satisfy the loom/Miri/TSan
+      gate.
 - [ ] **`loom`/Miri memory-ordering audit (R-4) is green** before the parallel
       tier is trusted. *No data races, ever.*
 
