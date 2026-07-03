@@ -1308,6 +1308,43 @@ impl AllocationCollectorPollMinorGcPlan {
         })
     }
 
+    /// Builds materialized relocation destinations from explicit addresses.
+    ///
+    /// This is the non-contiguous counterpart to
+    /// [`Self::relocation_destination_plan`]. It still derives allocation and
+    /// placement metadata from `nursery_layouts`, but validates a caller-supplied
+    /// destination table rather than materializing addresses from generation
+    /// bases. The resulting wrapper keeps the canonical survivor-frontier
+    /// destination order beside the same allocation and placement metadata used
+    /// by later commit planning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if nursery layout metadata does not match
+    /// this plan, if allocation or placement metadata cannot reserve storage or
+    /// overflows, if explicit destinations do not form a valid relocation map, or
+    /// if any destination violates the source object's required alignment or
+    /// overlaps another planned destination or live source range.
+    pub fn explicit_relocation_destination_plan(
+        &self,
+        nursery_layouts: &[NurseryObjectLayout],
+        destinations: &[MinorGcRelocationDestination],
+    ) -> Result<AllocationCollectorPollMinorGcRelocationDestinations, GenerationalGcError> {
+        let allocation_plan =
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(&self.plan, nursery_layouts)?;
+        let placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)?;
+        let relocation_destinations =
+            MinorGcRelocationDestinationPlan::from_destinations(&self.plan, destinations)?;
+        let relocation_plan = relocation_destinations.relocation_plan(&self.plan)?;
+        let _ = object_copy_plan_from_destination_placements(&relocation_plan, &placement_plan)?;
+        Ok(AllocationCollectorPollMinorGcRelocationDestinations {
+            allocation_plan,
+            placement_plan,
+            relocation_destinations,
+        })
+    }
+
     /// Builds ordered minor-GC commit metadata for this poll plan.
     ///
     /// The returned value keeps this plan's copied reference-slot labels next to
@@ -3726,6 +3763,34 @@ impl EvalHeap {
         self.validate_collector_poll_plan_allocation_state(plan)?;
         let nursery_layouts = self.nursery_layouts_for_minor_gc_plan(plan.plan())?;
         Ok(plan.relocation_destination_plan(&nursery_layouts, bases)?)
+    }
+
+    /// Builds relocation destinations from caller-supplied addresses.
+    ///
+    /// This helper has the same heap snapshot and survivor-layout validation as
+    /// [`Self::plan_collector_poll_minor_gc_relocation_destinations`], but it
+    /// accepts explicit destination addresses instead of contiguous
+    /// generation-space bases. It is intended for future destination-record
+    /// allocation code that obtains concrete heap addresses before commit
+    /// metadata is built. It still does not allocate destination records, reserve
+    /// semispace pages, copy bytes, or update live evaluator slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after planning, if a planned survivor no longer belongs to
+    /// this heap, if survivor-layout storage cannot be reserved, if the explicit
+    /// destination table is not a valid relocation map for `plan`, or if any
+    /// destination address violates the source object's required alignment,
+    /// overlaps another destination range, or overlaps a live source range.
+    pub fn plan_collector_poll_minor_gc_explicit_relocation_destinations(
+        &self,
+        plan: &AllocationCollectorPollMinorGcPlan,
+        destinations: &[MinorGcRelocationDestination],
+    ) -> Result<AllocationCollectorPollMinorGcRelocationDestinations, EvalHeapError> {
+        self.validate_collector_poll_plan_allocation_state(plan)?;
+        let nursery_layouts = self.nursery_layouts_for_minor_gc_plan(plan.plan())?;
+        Ok(plan.explicit_relocation_destination_plan(&nursery_layouts, destinations)?)
     }
 
     /// Derives object byte-copy requests for caller-owned copy buffers.

@@ -1095,6 +1095,44 @@ pub struct MinorGcRelocationDestinationPlan {
 }
 
 impl MinorGcRelocationDestinationPlan {
+    /// Builds relocation destination metadata from an explicit destination table.
+    ///
+    /// The input table may be in any order. The returned plan is canonicalized
+    /// into survivor-frontier order after validating that every live survivor has
+    /// exactly one destination, no stale non-survivor source appears, no two
+    /// survivors share a destination address, and no destination reuses a live
+    /// from-space source address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if relocation storage cannot be reserved
+    /// or if the explicit destination table fails the same validation as
+    /// [`MinorGcRelocationPlan::from_minor_gc_plan`].
+    pub fn from_destinations(
+        survivor_plan: &MinorGcPlan,
+        destinations: &[MinorGcRelocationDestination],
+    ) -> Result<Self, GenerationalGcError> {
+        let relocation_plan =
+            MinorGcRelocationPlan::from_minor_gc_plan(survivor_plan, destinations)?;
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact(relocation_plan.len())
+            .map_err(
+                |_| GenerationalGcError::MinorGcRelocationDestinationAllocationFailed {
+                    destinations: relocation_plan.len(),
+                },
+            )?;
+        for relocation in relocation_plan.relocations() {
+            canonical.push(MinorGcRelocationDestination::new(
+                relocation.source(),
+                relocation.destination(),
+            ));
+        }
+        Ok(Self {
+            destinations: canonical,
+        })
+    }
+
     /// Builds relocation destination metadata from placement offsets and bases.
     ///
     /// Destinations are emitted in placement order. Copied survivors use the
@@ -1426,7 +1464,8 @@ impl MinorGcObjectCopyPlan {
     /// Returns [`GenerationalGcError`] if copy storage cannot be reserved, if
     /// the copy count overflows, if nursery layout metadata is missing,
     /// duplicated, invalid, or stale for `relocation_plan`, or if a relocation
-    /// destination does not satisfy the source object's required alignment.
+    /// destination does not satisfy the source object's required alignment,
+    /// overlaps another destination range, or overlaps a live source range.
     pub fn from_relocation_plan(
         relocation_plan: &MinorGcRelocationPlan,
         nursery_layouts: &[NurseryObjectLayout],
@@ -1452,6 +1491,8 @@ impl MinorGcObjectCopyPlan {
                 align: layout.align(),
             });
         }
+        validate_object_copy_destination_ranges_are_disjoint(&copies)?;
+        validate_object_copy_destinations_do_not_overlap_sources(&copies)?;
 
         Ok(Self { copies })
     }
@@ -2661,6 +2702,77 @@ fn validate_relocation_destination_alignment(
     Ok(())
 }
 
+fn validate_object_copy_destination_ranges_are_disjoint(
+    copies: &[MinorGcObjectCopy],
+) -> Result<(), GenerationalGcError> {
+    for (index, copy) in copies.iter().enumerate() {
+        let copy_end = object_copy_destination_end(*copy)?;
+        for other in &copies[index + 1..] {
+            let other_end = object_copy_destination_end(*other)?;
+            if copy.destination().address_bits() < other_end
+                && other.destination().address_bits() < copy_end
+            {
+                return Err(
+                    GenerationalGcError::MinorGcObjectCopyDestinationRangeOverlap {
+                        first_generation: copy.destination_generation(),
+                        first: copy.destination(),
+                        second_generation: other.destination_generation(),
+                        second: other.destination(),
+                    },
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_object_copy_destinations_do_not_overlap_sources(
+    copies: &[MinorGcObjectCopy],
+) -> Result<(), GenerationalGcError> {
+    for destination_copy in copies {
+        let destination_end = object_copy_destination_end(*destination_copy)?;
+        for source_copy in copies {
+            let source_end = object_copy_source_end(*source_copy)?;
+            if destination_copy.destination().address_bits() < source_end
+                && source_copy.source().address_bits() < destination_end
+            {
+                return Err(
+                    GenerationalGcError::MinorGcObjectCopyDestinationSourceRangeOverlap {
+                        source_address: source_copy.source(),
+                        destination: destination_copy.destination(),
+                    },
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn object_copy_destination_end(copy: MinorGcObjectCopy) -> Result<usize, GenerationalGcError> {
+    copy.destination()
+        .address_bits()
+        .checked_add(copy.size_bytes())
+        .ok_or(
+            GenerationalGcError::MinorGcObjectCopyDestinationAddressOverflow {
+                generation: copy.destination_generation(),
+                destination: copy.destination(),
+                size_bytes: copy.size_bytes(),
+            },
+        )
+}
+
+fn object_copy_source_end(copy: MinorGcObjectCopy) -> Result<usize, GenerationalGcError> {
+    copy.source()
+        .address_bits()
+        .checked_add(copy.size_bytes())
+        .ok_or(
+            GenerationalGcError::MinorGcObjectCopySourceAddressOverflow {
+                address: copy.source(),
+                size_bytes: copy.size_bytes(),
+            },
+        )
+}
+
 fn validate_object_byte_copy_buffers_match_plan(
     plan: &MinorGcObjectCopyPlan,
     buffers: &[MinorGcObjectByteCopyBuffer<'_>],
@@ -3631,6 +3743,58 @@ pub enum GenerationalGcError {
     MinorGcObjectCopyAllocationFailed {
         /// The requested object-copy-plan capacity.
         copies: usize,
+    },
+    /// A planned object-copy destination address range overflowed.
+    #[error(
+        "minor-GC object-copy destination range overflowed for {generation:?} destination 0x{destination:x} size {size_bytes}",
+        destination = destination.address_bits()
+    )]
+    MinorGcObjectCopyDestinationAddressOverflow {
+        /// The destination generation being written.
+        generation: HeapGeneration,
+        /// The planned destination object address.
+        destination: GcHeapAddress,
+        /// The planned object size in bytes.
+        size_bytes: usize,
+    },
+    /// A planned object-copy source address range overflowed.
+    #[error(
+        "minor-GC object-copy source range overflowed for source 0x{address:x} size {size_bytes}",
+        address = address.address_bits()
+    )]
+    MinorGcObjectCopySourceAddressOverflow {
+        /// The planned source object address.
+        address: GcHeapAddress,
+        /// The planned object size in bytes.
+        size_bytes: usize,
+    },
+    /// Two planned object-copy destination ranges overlapped.
+    #[error(
+        "minor-GC object-copy destination ranges overlap: {first_generation:?} 0x{first:x} and {second_generation:?} 0x{second:x}",
+        first = first.address_bits(),
+        second = second.address_bits()
+    )]
+    MinorGcObjectCopyDestinationRangeOverlap {
+        /// The first destination generation.
+        first_generation: HeapGeneration,
+        /// The first overlapping destination object.
+        first: GcHeapAddress,
+        /// The second destination generation.
+        second_generation: HeapGeneration,
+        /// The second overlapping destination object.
+        second: GcHeapAddress,
+    },
+    /// A planned object-copy destination range overlapped from-space bytes.
+    #[error(
+        "minor-GC object-copy destination 0x{destination:x} overlaps source 0x{source:x}",
+        destination = destination.address_bits(),
+        source = source_address.address_bits()
+    )]
+    MinorGcObjectCopyDestinationSourceRangeOverlap {
+        /// The live from-space source whose bytes would be reused.
+        source_address: GcHeapAddress,
+        /// The destination object address that overlaps from-space bytes.
+        destination: GcHeapAddress,
     },
     /// An object-copy plan received the wrong number of caller-owned byte
     /// buffers.
@@ -5295,6 +5459,54 @@ mod tests {
     }
 
     #[test]
+    fn minor_gc_relocation_destination_plan_canonicalizes_explicit_destinations() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0xb000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let explicit_destinations = [
+            MinorGcRelocationDestination::new(second, second_destination),
+            MinorGcRelocationDestination::new(first, first_destination),
+        ];
+
+        let destination_plan =
+            MinorGcRelocationDestinationPlan::from_destinations(&plan, &explicit_destinations)
+                .expect("explicit destination plan builds");
+
+        assert_eq!(
+            destination_plan.destinations(),
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ]
+        );
+        assert_eq!(
+            destination_plan
+                .relocation_plan(&plan)
+                .expect("relocation map rebuilds")
+                .relocations()
+                .iter()
+                .map(|relocation| relocation.destination())
+                .collect::<Vec<_>>(),
+            vec![first_destination, second_destination]
+        );
+    }
+
+    #[test]
     fn minor_gc_relocation_plan_rejects_destinations_in_from_space() {
         let first = address(0x1000);
         let second = address(0x2000);
@@ -5765,6 +5977,134 @@ mod tests {
                     generation: HeapGeneration::Young,
                     destination: misaligned_destination,
                     align: 16,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_rejects_overlapping_destination_ranges() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0x9008);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[
+                    NurseryObjectLayout::new(first, 16, 8),
+                    NurseryObjectLayout::new(second, 16, 8),
+                ],
+            ),
+            Err(
+                GenerationalGcError::MinorGcObjectCopyDestinationRangeOverlap {
+                    first_generation: HeapGeneration::Young,
+                    first: first_destination,
+                    second_generation: HeapGeneration::Young,
+                    second: second_destination,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_rejects_cross_generation_destination_range_overlap() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0x9008);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[
+                    NurseryObjectLayout::new(copy, 16, 8),
+                    NurseryObjectLayout::new(promote, 16, 8),
+                ],
+            ),
+            Err(
+                GenerationalGcError::MinorGcObjectCopyDestinationRangeOverlap {
+                    first_generation: HeapGeneration::Young,
+                    first: copy_destination,
+                    second_generation: HeapGeneration::Old,
+                    second: promote_destination,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_rejects_destination_source_range_overlap() {
+        let young = address(0x1000);
+        let destination = address(0x1008);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[MinorGcRelocationDestination::new(young, destination)],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[NurseryObjectLayout::new(young, 16, 8)],
+            ),
+            Err(
+                GenerationalGcError::MinorGcObjectCopyDestinationSourceRangeOverlap {
+                    source_address: young,
+                    destination,
                 }
             )
         );

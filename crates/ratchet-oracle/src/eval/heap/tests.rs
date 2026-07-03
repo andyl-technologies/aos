@@ -8,9 +8,10 @@ use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
     HeapGeneration, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
     MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectAge,
-    NurseryObjectLayout, ProcessResidentMemorySource, RegionPlan, RegionRuntimeTier,
-    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    MinorGcPromotionPolicy, MinorGcRelocationDestination, MinorGcRelocationPlan,
+    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectLayout, ProcessResidentMemorySource,
+    RegionPlan, RegionRuntimeTier, RememberedEdge, RememberedSet, ResolvedValueGeneration,
+    ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -4095,6 +4096,306 @@ fn collector_poll_minor_gc_relocation_destinations_derive_layouts_from_heap_reco
             .copied()
             .collect::<Vec<_>>(),
         Vec::new()
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_explicit_relocation_destinations_accept_noncontiguous_addresses() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, first)
+        .expect("first root records");
+    roots
+        .try_push_value_stack(1, second)
+        .expect("second root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let first_destination = static_gc_address(0x5000_0000);
+    let second_destination = static_gc_address(0x3000_0000);
+    let explicit_destinations = [
+        MinorGcRelocationDestination::new(gc_address(second), second_destination),
+        MinorGcRelocationDestination::new(gc_address(first), first_destination),
+    ];
+
+    let destinations = heap
+        .plan_collector_poll_minor_gc_explicit_relocation_destinations(
+            &planned,
+            &explicit_destinations,
+        )
+        .expect("explicit destinations plan");
+
+    assert_eq!(destinations.destinations().len(), 2);
+    assert_eq!(
+        destinations.destinations()[0],
+        MinorGcRelocationDestination::new(gc_address(first), first_destination)
+    );
+    assert_eq!(
+        destinations.destinations()[1],
+        MinorGcRelocationDestination::new(gc_address(second), second_destination)
+    );
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan accepts explicit destinations");
+    let byte_copy_plan = heap
+        .collector_poll_minor_gc_object_byte_copy_plan(&commit)
+        .expect("object byte-copy plan derives");
+    assert_eq!(
+        byte_copy_plan
+            .requests()
+            .iter()
+            .map(AllocationCollectorPollObjectByteCopyRequest::destination)
+            .collect::<Vec<_>>(),
+        vec![first_destination, second_destination]
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_explicit_relocation_destinations_reject_duplicate_destination() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, first)
+        .expect("first root records");
+    roots
+        .try_push_value_stack(1, second)
+        .expect("second root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destination = static_gc_address(0x5000_0000);
+    let explicit_destinations = [
+        MinorGcRelocationDestination::new(gc_address(first), destination),
+        MinorGcRelocationDestination::new(gc_address(second), destination),
+    ];
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_explicit_relocation_destinations(
+            &planned,
+            &explicit_destinations,
+        )
+        .expect_err("duplicate explicit destination rejects"),
+        EvalHeapError::GenerationalGc(GenerationalGcError::DuplicateMinorGcRelocationDestination {
+            address: destination,
+        })
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_explicit_relocation_destinations_reject_overlapping_ranges() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, first)
+        .expect("first root records");
+    roots
+        .try_push_value_stack(1, second)
+        .expect("second root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let first_destination = static_gc_address(0x5000_0000);
+    let second_destination = static_gc_address(0x5000_0008);
+    let explicit_destinations = [
+        MinorGcRelocationDestination::new(gc_address(first), first_destination),
+        MinorGcRelocationDestination::new(gc_address(second), second_destination),
+    ];
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_explicit_relocation_destinations(
+            &planned,
+            &explicit_destinations,
+        )
+        .expect_err("overlapping explicit destination ranges reject"),
+        EvalHeapError::GenerationalGc(
+            GenerationalGcError::MinorGcObjectCopyDestinationRangeOverlap {
+                first_generation: HeapGeneration::Young,
+                first: first_destination,
+                second_generation: HeapGeneration::Young,
+                second: second_destination,
+            }
+        )
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_explicit_relocation_destinations_reject_cross_generation_overlap() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let copy = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("copied thunk allocates");
+    let promote = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("promoted thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let copy_address = gc_address(copy);
+    let promote_address = gc_address(promote);
+    let roots = vec![
+        ResolvedValueGeneration::young(copy_address),
+        ResolvedValueGeneration::young(promote_address),
+    ];
+    let nursery_objects = vec![
+        NurseryObjectAge::new(copy_address, 0),
+        NurseryObjectAge::new(promote_address, 1),
+    ];
+    let remembered_set = RememberedSet::new();
+    let plan = MinorGcPlan::from_roots_and_remembered(
+        roots.iter().copied(),
+        remembered_set.snapshot(),
+        remembered_set.epoch(),
+        &nursery_objects,
+        MinorGcPromotionPolicy::new(2),
+    )
+    .expect("mixed-action minor-GC plan builds");
+    let planned = AllocationCollectorPollMinorGcPlan::from_parts_for_test(
+        poll,
+        heap.records.len(),
+        heap.region_owner,
+        heap.worker_region_epoch,
+        heap.allocation_safepoints(),
+        heap.permanent_allocation_safepoints(),
+        remembered_set,
+        roots,
+        nursery_objects,
+        Vec::new(),
+        Vec::new(),
+        plan,
+    );
+    let copy_destination = static_gc_address(0x5000_0000);
+    let promote_destination = static_gc_address(0x5000_0008);
+    let explicit_destinations = [
+        MinorGcRelocationDestination::new(copy_address, copy_destination),
+        MinorGcRelocationDestination::new(promote_address, promote_destination),
+    ];
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_explicit_relocation_destinations(
+            &planned,
+            &explicit_destinations,
+        )
+        .expect_err("cross-generation explicit destination ranges reject"),
+        EvalHeapError::GenerationalGc(
+            GenerationalGcError::MinorGcObjectCopyDestinationRangeOverlap {
+                first_generation: HeapGeneration::Young,
+                first: copy_destination,
+                second_generation: HeapGeneration::Old,
+                second: promote_destination,
+            }
+        )
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_explicit_relocation_destinations_reject_source_range_overlap() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let child_address = gc_address(child);
+    let destination = static_gc_address(child_address.address_bits() + 8);
+    let explicit_destinations = [MinorGcRelocationDestination::new(
+        child_address,
+        destination,
+    )];
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_explicit_relocation_destinations(
+            &planned,
+            &explicit_destinations,
+        )
+        .expect_err("from-space interior explicit destination rejects"),
+        EvalHeapError::GenerationalGc(
+            GenerationalGcError::MinorGcObjectCopyDestinationSourceRangeOverlap {
+                source_address: child_address,
+                destination,
+            }
+        )
     );
 }
 

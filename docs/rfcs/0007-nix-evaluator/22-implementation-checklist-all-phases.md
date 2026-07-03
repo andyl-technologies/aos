@@ -6137,8 +6137,20 @@ and helps the oracle directly.
       `EvalHeap::plan_collector_poll_minor_gc_relocation_destinations` derives
       survivor layouts from allocator-recorded heap side-table size/alignment
       metadata and rejects heap record or allocation-safepoint changes after
-      planning before materializing destinations. This remains destination
-      metadata only; semispace page reservation, base selection, object storage
+      planning before materializing destinations.
+      `AllocationCollectorPollMinorGcPlan::explicit_relocation_destination_plan`
+      and `EvalHeap::plan_collector_poll_minor_gc_explicit_relocation_destinations`
+      validate caller-supplied explicit destination tables, canonicalize them
+      into survivor order, and allow non-contiguous destination addresses while
+      preserving the same allocation and placement metadata. Explicit tables
+      are checked against the derived object-copy sizes so absolute destination
+      ranges are disjoint and do not overlap live source ranges before commit
+      metadata can be built. Unit tests cover base-derived
+      copied-young/promoted-old destination planning, heap-derived layout sizes,
+      explicit non-contiguous destination tables, duplicate, overlapping, and
+      source-overlapping explicit-destination rejection, and post-plan
+      allocation rejection. This remains destination metadata only; semispace
+      page reservation, live collector base selection, object storage
       allocation, buffer binding to real heap objects, and generation-space
       management remain open.
 - [x] Current allocation-poll commit-plan bridge precursor:

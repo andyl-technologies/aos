@@ -1547,15 +1547,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       planners. It takes caller-supplied nursery layouts plus caller-chosen
       nursery/old destination bases, keeps each intermediate plan together, and
       validates materialized destinations against the poll plan's survivor
-      frontier. `EvalHeap::plan_collector_poll_minor_gc_relocation_destinations`
-      now derives survivor nursery layouts from allocator-recorded heap side-table
-      size/alignment metadata and rejects heap record or allocation-safepoint
-      changes after minor-GC planning before materializing destinations. Tests
-      cover caller-supplied copied-young/promoted-old destination planning,
-      heap-derived layout sizes, and post-plan allocation rejection. This is still
-      metadata only: it does not reserve semispace pages, choose destination
-      bases, allocate object storage, bind byte buffers to real objects, or
-      manage nursery/old generation spaces.
+      frontier. `AllocationCollectorPollMinorGcPlan::explicit_relocation_destination_plan`
+      and `EvalHeap::plan_collector_poll_minor_gc_explicit_relocation_destinations`
+      validate caller-supplied explicit destination tables, canonicalize them
+      into survivor order, and allow non-contiguous destination addresses while
+      preserving the same allocation and placement metadata. Explicit tables are
+      checked against the derived object-copy sizes so absolute destination
+      ranges are disjoint and do not overlap live source ranges before commit
+      metadata can be built. The heap helpers derive survivor nursery layouts
+      from allocator-recorded heap side-table size/alignment metadata and reject
+      heap record or allocation-safepoint changes after minor-GC planning before
+      materializing or validating destinations. Tests cover caller-supplied
+      copied-young/promoted-old destination planning, heap-derived layout sizes,
+      explicit non-contiguous destination tables, duplicate, overlapping, and
+      source-overlapping explicit-destination rejection, and post-plan allocation
+      rejection. This is still metadata only: it does not reserve
+      semispace pages, choose destination bases for the live collector, allocate
+      object storage, bind byte buffers to real objects, or manage nursery/old
+      generation spaces.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level
