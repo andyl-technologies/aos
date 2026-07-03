@@ -3547,6 +3547,46 @@ fn apply_boundary_minor_gc_outcome_root_writebacks(
     ))
 }
 
+fn apply_boundary_minor_gc_copied_heap_field_writebacks(
+    heap: &mut EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
+) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
+    let mut writes = Vec::new();
+    writes.try_reserve_exact(plan.writes().len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_WRITES_TABLE,
+            entries: plan.writes().len(),
+        }
+    })?;
+
+    for write in plan.writes() {
+        let Some(writeback_object_request) = write.writeback_object_request() else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcHeapFieldWritebackApplyUnsupportedInPlace {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                },
+            );
+        };
+        writes.push(AllocationCollectorPollCopiedHeapFieldWrite::new(
+            write.allocation_domain(),
+            write.validation_object(),
+            write.writeback_object(),
+            write.field_index(),
+            write.source().clone(),
+            write.replacement_metadata(),
+            write.replacement_request(),
+            writeback_object_request,
+        ));
+    }
+
+    let report = heap.apply_collector_poll_minor_gc_copied_heap_field_writes(&writes)?;
+    debug_assert_eq!(report.fields(), plan.report().fields());
+    Ok(plan.report())
+}
+
 fn validate_boundary_minor_gc_outcome_root_writeback_sources(
     plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
 ) -> Result<usize, EvalHeapError> {
@@ -7169,6 +7209,49 @@ mod heap_field_writeback_destination_binding_tests {
     }
 
     #[test]
+    fn copied_heap_field_writeback_applicator_rejects_in_place_dirty_fields() {
+        let old_object = address(0x1000);
+        let source = address(0x2000);
+        let replacement_destination = address(0x3000);
+        let replacement_request = request(
+            source,
+            replacement_destination,
+            MinorGcSurvivorAction::CopyToNursery,
+        );
+        let write_plan = EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan::new(vec![
+            EvalGcStressBoundaryMinorGcHeapFieldWritebackWrite {
+                allocation_domain: HeapAllocationDomain::Worker,
+                validation_object: old_object,
+                writeback_object: old_object,
+                field_index: 0,
+                source: field_source(),
+                replacement_destination,
+                replacement_generation: HeapGeneration::Young,
+                replacement_metadata: heap(replacement_destination, HeapGeneration::Young),
+                replacement_request,
+                replacement_destination_bytes: vec![1, 2, 3, 4],
+                writeback_object_request: None,
+                writeback_object_destination_bytes: None,
+            },
+        ]);
+        let mut heap = EvalHeap::new();
+
+        let err = apply_boundary_minor_gc_copied_heap_field_writebacks(&mut heap, &write_plan)
+            .expect_err("in-place dirty field writeback is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcHeapFieldWritebackApplyUnsupportedInPlace {
+                allocation_domain: HeapAllocationDomain::Worker,
+                writeback_object,
+                field_index: 0,
+                field_source,
+            } if writeback_object == old_object
+                && field_source == (HeapEdgeSource::ListElement { index: 0 })
+        ));
+    }
+
+    #[test]
     fn rejects_missing_copied_heap_field_writeback_object_metadata() {
         let validation_object = address(0x1000);
         let replacement_source = address(0x2000);
@@ -9173,6 +9256,37 @@ impl EvalOutcome {
     ) -> Result<EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport, EvalHeapError> {
         let plan = self.gc_stress_boundary_minor_gc_root_writeback_write_plan()?;
         apply_boundary_minor_gc_outcome_root_writebacks(&mut self.value, &self.heap, &plan)
+    }
+
+    /// Applies copied nursery-object heap-field writebacks to bound records.
+    ///
+    /// This consumes the installed heap-field writeback write plan, accepts only
+    /// fields whose writeback object is itself a relocated nursery object, and
+    /// then delegates to the heap's copied-object field writer. The writeback
+    /// object body and replacement body must already be bound by
+    /// [`EvalHeap::apply_collector_poll_minor_gc_object_body_writes`], and their
+    /// destination generations must already be installed. It revalidates the
+    /// deduplicated writeback/replacement object-copy request set against the
+    /// same global identity invariants as object-body writes. The applicator
+    /// currently rewrites only record-owned list elements and attrset bindings.
+    /// Like the object-body writer, it assumes the destination records are
+    /// unaliased collector-owned scratch records because the side table cannot
+    /// prove semispace ownership yet. It rejects dirty old/permanent in-place
+    /// field writes, captured environment fields, primop fields, thunk fields,
+    /// ABI headers, semispace storage, and Tier-B dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed heap-field writeback metadata is
+    /// inconsistent, if any write targets an in-place old/permanent field, if a
+    /// copied writeback/replacement body or generation is not already bound, if
+    /// the field no longer contains the expected from-space value, or if the
+    /// field source is not a record-owned list element or attrset binding.
+    pub fn apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks(
+        &mut self,
+    ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
+        let plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
+        apply_boundary_minor_gc_copied_heap_field_writebacks(&mut self.heap, &plan)
     }
 
     /// Matches installed heap-field writebacks to destination-byte snapshots.

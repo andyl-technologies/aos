@@ -16,7 +16,7 @@ use thiserror::Error;
 use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
-use crate::attrs::FlatAttrs;
+use crate::attrs::{AttrError, FlatAttrs};
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
@@ -46,6 +46,7 @@ pub use arena::{
     EvalHeapColdHashConsedAdviceReport, EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction,
     EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
+pub(crate) use roots::AllocationCollectorPollCopiedHeapFieldWrite;
 pub use roots::{
     AllocationCollectorPollForwardingInstallReport, AllocationCollectorPollForwardingValue,
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
@@ -462,6 +463,9 @@ pub enum EvalHeapError {
     /// A runtime value failed a checked heap-value operation.
     #[error("heap value operation failed: {0}")]
     Value(#[from] ValueError),
+    /// An attrset operation failed while rewriting a checked heap field.
+    #[error("heap attrset operation failed: {0}")]
+    Attr(#[from] AttrError),
     /// A heap pointer did not belong to this evaluator heap.
     #[error("unknown heap pointer for {tag:?}: 0x{address:x}")]
     UnknownPointer {
@@ -1624,6 +1628,84 @@ pub enum EvalHeapError {
         replacement: GcHeapAddress,
         /// The replacement generation carried by the binding.
         generation: HeapGeneration,
+    },
+    /// A live heap-field applicator does not yet support in-place field writes.
+    #[error(
+        "boundary minor-GC heap-field writeback application for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} is not a copied nursery-object field",
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackApplyUnsupportedInPlace {
+        /// The allocator domain recorded by the write plan.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A copied heap-field write targets a field kind that is not record-owned.
+    #[error(
+        "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not a record-owned list or attrset field",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollCopiedHeapFieldWriteUnsupportedSource {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A copied heap-field write found a stale from-space field value.
+    #[error(
+        "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} expected {expected:?}, found {actual:?}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollCopiedHeapFieldWriteValueMismatch {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The from-space field value expected before mutation.
+        expected: ResolvedValueGeneration,
+        /// The current field value.
+        actual: ResolvedValueGeneration,
+    },
+    /// A copied heap-field writeback object has not received its destination generation.
+    #[error(
+        "collector-poll minor-GC copied heap-field writeback object 0x{writeback_object:x} has generation {actual:?}, expected {expected:?}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollCopiedHeapFieldWriteObjectGenerationMismatch {
+        /// The copied heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The generation required by the writeback-object copy request.
+        expected: HeapGeneration,
+        /// The current heap-record generation.
+        actual: HeapGeneration,
+    },
+    /// A copied heap-field replacement object has not received its destination generation.
+    #[error(
+        "collector-poll minor-GC copied heap-field replacement 0x{replacement:x} for 0x{writeback_object:x}[{field_index}] {field_source:?} has generation {actual:?}, expected {expected:?}",
+        replacement = replacement.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    CollectorPollCopiedHeapFieldWriteReplacementGenerationMismatch {
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address.
+        replacement: GcHeapAddress,
+        /// The generation carried by the write plan.
+        expected: HeapGeneration,
+        /// The current heap-record generation.
+        actual: HeapGeneration,
     },
     /// A forwarding-header write plan has no installed forwarding value for a binding.
     #[error(

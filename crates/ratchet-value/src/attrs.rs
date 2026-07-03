@@ -217,6 +217,39 @@ impl FlatAttrs {
         &self.entries
     }
 
+    /// Returns a copy with one symbol-order slot's value replaced.
+    ///
+    /// This preserves the existing source-order and lexicographic-order
+    /// permutations. Callers must pass the key they expect at `slot` so stale
+    /// field metadata cannot silently update the wrong binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrError::SlotOutOfBounds`] if `slot` is not present. Returns
+    /// [`AttrError::SlotKeyMismatch`] if the slot exists but contains another
+    /// key.
+    pub fn with_symbol_slot_value(
+        &self,
+        slot: usize,
+        key: Symbol,
+        value: Value,
+    ) -> Result<Self, AttrError> {
+        let mut replaced = self.clone();
+        let len = replaced.entries.len();
+        let Some(entry) = replaced.entries.get_mut(slot) else {
+            return Err(AttrError::SlotOutOfBounds { slot, len });
+        };
+        if entry.key != key {
+            return Err(AttrError::SlotKeyMismatch {
+                slot,
+                expected: key,
+                actual: entry.key,
+            });
+        }
+        entry.value = value;
+        Ok(replaced)
+    }
+
     /// Returns the slot permutation for construction-order iteration.
     pub fn source_order(&self) -> &[u32] {
         &self.source_order
@@ -346,6 +379,24 @@ pub enum AttrError {
         /// The entry count whose construction storage could not be reserved.
         entries: usize,
     },
+    /// A symbol-order slot did not exist.
+    #[error("attribute symbol slot {slot} is out of bounds for {len} entries")]
+    SlotOutOfBounds {
+        /// The requested symbol-order slot.
+        slot: usize,
+        /// The number of entries in the attrset.
+        len: usize,
+    },
+    /// A symbol-order slot contained a different key than the caller expected.
+    #[error("attribute symbol slot {slot} key mismatch: expected {expected:?}, found {actual:?}")]
+    SlotKeyMismatch {
+        /// The requested symbol-order slot.
+        slot: usize,
+        /// The key expected by the caller.
+        expected: Symbol,
+        /// The key stored at the slot.
+        actual: Symbol,
+    },
 }
 
 #[cfg(test)]
@@ -413,6 +464,62 @@ mod tests {
         let keys: Vec<Symbol> = attrs.iter_source_order().map(|entry| entry.key).collect();
         assert_eq!(keys, vec![ids[2], ids[1], ids[0]]);
         assert_eq!(attrs.source_order(), &[2, 1, 0]);
+    }
+
+    #[test]
+    fn symbol_slot_replacement_preserves_permutations() {
+        let (symbols, ids) = symbols(&[b"z", b"a", b"m"]);
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[2], Value::int(3)),
+                AttrEntry::new(ids[1], Value::int(2)),
+                AttrEntry::new(ids[0], Value::int(1)),
+            ],
+            &symbols,
+        )
+        .expect("attrset builds");
+
+        let replaced = attrs
+            .with_symbol_slot_value(1, ids[1], Value::int(22))
+            .expect("symbol slot replacement succeeds");
+
+        assert_eq!(attrs.source_order(), replaced.source_order());
+        assert_eq!(attrs.iteration_order(), replaced.iteration_order());
+        assert_eq!(replaced.get(ids[0]).expect("z exists").as_int(), Ok(1));
+        assert_eq!(replaced.get(ids[1]).expect("a exists").as_int(), Ok(22));
+        assert_eq!(replaced.get(ids[2]).expect("m exists").as_int(), Ok(3));
+    }
+
+    #[test]
+    fn symbol_slot_replacement_rejects_stale_slot_metadata() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::new(ids[1], Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("attrset builds");
+
+        let out_of_bounds = attrs
+            .with_symbol_slot_value(7, ids[0], Value::int(9))
+            .expect_err("out-of-bounds slot rejects replacement");
+        assert_eq!(
+            out_of_bounds,
+            AttrError::SlotOutOfBounds { slot: 7, len: 2 }
+        );
+        let key_mismatch = attrs
+            .with_symbol_slot_value(1, ids[0], Value::int(9))
+            .expect_err("stale slot key rejects replacement");
+        assert_eq!(
+            key_mismatch,
+            AttrError::SlotKeyMismatch {
+                slot: 1,
+                expected: ids[0],
+                actual: ids[1],
+            }
+        );
     }
 
     #[test]
