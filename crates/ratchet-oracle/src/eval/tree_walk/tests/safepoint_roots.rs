@@ -5147,6 +5147,244 @@ fn live_reference_writebacks_validate_rejects_stale_root_without_mutation() {
 }
 
 #[test]
+fn live_existing_destination_commit_validate_headers_and_references_without_mutation() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let source_address = gc_address(child);
+    let destination_address = gc_address(destination);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("existing-destination live metadata installs for mixed writebacks");
+    assert_eq!(
+        live_metadata
+            .live_metadata()
+            .forwarding_pointers_installed(),
+        1
+    );
+    assert_eq!(
+        live_metadata
+            .live_metadata()
+            .forwarding_destination_bindings_installed(),
+        1
+    );
+    assert_eq!(live_metadata.object_body_preflight_objects(), 1);
+    assert_eq!(live_metadata.object_generation_preflight_objects(), 1);
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let forwarding_before = outcome
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("source forwarding cell is readable");
+    let original_outcome_value = outcome.value();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let original_dirty_cards = outcome.thunk_resolve_card_table().dirty_cards().to_vec();
+
+    let report = outcome
+        .validate_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect("existing-destination live commit preflight validates");
+
+    assert_eq!(report.forwarding_headers(), 1);
+    assert_eq!(report.forwarding_headers_copied_to_nursery(), 1);
+    assert_eq!(report.forwarding_headers_promoted_to_old(), 0);
+    assert_eq!(
+        report.forwarding_header_payload_bytes(),
+        root_write.destination_bytes().len()
+    );
+    assert_eq!(report.object_body_preflight_objects(), 1);
+    assert_eq!(report.object_generation_preflight_objects(), 1);
+    assert_eq!(report.roots(), 1);
+    assert_eq!(report.fields(), 1);
+    assert_eq!(report.references(), 2);
+    assert!(outcome.value().raw_eq(original_outcome_value));
+    assert!(
+        outcome
+            .heap()
+            .get_lambda(parent)
+            .expect("parent lambda remains typed")
+            .with_scope_env()
+            .scopes()[0]
+            .value()
+            .raw_eq(child)
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("source forwarding cell remains readable"),
+        forwarding_before
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("original destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn live_existing_destination_commit_validate_rejects_missing_forwarding_without_mutation() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let original_address = gc_address(original_value);
+    let destination_address = gc_address(destination_value);
+
+    let forwarding_binding_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_destination_bindings(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("forwarding-destination binding metadata installs");
+    assert_eq!(
+        forwarding_binding_dry_run.forwarding_destination_bindings_installed(),
+        1
+    );
+    let forwarding_destination_bindings_before = outcome
+        .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+        .clone();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination_value)
+        .expect("destination starts heap-bound");
+
+    let err = outcome
+        .validate_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect_err("missing live forwarding cell rejects commit preflight");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::BoundaryMinorGcForwardingHeaderWriteMissingForwarding {
+            source_address,
+            expected
+        } if source_address == original_address
+            && expected == ResolvedValueGeneration::Heap {
+                address: destination_address,
+                generation: HeapGeneration::Young,
+            }
+    ));
+    assert!(outcome.value().raw_eq(original_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        None
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        outcome.gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata(),
+        &forwarding_destination_bindings_before
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+}
+
+#[test]
+fn live_existing_destination_commit_validate_rejects_reference_only_metadata_first() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+
+    let reference_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("reference writeback metadata installs without forwarding headers");
+    assert_eq!(reference_dry_run.reference_writebacks_installed(), 2);
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+            .is_empty()
+    );
+    let stale_value = Value::int(1);
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("destination starts heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let original_dirty_cards = outcome.thunk_resolve_card_table().dirty_cards().to_vec();
+    outcome.value = stale_value;
+
+    let err = outcome
+        .validate_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect_err("reference-only metadata rejects before stale root validation");
+
+    assert_eq!(
+        err,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingForwardingHeaders {
+            references: 2,
+            forwarding_headers: 0,
+        }
+    );
+    assert!(outcome.value().raw_eq(stale_value));
+    assert!(
+        outcome
+            .heap()
+            .get_lambda(parent)
+            .expect("parent lambda remains typed")
+            .with_scope_env()
+            .scopes()[0]
+            .value()
+            .raw_eq(child)
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
 fn live_reference_writebacks_bind_once_and_rewrite_root_and_direct_field() {
     let (mut outcome, parent, child, destination) =
         boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();

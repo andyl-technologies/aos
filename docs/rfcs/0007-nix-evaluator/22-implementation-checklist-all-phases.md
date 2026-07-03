@@ -6269,6 +6269,26 @@ and helps the oracle directly.
       roots, JIT stack maps, shared lexical frame slots, blackholed thunk
       deferred-work/capture fields, forced thunk cached-result fields, ABI
       object headers, semispace storage, or Tier-B dispatch.
+- [x] Current boundary existing-destination live commit validation bridge:
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`
+      composes the installed forwarding-header metadata check with the read-only
+      live reference writeback preflight. It validates that live forwarding
+      cells still match forwarding-destination bindings, then checks paired
+      object-body/generation staging, the outcome-owned value-stack root,
+      supported record-owned heap fields, direct owner/destination aliasing, and
+      barrier staging against cloned remembered/card side tables without
+      committing any staged writes. Unit tests cover a mixed root plus dirty
+      permanent lambda-capture field whose existing scratch replacement is
+      copied to young without mutating forwarding cells, destination
+      body/generation state, heap fields, remembered/card side tables, or the
+      outcome value, and zero forwarding-header coverage rejection before
+      reference validation when reference metadata was installed independently.
+      This still requires destination records and metadata to already exist,
+      does not allocate synthetic destinations, does not write ABI object
+      headers, and does not cover active evaluator frames, import caches,
+      arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
+      blackholed thunk deferred-work/capture fields, forced thunk cached-result
+      fields, semispace storage, or Tier-B dispatch.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
@@ -7097,6 +7117,10 @@ and helps the oracle directly.
       runs the same root, field, object-body/generation, alias, and barrier
       staging checks without committing the heap-side transaction or outcome
       value write.
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`
+      layers forwarding-header metadata validation over that read-only reference
+      preflight, so missing or stale forwarding cells fail before a future
+      existing-destination commit would publish headers or reference writes.
       The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator

@@ -1846,6 +1846,16 @@ pub enum EvalHeapError {
         /// The live forwarding value currently installed on the heap record.
         actual: ResolvedValueGeneration,
     },
+    /// Existing-destination live commit reference writebacks lack forwarding-header coverage.
+    #[error(
+        "boundary minor-GC existing-destination commit has {references} reference writebacks but only {forwarding_headers} forwarding-header writes"
+    )]
+    BoundaryMinorGcExistingDestinationCommitMissingForwardingHeaders {
+        /// The number of supported reference writebacks covered by the preflight.
+        references: usize,
+        /// The number of forwarding headers covered by the preflight.
+        forwarding_headers: usize,
+    },
     /// A live forwarding installation received an empty forwarding slot.
     #[error(
         "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",

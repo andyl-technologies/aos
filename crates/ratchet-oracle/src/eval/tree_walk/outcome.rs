@@ -2630,6 +2630,97 @@ impl EvalGcStressBoundaryMinorGcLiveReferenceWritebackPreflightReport {
     }
 }
 
+/// Counts for a read-only existing-destination live commit preflight.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport {
+    forwarding_header_write_plan_report: EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+    reference_writeback_preflight_report:
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebackPreflightReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport {
+    const fn new(
+        forwarding_header_write_plan_report:
+            EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
+        reference_writeback_preflight_report:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebackPreflightReport,
+    ) -> Self {
+        Self {
+            forwarding_header_write_plan_report,
+            reference_writeback_preflight_report,
+        }
+    }
+
+    /// Returns the forwarding-header write-plan report.
+    pub const fn forwarding_header_write_plan_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport {
+        self.forwarding_header_write_plan_report
+    }
+
+    /// Returns how many forwarding headers are covered by the preflight.
+    pub const fn forwarding_headers(self) -> usize {
+        self.forwarding_header_write_plan_report.headers()
+    }
+
+    /// Returns how many forwarding headers point to next-nursery objects.
+    pub const fn forwarding_headers_copied_to_nursery(self) -> usize {
+        self.forwarding_header_write_plan_report.copied_to_nursery()
+    }
+
+    /// Returns how many forwarding headers point to promoted old objects.
+    pub const fn forwarding_headers_promoted_to_old(self) -> usize {
+        self.forwarding_header_write_plan_report.promoted_to_old()
+    }
+
+    /// Returns the payload bytes covered by forwarding-header metadata.
+    pub const fn forwarding_header_payload_bytes(self) -> usize {
+        self.forwarding_header_write_plan_report.payload_bytes()
+    }
+
+    /// Returns the live reference writeback preflight report.
+    pub const fn reference_writeback_preflight_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcLiveReferenceWritebackPreflightReport {
+        self.reference_writeback_preflight_report
+    }
+
+    /// Returns the paired object-body and object-generation preflight report.
+    pub const fn object_body_and_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.reference_writeback_preflight_report
+            .object_body_and_generation_write_report()
+    }
+
+    /// Returns how many destination object bodies were covered by the preflight.
+    pub const fn object_body_preflight_objects(self) -> usize {
+        self.reference_writeback_preflight_report
+            .object_body_preflight_objects()
+    }
+
+    /// Returns how many destination object generations were covered by the preflight.
+    pub const fn object_generation_preflight_objects(self) -> usize {
+        self.reference_writeback_preflight_report
+            .object_generation_preflight_objects()
+    }
+
+    /// Returns how many supported roots are covered by the preflight.
+    pub const fn roots(self) -> usize {
+        self.reference_writeback_preflight_report.roots()
+    }
+
+    /// Returns how many supported heap fields are covered by the preflight.
+    pub const fn fields(self) -> usize {
+        self.reference_writeback_preflight_report.fields()
+    }
+
+    /// Returns how many supported references are covered by the preflight.
+    pub const fn references(self) -> usize {
+        self.reference_writeback_preflight_report.references()
+    }
+}
+
 /// One validated live heap-field writeback input.
 ///
 /// This is an immutable write plan for a future object-field writer. It proves
@@ -10819,6 +10910,68 @@ impl EvalOutcome {
             &self.thunk_resolve_card_table,
             &root_plan,
             &heap_field_plan,
+        )
+    }
+
+    /// Preflights the existing-destination live commit bridge without mutation.
+    ///
+    /// This validates installed live forwarding cells against installed
+    /// forwarding-destination bindings, then validates the installed live
+    /// root/heap-field writeback metadata through the read-only reference
+    /// writeback preflight. It covers the currently modeled live commit
+    /// projections for existing destination records: forwarding-header metadata,
+    /// paired object-body/generation staging, outcome-owned value-stack root
+    /// writeback, supported record-owned heap-field writes, direct
+    /// owner/destination alias rejection, and remembered-set/card-table barrier
+    /// staging against side-table clones.
+    ///
+    /// This is a read-only GC-stress orchestration bridge. It does not write ABI
+    /// object headers, commit destination bodies or generations, mutate roots or
+    /// heap fields, publish remembered/card state, allocate synthetic
+    /// destinations, reserve semispace storage, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if forwarding-header metadata is missing,
+    /// absent for installed reference writebacks, or stale, if installed
+    /// root/heap-field writeback metadata is inconsistent, if live roots or
+    /// fields no longer hold the expected from-space values, if a destination
+    /// heap record aliases a direct in-place heap-field write owner, or if
+    /// existing destination records reject paired body/generation staging.
+    /// Whether this returns `Ok` or `Err`, live forwarding cells, destination
+    /// object bodies/generations, roots, heap fields, remembered-set/card-table
+    /// state, and the outcome value are left unchanged.
+    /// The forwarding-header coverage gate is intentionally a zero-coverage
+    /// guard for independently installed reference metadata; future per-source
+    /// header coverage belongs with the eventual header writer.
+    pub fn validate_gc_stress_boundary_minor_gc_live_existing_destination_commit(
+        &self,
+    ) -> Result<
+        EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport,
+        EvalHeapError,
+    > {
+        let forwarding_header_write_plan =
+            self.gc_stress_boundary_minor_gc_forwarding_header_write_plan()?;
+        let installed_references = self
+            .gc_stress_boundary_minor_gc_reference_writebacks
+            .install_report()
+            .writebacks();
+        let forwarding_headers = forwarding_header_write_plan.report().headers();
+        if installed_references != 0 && forwarding_headers == 0 {
+            return Err(
+                EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingForwardingHeaders {
+                    references: installed_references,
+                    forwarding_headers,
+                },
+            );
+        }
+        let reference_writeback_preflight =
+            self.validate_gc_stress_boundary_minor_gc_live_reference_writebacks()?;
+        Ok(
+            EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport::new(
+                forwarding_header_write_plan.report(),
+                reference_writeback_preflight,
+            ),
         )
     }
 
