@@ -48,9 +48,9 @@
     requirements;
 
   fleetEquivalenceRawDependency =
-    "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
+    "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
   fleetEquivalenceWrapperDependency =
-    "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
+    "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
@@ -308,7 +308,7 @@ in
             distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
             forbidden_paths=reduce,Decision,content-key,artifact
             allowed_paths=claim-lease,affinity,telemetry,progress
-            fleet_equivalence_gate_status=red-pending
+            fleet_equivalence_gate_status=implemented
             RESULT
           '';
         }

@@ -228,7 +228,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:fleet-equivalence",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:campaign-continuity",

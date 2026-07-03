@@ -354,6 +354,12 @@
       testTarget = "gate_e2e_determinism";
       requiredFeatures = [];
     }
+    {
+      gate = "gate:fleet-equivalence";
+      package = "crucible";
+      testTarget = "gate_fleet_equivalence";
+      requiredFeatures = ["test-double"];
+    }
   ];
 
   standards = [
@@ -462,6 +468,13 @@
       shape = "e2e-determinism";
       backend = "mixed";
     }
+    {
+      gate = "gate:fleet-equivalence";
+      ownerPackages = ["crucible"];
+      layers = ["L3"];
+      shape = "fleet-equivalence";
+      backend = "mixed";
+    }
   ];
 
   hashCompareGates = [
@@ -514,7 +527,7 @@
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:adversarial-determinism" "gate:e2e-determinism"];
+      gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:adversarial-determinism" "gate:e2e-determinism" "gate:fleet-equivalence"];
     }
     {
       package = "crucible-session";

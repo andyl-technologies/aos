@@ -48,6 +48,7 @@ enum TestShape {
     E2eDeterminism,
     DivergenceBisect,
     AdversarialCompare,
+    FleetEquivalence,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -190,6 +191,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         shape: TestShape::E2eDeterminism,
         backend: TestBackend::Mixed,
     },
+    GateTestingStandard {
+        gate: "gate:fleet-equivalence",
+        owner_packages: &["crucible"],
+        layers: &[Layer::L3],
+        shape: TestShape::FleetEquivalence,
+        backend: TestBackend::Mixed,
+    },
 ];
 
 const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
@@ -245,6 +253,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:scheduler-liveness",
             "gate:adversarial-determinism",
             "gate:e2e-determinism",
+            "gate:fleet-equivalence",
         ],
     },
     CrateTestingOwnership {

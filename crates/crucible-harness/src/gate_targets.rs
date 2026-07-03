@@ -259,6 +259,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
         placeholder: false,
     },
+    GateTargetSpec {
+        gate: "gate:fleet-equivalence",
+        package: "crucible",
+        test_target: "gate_fleet_equivalence",
+        required_features: &["test-double"],
+        placeholder: false,
+    },
 ];
 
 /// Returns every mapped gate target in RFC table order.
