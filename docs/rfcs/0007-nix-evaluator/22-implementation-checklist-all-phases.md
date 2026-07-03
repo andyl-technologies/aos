@@ -5985,6 +5985,18 @@ and helps the oracle directly.
       semispace ownership. It does not allocate destination records, reserve
       semispace storage, write heap-record generations, mutate roots/fields, write
       ABI object headers, or invoke Tier B.
+- [x] Current paired heap-record object body/generation applicator precursor:
+      `EvalHeap::apply_collector_poll_minor_gc_object_body_and_generation_writes`
+      consumes the same object-copy request plan, stages destination object-body
+      writes and destination `HeapGeneration` writes together, validates the
+      body-write layout/liveness checks and generation-write identity checks
+      before mutating either side, then commits both staged projections to
+      existing destination records. Unit tests cover promoted destination body
+      binding plus generation update, and duplicate-destination rejection with no
+      body or generation mutation. This still assumes destination records already
+      exist in the evaluator heap side table; it does not allocate destination
+      records, reserve semispace storage, install forwarding headers, publish
+      remembered sets, rewrite roots/fields, or invoke Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -6786,6 +6798,11 @@ and helps the oracle directly.
       layouts and duplicate/overlap invariants; it still assumes those records
       are unaliased collector-owned scratch destinations and does not allocate
       destination records or reserve semispace storage.
+      `EvalHeap::apply_collector_poll_minor_gc_object_body_and_generation_writes`
+      stages those body and heap-record generation projections together, validates
+      both before committing either, and then updates existing destination records
+      in one low-level heap-side transaction; it still has the same requirement
+      that destination records already be bound in the evaluator heap side table.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without

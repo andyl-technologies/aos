@@ -2040,6 +2040,37 @@ impl AllocationCollectorPollObjectBodyWriteReport {
     }
 }
 
+/// A summary of paired object-body and object-generation writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+    body_write_report: AllocationCollectorPollObjectBodyWriteReport,
+    generation_write_report: AllocationCollectorPollObjectGenerationWriteReport,
+}
+
+impl AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+    const fn new(
+        body_write_report: AllocationCollectorPollObjectBodyWriteReport,
+        generation_write_report: AllocationCollectorPollObjectGenerationWriteReport,
+    ) -> Self {
+        Self {
+            body_write_report,
+            generation_write_report,
+        }
+    }
+
+    /// Returns the object-body write report.
+    pub const fn body_write_report(self) -> AllocationCollectorPollObjectBodyWriteReport {
+        self.body_write_report
+    }
+
+    /// Returns the object-generation write report.
+    pub const fn generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.generation_write_report
+    }
+}
+
 struct CollectorPollObjectBodyWrite {
     destination_index: usize,
     object: HeapObjectValue,
@@ -3864,6 +3895,16 @@ impl EvalHeap {
         &mut self,
         plan: &AllocationCollectorPollObjectGenerationWritePlan,
     ) -> Result<AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError> {
+        let planned = self.stage_collector_poll_minor_gc_object_generation_writes(plan)?;
+        let report = plan.report();
+        self.commit_collector_poll_minor_gc_object_generation_writes(planned);
+        Ok(report)
+    }
+
+    fn stage_collector_poll_minor_gc_object_generation_writes(
+        &self,
+        plan: &AllocationCollectorPollObjectGenerationWritePlan,
+    ) -> Result<Vec<(usize, HeapGeneration)>, EvalHeapError> {
         let mut planned = Vec::new();
         planned
             .try_reserve_exact(plan.writes().len())
@@ -3886,11 +3927,16 @@ impl EvalHeap {
             planned.push((destination_index, write.generation()));
         }
 
+        Ok(planned)
+    }
+
+    fn commit_collector_poll_minor_gc_object_generation_writes(
+        &mut self,
+        planned: Vec<(usize, HeapGeneration)>,
+    ) {
         for (destination_index, generation) in planned {
             self.records[destination_index].generation = generation;
         }
-
-        Ok(plan.report())
     }
 
     /// Applies heap-record object-body writes for relocated destinations.
@@ -3922,6 +3968,61 @@ impl EvalHeap {
         &mut self,
         plan: &AllocationCollectorPollObjectByteCopyPlan,
     ) -> Result<AllocationCollectorPollObjectBodyWriteReport, EvalHeapError> {
+        let (planned, report) = self.stage_collector_poll_minor_gc_object_body_writes(plan)?;
+        self.commit_collector_poll_minor_gc_object_body_writes(planned);
+        Ok(report)
+    }
+
+    /// Applies paired heap-record body and generation writes for relocated destinations.
+    ///
+    /// This validates the same invariants as
+    /// [`Self::apply_collector_poll_minor_gc_object_body_writes`] and
+    /// [`Self::apply_collector_poll_minor_gc_object_generation_writes`] before
+    /// mutating either object bodies or generation metadata. It only applies writes
+    /// to destination records that already exist in this evaluator heap side table;
+    /// it does not allocate destination records, rewrite references, install
+    /// forwarding headers, publish remembered sets, or manage semispaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the object-copy plan violates generation-write
+    /// identity invariants, if planned scratch storage cannot be reserved, if a
+    /// source is unknown or no longer young, if a source or destination layout no
+    /// longer matches the object-copy request, or if a destination address does not
+    /// belong to this heap. When an error is returned, neither object bodies nor
+    /// generation metadata are changed.
+    pub fn apply_collector_poll_minor_gc_object_body_and_generation_writes(
+        &mut self,
+        plan: &AllocationCollectorPollObjectByteCopyPlan,
+    ) -> Result<AllocationCollectorPollObjectBodyAndGenerationWriteReport, EvalHeapError> {
+        let generation_plan = plan.object_generation_write_plan()?;
+        let (body_writes, body_write_report) =
+            self.stage_collector_poll_minor_gc_object_body_writes(plan)?;
+        let generation_writes =
+            self.stage_collector_poll_minor_gc_object_generation_writes(&generation_plan)?;
+        let generation_write_report = generation_plan.report();
+
+        self.commit_collector_poll_minor_gc_object_body_writes(body_writes);
+        self.commit_collector_poll_minor_gc_object_generation_writes(generation_writes);
+
+        Ok(
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
+                body_write_report,
+                generation_write_report,
+            ),
+        )
+    }
+
+    fn stage_collector_poll_minor_gc_object_body_writes(
+        &self,
+        plan: &AllocationCollectorPollObjectByteCopyPlan,
+    ) -> Result<
+        (
+            Vec<CollectorPollObjectBodyWrite>,
+            AllocationCollectorPollObjectBodyWriteReport,
+        ),
+        EvalHeapError,
+    > {
         let _ = plan.object_generation_write_plan()?;
         let mut planned = Vec::new();
         planned
@@ -3962,6 +4063,13 @@ impl EvalHeap {
             report.record(request);
         }
 
+        Ok((planned, report))
+    }
+
+    fn commit_collector_poll_minor_gc_object_body_writes(
+        &mut self,
+        planned: Vec<CollectorPollObjectBodyWrite>,
+    ) {
         for write in planned {
             let destination = &mut self.records[write.destination_index];
             destination.object = write.object;
@@ -3972,8 +4080,6 @@ impl EvalHeap {
                 .captured_value_hash
                 .set(write.captured_value_hash);
         }
-
-        Ok(report)
     }
 
     /// Creates object-copy metadata for existing test heap records.
