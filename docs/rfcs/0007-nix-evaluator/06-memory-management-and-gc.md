@@ -1403,9 +1403,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       demand. Tests cover initial worker/permanent generation state, test-only
       domain transitions, collector-poll minor-GC planning, forwarding
       installation, and GC-stress safepoint integration. This is still a state
-      precursor: no collector path writes new generation values into relocated
-      destination records, binds destination bytes to heap-object bodies, swaps
-      semispaces, mutates roots/fields, or invokes Tier B.
+      precursor: only narrow existing-destination applicators write relocated
+      destination generations or bodies today; no path allocates synthetic
+      destination records, swaps semispaces, mutates roots/fields as a full
+      collector commit, or invokes Tier B.
 - [x] Current heap-record object-generation write applicator precursor:
       `AllocationCollectorPollObjectByteCopyPlan::object_generation_write_plan`
       derives heap-record generation writes from validated object-copy requests,
@@ -1418,10 +1419,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       write into an existing destination record, unknown-destination rejection
       with no partial generation mutation, and malformed generation/action
       rejection. This is only an already-bound-record applicator: boundary
-      dry-runs still produce destination addresses and byte buffers that are not
-      bound to live heap-object records, and no path allocates destination
-      records, binds object bodies, swaps semispaces, mutates roots/fields,
-      writes ABI object headers, or invokes Tier B.
+      applicators can consume installed metadata only when destination records
+      already pre-exist under the scratch-record assumption, and no path
+      allocates destination records, swaps semispaces, mutates roots/fields as a
+      full collector commit, writes ABI object headers, or invokes Tier B.
 - [x] Current heap-record object-body write applicator precursor:
       `EvalHeap::apply_collector_poll_minor_gc_object_body_writes` consumes an
       `AllocationCollectorPollObjectByteCopyPlan`, validates every source is
@@ -2542,9 +2543,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       and `EvalHeap::apply_collector_poll_minor_gc_object_generation_writes`
       establish that heap-record writer for destinations that already have live
       evaluator records, applying generation changes atomically after validating
-      young sources and destination-record bindings. Boundary dry-runs still do
-      not bind their destination bytes or addresses to live heap-object records,
-      so this writer is not yet wired into the boundary commit path.
+      young sources and destination-record bindings. The narrow boundary
+      existing-destination applicators can lower installed live metadata into
+      the body, generation, or paired heap-record writers, but full boundary
+      commits still do not allocate destination records or bind synthetic
+      destination addresses to semispace storage.
       `EvalHeap::apply_collector_poll_minor_gc_object_body_writes` separately
       binds typed source object bodies and body-owned cache metadata into
       already-resolved destination records after validating the same object-copy
