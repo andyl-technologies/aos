@@ -1569,6 +1569,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-cas"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "crucible-cli"
 version = "0.1.0"
 dependencies = [

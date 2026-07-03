@@ -723,9 +723,16 @@ carries findings across an incompatible build.
     `checks.crucible.phase2.gates.patchMicrotests`, keeping the catalog audit
     attached to the package patch build/test gate without pulling unrelated
     green-before-advance wrappers into instantiation.
-- [ ] **T-PKG-17** Implement the `crucible-cas` self-contained content-addressed
+- [x] **T-PKG-17** Implement the `crucible-cas` self-contained content-addressed
   store + dependency-gated invalidation crate, depending on nothing from RFC-0007.
   — satisfies [PKG-32], [PKG-33]; spec §26.9.
+  - Completed by `checks.crucible.phase7.crucibleCas`: `crucible-cas` is a
+    standalone Crucible-owned workspace crate and package-inventory member with
+    no RFC-0007/ratchet dependency. It provides BLAKE3 `ContentHash` keys,
+    `DagStore` `put`/`get`/`has` operations, in-memory and two-level local
+    backends, and an invalidation query that marks a node invalid iff an input's
+    content hash changed. The crate's unit tests cover deduplicating writes,
+    two-level layout and integrity validation, and dependency-gated invalidation.
 - [ ] **T-PKG-18** Write the ratchet-seam merge marker (module docs: future home,
   narrow interface, conformance bar) and the future-merge plan (thin adapter behind
   the unchanged interface, gate-gated), keeping Crucible standalone with no

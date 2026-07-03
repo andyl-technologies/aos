@@ -11,6 +11,7 @@ members = [
     "aos-doc",
     "aos-package",
     "aos-systemd",
+    "crucible-cas",
     "crucible-sim",
     "crucible-assert",
     "crucible-shmem",
@@ -111,6 +112,7 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }

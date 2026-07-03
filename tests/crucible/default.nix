@@ -2430,6 +2430,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
       taskIds = ["T-PKG-14"];
     };
+    crucibleCas = import ./phase7-crucible-cas.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleCas";
+      taskIds = ["T-PKG-17"];
+    };
     cruciblePackagingConformance = import ./phase7-crucible-packaging-conformance.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.cruciblePackagingConformance";
