@@ -419,6 +419,14 @@ long-held locks.
   rejection, built-in example corpus execution, and a per-gate PASS row; full
   closure waits for the broader double-backed gate runners, real-QEMU gate
   execution under `--with-qemu`, and file-backed corpus override support.
+  `T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently
+  covers `save <SCENARIO> --at quiescence`, live double-backed terminal
+  savepoint export as a `.crucible-savepoint` handle, default `--artifact-dir`
+  and explicit `--out` destinations, handle labels, and usage errors for
+  virtual-time/property/marker stop points until concrete coordinates and
+  boundary commands are implemented; full closure waits for label-bearing
+  `create_savepoint`, replay-oracle `fat==thin` validation, real-QEMU coverage,
+  and all `--at` forms.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch, and continued
