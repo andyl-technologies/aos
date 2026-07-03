@@ -380,10 +380,119 @@ struct ReplayArgs {
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct SearchArgs {}
+struct SearchArgs {
+    /// Scenario file or content hash.
+    #[arg(value_name = "SCENARIO")]
+    scenario: Option<String>,
+    /// Select frontier expansion strategy.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "bfs|dfs|guided",
+        default_value_t = SearchStrategyArg::Bfs
+    )]
+    strategy: SearchStrategyArg,
+    /// Bound decision depth.
+    #[arg(long, value_name = "n")]
+    max_depth: Option<u64>,
+    /// Bound materialized states.
+    #[arg(long, value_name = "n", default_value_t = 1)]
+    max_states: u64,
+    /// Select first-violation handling.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "stop|collect",
+        default_value_t = SearchOnViolationArg::Stop
+    )]
+    on_violation: SearchOnViolationArg,
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
-struct FuzzArgs {}
+struct FuzzArgs {
+    /// ScenarioFamily file or content hash.
+    #[arg(value_name = "FAMILY")]
+    family: Option<String>,
+    /// ScenarioFamily file or content hash.
+    #[arg(long = "family", value_name = "path|hash")]
+    family_flag: Option<String>,
+    /// Number of family instances to run.
+    #[arg(long, value_name = "n", default_value_t = 1)]
+    runs: u64,
+    /// Coverage signal guiding sampling.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "basic-block",
+        default_value_t = FuzzCoverageArg::BasicBlock
+    )]
+    coverage: FuzzCoverageArg,
+    /// Seed or regression corpus directory.
+    #[arg(long, value_name = "path")]
+    corpus: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum SearchStrategyArg {
+    /// Breadth-first frontier expansion.
+    #[default]
+    Bfs,
+    /// Depth-first frontier expansion.
+    Dfs,
+    /// Coverage-guided frontier expansion.
+    Guided,
+}
+
+impl SearchStrategyArg {
+    fn engine_strategy(self) -> crucible::SearchStrategy {
+        match self {
+            Self::Bfs => crucible::SearchStrategy::BreadthFirst,
+            Self::Dfs => crucible::SearchStrategy::DepthFirst,
+            Self::Guided => crucible::SearchStrategy::CoverageGuided,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bfs => "bfs",
+            Self::Dfs => "dfs",
+            Self::Guided => "guided",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum SearchOnViolationArg {
+    /// Stop at the first counterexample.
+    #[default]
+    Stop,
+    /// Collect counterexamples within the budget.
+    Collect,
+}
+
+impl SearchOnViolationArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Collect => "collect",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum FuzzCoverageArg {
+    /// Use black-box basic-block coverage feedback.
+    #[default]
+    BasicBlock,
+}
+
+impl FuzzCoverageArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::BasicBlock => "basic-block",
+        }
+    }
+}
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct TriageArgs {
@@ -1266,6 +1375,47 @@ struct ForkDecisionOverride {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchDriverPlan {
+    scenario: RunScenarioRef,
+    strategy_arg: SearchStrategyArg,
+    engine_strategy: crucible::SearchStrategy,
+    max_depth: Option<u64>,
+    max_states: u64,
+    budget: crucible::SearchBudget,
+    on_violation: SearchOnViolationArg,
+    delegates_policy_to_advanced_engine: bool,
+    opportunistic_replay_oracle_sampling: bool,
+    counterexamples_are_self_contained: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FuzzDriverPlan {
+    family: FuzzFamilyRef,
+    runs: u64,
+    coverage: FuzzCoverageArg,
+    corpus: Option<PathBuf>,
+    config: crucible::CoverageGuidedFuzzConfig,
+    delegates_policy_to_advanced_engine: bool,
+    pins_one_scenario_def_per_iteration: bool,
+    counterexamples_are_self_contained: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FuzzFamilyRef {
+    File(PathBuf),
+    Stored(crucible::ContentHash),
+}
+
+impl FuzzFamilyRef {
+    fn label(&self) -> String {
+        match self {
+            Self::File(path) => path.display().to_string(),
+            Self::Stored(reference) => format_content_hash_ref(*reference),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ResumeSavepointRef {
     CheckpointHash(crucible::ContentHash),
     Handle {
@@ -1911,6 +2061,156 @@ fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliEr
         decision: decision.to_string(),
         value: pinned_value.to_string(),
     })
+}
+
+fn plan_search_invocation(
+    args: &SearchArgs,
+    store_root: &Path,
+) -> Result<SearchDriverPlan, CliError> {
+    let scenario = resolve_search_scenario(args.scenario.as_deref(), store_root)?;
+    validate_positive_optional_budget("--max-depth", args.max_depth)?;
+    validate_positive_budget("--max-states", args.max_states)?;
+    let engine_strategy = args.strategy.engine_strategy();
+    let budget = crucible::SearchBudget::new(args.max_states);
+
+    Ok(SearchDriverPlan {
+        scenario,
+        strategy_arg: args.strategy,
+        engine_strategy,
+        max_depth: args.max_depth,
+        max_states: args.max_states,
+        budget,
+        on_violation: args.on_violation,
+        delegates_policy_to_advanced_engine: true,
+        opportunistic_replay_oracle_sampling: true,
+        counterexamples_are_self_contained: true,
+    })
+}
+
+fn resolve_search_scenario(
+    scenario: Option<&str>,
+    store_root: &Path,
+) -> Result<RunScenarioRef, CliError> {
+    resolve_command_scenario("search", scenario, store_root).map_err(|error| match error {
+        CliError::InvalidScenario(message) => backend_error(message),
+        error => error,
+    })
+}
+
+fn plan_fuzz_invocation(
+    args: &FuzzArgs,
+    seed: &DeterminismErgonomicsPlan,
+) -> Result<FuzzDriverPlan, CliError> {
+    let family = resolve_fuzz_family_ref(args.family.as_deref(), args.family_flag.as_deref())?;
+    validate_positive_budget("--runs", args.runs)?;
+    if let Some(corpus) = &args.corpus {
+        validate_exploration_path_arg("--corpus", corpus)?;
+        if corpus.exists() && !corpus.is_dir() {
+            return Err(backend_error(format!(
+                "--corpus `{}` must be a directory when it already exists",
+                corpus.display()
+            )));
+        }
+    }
+    let config = crucible::CoverageGuidedFuzzConfig::new(
+        crucible::Seed::from_u64(seed.seed.value),
+        args.runs,
+    );
+
+    Ok(FuzzDriverPlan {
+        family,
+        runs: args.runs,
+        coverage: args.coverage,
+        corpus: args.corpus.clone(),
+        config,
+        delegates_policy_to_advanced_engine: true,
+        pins_one_scenario_def_per_iteration: true,
+        counterexamples_are_self_contained: true,
+    })
+}
+
+fn resolve_fuzz_family_ref(
+    positional: Option<&str>,
+    flag: Option<&str>,
+) -> Result<FuzzFamilyRef, CliError> {
+    match (positional, flag) {
+        (None, None) => Err(usage_error(
+            "fuzz requires a FAMILY argument or --family <path|hash>",
+        )),
+        (Some(_), Some(_)) => Err(usage_error(
+            "fuzz accepts either FAMILY or --family <path|hash>, not both",
+        )),
+        (Some(value), None) | (None, Some(value)) => parse_fuzz_family_ref(value),
+    }
+}
+
+fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(backend_error(
+            "family reference must not be empty or multiline",
+        ));
+    }
+    if value.starts_with(CONTENT_ADDRESS_PREFIX) {
+        return Err(backend_error(format!(
+            "family content hash `{value}` is not a DAG-store `blake3:<hash>` reference"
+        )));
+    }
+    if value.starts_with("blake3:") {
+        let reference =
+            crucible::ContentAddressedBlobRef::parse("family", value).map_err(|error| {
+                backend_error(format!(
+                    "family content hash `{value}` is malformed: {error}"
+                ))
+            })?;
+        return Ok(FuzzFamilyRef::Stored(reference.hash()));
+    }
+    let path = Path::new(value);
+    validate_exploration_path_arg("FAMILY", path)?;
+    if !path.exists() {
+        return Err(backend_error(format!("family `{value}` does not exist")));
+    }
+    if !path.is_file() {
+        return Err(backend_error(format!(
+            "family `{value}` is not a regular file"
+        )));
+    }
+    Ok(FuzzFamilyRef::File(path.to_path_buf()))
+}
+
+fn validate_positive_optional_budget(
+    label: &'static str,
+    value: Option<u64>,
+) -> Result<(), CliError> {
+    if let Some(value) = value {
+        validate_positive_budget(label, value)?;
+    }
+    Ok(())
+}
+
+fn validate_positive_budget(label: &'static str, value: u64) -> Result<(), CliError> {
+    if value == 0 {
+        return Err(usage_error(format!("{label} must be greater than zero")));
+    }
+    Ok(())
+}
+
+fn validate_exploration_path_arg(label: &'static str, path: &Path) -> Result<(), CliError> {
+    if path.as_os_str().is_empty()
+        || path
+            .to_string_lossy()
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(backend_error(format!(
+            "{label} path must not be empty or multiline"
+        )));
+    }
+    Ok(())
 }
 
 fn resolve_savepoint_ref(
@@ -6053,6 +6353,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Fork(args) => Some(plan_fork_invocation(args, cli.seed.is_some())?),
         _ => None,
     };
+    let search_plan = match &cli.command {
+        Commands::Search(args) => Some(plan_search_invocation(args, &run_store_root)?),
+        _ => None,
+    };
+    let fuzz_plan = match &cli.command {
+        Commands::Fuzz(args) => {
+            let seed = ergonomics_plan.as_ref().ok_or_else(|| {
+                backend_error("fuzz requires a resolved deterministic campaign seed")
+            })?;
+            Some(plan_fuzz_invocation(args, seed)?)
+        }
+        _ => None,
+    };
     let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
@@ -6070,6 +6383,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         if let Some(fork_plan) = &fork_plan {
             return Err(unsupported_fork_backend_error(fork_plan));
+        }
+        if let Some(search_plan) = &search_plan {
+            return Err(unsupported_search_backend_error(search_plan));
+        }
+        if let Some(fuzz_plan) = &fuzz_plan {
+            return Err(unsupported_fuzz_backend_error(fuzz_plan));
         }
         let mut outcome = execute_backend_routed_command(
             &thin_plan,
@@ -6398,6 +6717,25 @@ fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
         format_content_hash_ref(plan.source.checkpoint()),
         plan.source.label(),
         plan.label
+    ))
+}
+
+fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
+    backend_error(format!(
+        "search scenario {} strategy={} max-states={} on-violation={} requires the exploration-engine driver over phase-6 search policies tracked by T-CLI-13",
+        plan.scenario.label(),
+        plan.strategy_arg.label(),
+        plan.max_states,
+        plan.on_violation.label()
+    ))
+}
+
+fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
+    backend_error(format!(
+        "fuzz family {} runs={} coverage={} requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13",
+        plan.family.label(),
+        plan.runs,
+        plan.coverage.label()
     ))
 }
 
@@ -10395,6 +10733,277 @@ mod tests {
                 .to_string()
                 .contains(&format_content_hash_ref(checkpoint))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_search_fuzz_help_surface_lists_wip_flags() {
+        let mut command = Cli::command();
+        for (name, needles) in [
+            (
+                "search",
+                &[
+                    "SCENARIO",
+                    "--strategy <bfs|dfs|guided>",
+                    "--max-depth <n>",
+                    "--max-states <n>",
+                    "--on-violation <stop|collect>",
+                ][..],
+            ),
+            (
+                "fuzz",
+                &[
+                    "FAMILY",
+                    "--family <path|hash>",
+                    "--runs <n>",
+                    "--coverage <basic-block>",
+                    "--corpus <path>",
+                ][..],
+            ),
+        ] {
+            let help = command
+                .find_subcommand_mut(name)
+                .unwrap_or_else(|| panic!("{name} subcommand must be registered"))
+                .render_long_help()
+                .to_string();
+            for needle in needles {
+                assert!(
+                    help.contains(needle),
+                    "{name} help is missing `{needle}`:\n{help}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let search_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("search"),
+            scenario.display().to_string(),
+            String::from("--strategy"),
+            String::from("guided"),
+            String::from("--max-depth"),
+            String::from("3"),
+            String::from("--max-states"),
+            String::from("7"),
+            String::from("--on-violation"),
+            String::from("collect"),
+        ]);
+        let Commands::Search(args) = &search_cli.command else {
+            panic!("expected search command");
+        };
+        let search_plan = plan_search_invocation(args, temp.path())?;
+
+        assert!(matches!(search_plan.scenario, RunScenarioRef::File { .. }));
+        assert_eq!(search_plan.strategy_arg, SearchStrategyArg::Guided);
+        assert_eq!(
+            search_plan.engine_strategy,
+            crucible::SearchStrategy::CoverageGuided
+        );
+        assert_eq!(search_plan.max_depth, Some(3));
+        assert_eq!(search_plan.max_states, 7);
+        assert_eq!(search_plan.budget, crucible::SearchBudget::new(7));
+        assert_eq!(search_plan.on_violation, SearchOnViolationArg::Collect);
+        assert!(search_plan.delegates_policy_to_advanced_engine);
+        assert!(search_plan.opportunistic_replay_oracle_sampling);
+        assert!(search_plan.counterexamples_are_self_contained);
+
+        for args in [
+            SearchArgs {
+                scenario: Some(scenario.display().to_string()),
+                max_depth: Some(0),
+                ..SearchArgs::default()
+            },
+            SearchArgs {
+                scenario: Some(scenario.display().to_string()),
+                max_states: 0,
+                ..SearchArgs::default()
+            },
+        ] {
+            let error = match plan_search_invocation(&args, temp.path()) {
+                Ok(_) => panic!("zero search budget must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, CliError::Usage(_)));
+            assert_eq!(error.exit_code(), 64);
+        }
+
+        let missing_scenario_file = temp.path().join("missing-search.toml");
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(missing_scenario_file.display().to_string()),
+                max_states: 1,
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("missing search scenario must be discovery/config"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        let family_path = temp.path().join("family.toml");
+        fs::write(&family_path, "schema = \"scenario-family-fixture\"\n")?;
+        let corpus = temp.path().join("corpus");
+        fs::create_dir(&corpus)?;
+        let fuzz_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--seed"),
+            String::from("0x55"),
+            String::from("fuzz"),
+            family_path.display().to_string(),
+            String::from("--runs"),
+            String::from("5"),
+            String::from("--coverage"),
+            String::from("basic-block"),
+            String::from("--corpus"),
+            corpus.display().to_string(),
+        ]);
+        let seed_plan = plan_determinism_ergonomics(
+            &fuzz_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("fuzz should resolve a seed");
+        let Commands::Fuzz(args) = &fuzz_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+
+        assert_eq!(fuzz_plan.family, FuzzFamilyRef::File(family_path.clone()));
+        assert_eq!(fuzz_plan.runs, 5);
+        assert_eq!(fuzz_plan.coverage, FuzzCoverageArg::BasicBlock);
+        assert_eq!(fuzz_plan.corpus.as_deref(), Some(corpus.as_path()));
+        assert_eq!(
+            fuzz_plan.config,
+            crucible::CoverageGuidedFuzzConfig::new(crucible::Seed::from_u64(0x55), 5)
+        );
+        assert!(fuzz_plan.delegates_policy_to_advanced_engine);
+        assert!(fuzz_plan.pins_one_scenario_def_per_iteration);
+        assert!(fuzz_plan.counterexamples_are_self_contained);
+
+        let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
+        let hash_cli = Cli::parse_from(["crucible", "fuzz", "--family", &reference]);
+        let Commands::Fuzz(args) = &hash_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let hash_seed = plan_determinism_ergonomics(
+            &hash_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(1),
+        )?
+        .expect("fuzz should resolve a generated seed");
+        let hash_plan = plan_fuzz_invocation(args, &hash_seed)?;
+        assert!(matches!(hash_plan.family, FuzzFamilyRef::Stored(_)));
+
+        let malformed_hash = FuzzArgs {
+            family: Some(String::from("blake3:not-a-hash")),
+            runs: 1,
+            ..FuzzArgs::default()
+        };
+        let error = match plan_fuzz_invocation(&malformed_hash, &seed_plan) {
+            Ok(_) => panic!("malformed fuzz family hash must be discovery/config"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        for args in [
+            FuzzArgs::default(),
+            FuzzArgs {
+                family: Some(family_path.display().to_string()),
+                family_flag: Some(reference.clone()),
+                ..FuzzArgs::default()
+            },
+            FuzzArgs {
+                family: Some(family_path.display().to_string()),
+                runs: 0,
+                ..FuzzArgs::default()
+            },
+        ] {
+            let error = match plan_fuzz_invocation(&args, &seed_plan) {
+                Ok(_) => panic!("malformed fuzz invocation must fail"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, CliError::Usage(_)),
+                "unexpected error: {error}"
+            );
+            assert_eq!(error.exit_code(), 64);
+        }
+
+        let corpus_file = temp.path().join("corpus-file");
+        fs::write(&corpus_file, "not a directory")?;
+        let error = match plan_fuzz_invocation(
+            &FuzzArgs {
+                family: Some(family_path.display().to_string()),
+                runs: 1,
+                corpus: Some(corpus_file),
+                ..FuzzArgs::default()
+            },
+            &seed_plan,
+        ) {
+            Ok(_) => panic!("file corpus must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_search_fuzz_workflow_rejects_execution_until_driver_exists() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let search_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            scenario.display().to_string(),
+            String::from("--strategy"),
+            String::from("dfs"),
+        ]);
+        let error = match dispatch(&search_cli) {
+            Ok(_) => panic!("search must not silently pass before exploration driver exists"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("T-CLI-13"));
+        assert!(error.to_string().contains("strategy=dfs"));
+
+        let family_path = temp.path().join("family.toml");
+        fs::write(&family_path, "schema = \"scenario-family-fixture\"\n")?;
+        let fuzz_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("9"),
+            String::from("fuzz"),
+            family_path.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let error = match dispatch(&fuzz_cli) {
+            Ok(_) => panic!("fuzz must not silently pass before exploration driver exists"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("T-CLI-13"));
+        assert!(error.to_string().contains("runs=2"));
 
         Ok(())
     }

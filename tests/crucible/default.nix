@@ -1542,6 +1542,20 @@ in rec {
         phase4.gates.e2eDeterminism.rawGate
       ];
     };
+    cliSearchFuzzWorkflow = import ./phase5-cli-search-fuzz-workflow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase5.cliSearchFuzzWorkflow";
+      taskIds = ["T-CLI-13"];
+      dependencies = [
+        phase5.cliRunWorkflow
+        phase5.cliForkWorkflow
+        phase5.cliReplayCheck
+        phase6.stateSpaceSearch
+        phase6.coverageGuidedFuzzing
+        phase4.gates.replayOracle.rawGate
+        phase4.gates.e2eDeterminism.rawGate
+      ];
+    };
     cliServeReadOnly = import ./phase5-cli-serve-read-only.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeReadOnly";

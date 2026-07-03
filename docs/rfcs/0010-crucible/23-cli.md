@@ -1083,6 +1083,19 @@ branch on the verdict without parsing output:
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
   satisfies [CLI-23]; spec §13.
+  Work in progress under `checks.crucible.phase5.cliSearchFuzzWorkflow`: the CLI
+  now parses `search <SCENARIO>` with `--strategy`, `--max-depth`,
+  `--max-states`, and `--on-violation`, validates the scenario through the same
+  concrete `ScenarioDef` resolver used by `run`, maps strategy and budget to the
+  phase-6 advanced search API, parses `fuzz <FAMILY>` / `fuzz --family
+  <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
+  campaign seed into `CoverageGuidedFuzzConfig`, and fails execution explicitly
+  until the exploration-engine driver over phase-6 search/fuzz policies is
+  wired. Full closure remains blocked on the backend driver that invokes
+  `TemporalGraph::search_with_strategy_and_failure_oracle` and
+  `ScenarioFamily::fuzz_coverage_guided`, in-search replay-oracle sampling,
+  counterexample artifact emission with repro commands, budget/outcome exit-code
+  handling, corpus persistence, and real-QEMU coverage.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
