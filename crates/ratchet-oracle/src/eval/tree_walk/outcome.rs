@@ -61,6 +61,8 @@ const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_WRITES_TABLE: &str =
     "boundary minor-GC heap-field writeback writes";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_WRITE_BYTES_TABLE: &str =
     "boundary minor-GC heap-field writeback write bytes";
+const BOUNDARY_MINOR_GC_REFERENCE_WRITEBACK_WRITES_TABLE: &str =
+    "boundary minor-GC reference writeback writes";
 const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
     "boundary minor-GC forwarding slot buffer";
 const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
@@ -2388,6 +2390,95 @@ impl EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackReport {
     }
 }
 
+/// Counts for live object-body/generation writes plus supported reference rewrites.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport {
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    outcome_root_writeback_report: EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport,
+    heap_field_writeback_report: EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport,
+}
+
+impl EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport {
+    const fn new(
+        object_body_and_generation_write_report:
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+        outcome_root_writeback_report: EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport,
+        heap_field_writeback_report: EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport,
+    ) -> Self {
+        Self {
+            object_body_and_generation_write_report,
+            outcome_root_writeback_report,
+            heap_field_writeback_report,
+        }
+    }
+
+    /// Returns the paired object-body and object-generation write report.
+    pub const fn object_body_and_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
+    /// Returns the destination object-body write report.
+    pub const fn object_body_write_report(self) -> AllocationCollectorPollObjectBodyWriteReport {
+        self.object_body_and_generation_write_report
+            .body_write_report()
+    }
+
+    /// Returns how many destination object bodies were written.
+    pub const fn object_bodies_written(self) -> usize {
+        self.object_body_write_report().objects()
+    }
+
+    /// Returns the destination object-generation write report.
+    pub const fn object_generation_write_report(
+        self,
+    ) -> AllocationCollectorPollObjectGenerationWriteReport {
+        self.object_body_and_generation_write_report
+            .generation_write_report()
+    }
+
+    /// Returns how many destination object generations were written.
+    pub const fn object_generations_written(self) -> usize {
+        self.object_generation_write_report().objects()
+    }
+
+    /// Returns the outcome-root writeback report.
+    pub const fn outcome_root_writeback_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
+        self.outcome_root_writeback_report
+    }
+
+    /// Returns how many outcome-owned value-stack roots were rewritten.
+    pub const fn value_stack_roots(self) -> usize {
+        self.outcome_root_writeback_report.value_stack_roots()
+    }
+
+    /// Returns how many outcome-owned roots were rewritten.
+    pub const fn roots(self) -> usize {
+        self.outcome_root_writeback_report.roots()
+    }
+
+    /// Returns the heap-field writeback report.
+    pub const fn heap_field_writeback_report(
+        self,
+    ) -> EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport {
+        self.heap_field_writeback_report
+    }
+
+    /// Returns how many heap fields were rewritten.
+    pub const fn fields(self) -> usize {
+        self.heap_field_writeback_report.fields()
+    }
+
+    /// Returns how many supported references were rewritten.
+    pub const fn references(self) -> usize {
+        self.roots().saturating_add(self.fields())
+    }
+}
+
 /// One validated live heap-field writeback input.
 ///
 /// This is an immutable write plan for a future object-field writer. It proves
@@ -3674,6 +3765,85 @@ fn apply_boundary_minor_gc_live_outcome_root_writebacks(
     )
 }
 
+fn apply_boundary_minor_gc_live_reference_writebacks(
+    outcome_value: &mut Value,
+    heap: &mut EvalHeap,
+    remembered_set: &mut RememberedSet,
+    card_table: &mut GcCardTable,
+    root_plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+    heap_field_plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
+) -> Result<EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport, EvalHeapError> {
+    let value_stack_roots = validate_boundary_minor_gc_outcome_root_writeback_source_values(
+        outcome_value,
+        heap,
+        root_plan,
+    )?;
+    let (copied_writes, direct_writes) =
+        boundary_minor_gc_heap_field_writeback_writes(heap_field_plan)?;
+    let object_body_plan =
+        boundary_minor_gc_reference_writeback_object_body_write_plan(root_plan, heap_field_plan)?;
+    validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
+        &object_body_plan,
+        heap_field_plan,
+    )?;
+    let (object_body_and_generation_write_report, copied_report, direct_report) = heap
+        .apply_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+            &object_body_plan,
+            &copied_writes,
+            &direct_writes,
+            remembered_set,
+            card_table,
+        )?;
+    debug_assert_eq!(
+        copied_report
+            .fields()
+            .saturating_add(direct_report.fields()),
+        heap_field_plan.report().fields()
+    );
+    let outcome_root_writeback_report =
+        commit_boundary_minor_gc_outcome_root_writebacks_prevalidated(
+            outcome_value,
+            root_plan,
+            value_stack_roots,
+        );
+
+    Ok(
+        EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport::new(
+            object_body_and_generation_write_report,
+            outcome_root_writeback_report,
+            heap_field_plan.report(),
+        ),
+    )
+}
+
+fn validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
+    object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+    heap_field_plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
+) -> Result<(), EvalHeapError> {
+    for write in heap_field_plan.writes() {
+        if write.writeback_object_request().is_some() {
+            continue;
+        }
+        if object_body_plan
+            .requests()
+            .iter()
+            .any(|request| request.destination() == write.writeback_object())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveReferenceWritebackDestinationAliasesDirectWriteback {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    destination: write.writeback_object(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn apply_boundary_minor_gc_heap_field_writebacks(
     heap: &mut EvalHeap,
     remembered_set: &mut RememberedSet,
@@ -3699,6 +3869,10 @@ fn apply_boundary_minor_gc_live_heap_field_writebacks(
 ) -> Result<EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackReport, EvalHeapError> {
     let (copied_writes, direct_writes) = boundary_minor_gc_heap_field_writeback_writes(plan)?;
     let object_body_plan = boundary_minor_gc_heap_field_writeback_object_body_write_plan(plan)?;
+    validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
+        &object_body_plan,
+        plan,
+    )?;
     let (object_body_and_generation_write_report, copied_report, direct_report) = heap
         .apply_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
             &object_body_plan,
@@ -3795,6 +3969,22 @@ fn apply_boundary_minor_gc_heap_field_writebacks_from_writes(
         report.fields()
     );
     Ok(report)
+}
+
+fn commit_boundary_minor_gc_outcome_root_writebacks_prevalidated(
+    outcome_value: &mut Value,
+    plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+    value_stack_roots: usize,
+) -> EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
+    let mut replacement = None;
+    for write in plan.writes() {
+        replacement = Some(write.replacement_value());
+    }
+    if let Some(next) = replacement {
+        *outcome_value = next;
+    }
+
+    EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport::new(value_stack_roots)
 }
 
 fn validate_boundary_minor_gc_outcome_root_writeback_source_destinations(
@@ -3921,6 +4111,51 @@ fn boundary_minor_gc_heap_field_writeback_object_body_write_plan(
         })?;
 
     for write in plan.writes() {
+        if let Some(writeback_object_request) = write.writeback_object_request() {
+            push_unique_boundary_minor_gc_object_copy_request(
+                &mut requests,
+                writeback_object_request,
+            );
+        }
+        push_unique_boundary_minor_gc_object_copy_request(
+            &mut requests,
+            write.replacement_request(),
+        );
+    }
+
+    Ok(AllocationCollectorPollObjectByteCopyPlan::from_requests(
+        requests,
+    ))
+}
+
+fn boundary_minor_gc_reference_writeback_object_body_write_plan(
+    root_plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+    heap_field_plan: &EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlan,
+) -> Result<AllocationCollectorPollObjectByteCopyPlan, EvalHeapError> {
+    let heap_field_entries = heap_field_plan.writes().len().checked_mul(2).ok_or(
+        EvalHeapError::RootScanLengthOverflow {
+            table: BOUNDARY_MINOR_GC_REFERENCE_WRITEBACK_WRITES_TABLE,
+        },
+    )?;
+    let entries = root_plan
+        .writes()
+        .len()
+        .checked_add(heap_field_entries)
+        .ok_or(EvalHeapError::RootScanLengthOverflow {
+            table: BOUNDARY_MINOR_GC_REFERENCE_WRITEBACK_WRITES_TABLE,
+        })?;
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(entries)
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_REFERENCE_WRITEBACK_WRITES_TABLE,
+            entries,
+        })?;
+
+    for write in root_plan.writes() {
+        push_unique_boundary_minor_gc_object_copy_request(&mut requests, write.request());
+    }
+    for write in heap_field_plan.writes() {
         if let Some(writeback_object_request) = write.writeback_object_request() {
             push_unique_boundary_minor_gc_object_copy_request(
                 &mut requests,
@@ -10091,11 +10326,13 @@ impl EvalOutcome {
     /// Returns [`EvalHeapError`] if installed heap-field writeback metadata is
     /// inconsistent, if a current source field no longer holds the expected
     /// young from-space value, if field or barrier staging fails, if a
-    /// destination heap record is missing or rejects the paired body/generation
-    /// write, or if the final heap-field writeback applicator fails. Source-field
-    /// and final field/barrier prevalidation happen before destination object
-    /// bodies or generations are written; when a paired-write error is returned,
-    /// the paired writer leaves destination bodies and generations unchanged.
+    /// destination heap record aliases a direct in-place heap-field write owner,
+    /// if a destination heap record is missing or rejects the paired
+    /// body/generation write, or if the final heap-field writeback applicator
+    /// fails. Source-field and final field/barrier prevalidation happen before
+    /// destination object bodies or generations are written; when a paired-write
+    /// error is returned, the paired writer leaves destination bodies and
+    /// generations unchanged.
     pub fn apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcLiveHeapFieldWritebackReport, EvalHeapError> {
@@ -10105,6 +10342,52 @@ impl EvalOutcome {
             &mut self.thunk_resolve_remembered_set,
             &mut self.thunk_resolve_card_table,
             &plan,
+        )
+    }
+
+    /// Binds replacement bodies and applies supported live reference writes.
+    ///
+    /// This consumes the installed live root and heap-field writeback metadata
+    /// plus installed writeback-destination bindings. It validates the
+    /// outcome-owned `ValueStack { slot: 0 }` root source, current record-owned
+    /// heap fields, staged field mutations, and staged remembered-set/card-table
+    /// publication before mutating destination records. It then applies paired
+    /// object-body/generation writes for every replacement or copied writeback
+    /// object named by the root and heap-field write plans, rewrites supported
+    /// record-owned heap fields, and finally writes the already prevalidated
+    /// outcome value.
+    ///
+    /// This is a narrow live-reference bridge for GC-stress experiments. It
+    /// still requires destination heap records to pre-exist, and it does not
+    /// allocate destination records, reserve semispace storage, mutate active
+    /// evaluator frames or import caches, update JIT stack maps, rewrite shared
+    /// lexical frame slots or thunk fields, write ABI forwarding headers, or
+    /// invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed root or heap-field writeback
+    /// metadata is inconsistent, if the outcome value no longer holds the
+    /// expected root source, if a current source field no longer holds its
+    /// expected young from-space value, if field or barrier staging fails, if a
+    /// destination heap record aliases a direct in-place heap-field write owner,
+    /// if a destination heap record is missing or rejects a paired
+    /// body/generation write, or if a supported field write cannot be staged.
+    /// Root and source-field prevalidation happens before destination object
+    /// bodies, generations, heap fields, remembered-set/card-table state, or the
+    /// outcome value are changed.
+    pub fn apply_gc_stress_boundary_minor_gc_live_reference_writebacks(
+        &mut self,
+    ) -> Result<EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport, EvalHeapError> {
+        let root_plan = self.gc_stress_boundary_minor_gc_root_writeback_write_plan()?;
+        let heap_field_plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
+        apply_boundary_minor_gc_live_reference_writebacks(
+            &mut self.value,
+            &mut self.heap,
+            &mut self.thunk_resolve_remembered_set,
+            &mut self.thunk_resolve_card_table,
+            &root_plan,
+            &heap_field_plan,
         )
     }
 

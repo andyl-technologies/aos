@@ -6142,15 +6142,38 @@ and helps the oracle directly.
       fields plus staged heap-field/barrier writes before destination mutation,
       applies paired object-body/generation writes for replacement requests and
       copied writeback-object requests named by the heap-field write plan, and
-      then rewrites supported record-owned heap fields through the already-bound
-      applicator. Unit tests cover a
+      rejects direct in-place field owners that alias those object-copy
+      destinations before rewriting supported record-owned heap fields through
+      the already-bound applicator. Unit tests cover a
       permanent-shared direct list field whose existing scratch replacement is
       copied to young with remembered-set/card-table publication, and stale
       direct-field rejection before the original destination body or generation
-      is changed. This still requires destination records to already exist as
+      is changed, and direct owner / destination alias rejection before mutation.
+      This still requires destination records to already exist as
       unaliased collector-owned scratch records, does not allocate synthetic
       destinations, and does not cover shared lexical frame slots, thunk fields,
       ABI object headers, semispace storage, or Tier-B dispatch.
+- [x] Current boundary live reference writeback bridge:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
+      consumes installed live root and heap-field writeback metadata plus
+      installed writeback-destination bindings, prevalidates the outcome-owned
+      `ValueStack { slot: 0 }` root, current record-owned source fields, staged
+      heap-field mutations, and staged remembered-set/card-table publication,
+      coalesces duplicate object-copy requests across roots and fields, applies
+      paired object-body/generation writes once for every referenced destination
+      or copied writeback object, rejects direct in-place field owners that alias
+      those object-copy destinations, rewrites supported record-owned heap
+      fields, and then writes the prevalidated outcome value. Unit tests cover a
+      mixed value-stack root plus dirty permanent lambda-capture field sharing
+      one existing scratch replacement, stale-root rejection before field or
+      destination mutation, stale-field rejection before the root or original
+      destination body/generation changes, and aliased direct owner /
+      destination rejection before mutation. This still requires
+      destination records to already exist as unaliased collector-owned scratch
+      records, does not allocate synthetic destinations, and does not rewrite
+      active evaluator frames, import caches, arbitrary value-stack roots, JIT
+      stack maps, shared lexical frame slots, thunk fields, ABI object headers,
+      semispace storage, or Tier-B dispatch.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6873,11 +6896,19 @@ and helps the oracle directly.
       writeback-object requests named by that field plan, and delegates to the
       already-bound heap-field applicator. It also preflights the field and
       remembered-set/card-table staging path before writing destination
-      body/generation state. The live root and heap-field bridges
-      still require destination heap records to pre-exist, do not allocate
-      synthetic destinations, do not rewrite active evaluator root storage, and
-      do not cover shared lexical frame slots, thunk fields, real ABI
-      object-header forwarding storage, semispace storage, or Tier-B dispatch.
+      body/generation state.
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
+      combines the outcome-root and heap-field live bridges for one installed
+      reference writeback set: it prevalidates the outcome-owned value-stack root
+      and supported record-owned heap fields, coalesces duplicate destination
+      body/generation writes across roots and fields, rejects direct in-place
+      field owners that alias those destinations, applies the heap-side
+      transaction, and then rewrites the already prevalidated outcome value. The
+      live reference bridges still require destination heap records to pre-exist,
+      do not allocate synthetic destinations, do not rewrite active evaluator
+      root storage, and do not cover shared lexical frame slots, thunk fields,
+      real ABI object-header forwarding storage, semispace storage, or Tier-B
+      dispatch.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

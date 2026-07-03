@@ -1647,6 +1647,24 @@ pub enum EvalHeapError {
         /// The copied field source label.
         field_source: HeapEdgeSource,
     },
+    /// A live reference writeback destination aliases a direct heap-field owner.
+    #[error(
+        "boundary minor-GC live reference writeback destination 0x{destination:x} aliases direct heap-field writeback owner {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?}",
+        destination = destination.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcLiveReferenceWritebackDestinationAliasesDirectWriteback {
+        /// The allocator domain recorded by the direct field write.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten in place.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The direct field source label.
+        field_source: HeapEdgeSource,
+        /// The object-copy destination that aliases the direct field owner.
+        destination: GcHeapAddress,
+    },
     /// A copied heap-field write targets a field kind that is not record-owned.
     #[error(
         "collector-poll minor-GC copied heap-field write for 0x{writeback_object:x}[{field_index}] {field_source:?} is not a record-owned list, attrset, or primop-argument field",

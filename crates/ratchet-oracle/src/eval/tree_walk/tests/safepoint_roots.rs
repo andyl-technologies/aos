@@ -248,6 +248,183 @@ fn boundary_permanent_list_field_outcome_with_existing_destination()
     )
 }
 
+fn boundary_root_and_permanent_lambda_field_outcome_with_existing_destination()
+-> (EvalOutcome, Value, Value, Value) {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let with_env =
+        EvalWithEnv::capture(&[EvalWithScope::new(EvalModuleId::ROOT, IrId::new(8), child)])
+            .expect("dynamic with env captures child");
+    let parent = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+            with_env,
+            EvalScopedGlobalEnv::default(),
+        ))
+        .expect("parent lambda allocates");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(parent, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark parent permanent");
+    evaluator
+        .thunk_resolve_card_table
+        .mark_source(gc_address(parent))
+        .expect("permanent parent card marks");
+    let destination = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("test destination lambda allocates");
+    let frame = EvalFrame::new(1).expect("active frame allocates");
+    frame.set(0, parent).expect("active parent root sets");
+    evaluator.env.push(frame);
+
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(child)
+        .expect("child value plus permanent parent builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    (
+        EvalOutcome {
+            value: child,
+            heap: evaluator.heap,
+            stats,
+            attr_telemetry: evaluator.attr_telemetry,
+            trace_output: evaluator.trace_output,
+            warning_output: evaluator.warning_output,
+            impure_input_trace: evaluator.impure_input_trace,
+            impure_input_trace_complete: evaluator.impure_input_trace_complete,
+            persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+            derivations,
+            thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+            thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+            memory_budget_action: None,
+            cheap_memory_budget_plan: None,
+            cheap_memory_advice_report: None,
+            cold_hash_consed_value_materialization: None,
+            gc_stress_boundary_scans,
+            gc_stress_boundary_minor_gc_reference_writebacks:
+                EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+            gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
+            gc_stress_boundary_minor_gc_destination_storage:
+                EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+            gc_stress_boundary_minor_gc_object_generations:
+                EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+            gc_stress_boundary_minor_gc_writeback_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
+        },
+        parent,
+        child,
+        destination,
+    )
+}
+
+fn boundary_distinct_root_and_permanent_lambda_field_outcome() -> (EvalOutcome, Value, Value, Value)
+{
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let root_child = evaluator.eval_root().expect("root lambda evaluates");
+    let field_child = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("field child lambda allocates");
+    let with_env = EvalWithEnv::capture(&[EvalWithScope::new(
+        EvalModuleId::ROOT,
+        IrId::new(8),
+        field_child,
+    )])
+    .expect("dynamic with env captures field child");
+    let parent = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+            with_env,
+            EvalScopedGlobalEnv::default(),
+        ))
+        .expect("parent lambda allocates");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(parent, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark parent permanent");
+    evaluator
+        .thunk_resolve_card_table
+        .mark_source(gc_address(parent))
+        .expect("permanent parent card marks");
+    let frame = EvalFrame::new(1).expect("active frame allocates");
+    frame.set(0, parent).expect("active parent root sets");
+    evaluator.env.push(frame);
+
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(root_child)
+        .expect("root child plus permanent parent builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    (
+        EvalOutcome {
+            value: root_child,
+            heap: evaluator.heap,
+            stats,
+            attr_telemetry: evaluator.attr_telemetry,
+            trace_output: evaluator.trace_output,
+            warning_output: evaluator.warning_output,
+            impure_input_trace: evaluator.impure_input_trace,
+            impure_input_trace_complete: evaluator.impure_input_trace_complete,
+            persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+            derivations,
+            thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+            thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+            memory_budget_action: None,
+            cheap_memory_budget_plan: None,
+            cheap_memory_advice_report: None,
+            cold_hash_consed_value_materialization: None,
+            gc_stress_boundary_scans,
+            gc_stress_boundary_minor_gc_reference_writebacks:
+                EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+            gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
+            gc_stress_boundary_minor_gc_destination_storage:
+                EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+            gc_stress_boundary_minor_gc_object_generations:
+                EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+            gc_stress_boundary_minor_gc_writeback_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
+        },
+        parent,
+        root_child,
+        field_child,
+    )
+}
+
 fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
     scan.scan().roots().iter().any(|scan_root| {
         scan_root.source() == &EvalRootSource::ValueStack { slot: 0 }
@@ -2326,6 +2503,10 @@ fn live_outcome_root_writebacks_reject_stale_value_before_body_write() {
         .expect("root writeback plan validates");
     let root_writeback = &root_writeback_plan.writes()[0];
     let request = root_writeback.request();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination_value)
+        .expect("destination value is heap-bound");
     assert!(matches!(
         outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
             request,
@@ -2358,7 +2539,7 @@ fn live_outcome_root_writebacks_reject_stale_value_before_body_write() {
             .heap()
             .generation(destination_value)
             .expect("destination value remains heap-bound"),
-        HeapGeneration::Young
+        original_destination_generation
     );
     assert!(matches!(
         outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
@@ -2469,6 +2650,10 @@ fn live_heap_field_writebacks_reject_stale_direct_field_before_body_write() {
         .expect("heap-field writeback plan validates");
     let write = &write_plan.writes()[0];
     let original_request = write.replacement_request();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
     let stale_destination = outcome
         .heap
         .alloc_lambda(EvalLambda::new(
@@ -2552,7 +2737,421 @@ fn live_heap_field_writebacks_reject_stale_direct_field_before_body_write() {
             .heap()
             .generation(destination)
             .expect("original destination remains heap-bound"),
-        HeapGeneration::Young
+        original_destination_generation
+    );
+}
+
+#[test]
+fn live_reference_writebacks_bind_once_and_rewrite_root_and_direct_field() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs for mixed root and field writebacks");
+    assert_eq!(
+        live_metadata.root_writeback_destination_bindings_installed(),
+        1
+    );
+    assert_eq!(
+        live_metadata.heap_field_writeback_destination_bindings_installed(),
+        1
+    );
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let heap_field_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("heap-field writeback plan validates");
+    assert_eq!(root_plan.len(), 1);
+    assert_eq!(heap_field_plan.len(), 1);
+    let root_write = &root_plan.writes()[0];
+    let field_write = &heap_field_plan.writes()[0];
+    assert_eq!(root_write.request().source(), gc_address(child));
+    assert_eq!(root_write.request().destination(), destination_address);
+    assert_eq!(field_write.writeback_object(), gc_address(parent));
+    assert_eq!(
+        field_write.replacement_request().source(),
+        gc_address(child)
+    );
+    assert_eq!(
+        field_write.replacement_request().destination(),
+        destination_address
+    );
+    assert!(outcome.value().raw_eq(child));
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect("live reference writeback binds once and rewrites root plus field");
+
+    assert_eq!(report.object_bodies_written(), 1);
+    assert_eq!(report.object_generations_written(), 1);
+    assert_eq!(report.roots(), 1);
+    assert_eq!(report.fields(), 1);
+    assert_eq!(report.references(), 2);
+    assert!(outcome.value().raw_eq(destination));
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
+            .raw_eq(destination)
+    );
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(
+            root_write.request(),
+            ValueTag::Lambda,
+        )
+        .expect("shared replacement destination body is bound");
+    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
+    assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+}
+
+#[test]
+fn live_reference_writebacks_reject_stale_root_before_field_or_body_write() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+    let stale_value = Value::int(1);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs for mixed root and field writebacks");
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let root_request = root_write.request();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let original_dirty_cards = outcome.thunk_resolve_card_table().dirty_cards().to_vec();
+    assert!(matches!(
+        outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
+            root_request,
+            root_write.replacement_tag(),
+        ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(child) && destination == destination_address
+    ));
+    outcome.value = stale_value;
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect_err("stale root rejects combined live reference writeback");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+            index: 0,
+            expected_tag: ValueTag::Lambda,
+            actual_tag: ValueTag::Int,
+            ..
+        }
+    ));
+    assert!(outcome.value().raw_eq(stale_value));
+    assert!(matches!(
+        outcome.heap().validate_collector_poll_minor_gc_object_body_binding(
+            root_request,
+            root_write.replacement_tag(),
+        ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(child) && destination == destination_address
+    ));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("original destination remains heap-bound"),
+        original_destination_generation
+    );
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(lambda.with_scope_env().scopes()[0].value().raw_eq(child));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn live_reference_writebacks_reject_stale_field_before_root_or_body_write() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let destination_address = gc_address(destination);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs for mixed root and field writebacks");
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let original_root_request = root_plan.writes()[0].request();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let heap_field_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("heap-field writeback plan validates");
+    let field_write = heap_field_plan.writes()[0].clone();
+    let original_field_request = field_write.replacement_request();
+    let stale_destination = outcome
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("stale destination lambda allocates");
+    let stale_destination_address = gc_address(stale_destination);
+    let stale_request = AllocationCollectorPollObjectByteCopyRequest::for_test(
+        gc_address(child),
+        stale_destination_address,
+        MinorGcSurvivorAction::CopyToNursery,
+        HeapGeneration::Young,
+        original_field_request.size_bytes(),
+        original_field_request.align(),
+    );
+    let stale_body_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![stale_request]);
+    outcome
+        .heap
+        .apply_collector_poll_minor_gc_object_body_and_generation_writes(&stale_body_plan)
+        .expect("stale destination body/generation writes apply");
+    let stale_write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        field_write.allocation_domain(),
+        field_write.writeback_object(),
+        field_write.field_index(),
+        field_write.source().clone(),
+        ResolvedValueGeneration::Heap {
+            address: stale_destination_address,
+            generation: HeapGeneration::Young,
+        },
+        stale_request,
+    );
+    let (_, direct_report) = outcome
+        .heap
+        .apply_collector_poll_minor_gc_heap_field_writes_with_card_table(
+            &[],
+            &[stale_write],
+            &mut outcome.thunk_resolve_remembered_set,
+            &mut outcome.thunk_resolve_card_table,
+        )
+        .expect("test can stale the direct field");
+    assert_eq!(direct_report.fields(), 1);
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect_err("stale field rejects combined live reference writeback");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteValueMismatch {
+            writeback_object,
+            field_index,
+            expected,
+            actual,
+            ..
+        } if writeback_object == gc_address(parent)
+            && field_index == field_write.field_index()
+            && expected == ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            }
+            && actual == ResolvedValueGeneration::Heap {
+                address: stale_destination_address,
+                generation: HeapGeneration::Young,
+            }
+    ));
+    assert!(outcome.value().raw_eq(child));
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                original_root_request,
+                ValueTag::Lambda,
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(child) && destination == destination_address
+    ));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("original destination remains heap-bound"),
+        original_destination_generation
+    );
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
+            .raw_eq(stale_destination)
+    );
+}
+
+#[test]
+fn live_heap_field_writebacks_reject_direct_writeback_destination_alias_before_mutation() {
+    let (mut outcome, parent, child, _destination) =
+        boundary_permanent_list_field_outcome_with_existing_destination();
+    let parent_address = gc_address(parent);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(parent_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata can describe an aliased direct heap-field destination");
+    let heap_field_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("heap-field writeback plan validates");
+    let field_write = &heap_field_plan.writes()[0];
+    assert_eq!(field_write.writeback_object(), parent_address);
+    assert_eq!(
+        field_write.replacement_request().destination(),
+        parent_address
+    );
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks()
+        .expect_err("direct writeback owner cannot also be a field replacement destination");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::BoundaryMinorGcLiveReferenceWritebackDestinationAliasesDirectWriteback {
+            allocation_domain: HeapAllocationDomain::PermanentShared,
+            writeback_object,
+            field_index,
+            destination,
+            ..
+        } if writeback_object == parent_address
+            && field_index == field_write.field_index()
+            && destination == parent_address
+    ));
+    assert!(outcome.value().raw_eq(parent));
+    assert!(
+        outcome
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .iter()
+            .copied()
+            .next()
+            .expect("parent list has child")
+            .raw_eq(child)
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(parent)
+            .expect("parent remains heap-bound"),
+        HeapGeneration::Permanent
+    );
+}
+
+#[test]
+fn live_reference_writebacks_reject_direct_writeback_destination_alias_before_mutation() {
+    let (mut outcome, parent, root_child, field_child) =
+        boundary_distinct_root_and_permanent_lambda_field_outcome();
+    let parent_address = gc_address(parent);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(parent_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata can describe an aliased direct writeback destination");
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    assert_eq!(
+        root_plan.writes()[0].request().source(),
+        gc_address(root_child)
+    );
+    assert_eq!(
+        root_plan.writes()[0].request().destination(),
+        parent_address
+    );
+    let heap_field_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("heap-field writeback plan validates");
+    let field_write = &heap_field_plan.writes()[0];
+    assert_eq!(field_write.writeback_object(), parent_address);
+    assert_eq!(
+        field_write.replacement_request().source(),
+        gc_address(field_child)
+    );
+    assert_ne!(
+        field_write.replacement_request().destination(),
+        parent_address
+    );
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_reference_writebacks()
+        .expect_err("direct writeback owner cannot also be an object-copy destination");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::BoundaryMinorGcLiveReferenceWritebackDestinationAliasesDirectWriteback {
+            allocation_domain: HeapAllocationDomain::PermanentShared,
+            writeback_object,
+            field_index,
+            destination,
+            ..
+        } if writeback_object == parent_address
+            && field_index == field_write.field_index()
+            && destination == parent_address
+    ));
+    assert!(outcome.value().raw_eq(root_child));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(parent)
+            .expect("parent remains heap-bound"),
+        HeapGeneration::Permanent
+    );
+    let lambda = outcome
+        .heap()
+        .get_lambda(parent)
+        .expect("parent lambda remains typed");
+    assert!(
+        lambda.with_scope_env().scopes()[0]
+            .value()
+            .raw_eq(field_child)
     );
 }
 
