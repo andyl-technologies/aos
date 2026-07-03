@@ -2402,8 +2402,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       `Value::heap` path for preflight metadata, and
       `AllocationCollectorPollRootWritebackPlan::apply_to_value_slots` can
       validate and rewrite caller-owned typed root-slot buffers with those
-      reconstructed values. These helpers still do not validate object
-      liveness, bind semispace storage, or mutate live root slots.
+      reconstructed values.
+      `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` now binds that
+      typed root-writeback plan to explicit mutable tree-walk root storage:
+      value-stack slots, active/suspended lexical frames, active/suspended
+      dynamic scopes, active force continuations, active first-class primop
+      arguments, and ready import-cache entries are read into a temporary typed
+      slot buffer, validated, and then rewritten only after validation succeeds.
+      Tests cover a real collector-poll plan rewriting every supported
+      tree-walk root kind, distinct reverse-depth mapping for suspended roots,
+      force continuations, and active first-class primop argument frames,
+      ready-import indexing that skips evaluating entries, and stale value-stack
+      plus stale active-frame rejection that leaves tree-walk-owned roots
+      unchanged. These helpers still do not validate object liveness, bind
+      semispace storage, mutate interned roots, detached primop metadata, or JIT
+      stack-map slots, or wire root writebacks into automatic allocation-safepoint
+      collection.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;
@@ -2525,11 +2539,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       body/generation writes across roots and fields, rejects direct in-place
       field owners that alias those destinations, applies the heap-side
       transaction, and then rewrites the already prevalidated outcome value. The
+      `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` adaptor now
+      applies the existing typed root-writeback plan to explicit mutable
+      tree-walk root storage after validating a temporary typed slot buffer,
+      covering value-stack roots, active/suspended frames and dynamic scopes,
+      force continuations, active first-class primop arguments, and ready
+      import-cache roots while leaving interned roots, detached primop metadata,
+      and JIT stack maps unsupported. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
-      root storage, and do not cover shared lexical frame slots, thunk fields,
-      real ABI object-header forwarding storage, semispace storage, or Tier-B
-      dispatch.
+      root storage automatically at allocation safepoints, and do not cover
+      shared lexical frame slots, thunk fields, real ABI object-header forwarding
+      storage, semispace storage, or Tier-B dispatch.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and

@@ -6616,6 +6616,24 @@ and helps the oracle directly.
       slots; the moving Tier-B collector, full relocation-slot root contract,
       and Cranelift stack-map wiring remain open in the row above and in
       [08](08-execution-tiers-and-cranelift.md).
+- [x] Current tree-walk safepoint root-writeback adaptor precursor:
+      `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` binds the
+      existing typed root-writeback plan to explicit mutable tree-walk root
+      storage. It reads planned value-stack, active/suspended lexical frame,
+      active/suspended `with`, active/suspended scoped-global, force-continuation,
+      active first-class primop-argument, and ready import-cache roots into a
+      temporary typed slot buffer, validates that buffer with
+      `AllocationCollectorPollRootWritebackPlan::apply_to_value_slots`, and only
+      then writes relocated values back to those roots. Tests cover a real
+      collector-poll plan rewriting every supported tree-walk root kind,
+      distinct reverse-depth mapping for suspended roots, force continuations,
+      and active first-class primop argument frames, ready-import indexing that
+      skips evaluating entries, and stale value-stack plus stale active-frame
+      rejection that leaves tree-walk-owned roots unchanged. This is not wired
+      into evaluator allocation safepoints yet and still does not mutate
+      interned roots, detached primop-argument metadata, JIT stack-map slots,
+      heap fields, object bytes, forwarding headers, remembered/card state, or
+      semispace storage.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -6909,6 +6927,13 @@ and helps the oracle directly.
       root storage, and do not cover shared lexical frame slots, thunk fields,
       real ABI object-header forwarding storage, semispace storage, or Tier-B
       dispatch.
+      `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` separately
+      binds the existing typed root-writeback plan to explicit mutable tree-walk
+      root storage after validating a temporary typed slot buffer, covering
+      value-stack roots, active/suspended frames and dynamic scopes, force
+      continuations, active first-class primop arguments, and ready import-cache
+      roots while leaving interned roots, detached primop metadata, and JIT stack
+      maps unsupported.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

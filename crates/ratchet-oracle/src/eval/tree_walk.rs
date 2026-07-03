@@ -54,6 +54,7 @@ use super::heap::{
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
     AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootValueWritebackSlot,
+    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollRootWritebackReport,
     AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, EvalHeap,
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
     EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode,
@@ -1153,7 +1154,9 @@ mod region;
 mod safepoint_roots;
 mod serialize_xml;
 
-pub use safepoint_roots::{TreeWalkSafepointRootError, TreeWalkSafepointScanError};
+pub use safepoint_roots::{
+    TreeWalkSafepointRootError, TreeWalkSafepointRootWritebackError, TreeWalkSafepointScanError,
+};
 
 #[cfg(test)]
 mod tests;
