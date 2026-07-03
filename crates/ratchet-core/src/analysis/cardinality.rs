@@ -72,6 +72,14 @@ pub enum CardinalityAnalysisError {
         /// The expected payload shape.
         expected: &'static str,
     },
+    /// The fact table length did not match the arena node count.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of fact records required by the arena.
+        expected: usize,
+        /// The number of fact records present.
+        actual: usize,
+    },
 }
 
 /// Annotates binding values whose local usage cardinality is proven.
@@ -88,6 +96,13 @@ pub enum CardinalityAnalysisError {
 pub fn annotate_cardinality(
     ir: &mut Ir,
 ) -> Result<CardinalityAnalysisReport, CardinalityAnalysisError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(CardinalityAnalysisError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
     CardinalityAnalyzer::new(ir).run()
 }
 

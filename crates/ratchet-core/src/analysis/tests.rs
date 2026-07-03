@@ -162,6 +162,68 @@ fn cardinality_resets_stale_facts_when_frame_becomes_incomplete() {
 }
 
 #[test]
+fn cardinality_rejects_fact_table_length_mismatches() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Int(1),
+        )],
+        Vec::new(),
+    );
+    let mut overlong = Ir {
+        root: IrId::new(0),
+        arena: arena.clone(),
+        facts: IrFacts::conservative(2),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    overlong
+        .facts
+        .get_mut(IrId::new(1))
+        .expect("stale fact exists")
+        .cardinality = Cardinality::Once;
+
+    let error = annotate_cardinality(&mut overlong).expect_err("overlong fact table rejects");
+
+    assert_eq!(
+        error,
+        CardinalityAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_eq!(cardinality(&overlong, IrId::new(1)), Cardinality::Once);
+
+    let mut short = Ir {
+        root: IrId::new(0),
+        arena,
+        facts: IrFacts::conservative(0),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_cardinality(&mut short).expect_err("short fact table rejects");
+
+    assert_eq!(
+        error,
+        CardinalityAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 0,
+        }
+    );
+}
+
+#[test]
 fn cardinality_rejects_malformed_local_var_payloads() {
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"x").expect("symbol interns");

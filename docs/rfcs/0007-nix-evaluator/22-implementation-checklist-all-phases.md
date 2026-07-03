@@ -6868,6 +6868,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       single-entry thunk lowering, call-by-name downgrades, dead-binding
       elimination, escape-proven frame-locality integration, or the whole-program
       demand fixpoint.
+- [x] Current cardinality fact-table validation hardening:
+      `annotate_cardinality` now rejects fact-table/node-count mismatches before
+      local usage counting mutates facts, so malformed imported facts cannot
+      leave stale cardinality entries outside the IR arena. This is a
+      fact-substrate consistency check only; it does not add whole-program
+      cardinality precision or new single-entry-thunk lowering.
 - [x] Current dead-binding elimination planning precursor:
       `ratchet-core::analysis::dead_binding` consumes cardinality facts and
       returns a conservative plan for `let` bindings whose value code can be
