@@ -2394,6 +2394,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleQemuPluginPackage";
       taskIds = ["T-PKG-7"];
     };
+    cruciblePackageHermeticDiscovery = import ./phase7-crucible-package-hermetic-discovery.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.cruciblePackageHermeticDiscovery";
+      taskIds = ["T-PKG-9"];
+    };
     crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleWorkspacePackage";

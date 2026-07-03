@@ -621,10 +621,19 @@ carries findings across an incompatible build.
     package build, installs the `crucible` CLI, and emits
     `nix-support/crucible-build-info` recording the workspace flags and hermetic
     cargo-deps path.
-- [ ] **T-PKG-9** Implement hermetic QEMU/plugin discovery wiring in the `crucible`
+- [x] **T-PKG-9** Implement hermetic QEMU/plugin discovery wiring in the `crucible`
   package (baked store paths or `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN` wrapper; flag/env
   overrides; no host `$PATH` fallback). — satisfies [PKG-20]; spec §26.5,
   coordinates with [`23-cli.md`](23-cli.md) §5.
+  - Completed by `checks.crucible.phase7.cruciblePackageHermeticDiscovery`: the
+    package builds the CLI with compile-time AOS package-set hints for
+    `qemu-crucible` and `crucible-qemu-plugin`, keeps both in the runtime
+    closure, records the resolved package paths in `crucible-build-info`, and
+    links to `checks.crucible.phase5.cliHermeticDiscovery` for the CLI behavior
+    proof that flags override env, env overrides AOS hints, artifact markers are
+    checked for QEMU/plugin identity and plugin ABI compatibility, and host
+    `$PATH` QEMU is never a fallback. `checks.crucible.phase1.aosWorkspaceBuild`
+    is the package-output smoke verifier for the emitted discovery metadata.
 - [ ] **T-PKG-10** Version the three ABIs independently in the artifacts that speak
   them, with loud mismatch failure; emit the `qemu-crucible` sim-capability marker;
   share the generated shmem header across C and Rust. — satisfies [PKG-21],
