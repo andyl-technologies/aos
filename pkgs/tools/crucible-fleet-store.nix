@@ -64,6 +64,17 @@ in
       grep -q '^lost_cas=bookkeeping-only$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^read_merge_retry=enabled$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^merge_roots=materialized-objects$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_seed=prior-corpus$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_seed_artifact=self-contained$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_seed_replay=bit-identical$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^campaign_seed_process_state=not-required$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_ratchet=grow-only-union-crdt$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_ratchet_monotone=true$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_crdt=commutative-associative-idempotent$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^coverage_novelty=against-accumulated-map$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^findings_ledger=cross-run-grow-only$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^findings_ledger_dedup=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+      grep -q '^finding_replay=bit-identical-from-ledger$' "$TMPDIR/crucible-fleet-store.probe"
 
       mkdir -p "$out/nix-support"
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
@@ -82,6 +93,7 @@ in
       dce_claim_lease_task=T-DCE-2
       dce_four_layer_dedup_task=T-DCE-3
       dce_campaign_manifest_task=T-DCE-4
+      dce_campaign_seed_task=T-DCE-5
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable
@@ -94,6 +106,11 @@ in
       campaign_head_log=append-only-checksummed
       manifest_root_objects=required
       merge_roots=materialized-objects
+      campaign_seed=prior-corpus
+      campaign_seed_artifact=self-contained
+      campaign_seed_replay=bit-identical
+      coverage_ratchet=grow-only-union-crdt
+      findings_ledger=cross-run-grow-only
       probe=crucible-fleet-store probe
       INFO
       cat "$TMPDIR/crucible-fleet-store.probe" >> "$out/nix-support/crucible-fleet-store-build-info"

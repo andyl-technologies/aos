@@ -18,9 +18,9 @@ use std::sync::Barrier;
 use std::thread;
 
 use crucible_cas::{
-    CampaignCasOutcome, CampaignManifest, CampaignProvenance, ContentHash, DagStore,
-    ExpansionDedupDecision, FrontierClaimRequest, SharedCampaignStore, SharedDagStore,
-    SharedDedupIndex, SharedFrontier, SoftHashAffinity,
+    CampaignCasOutcome, CampaignFinding, CampaignManifest, CampaignProvenance,
+    CampaignReplayArtifact, ContentHash, DagStore, ExpansionDedupDecision, FrontierClaimRequest,
+    SharedCampaignStore, SharedDagStore, SharedDedupIndex, SharedFrontier, SoftHashAffinity,
 };
 
 const PROBE_PAYLOAD: &[u8] = b"crucible-fleet-store-probe-v1";
@@ -80,6 +80,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     prove_frontier_claim_leases(&root.join("leases"))?;
     prove_four_layer_dedup(&root.join("dedup"))?;
     prove_campaign_manifest_store(&root.join("campaign"))?;
+    prove_campaign_seed_coverage_findings(&root.join("campaign-continuity-substrate"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -121,6 +122,17 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("lost_cas=bookkeeping-only");
     println!("read_merge_retry=enabled");
     println!("merge_roots=materialized-objects");
+    println!("campaign_seed=prior-corpus");
+    println!("campaign_seed_artifact=self-contained");
+    println!("campaign_seed_replay=bit-identical");
+    println!("campaign_seed_process_state=not-required");
+    println!("coverage_ratchet=grow-only-union-crdt");
+    println!("coverage_ratchet_monotone=true");
+    println!("coverage_crdt=commutative-associative-idempotent");
+    println!("coverage_novelty=against-accumulated-map");
+    println!("findings_ledger=cross-run-grow-only");
+    println!("findings_ledger_dedup=content-addressed");
+    println!("finding_replay=bit-identical-from-ledger");
     Ok(())
 }
 
@@ -529,6 +541,109 @@ fn probe_campaign_root(
                 .as_bytes(),
         )
         .map_err(|error| Box::new(error) as Box<dyn Error>)
+}
+
+fn prove_campaign_seed_coverage_findings(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let campaign = SharedCampaignStore::new(root);
+    let artifact_a = CampaignReplayArtifact::new(
+        b"definition:seed-a".to_vec(),
+        b"seed:a".to_vec(),
+        b"schedule:a".to_vec(),
+    );
+    let artifact_b = CampaignReplayArtifact::new(
+        b"definition:seed-b".to_vec(),
+        b"seed:b".to_vec(),
+        b"schedule:b".to_vec(),
+    );
+    let edge_a = ContentHash::from_bytes(b"campaign-continuity-edge-a");
+    let edge_b = ContentHash::from_bytes(b"campaign-continuity-edge-b");
+    let edge_c = ContentHash::from_bytes(b"campaign-continuity-edge-c");
+    let corpus_root = campaign.persist_campaign_corpus([
+        artifact_a.clone(),
+        artifact_b.clone(),
+        artifact_a.clone(),
+    ])?;
+    let coverage_left = campaign.persist_accumulated_coverage_map([edge_a, edge_b])?;
+    let coverage_right = campaign.persist_accumulated_coverage_map([edge_b, edge_c])?;
+    let findings_left = campaign.persist_findings_ledger([CampaignFinding::new(
+        ContentHash::from_bytes(b"finding-a"),
+        artifact_a,
+    )])?;
+    let findings_right = campaign.persist_findings_ledger([CampaignFinding::new(
+        ContentHash::from_bytes(b"finding-b"),
+        artifact_b,
+    )])?;
+    let manifest = CampaignManifest::new(
+        corpus_root,
+        coverage_left,
+        findings_left,
+        ContentHash::from_bytes(b"genesis-pin"),
+        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1"),
+    );
+
+    let seeds = campaign.seed_next_run(&manifest)?;
+    if seeds.len() != 2 || !seeds.iter().all(|seed| seed.reproduces_bit_identically()) {
+        return Err(input_error(
+            "campaign corpus seeds did not replay bit-identically",
+        ));
+    }
+    if seeds.iter().any(|seed| {
+        seed.artifact.definition().is_empty()
+            || seed.artifact.seed().is_empty()
+            || seed.artifact.schedule().is_empty()
+    }) {
+        return Err(input_error("campaign seed artifact was not self-contained"));
+    }
+
+    let merged_coverage =
+        campaign.merge_accumulated_coverage_maps(coverage_left, coverage_right)?;
+    let reverse_coverage =
+        campaign.merge_accumulated_coverage_maps(coverage_right, coverage_left)?;
+    let duplicate_coverage =
+        campaign.merge_accumulated_coverage_maps(merged_coverage, coverage_left)?;
+    let coverage_edges = campaign.accumulated_coverage_edges(merged_coverage)?;
+    let redundant_delta = campaign.accumulated_coverage_delta(merged_coverage, [edge_a, edge_c])?;
+    let novel_delta = campaign.accumulated_coverage_delta(
+        merged_coverage,
+        [
+            edge_a,
+            ContentHash::from_bytes(b"campaign-continuity-edge-d"),
+        ],
+    )?;
+    if merged_coverage != reverse_coverage
+        || merged_coverage != duplicate_coverage
+        || coverage_edges.len() != 3
+        || redundant_delta.is_novel()
+        || !novel_delta.is_novel()
+    {
+        return Err(input_error(
+            "campaign accumulated coverage was not a grow-only union",
+        ));
+    }
+
+    let merged_findings = campaign.merge_findings_ledgers(findings_left, findings_right)?;
+    let duplicate_findings = campaign.merge_findings_ledgers(merged_findings, findings_left)?;
+    let entries = campaign.findings_ledger_entries(merged_findings)?;
+    if duplicate_findings != merged_findings || entries.len() != 2 {
+        return Err(input_error(
+            "campaign findings ledger did not deduplicate across runs",
+        ));
+    }
+    for entry in entries {
+        let artifact = campaign.read_replay_artifact(entry.artifact_hash)?;
+        if !entry.reproduces_bit_identically(&artifact) {
+            return Err(input_error(
+                "campaign ledger finding did not replay bit-identically",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn probe_content_path(root: &Path, node: &ContentHash) -> PathBuf {
