@@ -433,7 +433,7 @@ in rec {
         gate = import ./phase2-patch-microtests.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-          taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          taskIds = ["T-PLAN-3" "T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
           dependencies = [layer1Injection.rawGate];
         };
         dependencies = [layer1Injection];
@@ -2428,7 +2428,7 @@ in rec {
     crucibleGateCiWiring = import ./phase7-crucible-gate-ci-wiring.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
-      taskIds = ["T-PKG-14"];
+      taskIds = ["T-PKG-4" "T-PKG-14"];
     };
     crucibleCas = import ./phase7-crucible-cas.nix {
       inherit pkgs lib;
@@ -2462,7 +2462,7 @@ in rec {
       patchMicrotestsGate = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+        taskIds = ["T-PLAN-3" "T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
       };
     };
     crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix {
