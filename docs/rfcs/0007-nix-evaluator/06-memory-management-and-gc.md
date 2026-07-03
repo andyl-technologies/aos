@@ -2428,16 +2428,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
       now prevalidate and apply the complete root+heap-field partition to
       caller-owned typed root buffers plus live heap-field buffers read from
-      current typed heap fields before a future live writer binds those buffers
-      to evaluator storage. Tests cover the poll-derived all-root rewrite,
+      current typed heap fields.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
+      then uses that same complete-partition prevalidation before writing the
+      supported tree-walk root storage while leaving heap-field rewrites in
+      caller-owned buffers. Tests cover the poll-derived all-root rewrite,
       direct stale-poll rejection before mutation in the planning wrapper,
       root-only applicator, and buffer applicator, stale typed-root,
       heap-field metadata, and live heap-field buffer rejection before either
       buffer partition is rewritten, complete mixed root/field partition
       reporting down to the remembered list-field
       owner/source/replacement, mixed root/heap-field buffer application, and
-      dirty permanent-list mixed-plan rejection before mutating the value stack,
-      active frame root, or ready import-cache root. These helpers still do not
+      mixed root-storage plus heap-field-buffer application, stale live
+      heap-field rejection before root mutation, and dirty permanent-list
+      mixed-plan rejection before mutating the value stack, active frame root,
+      or ready import-cache root. These helpers still do not
       validate object liveness, bind semispace storage, mutate interned
       roots, detached primop metadata, or JIT stack-map slots, copy object
       bodies, update heap fields, publish remembered/card-table state, or wire
@@ -2578,11 +2583,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       preserves the complete root+heap-field partition for the future full
       live-reference writer, including exact remembered-field writeback metadata.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
-      applies that partition to caller-owned typed root and heap-field buffers
-      without mutating evaluator storage. The
+      applies that partition to caller-owned typed root and live heap-field
+      buffers without mutating evaluator storage, and
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
+      writes supported tree-walk roots only after the complete partition
+      validates. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
-      root storage automatically at allocation safepoints, and do not cover
+      root storage automatically at allocation safepoints beyond this explicit
+      bridge, and do not cover
       shared lexical frame slots, thunk fields, real ABI object-header forwarding
       storage, semispace storage, or Tier-B dispatch.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,

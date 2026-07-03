@@ -6651,8 +6651,11 @@ and helps the oracle directly.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`
       now prevalidate and apply the complete root+heap-field partition to
       caller-owned typed root buffers plus live heap-field buffers read from
-      current typed heap fields before a future live writer binds those buffers
-      to evaluator storage. Tests cover a
+      current typed heap fields.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
+      then uses that same complete-partition prevalidation before writing the
+      supported tree-walk root storage while leaving heap-field rewrites in
+      caller-owned buffers. Tests cover a
       real poll rewriting every supported mutable tree-walk root kind, direct
       stale-poll rejection before mutation in the planning wrapper, root-only
       applicator, and buffer applicator, stale typed-root, heap-field metadata,
@@ -6660,7 +6663,8 @@ and helps the oracle directly.
       rewritten, complete mixed root/field partition reporting down to the
       remembered list-field
       owner/source/replacement, mixed root/heap-field buffer application, and a
-      dirty permanent-list remembered edge whose mixed
+      mixed root-storage plus heap-field-buffer application, stale live
+      heap-field rejection before root mutation, and a dirty permanent-list remembered edge whose mixed
       root/field plan is rejected without touching the value stack, active frame
       root, or ready import-cache root. This is still not automatic
       allocation-site dispatch and still does not allocate destination records,
@@ -6977,8 +6981,10 @@ and helps the oracle directly.
       wrapper preserves the complete root+heap-field writeback partition for the
       future full live-reference writer, including exact remembered-field
       writeback metadata. Its buffer applicator applies that partition to
-      caller-owned typed root and heap-field buffers without mutating evaluator
-      storage.
+      caller-owned typed root and live heap-field buffers without mutating
+      evaluator storage, and its root-storage plus heap-field-buffer applicator
+      writes supported tree-walk roots only after the complete partition
+      validates.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

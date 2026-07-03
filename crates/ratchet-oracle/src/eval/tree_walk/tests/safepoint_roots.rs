@@ -1429,6 +1429,144 @@ fn collector_poll_minor_gc_reference_writebacks_apply_to_safepoint_buffers_mixed
 }
 
 #[test]
+fn reference_writebacks_apply_root_storage_after_field_buffer_validation() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+        )
+        .expect("mixed reference writebacks apply to roots and field buffers");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 4);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 5);
+    assert_eq!(application.root_writebacks(), 3);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.applied_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_writebacks(), 4);
+    assert_eq!(application.buffers().applied_writebacks(), 4);
+    let relocated = relocated_value(ValueTag::Lambda, nursery_base);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+
+    let heap_field_slots = application.heap_field_writeback_slots();
+    assert_eq!(heap_field_slots.len(), 1);
+    assert_eq!(heap_field_slots[0].validation_object(), gc_address(parent));
+    assert_eq!(heap_field_slots[0].writeback_object(), gc_address(parent));
+    assert_eq!(heap_field_slots[0].field_index(), 0);
+    assert_eq!(
+        heap_field_slots[0].source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(
+        heap_field_slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, relocated);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+}
+
+#[test]
+fn reference_writebacks_reject_stale_live_field_before_root_storage_mutation() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(child, HeapAllocationDomain::PermanentShared)
+        .expect("test can stale the live field generation");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("stale live field rejects before tree-walk root mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Heap(
+            EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                index: 4,
+                expected: ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Young,
+                },
+                actual: ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Permanent,
+                },
+            },
+        )
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_root_writebacks_reject_heap_field_partition_before_mutation() {
     let (mut evaluator, child, _parent, poll, mut value_stack) =
         tree_walk_with_mixed_root_and_heap_field_writebacks();
