@@ -7074,6 +7074,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       ordering, and frame-initialization preservation.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the
       `eval_expr` flip.
+- [x] Current annotated-IR JSON parity precursor:
+      `ratchet-oracle` now has an internal tree-walk differential harness that
+      lowers `builtins.toJSON` expressions twice, evaluates one copy with
+      conservative facts and the other after `annotate_ir`, requires analysis
+      facts to change, and compares byte-identical JSON strings plus
+      trace/warning output. Deterministic cases cover lazy traps that must stay
+      unforced under strictness/escape/cardinality facts; a separate direct
+      lambda case proves the annotated facts drive tree-walk thunk elision; and
+      a `proptest` source generator covers scalar arithmetic, list length, and
+      both `any`/`all` boolean outcomes. This does not run the
+      `aos --eval --json` CLI, compare against the C++ oracle, cover
+      string-context or error-rendering parity, or close `C-4`.
 
 **Conformance (hold parity).**
 

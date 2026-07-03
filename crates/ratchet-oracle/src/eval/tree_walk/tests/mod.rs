@@ -219,6 +219,7 @@ use support::*;
 // the helper was a local item that shadowed the glob.
 use support::lower;
 
+mod analysis_soundness;
 mod attrs_1;
 mod attrs_2;
 mod attrs_3;
