@@ -277,6 +277,7 @@
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
       fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;
       campaignManifestGate = crucibleChecks.phase7.crucibleCampaignManifest;
+      campaignSeedingGate = crucibleChecks.phase7.crucibleCampaignSeeding;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -294,6 +295,7 @@
           frontierLeaseGate
           fourLayerDedupGate
           campaignManifestGate
+          campaignSeedingGate
         ];
 
         phases = [
@@ -344,6 +346,20 @@
               grep -q '^lost_cas=bookkeeping-only$' "$campaign_manifest_result"
               grep -q '^merge_roots=materialized-objects$' "$campaign_manifest_result"
 
+              campaign_seeding_result="${campaignSeedingGate}/result"
+              grep -q '^PASS$' "$campaign_seeding_result"
+              grep -q '^tasks=T-DCE-5$' "$campaign_seeding_result"
+              grep -q '^campaign_seed=prior-corpus$' "$campaign_seeding_result"
+              grep -q '^campaign_seed_artifact=self-contained$' "$campaign_seeding_result"
+              grep -q '^campaign_seed_replay=bit-identical$' "$campaign_seeding_result"
+              grep -q '^coverage_ratchet=grow-only-union-crdt$' "$campaign_seeding_result"
+              grep -q '^coverage_ratchet_monotone=true$' "$campaign_seeding_result"
+              grep -q '^coverage_crdt=commutative-associative-idempotent$' "$campaign_seeding_result"
+              grep -q '^coverage_novelty=against-accumulated-map$' "$campaign_seeding_result"
+              grep -q '^findings_ledger=cross-run-grow-only$' "$campaign_seeding_result"
+              grep -q '^findings_ledger_dedup=content-addressed$' "$campaign_seeding_result"
+              grep -q '^finding_replay=bit-identical-from-ledger$' "$campaign_seeding_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -379,6 +395,17 @@
               grep -q '^lost_cas=bookkeeping-only$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^read_merge_retry=enabled$' "$TMPDIR/crucible-fleet-store.probe"
               grep -q '^merge_roots=materialized-objects$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_seed=prior-corpus$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_seed_artifact=self-contained$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_seed_replay=bit-identical$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^campaign_seed_process_state=not-required$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_ratchet=grow-only-union-crdt$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_ratchet_monotone=true$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_crdt=commutative-associative-idempotent$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^coverage_novelty=against-accumulated-map$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^findings_ledger=cross-run-grow-only$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^findings_ledger_dedup=content-addressed$' "$TMPDIR/crucible-fleet-store.probe"
+              grep -q '^finding_replay=bit-identical-from-ledger$' "$TMPDIR/crucible-fleet-store.probe"
 
               mkdir -p "$out"
               cat > "$out/result" <<'RESULT'
@@ -393,6 +420,7 @@
               frontier_lease_gate_result=${frontierLeaseGate}/result
               four_layer_dedup_gate_result=${fourLayerDedupGate}/result
               campaign_manifest_gate_result=${campaignManifestGate}/result
+              campaign_seeding_gate_result=${campaignSeedingGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -433,6 +461,17 @@
               lost_cas=bookkeeping-only
               read_merge_retry=enabled
               merge_roots=materialized-objects
+              campaign_seed=prior-corpus
+              campaign_seed_artifact=self-contained
+              campaign_seed_replay=bit-identical
+              campaign_seed_process_state=not-required
+              coverage_ratchet=grow-only-union-crdt
+              coverage_ratchet_monotone=true
+              coverage_crdt=commutative-associative-idempotent
+              coverage_novelty=against-accumulated-map
+              findings_ledger=cross-run-grow-only
+              findings_ledger_dedup=content-addressed
+              finding_replay=bit-identical-from-ledger
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

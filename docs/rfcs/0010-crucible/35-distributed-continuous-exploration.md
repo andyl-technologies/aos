@@ -1019,13 +1019,24 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     manifest objects, and read-merge-retry writes immutable merge-root records for
     corpus, coverage, and findings before advancing a manifest without changing
     genesis pin or provenance.
-    Corpus seeding, monotone accumulated coverage, and the findings ledger remain
-    T-DCE-5/T-DCE-9.
-- [ ] **T-DCE-5** Implement seeding run N+1 from the prior corpus (each entry a
+    The full campaign-continuity gate remains T-DCE-9.
+- [x] **T-DCE-5** Implement seeding run N+1 from the prior corpus (each entry a
   self-contained artifact replaying bit-identically) and the grow-only accumulated
   coverage map (union CRDT) driving the monotone continuous coverage ratchet, plus
   the cross-run findings ledger. — satisfies [DCE-11], [DCE-12], [DCE-13], [DCE-24];
   spec §35.3.2, §35.3.3, §35.5.3; cross-ref 22 §22.7.2.
+  - Completed by `checks.crucible.phase7.crucibleCampaignSeeding`: `crucible-cas`
+    now exposes self-contained `CampaignReplayArtifact` objects, `CampaignCorpusSeed`
+    loading for run N+1, typed accumulated coverage-map roots with grow-only union
+    merge, and grow-only content-deduplicated findings ledgers. The packaged
+    `crucible-fleet-store probe` proves prior-corpus seeding replays each artifact
+    bit-identically without live process state, accumulated coverage novelty is
+    evaluated against the campaign-lifetime map, coverage-root merge is
+    commutative/idempotent grow-only union, and findings ledger entries replay from
+    their stored artifacts while rediscovery deduplicates by content. Storage
+    bounding remains T-DCE-6, determinism guardrails remain T-DCE-7, fleet
+    equivalence remains T-DCE-8, and the full campaign-continuity gate remains
+    T-DCE-9.
 - [ ] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
   roots, fat→thin eviction (value preserved), and deterministic seeded corpus
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies

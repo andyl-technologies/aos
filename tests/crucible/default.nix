@@ -2480,6 +2480,11 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleCampaignManifest";
       taskIds = ["T-DCE-4"];
     };
+    crucibleCampaignSeeding = import ./phase7-crucible-campaign-seeding.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleCampaignSeeding";
+      taskIds = ["T-DCE-5"];
+    };
     crucibleCampaignProvenance = import ./phase7-crucible-campaign-provenance.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";
@@ -2592,9 +2597,9 @@ in rec {
           phase = "phase7";
           taskIds = ["T-PLAN-3" "T-DCE-9"];
           reason = "campaign continuity gate is intentionally pending";
-          dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignProvenance];
+          dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];
         };
-        dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignProvenance];
+        dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignProvenance];
       };
     };
   };

@@ -26,8 +26,10 @@
 //! [`SharedFrontier`], [`FrontierClaimRequest`], [`FrontierLease`],
 //! [`SoftHashAffinity`], [`SharedDedupIndex`], [`ExpansionDedupDecision`],
 //! [`CoverageAdmission`], [`ReductionAdmission`], [`SharedCampaignStore`],
-//! [`CampaignManifest`], [`CampaignProvenance`], and the invalidation types
-//! [`DependencySnapshot`], [`InvalidationQuery`], and [`InvalidationDecision`].
+//! [`CampaignReplayArtifact`], [`CampaignCorpusSeed`], [`CampaignCoverageDelta`],
+//! [`CampaignFinding`], [`CampaignManifest`], [`CampaignProvenance`], and the
+//! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
+//! [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -1412,14 +1414,7 @@ impl SharedCampaignStore {
         let Some(manifest_hash) = self.read_head_hash()? else {
             return Ok(None);
         };
-        let material = String::from_utf8(self.store.get(&manifest_hash)?).map_err(|_| {
-            CasError::InvalidCampaignRecord {
-                path: self.store.object_path(&manifest_hash),
-                reason: "campaign manifest object is not UTF-8",
-            }
-        })?;
-        let manifest = parse_manifest_record(&self.store.object_path(&manifest_hash), &material)?;
-        self.validate_manifest_roots(&manifest)?;
+        let manifest = self.read_manifest_object(manifest_hash)?;
         Ok(Some(CampaignHead {
             manifest_hash,
             manifest,
@@ -1451,6 +1446,10 @@ impl SharedCampaignStore {
                 current,
                 proposed_manifest_hash,
             });
+        }
+        if let Some(current_manifest_hash) = current {
+            let current_manifest = self.read_manifest_object(current_manifest_hash)?;
+            self.validate_monotone_manifest_advance(&current_manifest, manifest)?;
         }
         self.write_head(&mut guard, current_pointer, proposed_manifest_hash)?;
         let head = self
@@ -1507,10 +1506,332 @@ impl SharedCampaignStore {
         }
     }
 
+    /// Persists a self-contained replay artifact as an immutable object.
+    ///
+    /// The stored artifact contains the definition, seed, and schedule bytes
+    /// needed to reproduce the entry without resuming a producing run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the artifact cannot be stored.
+    pub fn persist_replay_artifact(
+        &self,
+        artifact: &CampaignReplayArtifact,
+    ) -> Result<ContentHash, CasError> {
+        self.store
+            .put(campaign_replay_artifact_material(artifact).as_bytes())
+    }
+
+    /// Reads and validates a self-contained replay artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the artifact is missing, corrupt, or has an
+    /// invalid replay hash.
+    pub fn read_replay_artifact(
+        &self,
+        artifact_hash: ContentHash,
+    ) -> Result<CampaignReplayArtifact, CasError> {
+        let material = self.read_campaign_object_text(artifact_hash)?;
+        parse_replay_artifact_record(&self.store.object_path(&artifact_hash), &material)
+    }
+
+    /// Persists a retained campaign corpus root.
+    ///
+    /// Each supplied artifact is stored first, then the corpus root records the
+    /// artifact hash and replay hash. Duplicate artifacts collapse to one corpus
+    /// entry by content address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when an artifact or corpus root cannot be stored.
+    pub fn persist_campaign_corpus<I>(&self, artifacts: I) -> Result<ContentHash, CasError>
+    where
+        I: IntoIterator<Item = CampaignReplayArtifact>,
+    {
+        let mut entries = BTreeMap::new();
+        for artifact in artifacts {
+            let artifact_hash = self.persist_replay_artifact(&artifact)?;
+            entries.insert(artifact_hash, artifact.replay_hash());
+        }
+        self.persist_campaign_corpus_entries(&entries)
+    }
+
+    /// Loads the corpus named by `manifest` as the seed plan for run N+1.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the corpus root or any replay artifact is
+    /// missing, corrupt, or not self-validating.
+    pub fn seed_next_run(
+        &self,
+        manifest: &CampaignManifest,
+    ) -> Result<Vec<CampaignCorpusSeed>, CasError> {
+        self.seed_next_run_from_prior_corpus(manifest.corpus_root)
+    }
+
+    /// Loads a prior corpus root as self-contained run N+1 seed artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the corpus root or any replay artifact is
+    /// missing, corrupt, or not self-validating.
+    pub fn seed_next_run_from_prior_corpus(
+        &self,
+        corpus_root: ContentHash,
+    ) -> Result<Vec<CampaignCorpusSeed>, CasError> {
+        self.corpus_seed_map(corpus_root)
+            .map(|entries| entries.into_values().collect())
+    }
+
+    /// Persists an accumulated coverage map root.
+    ///
+    /// Coverage maps are grow-only sets. Duplicate edges collapse by content
+    /// address before the root object is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the coverage root cannot be stored.
+    pub fn persist_accumulated_coverage_map<I>(&self, edges: I) -> Result<ContentHash, CasError>
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let edges = edges.into_iter().collect::<BTreeSet<_>>();
+        self.persist_coverage_edges(&edges)
+    }
+
+    /// Returns the sorted coverage edges named by an accumulated coverage root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the coverage root is missing or corrupt.
+    pub fn accumulated_coverage_edges(
+        &self,
+        coverage_map_root: ContentHash,
+    ) -> Result<Vec<ContentHash>, CasError> {
+        Ok(self
+            .coverage_edge_set(coverage_map_root)?
+            .into_iter()
+            .collect())
+    }
+
+    /// Computes novelty against the accumulated coverage map.
+    ///
+    /// Candidate edges are novel exactly when they are absent from the accumulated
+    /// map named by `coverage_map_root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the accumulated coverage root is missing or
+    /// corrupt.
+    pub fn accumulated_coverage_delta<I>(
+        &self,
+        coverage_map_root: ContentHash,
+        candidate_edges: I,
+    ) -> Result<CampaignCoverageDelta, CasError>
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let accumulated = self.coverage_edge_set(coverage_map_root)?;
+        let mut new_edges = Vec::new();
+        let mut known_edges = Vec::new();
+        for edge in candidate_edges.into_iter().collect::<BTreeSet<_>>() {
+            if accumulated.contains(&edge) {
+                known_edges.push(edge);
+            } else {
+                new_edges.push(edge);
+            }
+        }
+        Ok(CampaignCoverageDelta {
+            coverage_map_root,
+            new_edges,
+            known_edges,
+        })
+    }
+
+    /// Merges two accumulated coverage roots by grow-only set union.
+    ///
+    /// The operation is commutative, associative, and idempotent because the root
+    /// material is the sorted set union of both inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when either root is missing, corrupt, or cannot be
+    /// stored.
+    pub fn merge_accumulated_coverage_maps(
+        &self,
+        left: ContentHash,
+        right: ContentHash,
+    ) -> Result<ContentHash, CasError> {
+        let mut edges = self.coverage_edge_set(left)?;
+        edges.extend(self.coverage_edge_set(right)?);
+        self.persist_coverage_edges(&edges)
+    }
+
+    /// Persists a grow-only findings ledger root.
+    ///
+    /// Finding artifacts are content-addressed before the ledger is written. If
+    /// multiple runs rediscover the same finding artifact, the ledger retains
+    /// one entry keyed by that artifact's content address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when a finding artifact, finding entry, or ledger root
+    /// cannot be stored.
+    pub fn persist_findings_ledger<I>(&self, findings: I) -> Result<ContentHash, CasError>
+    where
+        I: IntoIterator<Item = CampaignFinding>,
+    {
+        let mut entries = BTreeMap::new();
+        for finding in findings {
+            let (artifact_hash, finding_hash) = self.persist_finding(&finding)?;
+            insert_deduped_finding_entry(&mut entries, artifact_hash, finding_hash);
+        }
+        self.persist_findings_entries(&entries)
+    }
+
+    /// Returns the sorted persisted findings named by a ledger root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the ledger or any finding artifact is missing,
+    /// corrupt, or not self-validating.
+    pub fn findings_ledger_entries(
+        &self,
+        findings_root: ContentHash,
+    ) -> Result<Vec<PersistedCampaignFinding>, CasError> {
+        self.findings_entry_map(findings_root)
+            .map(|entries| entries.into_values().collect())
+    }
+
+    /// Merges two findings ledgers by grow-only set union.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when either ledger root is missing, corrupt, or cannot
+    /// be stored.
+    pub fn merge_findings_ledgers(
+        &self,
+        left: ContentHash,
+        right: ContentHash,
+    ) -> Result<ContentHash, CasError> {
+        let mut entries = self.finding_entry_hashes(left)?;
+        for (artifact_hash, finding_hash) in self.finding_entry_hashes(right)? {
+            insert_deduped_finding_entry(&mut entries, artifact_hash, finding_hash);
+        }
+        self.persist_findings_entries(&entries)
+    }
+
     fn validate_manifest_roots(&self, manifest: &CampaignManifest) -> Result<(), CasError> {
         self.require_manifest_root("corpus_root", manifest.corpus_root)?;
         self.require_manifest_root("coverage_map_root", manifest.coverage_map_root)?;
         self.require_manifest_root("findings_root", manifest.findings_root)?;
+        Ok(())
+    }
+
+    fn read_manifest_object(
+        &self,
+        manifest_hash: ContentHash,
+    ) -> Result<CampaignManifest, CasError> {
+        let material = String::from_utf8(self.store.get(&manifest_hash)?).map_err(|_| {
+            CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&manifest_hash),
+                reason: "campaign manifest object is not UTF-8",
+            }
+        })?;
+        let manifest = parse_manifest_record(&self.store.object_path(&manifest_hash), &material)?;
+        self.validate_manifest_roots(&manifest)?;
+        Ok(manifest)
+    }
+
+    fn validate_monotone_manifest_advance(
+        &self,
+        current: &CampaignManifest,
+        proposed: &CampaignManifest,
+    ) -> Result<(), CasError> {
+        validate_campaign_lineage(current, proposed)?;
+        self.validate_monotone_root("corpus", current.corpus_root, proposed.corpus_root)?;
+        self.validate_monotone_root(
+            "coverage-map",
+            current.coverage_map_root,
+            proposed.coverage_map_root,
+        )?;
+        self.validate_monotone_root("findings", current.findings_root, proposed.findings_root)?;
+        Ok(())
+    }
+
+    fn validate_monotone_root(
+        &self,
+        label: &'static str,
+        current: ContentHash,
+        proposed: ContentHash,
+    ) -> Result<(), CasError> {
+        if !self.supports_typed_campaign_root(label, current)? {
+            return Ok(());
+        }
+        if !self.supports_typed_campaign_root(label, proposed)? {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: campaign_root_regression_reason(label),
+            });
+        }
+        match label {
+            "corpus" => self.validate_campaign_corpus_superset(current, proposed),
+            "coverage-map" => self.validate_coverage_superset(current, proposed),
+            "findings" => self.validate_findings_superset(current, proposed),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_campaign_corpus_superset(
+        &self,
+        current: ContentHash,
+        proposed: ContentHash,
+    ) -> Result<(), CasError> {
+        let current_entries = self.corpus_entry_hashes(current)?;
+        let proposed_entries = self.corpus_entry_hashes(proposed)?;
+        for (artifact_hash, replay_hash) in current_entries {
+            if proposed_entries.get(&artifact_hash) != Some(&replay_hash) {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&proposed),
+                    reason: "campaign corpus advance would drop a prior seed artifact",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_coverage_superset(
+        &self,
+        current: ContentHash,
+        proposed: ContentHash,
+    ) -> Result<(), CasError> {
+        let current_edges = self.coverage_edge_set(current)?;
+        let proposed_edges = self.coverage_edge_set(proposed)?;
+        if !current_edges.is_subset(&proposed_edges) {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&proposed),
+                reason: "campaign coverage-map advance would reduce accumulated coverage",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_findings_superset(
+        &self,
+        current: ContentHash,
+        proposed: ContentHash,
+    ) -> Result<(), CasError> {
+        let current_entries = self.finding_entry_hashes(current)?;
+        let proposed_entries = self.finding_entry_hashes(proposed)?;
+        for artifact_hash in current_entries.keys() {
+            if !proposed_entries.contains_key(artifact_hash) {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&proposed),
+                    reason: "campaign findings advance would drop a prior finding artifact",
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1571,12 +1892,244 @@ impl SharedCampaignStore {
         if left == right {
             return Ok(left);
         }
+        if let Some(merged) = self.try_merge_typed_manifest_root(label, left, right)? {
+            return Ok(merged);
+        }
         let (first, second) = ordered_manifest_roots(left, right);
         let merged = self
             .store
             .put(campaign_root_merge_record_material(label, first, second).as_bytes())?;
         debug_assert_eq!(merged, campaign_root_merge_hash(label, left, right));
         Ok(merged)
+    }
+
+    fn try_merge_typed_manifest_root(
+        &self,
+        label: &'static str,
+        left: ContentHash,
+        right: ContentHash,
+    ) -> Result<Option<ContentHash>, CasError> {
+        if !self.supports_typed_campaign_root(label, left)?
+            || !self.supports_typed_campaign_root(label, right)?
+        {
+            return Ok(None);
+        }
+        let merged = match label {
+            "corpus" => {
+                let mut entries = self.corpus_entry_hashes(left)?;
+                entries.extend(self.corpus_entry_hashes(right)?);
+                self.persist_campaign_corpus_entries(&entries)?
+            }
+            "coverage-map" => self.merge_accumulated_coverage_maps(left, right)?,
+            "findings" => self.merge_findings_ledgers(left, right)?,
+            _ => return Ok(None),
+        };
+        Ok(Some(merged))
+    }
+
+    fn supports_typed_campaign_root(
+        &self,
+        label: &'static str,
+        root: ContentHash,
+    ) -> Result<bool, CasError> {
+        let material = self.read_campaign_object_text(root)?;
+        let format = record_format(&material);
+        if format == Some(campaign_typed_root_format(label)) {
+            return Ok(true);
+        }
+        if format != Some("crucible.campaign-root-merge.v1") {
+            return Ok(false);
+        }
+        let merge = parse_campaign_root_merge_record(&self.store.object_path(&root), &material)?;
+        if merge.label != label {
+            return Ok(false);
+        }
+        Ok(self.supports_typed_campaign_root(label, merge.left)?
+            && self.supports_typed_campaign_root(label, merge.right)?)
+    }
+
+    fn persist_campaign_corpus_entries(
+        &self,
+        entries: &BTreeMap<ContentHash, ContentHash>,
+    ) -> Result<ContentHash, CasError> {
+        self.store
+            .put(campaign_corpus_record_material(entries).as_bytes())
+    }
+
+    fn persist_coverage_edges(
+        &self,
+        edges: &BTreeSet<ContentHash>,
+    ) -> Result<ContentHash, CasError> {
+        self.store
+            .put(campaign_coverage_map_record_material(edges).as_bytes())
+    }
+
+    fn persist_finding(
+        &self,
+        finding: &CampaignFinding,
+    ) -> Result<(ContentHash, ContentHash), CasError> {
+        let artifact_hash = self.persist_replay_artifact(&finding.artifact)?;
+        let finding_hash = self
+            .store
+            .put(campaign_finding_record_material(finding, artifact_hash).as_bytes())?;
+        Ok((artifact_hash, finding_hash))
+    }
+
+    fn persist_findings_entries(
+        &self,
+        entries: &BTreeMap<ContentHash, ContentHash>,
+    ) -> Result<ContentHash, CasError> {
+        self.store
+            .put(campaign_findings_ledger_record_material(entries).as_bytes())
+    }
+
+    fn corpus_seed_map(
+        &self,
+        root: ContentHash,
+    ) -> Result<BTreeMap<ContentHash, CampaignCorpusSeed>, CasError> {
+        let entries = self.corpus_entry_hashes(root)?;
+        let mut seeds = BTreeMap::new();
+        for (artifact_hash, expected_replay_hash) in entries {
+            let artifact = self.read_replay_artifact(artifact_hash)?;
+            let replay_hash = artifact.replay_hash();
+            if replay_hash != expected_replay_hash {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&artifact_hash),
+                    reason: "campaign corpus replay hash does not match artifact",
+                });
+            }
+            seeds.insert(
+                artifact_hash,
+                CampaignCorpusSeed {
+                    artifact_hash,
+                    replay_hash,
+                    artifact,
+                },
+            );
+        }
+        Ok(seeds)
+    }
+
+    fn corpus_entry_hashes(
+        &self,
+        root: ContentHash,
+    ) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
+        let material = self.read_campaign_object_text(root)?;
+        let path = self.store.object_path(&root);
+        match record_format(&material) {
+            Some("crucible.campaign-corpus.v1") => parse_campaign_corpus_record(&path, &material),
+            Some("crucible.campaign-root-merge.v1") => {
+                let merge = parse_campaign_root_merge_record(&path, &material)?;
+                if merge.label != "corpus" {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path,
+                        reason: "campaign root merge label is not corpus",
+                    });
+                }
+                let mut entries = self.corpus_entry_hashes(merge.left)?;
+                entries.extend(self.corpus_entry_hashes(merge.right)?);
+                Ok(entries)
+            }
+            _ => Err(CasError::InvalidCampaignRecord {
+                path,
+                reason: "campaign corpus root format is unsupported",
+            }),
+        }
+    }
+
+    fn coverage_edge_set(&self, root: ContentHash) -> Result<BTreeSet<ContentHash>, CasError> {
+        let material = self.read_campaign_object_text(root)?;
+        let path = self.store.object_path(&root);
+        match record_format(&material) {
+            Some("crucible.campaign-coverage-map.v1") => {
+                parse_campaign_coverage_map_record(&path, &material)
+            }
+            Some("crucible.campaign-root-merge.v1") => {
+                let merge = parse_campaign_root_merge_record(&path, &material)?;
+                if merge.label != "coverage-map" {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path,
+                        reason: "campaign root merge label is not coverage-map",
+                    });
+                }
+                let mut entries = self.coverage_edge_set(merge.left)?;
+                entries.extend(self.coverage_edge_set(merge.right)?);
+                Ok(entries)
+            }
+            _ => Err(CasError::InvalidCampaignRecord {
+                path,
+                reason: "campaign coverage-map root format is unsupported",
+            }),
+        }
+    }
+
+    fn findings_entry_map(
+        &self,
+        root: ContentHash,
+    ) -> Result<BTreeMap<ContentHash, PersistedCampaignFinding>, CasError> {
+        let entries = self.finding_entry_hashes(root)?;
+        let mut findings = BTreeMap::new();
+        for (artifact_hash, finding_hash) in entries {
+            let material = self.read_campaign_object_text(finding_hash)?;
+            let persisted = parse_campaign_finding_record(
+                &self.store.object_path(&finding_hash),
+                finding_hash,
+                &material,
+            )?;
+            if persisted.artifact_hash != artifact_hash {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&finding_hash),
+                    reason: "campaign findings ledger artifact does not match finding record",
+                });
+            }
+            let artifact = self.read_replay_artifact(persisted.artifact_hash)?;
+            if persisted.replay_hash != artifact.replay_hash() {
+                return Err(CasError::InvalidCampaignRecord {
+                    path: self.store.object_path(&finding_hash),
+                    reason: "campaign finding replay hash does not match artifact",
+                });
+            }
+            findings.insert(finding_hash, persisted);
+        }
+        Ok(findings)
+    }
+
+    fn finding_entry_hashes(
+        &self,
+        root: ContentHash,
+    ) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
+        let material = self.read_campaign_object_text(root)?;
+        let path = self.store.object_path(&root);
+        match record_format(&material) {
+            Some("crucible.campaign-findings-ledger.v1") => {
+                parse_campaign_findings_ledger_record(&path, &material)
+            }
+            Some("crucible.campaign-root-merge.v1") => {
+                let merge = parse_campaign_root_merge_record(&path, &material)?;
+                if merge.label != "findings" {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path,
+                        reason: "campaign root merge label is not findings",
+                    });
+                }
+                let mut entries = self.finding_entry_hashes(merge.left)?;
+                for (artifact_hash, finding_hash) in self.finding_entry_hashes(merge.right)? {
+                    insert_deduped_finding_entry(&mut entries, artifact_hash, finding_hash);
+                }
+                Ok(entries)
+            }
+            _ => Err(CasError::InvalidCampaignRecord {
+                path,
+                reason: "campaign findings root format is unsupported",
+            }),
+        }
+    }
+
+    fn read_campaign_object_text(&self, key: ContentHash) -> Result<String, CasError> {
+        String::from_utf8(self.store.get(&key)?).map_err(|_| CasError::InvalidCampaignRecord {
+            path: self.store.object_path(&key),
+            reason: "campaign object is not UTF-8",
+        })
     }
 
     fn acquire_head_lock(&self, operation: FlockOperation) -> Result<CampaignHeadLock, CasError> {
@@ -1811,6 +2364,146 @@ pub struct CampaignAdvanceReport {
     pub head: CampaignHead,
 }
 
+/// Self-contained campaign replay artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignReplayArtifact {
+    definition: Vec<u8>,
+    seed: Vec<u8>,
+    schedule: Vec<u8>,
+}
+
+impl CampaignReplayArtifact {
+    /// Builds a replay artifact from definition, seed, and schedule bytes.
+    #[must_use]
+    pub fn new(
+        definition: impl Into<Vec<u8>>,
+        seed: impl Into<Vec<u8>>,
+        schedule: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            definition: definition.into(),
+            seed: seed.into(),
+            schedule: schedule.into(),
+        }
+    }
+
+    /// Returns the scenario or workload definition bytes.
+    #[must_use]
+    pub fn definition(&self) -> &[u8] {
+        &self.definition
+    }
+
+    /// Returns the deterministic seed bytes.
+    #[must_use]
+    pub fn seed(&self) -> &[u8] {
+        &self.seed
+    }
+
+    /// Returns the deterministic schedule bytes.
+    #[must_use]
+    pub fn schedule(&self) -> &[u8] {
+        &self.schedule
+    }
+
+    /// Returns the canonical replay-input bytes produced from the artifact.
+    #[must_use]
+    pub fn replay_bytes(&self) -> Vec<u8> {
+        campaign_replay_input_material(self).into_bytes()
+    }
+
+    /// Returns the content hash of the canonical replay input.
+    #[must_use]
+    pub fn replay_hash(&self) -> ContentHash {
+        ContentHash::from_bytes(&self.replay_bytes())
+    }
+}
+
+/// Corpus seed loaded for the next campaign run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignCorpusSeed {
+    /// Content hash of the self-contained replay artifact.
+    pub artifact_hash: ContentHash,
+    /// Replay hash recorded by the corpus root.
+    pub replay_hash: ContentHash,
+    /// Self-contained replay artifact bytes.
+    pub artifact: CampaignReplayArtifact,
+}
+
+impl CampaignCorpusSeed {
+    /// Returns whether the loaded artifact reproduces the recorded replay hash.
+    #[must_use]
+    pub fn reproduces_bit_identically(&self) -> bool {
+        self.artifact.replay_hash() == self.replay_hash
+    }
+}
+
+/// Novelty result for a candidate against accumulated campaign coverage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignCoverageDelta {
+    /// Accumulated coverage root used as the novelty baseline.
+    pub coverage_map_root: ContentHash,
+    /// Candidate edges absent from the accumulated map.
+    pub new_edges: Vec<ContentHash>,
+    /// Candidate edges already present in the accumulated map.
+    pub known_edges: Vec<ContentHash>,
+}
+
+impl CampaignCoverageDelta {
+    /// Returns whether the candidate adds campaign-lifetime coverage.
+    #[must_use]
+    pub fn is_novel(&self) -> bool {
+        !self.new_edges.is_empty()
+    }
+}
+
+/// A finding to add to a cross-run campaign ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignFinding {
+    /// Content-addressed failure fingerprint.
+    pub fingerprint: ContentHash,
+    /// Self-contained reproduction artifact for the finding.
+    pub artifact: CampaignReplayArtifact,
+}
+
+impl CampaignFinding {
+    /// Builds a campaign finding from a fingerprint and replay artifact.
+    #[must_use]
+    pub fn new(fingerprint: ContentHash, artifact: CampaignReplayArtifact) -> Self {
+        Self {
+            fingerprint,
+            artifact,
+        }
+    }
+}
+
+/// Finding entry loaded from a cross-run campaign ledger.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersistedCampaignFinding {
+    /// Content hash of the finding entry.
+    pub finding_hash: ContentHash,
+    /// Content-addressed failure fingerprint.
+    pub fingerprint: ContentHash,
+    /// Content hash of the self-contained replay artifact.
+    pub artifact_hash: ContentHash,
+    /// Replay hash recorded by the finding entry.
+    pub replay_hash: ContentHash,
+}
+
+impl PersistedCampaignFinding {
+    /// Returns whether `artifact` reproduces the recorded replay hash.
+    #[must_use]
+    pub fn reproduces_bit_identically(&self, artifact: &CampaignReplayArtifact) -> bool {
+        artifact.replay_hash() == self.replay_hash
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CampaignRootMerge {
+    label: &'static str,
+    left: ContentHash,
+    right: ContentHash,
+}
+
 fn content_path(root: &Path, key: &ContentHash) -> PathBuf {
     let hex = key.to_hex();
     root.join(&hex[0..2]).join(hex)
@@ -1921,6 +2614,71 @@ fn manifest_record_material(manifest: &CampaignManifest) -> String {
         manifest.provenance.qemu_build,
         manifest.provenance.abi_versions,
     )
+}
+
+fn campaign_replay_input_material(artifact: &CampaignReplayArtifact) -> String {
+    format!(
+        "format=crucible.campaign-replay-input.v1\ndefinition={}\nseed={}\nschedule={}\n",
+        encode_hex(artifact.definition()),
+        encode_hex(artifact.seed()),
+        encode_hex(artifact.schedule())
+    )
+}
+
+fn campaign_replay_artifact_material(artifact: &CampaignReplayArtifact) -> String {
+    format!(
+        "format=crucible.campaign-replay-artifact.v1\ndefinition={}\nseed={}\nschedule={}\nreplay_hash={}\n",
+        encode_hex(artifact.definition()),
+        encode_hex(artifact.seed()),
+        encode_hex(artifact.schedule()),
+        artifact.replay_hash().to_hex()
+    )
+}
+
+fn campaign_corpus_record_material(entries: &BTreeMap<ContentHash, ContentHash>) -> String {
+    let mut material = String::from("format=crucible.campaign-corpus.v1\n");
+    for (artifact_hash, replay_hash) in entries {
+        material.push_str(&format!(
+            "entry artifact={} replay={}\n",
+            artifact_hash.to_hex(),
+            replay_hash.to_hex()
+        ));
+    }
+    material
+}
+
+fn campaign_coverage_map_record_material(edges: &BTreeSet<ContentHash>) -> String {
+    let mut material = String::from("format=crucible.campaign-coverage-map.v1\n");
+    for edge in edges {
+        material.push_str(&format!("edge={}\n", edge.to_hex()));
+    }
+    material
+}
+
+fn campaign_finding_record_material(
+    finding: &CampaignFinding,
+    artifact_hash: ContentHash,
+) -> String {
+    format!(
+        "format=crucible.campaign-finding.v1\nfingerprint={}\nartifact={}\nreplay={}\n",
+        finding.fingerprint.to_hex(),
+        artifact_hash.to_hex(),
+        finding.artifact.replay_hash().to_hex()
+    )
+}
+
+fn campaign_findings_ledger_record_material(
+    entries: &BTreeMap<ContentHash, ContentHash>,
+) -> String {
+    let mut material = String::from("format=crucible.campaign-findings-ledger.v1\n");
+    for (artifact_hash, finding_hash) in entries {
+        material.push_str(&format!(
+            "entry artifact={} finding={}\n",
+            artifact_hash.to_hex(),
+            finding_hash.to_hex()
+        ));
+    }
+    material
 }
 
 fn campaign_head_entry_material(generation: u64, manifest_hash: ContentHash) -> String {
@@ -2089,6 +2847,170 @@ fn parse_manifest_record(path: &Path, material: &str) -> Result<CampaignManifest
     Ok(manifest)
 }
 
+fn parse_replay_artifact_record(
+    path: &Path,
+    material: &str,
+) -> Result<CampaignReplayArtifact, CasError> {
+    let fields = parse_key_value_record(path, material, "campaign replay artifact")?;
+    if fields.get("format") != Some(&"crucible.campaign-replay-artifact.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign replay artifact format is unsupported",
+        });
+    }
+    let artifact = CampaignReplayArtifact::new(
+        decode_hex_field(path, &fields, "definition")?,
+        decode_hex_field(path, &fields, "seed")?,
+        decode_hex_field(path, &fields, "schedule")?,
+    );
+    let replay_hash = parse_required_campaign_hash(path, &fields, "replay_hash")?;
+    if replay_hash != artifact.replay_hash() {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign replay artifact hash is invalid",
+        });
+    }
+    Ok(artifact)
+}
+
+fn parse_campaign_corpus_record(
+    path: &Path,
+    material: &str,
+) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
+    let mut lines = material.lines();
+    if lines.next() != Some("format=crucible.campaign-corpus.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign corpus format is unsupported",
+        });
+    }
+    let mut entries = BTreeMap::new();
+    for line in lines {
+        let Some(fields_material) = line.strip_prefix("entry ") else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign corpus entry line is unsupported",
+            });
+        };
+        let fields = parse_space_fields(path, fields_material, "campaign corpus entry")?;
+        let artifact = parse_required_campaign_hash(path, &fields, "artifact")?;
+        let replay = parse_required_campaign_hash(path, &fields, "replay")?;
+        entries.insert(artifact, replay);
+    }
+    Ok(entries)
+}
+
+fn parse_campaign_coverage_map_record(
+    path: &Path,
+    material: &str,
+) -> Result<BTreeSet<ContentHash>, CasError> {
+    let mut lines = material.lines();
+    if lines.next() != Some("format=crucible.campaign-coverage-map.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign coverage-map format is unsupported",
+        });
+    }
+    let mut edges = BTreeSet::new();
+    for line in lines {
+        let Some(edge) = line.strip_prefix("edge=") else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign coverage-map edge line is unsupported",
+            });
+        };
+        edges.insert(ContentHash::from_hex(edge).ok_or_else(|| {
+            CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign coverage-map edge hash is invalid",
+            }
+        })?);
+    }
+    Ok(edges)
+}
+
+fn parse_campaign_finding_record(
+    path: &Path,
+    finding_hash: ContentHash,
+    material: &str,
+) -> Result<PersistedCampaignFinding, CasError> {
+    let fields = parse_key_value_record(path, material, "campaign finding")?;
+    if fields.get("format") != Some(&"crucible.campaign-finding.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign finding format is unsupported",
+        });
+    }
+    Ok(PersistedCampaignFinding {
+        finding_hash,
+        fingerprint: parse_required_campaign_hash(path, &fields, "fingerprint")?,
+        artifact_hash: parse_required_campaign_hash(path, &fields, "artifact")?,
+        replay_hash: parse_required_campaign_hash(path, &fields, "replay")?,
+    })
+}
+
+fn parse_campaign_findings_ledger_record(
+    path: &Path,
+    material: &str,
+) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
+    let mut lines = material.lines();
+    if lines.next() != Some("format=crucible.campaign-findings-ledger.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign findings ledger format is unsupported",
+        });
+    }
+    let mut findings = BTreeMap::new();
+    for line in lines {
+        let Some(fields_material) = line.strip_prefix("entry ") else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign findings ledger line is unsupported",
+            });
+        };
+        let fields = parse_space_fields(path, fields_material, "campaign findings ledger entry")?;
+        let artifact = parse_required_campaign_hash(path, &fields, "artifact")?;
+        let finding = parse_required_campaign_hash(path, &fields, "finding")?;
+        insert_deduped_finding_entry(&mut findings, artifact, finding);
+    }
+    Ok(findings)
+}
+
+fn parse_campaign_root_merge_record(
+    path: &Path,
+    material: &str,
+) -> Result<CampaignRootMerge, CasError> {
+    let fields = parse_key_value_record(path, material, "campaign root merge")?;
+    if fields.get("format") != Some(&"crucible.campaign-root-merge.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign root merge format is unsupported",
+        });
+    }
+    let label = match fields.get("label").copied() {
+        Some("corpus") => "corpus",
+        Some("coverage-map") => "coverage-map",
+        Some("findings") => "findings",
+        Some(_) => {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign root merge label is unsupported",
+            });
+        }
+        None => {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign root merge is missing label",
+            });
+        }
+    };
+    Ok(CampaignRootMerge {
+        label,
+        left: parse_required_campaign_hash(path, &fields, "left")?,
+        right: parse_required_campaign_hash(path, &fields, "right")?,
+    })
+}
+
 fn parse_campaign_head_record(
     path: &Path,
     material: &str,
@@ -2232,6 +3154,28 @@ fn parse_key_value_record<'a>(
     Ok(fields)
 }
 
+fn parse_space_fields<'a>(
+    path: &Path,
+    material: &'a str,
+    label: &'static str,
+) -> Result<BTreeMap<&'a str, &'a str>, CasError> {
+    let mut fields = BTreeMap::new();
+    for field in material.split_whitespace() {
+        let Some((key, value)) = field.split_once('=') else {
+            let reason = match label {
+                "campaign corpus entry" => "campaign corpus entry field is missing '='",
+                _ => "record field is missing '='",
+            };
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason,
+            });
+        };
+        fields.insert(key, value);
+    }
+    Ok(fields)
+}
+
 fn parse_required_hash(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
@@ -2277,6 +3221,23 @@ fn parse_required_campaign_hash(
     ContentHash::from_hex(value).ok_or_else(|| CasError::InvalidCampaignRecord {
         path: path.to_path_buf(),
         reason: "campaign record hash field is invalid",
+    })
+}
+
+fn decode_hex_field(
+    path: &Path,
+    fields: &BTreeMap<&str, &str>,
+    name: &'static str,
+) -> Result<Vec<u8>, CasError> {
+    let value = fields
+        .get(name)
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign record is missing bytes field",
+        })?;
+    decode_hex(value).ok_or_else(|| CasError::InvalidCampaignRecord {
+        path: path.to_path_buf(),
+        reason: "campaign record bytes field is invalid",
     })
 }
 
@@ -2331,6 +3292,28 @@ fn campaign_root_field(label: &str) -> &'static str {
     }
 }
 
+fn campaign_root_regression_reason(label: &str) -> &'static str {
+    match label {
+        "corpus" => "typed campaign corpus root cannot be replaced by an untyped root",
+        "coverage-map" => "typed campaign coverage-map root cannot be replaced by an untyped root",
+        "findings" => "typed campaign findings root cannot be replaced by an untyped root",
+        _ => "typed campaign root cannot be replaced by an untyped root",
+    }
+}
+
+fn campaign_typed_root_format(label: &str) -> &'static str {
+    match label {
+        "corpus" => "crucible.campaign-corpus.v1",
+        "coverage-map" => "crucible.campaign-coverage-map.v1",
+        "findings" => "crucible.campaign-findings-ledger.v1",
+        _ => "",
+    }
+}
+
+fn record_format(material: &str) -> Option<&str> {
+    material.lines().next()?.strip_prefix("format=")
+}
+
 fn campaign_root_merge_hash(label: &str, left: ContentHash, right: ContentHash) -> ContentHash {
     if left == right {
         return left;
@@ -2357,6 +3340,45 @@ fn ordered_manifest_roots(left: ContentHash, right: ContentHash) -> (ContentHash
     } else {
         (right, left)
     }
+}
+
+fn insert_deduped_finding_entry(
+    entries: &mut BTreeMap<ContentHash, ContentHash>,
+    artifact_hash: ContentHash,
+    finding_hash: ContentHash,
+) {
+    match entries.entry(artifact_hash) {
+        Entry::Vacant(entry) => {
+            entry.insert(finding_hash);
+        }
+        Entry::Occupied(mut entry) if finding_hash < *entry.get() => {
+            entry.insert(finding_hash);
+        }
+        Entry::Occupied(_) => {}
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        decoded.push((high << 4) | low);
+    }
+    Some(decoded)
 }
 
 static FRONTIER_CLAIM_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2909,6 +3931,296 @@ mod tests {
             .ok_or_else(|| std::io::Error::other("second host did not claim fallback node"))?;
         assert_ne!(first_claim.node, second_claim.node);
         assert!(!frontier.claimable_nodes(3)?.contains(&first_claim.node));
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_seed_loads_self_contained_replay_artifacts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let first = CampaignReplayArtifact::new(
+            b"definition:partition-recovery".to_vec(),
+            b"seed:0001".to_vec(),
+            b"schedule:a,b,c".to_vec(),
+        );
+        let second = CampaignReplayArtifact::new(
+            b"definition:crash-restart".to_vec(),
+            b"seed:0002".to_vec(),
+            b"schedule:x,y,z".to_vec(),
+        );
+        let corpus_root =
+            campaign.persist_campaign_corpus([first.clone(), second.clone(), first.clone()])?;
+        let manifest = CampaignManifest::new(
+            corpus_root,
+            campaign.persist_accumulated_coverage_map([])?,
+            campaign.persist_findings_ledger([])?,
+            ContentHash::from_bytes(b"genesis-pin"),
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+        );
+
+        let seeds = campaign.seed_next_run(&manifest)?;
+
+        assert_eq!(seeds.len(), 2);
+        for seed in seeds {
+            assert!(seed.reproduces_bit_identically());
+            assert_eq!(
+                campaign.read_replay_artifact(seed.artifact_hash)?,
+                seed.artifact
+            );
+            assert!(
+                seed.artifact
+                    .replay_bytes()
+                    .starts_with(b"format=crucible.campaign-replay-input.v1\n")
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_coverage_ratchet_is_grow_only_union_crdt() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let edge_a = ContentHash::from_bytes(b"campaign-edge-a");
+        let edge_b = ContentHash::from_bytes(b"campaign-edge-b");
+        let edge_c = ContentHash::from_bytes(b"campaign-edge-c");
+        let left = campaign.persist_accumulated_coverage_map([edge_a, edge_b])?;
+        let right = campaign.persist_accumulated_coverage_map([edge_b, edge_c])?;
+
+        let merged = campaign.merge_accumulated_coverage_maps(left, right)?;
+        let reverse = campaign.merge_accumulated_coverage_maps(right, left)?;
+        let duplicate = campaign.merge_accumulated_coverage_maps(merged, left)?;
+        let delta = campaign.accumulated_coverage_delta(merged, [edge_a, edge_c])?;
+        let novel = campaign.accumulated_coverage_delta(
+            merged,
+            [edge_a, ContentHash::from_bytes(b"campaign-edge-d")],
+        )?;
+        let mut expected_edges = vec![edge_a, edge_b, edge_c];
+        expected_edges.sort();
+        let mut expected_known = vec![edge_a, edge_c];
+        expected_known.sort();
+
+        assert_eq!(merged, reverse);
+        assert_eq!(duplicate, merged);
+        assert_eq!(campaign.accumulated_coverage_edges(merged)?, expected_edges);
+        assert!(!delta.is_novel());
+        assert_eq!(delta.known_edges, expected_known);
+        assert!(novel.is_novel());
+        assert_eq!(novel.new_edges.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_findings_ledger_accumulates_and_deduplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let artifact_a = CampaignReplayArtifact::new(
+            b"definition:finding-a".to_vec(),
+            b"seed:a".to_vec(),
+            b"schedule:a".to_vec(),
+        );
+        let artifact_b = CampaignReplayArtifact::new(
+            b"definition:finding-b".to_vec(),
+            b"seed:b".to_vec(),
+            b"schedule:b".to_vec(),
+        );
+        let finding_a =
+            CampaignFinding::new(ContentHash::from_bytes(b"failure-a"), artifact_a.clone());
+        let finding_a_rediscovered = CampaignFinding::new(
+            ContentHash::from_bytes(b"failure-a-rediscovered"),
+            artifact_a.clone(),
+        );
+        let finding_b =
+            CampaignFinding::new(ContentHash::from_bytes(b"failure-b"), artifact_b.clone());
+        let artifact_a_hash = campaign.persist_replay_artifact(&artifact_a)?;
+        let left = campaign
+            .persist_findings_ledger([finding_a.clone(), finding_a_rediscovered.clone()])?;
+        let right = campaign.persist_findings_ledger([finding_a_rediscovered, finding_b])?;
+
+        let merged = campaign.merge_findings_ledgers(left, right)?;
+        let entries = campaign.findings_ledger_entries(merged)?;
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.artifact_hash == artifact_a_hash)
+                .count(),
+            1
+        );
+        for entry in entries {
+            let artifact = campaign.read_replay_artifact(entry.artifact_hash)?;
+            assert!(entry.reproduces_bit_identically(&artifact));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_merge_unions_typed_campaign_roots() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let artifact_a = CampaignReplayArtifact::new(
+            b"definition:a".to_vec(),
+            b"seed:a".to_vec(),
+            b"s:a".to_vec(),
+        );
+        let artifact_b = CampaignReplayArtifact::new(
+            b"definition:b".to_vec(),
+            b"seed:b".to_vec(),
+            b"s:b".to_vec(),
+        );
+        let edge_a = ContentHash::from_bytes(b"typed-edge-a");
+        let edge_b = ContentHash::from_bytes(b"typed-edge-b");
+        let finding_a = CampaignFinding::new(
+            ContentHash::from_bytes(b"typed-finding-a"),
+            artifact_a.clone(),
+        );
+        let finding_b = CampaignFinding::new(
+            ContentHash::from_bytes(b"typed-finding-b"),
+            artifact_b.clone(),
+        );
+        let provenance =
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+        let first = CampaignManifest::new(
+            campaign.persist_campaign_corpus([artifact_a])?,
+            campaign.persist_accumulated_coverage_map([edge_a])?,
+            campaign.persist_findings_ledger([finding_a])?,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance.clone(),
+        );
+        let second = CampaignManifest::new(
+            campaign.persist_campaign_corpus([artifact_b])?,
+            campaign.persist_accumulated_coverage_map([edge_b])?,
+            campaign.persist_findings_ledger([finding_b])?,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance,
+        );
+
+        match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(_) => {}
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        }
+        let report = campaign.advance_head_with_merge(&second, 3)?;
+        let mut expected_edges = vec![edge_a, edge_b];
+        expected_edges.sort();
+
+        assert_eq!(campaign.seed_next_run(&report.head.manifest)?.len(), 2);
+        assert_eq!(
+            campaign.accumulated_coverage_edges(report.head.manifest.coverage_map_root)?,
+            expected_edges
+        );
+        assert_eq!(
+            campaign
+                .findings_ledger_entries(report.head.manifest.findings_root)?
+                .len(),
+            2
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_cas_rejects_typed_root_regression() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let artifact_a = CampaignReplayArtifact::new(
+            b"definition:regression-a".to_vec(),
+            b"seed:a".to_vec(),
+            b"schedule:a".to_vec(),
+        );
+        let artifact_b = CampaignReplayArtifact::new(
+            b"definition:regression-b".to_vec(),
+            b"seed:b".to_vec(),
+            b"schedule:b".to_vec(),
+        );
+        let edge_a = ContentHash::from_bytes(b"regression-edge-a");
+        let edge_b = ContentHash::from_bytes(b"regression-edge-b");
+        let finding_a = CampaignFinding::new(
+            ContentHash::from_bytes(b"regression-finding-a"),
+            artifact_a.clone(),
+        );
+        let finding_b = CampaignFinding::new(
+            ContentHash::from_bytes(b"regression-finding-b"),
+            artifact_b.clone(),
+        );
+        let provenance =
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+        let full_corpus = campaign.persist_campaign_corpus([artifact_a.clone(), artifact_b])?;
+        let full_coverage = campaign.persist_accumulated_coverage_map([edge_a, edge_b])?;
+        let full_findings =
+            campaign.persist_findings_ledger([finding_a.clone(), finding_b.clone()])?;
+        let first = CampaignManifest::new(
+            full_corpus,
+            full_coverage,
+            full_findings,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance.clone(),
+        );
+        let corpus_regressed = CampaignManifest::new(
+            campaign.persist_campaign_corpus([artifact_a.clone()])?,
+            full_coverage,
+            full_findings,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance.clone(),
+        );
+        let coverage_regressed = CampaignManifest::new(
+            full_corpus,
+            campaign.persist_accumulated_coverage_map([edge_a])?,
+            full_findings,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance.clone(),
+        );
+        let findings_regressed = CampaignManifest::new(
+            full_corpus,
+            full_coverage,
+            campaign.persist_findings_ledger([finding_a])?,
+            ContentHash::from_bytes(b"genesis-pin"),
+            provenance.clone(),
+        );
+
+        let first_head = match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(head) => head,
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        };
+
+        assert!(matches!(
+            campaign.compare_and_swap_head(Some(first_head.manifest_hash), &corpus_regressed),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign corpus advance would drop a prior seed artifact",
+                ..
+            })
+        ));
+        assert!(matches!(
+            campaign.compare_and_swap_head(Some(first_head.manifest_hash), &coverage_regressed),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign coverage-map advance would reduce accumulated coverage",
+                ..
+            })
+        ));
+        assert!(matches!(
+            campaign.compare_and_swap_head(Some(first_head.manifest_hash), &findings_regressed),
+            Err(CasError::InvalidCampaignRecord {
+                reason: "campaign findings advance would drop a prior finding artifact",
+                ..
+            })
+        ));
+        assert_eq!(
+            campaign
+                .read_head()?
+                .ok_or_else(|| std::io::Error::other("campaign head missing"))?
+                .manifest_hash,
+            first_head.manifest_hash
+        );
 
         Ok(())
     }
