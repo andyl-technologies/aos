@@ -260,6 +260,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-cli",
                 "gate_e2e_determinism"
             ),
+            (
+                "gate:fleet-equivalence",
+                "crucible",
+                "gate_fleet_equivalence"
+            ),
         ])
     );
 }
@@ -402,6 +407,7 @@ fn crucible_gate_target_requires_test_double(target: &GateTargetSpec) -> bool {
                 | "gate:content-address"
                 | "gate:scheduler-liveness"
                 | "gate:e2e-determinism"
+                | "gate:fleet-equivalence"
         )
 }
 

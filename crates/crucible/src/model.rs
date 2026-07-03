@@ -15079,6 +15079,125 @@ impl TemporalGraph {
         )
     }
 
+    /// Searches with a deterministic shared-worklist fleet model.
+    ///
+    /// The fleet model uses one shared content-addressed frontier, deterministic
+    /// host claim ordering, and the same single-frontier expansion path as
+    /// [`Self::search_with_strategy_and_failure_oracle`]. Host identities are
+    /// recorded only as claim/order metadata in the returned report; they do not
+    /// enter configurations, discovered findings, or reproduction artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not describe `root`. Returns other [`EngineError`] values when
+    /// expanding a frontier or capturing a discovered finding artifact fails.
+    pub fn search_with_work_stealing_fleet(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        config: FleetWorkStealingConfig,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+    ) -> Result<FleetWorkStealingSearchRun, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+
+        let host_count = config.host_count();
+        let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
+        let mut scheduled = BTreeSet::from([root.id()]);
+        let mut expanded = BTreeSet::new();
+        let mut explored_graph = BTreeSet::from([root.id()]);
+        let mut claims = Vec::new();
+        let mut discovered_failures = Vec::new();
+        let mut discovered_failure_configurations = BTreeSet::new();
+        record_search_discovered_failure(
+            root,
+            Some(scenario),
+            failure_oracle,
+            &mut discovered_failure_configurations,
+            &mut discovered_failures,
+        )?;
+
+        while (claims.len() as u64) < config.total_budget.max_expansions {
+            let sequence = claims.len() as u64;
+            let Some(index) =
+                select_fleet_work_stealing_candidate(&worklist, host_count, config.seed, sequence)
+            else {
+                break;
+            };
+            let host_index = fleet_claim_host_index(host_count, config.seed, sequence);
+            let candidate = worklist.remove(index);
+            if !expanded.insert(candidate.id()) {
+                continue;
+            }
+
+            let search = self.search(
+                &candidate.configuration,
+                FrontierReductionPolicy::none(),
+                materialization_policy,
+                trigger,
+            )?;
+            for child in &search.frontier_report.explored {
+                let child_id = child.configuration.id();
+                explored_graph.insert(child_id);
+                record_search_discovered_failure(
+                    &child.configuration,
+                    Some(scenario),
+                    failure_oracle,
+                    &mut discovered_failure_configurations,
+                    &mut discovered_failures,
+                )?;
+                if scheduled.insert(child_id) {
+                    worklist.push(SearchFrontierCandidate::new(child.configuration.clone()));
+                }
+            }
+            for covered in &search.frontier_report.covered {
+                if let Some(representative) = self
+                    .recorded_configurations
+                    .get(&covered.representative)
+                    .cloned()
+                {
+                    let representative_id = representative.id();
+                    explored_graph.insert(representative_id);
+                    record_search_discovered_failure(
+                        &representative,
+                        Some(scenario),
+                        failure_oracle,
+                        &mut discovered_failure_configurations,
+                        &mut discovered_failures,
+                    )?;
+                    if scheduled.insert(representative_id) {
+                        worklist.push(SearchFrontierCandidate::new(representative));
+                    }
+                }
+            }
+
+            claims.push(FleetWorkClaim {
+                sequence,
+                host_index,
+                frontier: candidate.id(),
+                depth: candidate.depth,
+                search,
+            });
+        }
+
+        Ok(FleetWorkStealingSearchRun {
+            root: root.id(),
+            config,
+            explored_graph,
+            claims,
+            discovered_failures,
+            exhausted: worklist.is_empty(),
+        })
+    }
+
     /// Searches with graph-level symmetry and partial-order reductions enabled.
     ///
     /// Reductions are applied by the same single-frontier expansion path as
@@ -17204,6 +17323,42 @@ impl SearchBudget {
     }
 }
 
+/// Deterministic configuration for the shared-worklist fleet search model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FleetWorkStealingConfig {
+    /// Total frontier-expansion budget shared by every host.
+    pub total_budget: SearchBudget,
+    /// Requested number of logical hosts competing for claims.
+    pub host_count: u64,
+    /// Seed used only to order host claims and work stealing.
+    pub seed: Seed,
+}
+
+impl FleetWorkStealingConfig {
+    /// Builds a deterministic fleet work-stealing configuration.
+    #[must_use]
+    pub const fn new(total_budget: SearchBudget, host_count: u64, seed: Seed) -> Self {
+        Self {
+            total_budget,
+            host_count,
+            seed,
+        }
+    }
+
+    /// Returns the effective host count.
+    ///
+    /// A zero-host configuration is normalized to one host so callers cannot
+    /// accidentally make the check depend on an absent host set.
+    #[must_use]
+    pub const fn host_count(self) -> u64 {
+        if self.host_count == 0 {
+            1
+        } else {
+            self.host_count
+        }
+    }
+}
+
 /// Configuration for a single-host coverage-guided fuzzing pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CoverageGuidedFuzzConfig {
@@ -18055,6 +18210,181 @@ impl SearchDiscoveredFailure {
     #[must_use]
     pub fn reproduction_artifact(&self) -> &FindingReproductionArtifact {
         &self.reproduction_artifact
+    }
+}
+
+/// One fleet work claim from the shared frontier.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FleetWorkClaim {
+    /// Zero-based deterministic claim sequence.
+    pub sequence: u64,
+    /// Logical host that won this claim.
+    pub host_index: u64,
+    /// Checkpoint expanded by the claim.
+    pub frontier: ContentHash,
+    /// Number of recorded decisions in `frontier`.
+    pub depth: usize,
+    /// Single-frontier search result produced by this claim.
+    pub search: TemporalGraphSearch,
+}
+
+/// Result of a deterministic shared-worklist fleet search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FleetWorkStealingSearchRun {
+    /// Root checkpoint supplied to the fleet.
+    pub root: ContentHash,
+    /// Fleet configuration used to order claims.
+    pub config: FleetWorkStealingConfig,
+    /// Deduplicated content-addressed graph reached by the fleet.
+    pub explored_graph: BTreeSet<ContentHash>,
+    /// Work claims in exact deterministic claim order.
+    pub claims: Vec<FleetWorkClaim>,
+    /// Failures discovered by the fleet.
+    pub discovered_failures: Vec<SearchDiscoveredFailure>,
+    /// Whether the shared frontier was exhausted before the budget stopped the run.
+    pub exhausted: bool,
+}
+
+/// Content-addressed finding entry compared by `gate:fleet-equivalence`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FleetFindingSetEntry {
+    /// Stable finding fingerprint.
+    pub fingerprint: ContentHash,
+    /// Configuration where the finding was observed.
+    pub configuration: ContentHash,
+    /// Self-contained reproduction artifact id.
+    pub artifact: ContentHash,
+    /// Reduced state reached by replaying the artifact.
+    pub replayed_state: ContentHash,
+}
+
+impl FleetFindingSetEntry {
+    fn from_failure(failure: &SearchDiscoveredFailure) -> Self {
+        Self {
+            fingerprint: failure.fingerprint,
+            configuration: failure.configuration,
+            artifact: failure.reproduction_artifact.artifact.id(),
+            replayed_state: failure.reproduction_artifact.replay.state,
+        }
+    }
+}
+
+/// Localized fleet-equivalence mismatch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FleetEquivalenceDivergence {
+    /// Stable mismatch category.
+    pub reason: &'static str,
+    /// Finding fingerprint at the first sorted mismatch, if known.
+    pub fingerprint: Option<ContentHash>,
+    /// Configuration at the first sorted mismatch, if known.
+    pub configuration: Option<ContentHash>,
+    /// Single-host artifact at the mismatch, if any.
+    pub single_artifact: Option<ContentHash>,
+    /// Fleet artifact at the mismatch, if any.
+    pub fleet_artifact: Option<ContentHash>,
+    /// Replay-oracle bisection handoff for the mismatching artifact/configuration.
+    pub bisection: SearchReplayOracleBisectionRequest,
+}
+
+/// Result of comparing a single-host search with a fleet search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FleetEquivalenceReport {
+    /// Whether both runs started from the same content-addressed root.
+    pub root_equal: bool,
+    /// Whether both runs used the same total frontier-expansion budget.
+    pub budget_equal: bool,
+    /// Whether both runs reached the same deduplicated graph.
+    pub explored_graph_equal: bool,
+    /// Whether both runs exhausted the reachable frontier before the budget ended.
+    pub both_exhausted: bool,
+    /// Single-host content-addressed finding set.
+    pub single_finding_set: BTreeSet<FleetFindingSetEntry>,
+    /// Fleet content-addressed finding set.
+    pub fleet_finding_set: BTreeSet<FleetFindingSetEntry>,
+    /// Single-host discovery order, retained only for diagnostics.
+    pub single_discovery_order: Vec<FleetFindingSetEntry>,
+    /// Fleet discovery order, retained only for diagnostics.
+    pub fleet_discovery_order: Vec<FleetFindingSetEntry>,
+    /// Whether the finding sets match order-insensitively.
+    pub finding_sets_equal: bool,
+    /// Whether every shared finding carries byte-identical artifacts.
+    pub artifacts_byte_identical: bool,
+    /// Whether the diagnostic discovery order happened to match.
+    pub discovery_order_equal: bool,
+    /// First localized mismatch, if the equivalence proof failed.
+    pub divergence: Option<FleetEquivalenceDivergence>,
+}
+
+impl FleetEquivalenceReport {
+    /// Compares a single-host exhaustive search and a shared-worklist fleet run.
+    #[must_use]
+    pub fn compare(single: &TemporalGraphSearchRun, fleet: &FleetWorkStealingSearchRun) -> Self {
+        let single_discovery_order = single
+            .discovered_failures
+            .iter()
+            .map(FleetFindingSetEntry::from_failure)
+            .collect::<Vec<_>>();
+        let fleet_discovery_order = fleet
+            .discovered_failures
+            .iter()
+            .map(FleetFindingSetEntry::from_failure)
+            .collect::<Vec<_>>();
+        let single_finding_set = single_discovery_order
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let fleet_finding_set = fleet_discovery_order
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let root_equal = single.root == fleet.root;
+        let budget_equal = single.budget == fleet.config.total_budget;
+        let explored_graph_equal = single.explored_graph == fleet.explored_graph;
+        let both_exhausted = single.exhausted && fleet.exhausted;
+        let finding_sets_equal = single_finding_set == fleet_finding_set;
+        let artifacts_byte_identical = fleet_artifacts_are_byte_identical(
+            single,
+            fleet,
+            &single_finding_set,
+            &fleet_finding_set,
+        );
+        let discovery_order_equal = single_discovery_order == fleet_discovery_order;
+        let divergence = (!root_equal
+            || !budget_equal
+            || !explored_graph_equal
+            || !both_exhausted
+            || !finding_sets_equal
+            || !artifacts_byte_identical)
+            .then(|| {
+                fleet_equivalence_divergence(single, fleet, &single_finding_set, &fleet_finding_set)
+            });
+
+        Self {
+            root_equal,
+            budget_equal,
+            explored_graph_equal,
+            both_exhausted,
+            single_finding_set,
+            fleet_finding_set,
+            single_discovery_order,
+            fleet_discovery_order,
+            finding_sets_equal,
+            artifacts_byte_identical,
+            discovery_order_equal,
+            divergence,
+        }
+    }
+
+    /// Returns whether the fleet-equivalence proof passed.
+    #[must_use]
+    pub const fn passes(&self) -> bool {
+        self.root_equal
+            && self.budget_equal
+            && self.explored_graph_equal
+            && self.both_exhausted
+            && self.finding_sets_equal
+            && self.artifacts_byte_identical
+            && self.divergence.is_none()
     }
 }
 
@@ -22731,6 +23061,52 @@ fn select_search_frontier_candidate(
         .map(|(index, _)| index)
 }
 
+fn select_fleet_work_stealing_candidate(
+    worklist: &[SearchFrontierCandidate],
+    host_count: u64,
+    seed: Seed,
+    sequence: u64,
+) -> Option<usize> {
+    let host_index = fleet_claim_host_index(host_count, seed, sequence);
+    worklist
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, candidate)| {
+            (
+                fleet_work_stealing_score(seed, sequence, host_index, candidate),
+                candidate.depth,
+                candidate.id(),
+            )
+        })
+        .map(|(index, _)| index)
+}
+
+fn fleet_claim_host_index(host_count: u64, seed: Seed, sequence: u64) -> u64 {
+    let host_count = host_count.max(1);
+    let hash = ContentHash::from_canonical_material(
+        "crucible.fleet-equivalence.claim-host.v1",
+        &format!("seed={}\nsequence={sequence}\n", seed.to_hex()),
+    );
+    content_hash_low_u64(hash) % host_count
+}
+
+fn fleet_work_stealing_score(
+    seed: Seed,
+    sequence: u64,
+    host_index: u64,
+    candidate: &SearchFrontierCandidate,
+) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.fleet-equivalence.claim-score.v1",
+        &format!(
+            "seed={}\nsequence={sequence}\nhost={host_index}\ndepth={}\nfrontier={}\n",
+            seed.to_hex(),
+            candidate.depth,
+            candidate.id().to_hex()
+        ),
+    )
+}
+
 fn compare_search_frontier_candidates(
     graph: &TemporalGraph,
     left: &SearchFrontierCandidate,
@@ -22752,6 +23128,197 @@ fn compare_search_frontier_candidates(
         SearchStrategy::CoverageGuided => search_coverage_guided_key(graph, left)
             .cmp(&search_coverage_guided_key(graph, right))
             .then_with(|| left.id().cmp(&right.id())),
+    }
+}
+
+fn fleet_artifacts_are_byte_identical(
+    single: &TemporalGraphSearchRun,
+    fleet: &FleetWorkStealingSearchRun,
+    single_finding_set: &BTreeSet<FleetFindingSetEntry>,
+    fleet_finding_set: &BTreeSet<FleetFindingSetEntry>,
+) -> bool {
+    if single_finding_set != fleet_finding_set {
+        return false;
+    }
+    let fleet_by_finding = fleet
+        .discovered_failures
+        .iter()
+        .map(|failure| ((failure.fingerprint, failure.configuration), failure))
+        .collect::<BTreeMap<_, _>>();
+
+    single.discovered_failures.iter().all(|single_failure| {
+        let key = (single_failure.fingerprint, single_failure.configuration);
+        fleet_by_finding.get(&key).is_some_and(|fleet_failure| {
+            single_failure
+                .reproduction_artifact
+                .artifact
+                .canonical_bytes()
+                == fleet_failure
+                    .reproduction_artifact
+                    .artifact
+                    .canonical_bytes()
+        })
+    })
+}
+
+fn fleet_equivalence_divergence(
+    single: &TemporalGraphSearchRun,
+    fleet: &FleetWorkStealingSearchRun,
+    single_finding_set: &BTreeSet<FleetFindingSetEntry>,
+    fleet_finding_set: &BTreeSet<FleetFindingSetEntry>,
+) -> FleetEquivalenceDivergence {
+    if single.root != fleet.root {
+        return FleetEquivalenceDivergence {
+            reason: "root-differs",
+            fingerprint: None,
+            configuration: Some(single.root),
+            single_artifact: None,
+            fleet_artifact: None,
+            bisection: fleet_equivalence_bisection(single.root, "fleet-equivalence-root-differs"),
+        };
+    }
+    if single.budget != fleet.config.total_budget {
+        return FleetEquivalenceDivergence {
+            reason: "budget-differs",
+            fingerprint: None,
+            configuration: Some(single.root),
+            single_artifact: None,
+            fleet_artifact: None,
+            bisection: fleet_equivalence_bisection(single.root, "fleet-equivalence-budget-differs"),
+        };
+    }
+    if single.explored_graph != fleet.explored_graph {
+        let configuration = single
+            .explored_graph
+            .symmetric_difference(&fleet.explored_graph)
+            .next()
+            .copied()
+            .unwrap_or(single.root);
+        return FleetEquivalenceDivergence {
+            reason: "explored-graph-differs",
+            fingerprint: None,
+            configuration: Some(configuration),
+            single_artifact: None,
+            fleet_artifact: None,
+            bisection: fleet_equivalence_bisection(
+                configuration,
+                "fleet-equivalence-explored-graph-differs",
+            ),
+        };
+    }
+    if !single.exhausted || !fleet.exhausted {
+        return FleetEquivalenceDivergence {
+            reason: "not-exhausted",
+            fingerprint: None,
+            configuration: Some(single.root),
+            single_artifact: None,
+            fleet_artifact: None,
+            bisection: fleet_equivalence_bisection(single.root, "fleet-equivalence-not-exhausted"),
+        };
+    }
+
+    let single_by_finding = single
+        .discovered_failures
+        .iter()
+        .map(|failure| ((failure.fingerprint, failure.configuration), failure))
+        .collect::<BTreeMap<_, _>>();
+    let fleet_by_finding = fleet
+        .discovered_failures
+        .iter()
+        .map(|failure| ((failure.fingerprint, failure.configuration), failure))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut keys = single_by_finding
+        .keys()
+        .chain(fleet_by_finding.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if keys.is_empty() {
+        keys.extend(
+            single_finding_set
+                .iter()
+                .chain(fleet_finding_set.iter())
+                .map(|entry| (entry.fingerprint, entry.configuration)),
+        );
+    }
+
+    for (fingerprint, configuration) in keys {
+        let single_failure = single_by_finding.get(&(fingerprint, configuration));
+        let fleet_failure = fleet_by_finding.get(&(fingerprint, configuration));
+        match (single_failure, fleet_failure) {
+            (Some(single_failure), Some(fleet_failure))
+                if single_failure
+                    .reproduction_artifact
+                    .artifact
+                    .canonical_bytes()
+                    != fleet_failure
+                        .reproduction_artifact
+                        .artifact
+                        .canonical_bytes() =>
+            {
+                return FleetEquivalenceDivergence {
+                    reason: "artifact-bytes-differ",
+                    fingerprint: Some(fingerprint),
+                    configuration: Some(configuration),
+                    single_artifact: Some(single_failure.reproduction_artifact.artifact.id()),
+                    fleet_artifact: Some(fleet_failure.reproduction_artifact.artifact.id()),
+                    bisection: fleet_equivalence_bisection(
+                        configuration,
+                        "fleet-equivalence-artifact-bytes-differ",
+                    ),
+                };
+            }
+            (Some(single_failure), None) => {
+                return FleetEquivalenceDivergence {
+                    reason: "missing-from-fleet",
+                    fingerprint: Some(fingerprint),
+                    configuration: Some(configuration),
+                    single_artifact: Some(single_failure.reproduction_artifact.artifact.id()),
+                    fleet_artifact: None,
+                    bisection: fleet_equivalence_bisection(
+                        configuration,
+                        "fleet-equivalence-missing-from-fleet",
+                    ),
+                };
+            }
+            (None, Some(fleet_failure)) => {
+                return FleetEquivalenceDivergence {
+                    reason: "extra-in-fleet",
+                    fingerprint: Some(fingerprint),
+                    configuration: Some(configuration),
+                    single_artifact: None,
+                    fleet_artifact: Some(fleet_failure.reproduction_artifact.artifact.id()),
+                    bisection: fleet_equivalence_bisection(
+                        configuration,
+                        "fleet-equivalence-extra-in-fleet",
+                    ),
+                };
+            }
+            (Some(_), Some(_)) | (None, None) => {}
+        }
+    }
+
+    FleetEquivalenceDivergence {
+        reason: "finding-set-differs",
+        fingerprint: None,
+        configuration: None,
+        single_artifact: None,
+        fleet_artifact: None,
+        bisection: fleet_equivalence_bisection(
+            single.root,
+            "fleet-equivalence-finding-set-differs",
+        ),
+    }
+}
+
+fn fleet_equivalence_bisection(
+    configuration: ContentHash,
+    reason: &'static str,
+) -> SearchReplayOracleBisectionRequest {
+    SearchReplayOracleBisectionRequest {
+        sequence: 0,
+        checkpoint: configuration,
+        reason,
     }
 }
 

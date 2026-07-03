@@ -236,6 +236,13 @@
       requiredFeatures = [];
       placeholder = false;
     }
+    {
+      gate = "gate:fleet-equivalence";
+      package = "crucible";
+      testTarget = "gate_fleet_equivalence";
+      requiredFeatures = ["test-double"];
+      placeholder = false;
+    }
   ];
 
   canonicalGates = [
@@ -254,6 +261,7 @@
     "gate:patch-microtests"
     "gate:adversarial-determinism"
     "gate:e2e-determinism"
+    "gate:fleet-equivalence"
   ];
 
   crucibleTestDoubleGates = [
@@ -264,6 +272,7 @@
     "gate:content-address"
     "gate:scheduler-liveness"
     "gate:e2e-determinism"
+    "gate:fleet-equivalence"
   ];
 
   hasInfix = needle: haystack: let

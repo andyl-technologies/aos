@@ -22,6 +22,7 @@
   patchMicrotests = builtins.readFile ./phase2-patch-microtests.nix;
   qemuInert = builtins.readFile ./phase2-qemu-inert.nix;
   phase7E2e = builtins.readFile ./phase7-e2e-determinism.nix;
+  phase7FleetEquivalence = builtins.readFile ./phase7-crucible-fleet-equivalence.nix;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -155,14 +156,14 @@
       needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "fleet equivalence waits for e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
-      edge = "gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence waits for real-QEMU slice, e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
+      edge = "gate:single-vm-fingerprint-real-qemu+gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence";
+      needle = "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
-      edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence-wrapper";
-      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence wrapper waits for real-QEMU slice, e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
+      edge = "gate:single-vm-fingerprint-real-qemu-wrapper+gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence-wrapper";
+      needle = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "campaign continuity waits for fleet equivalence, campaign manifest, campaign seeding, storage bounding, and campaign provenance";
@@ -180,6 +181,10 @@
     {
       gate = "gate:e2e-determinism";
       path = "checks.crucible.phase7.gates.e2eDeterminism";
+    }
+    {
+      gate = "gate:fleet-equivalence";
+      path = "checks.crucible.phase7.gates.fleetEquivalence";
     }
   ];
 
@@ -425,6 +430,26 @@
         needle = "determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;";
       }
       {
+        label = "distributed fleet wrapper consumes fleet equivalence gate";
+        needle = "fleetEquivalenceGate = crucibleChecks.phase7.gates.fleetEquivalence.rawGate;";
+      }
+      {
+        label = "distributed fleet wrapper records fleet equivalence result";
+        needle = ''fleet_equivalence_gate_result=''${fleetEquivalenceGate}/result'';
+      }
+      {
+        label = "distributed fleet wrapper records byte-identical fleet equivalence";
+        needle = "fleet_equivalence_artifacts=byte-identical";
+      }
+      {
+        label = "distributed fleet wrapper records structural fleet equivalence";
+        needle = "fleet_equivalence_structural=root-budget-graph-exhaustion";
+      }
+      {
+        label = "distributed fleet wrapper records real-QEMU fleet equivalence source";
+        needle = "fleet_equivalence_real_qemu_slice=checks.crucible.phase2.gates.singleVmFingerprint";
+      }
+      {
         label = "distributed fleet wrapper records TCG-only execution";
         needle = "tcg_only=true";
       }
@@ -488,6 +513,10 @@
         label = "phase7 e2e gate import";
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
+      {
+        label = "phase7 fleet equivalence gate import";
+        needle = "gate = import ./phase7-crucible-fleet-equivalence.nix";
+      }
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
@@ -505,6 +534,24 @@
       {
         label = "phase7 acceptance gate records CI wiring guard";
         needle = "ci_wiring_guard=checks.crucible.phase7.crucibleGateCiWiring";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase7-crucible-fleet-equivalence.nix" phase7FleetEquivalence [
+      {
+        label = "phase7 fleet equivalence gate records SimDouble fleet coverage";
+        needle = "simdouble_fleet=host-profile-matrix";
+      }
+      {
+        label = "phase7 fleet equivalence gate records adversarial host conditions";
+        needle = "adversarial_host_conditions=canonical-host-adversary-matrix-simdouble-fleet";
+      }
+      {
+        label = "phase7 fleet equivalence gate records real-QEMU slice source";
+        needle = "real_qemu_slice_source=checks.crucible.phase2.gates.singleVmFingerprint";
+      }
+      {
+        label = "phase7 fleet equivalence gate records bisection handoff";
+        needle = "divergence_bisection=SearchReplayOracleBisectionRequest";
       }
     ];
 

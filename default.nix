@@ -280,6 +280,7 @@
       campaignSeedingGate = crucibleChecks.phase7.crucibleCampaignSeeding;
       campaignStorageBoundingGate = crucibleChecks.phase7.crucibleCampaignStorageBounding;
       determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;
+      fleetEquivalenceGate = crucibleChecks.phase7.gates.fleetEquivalence.rawGate;
     in
       pkgs.mkDerivation {
         pname = "crucible-fleet-distributed-continuous-exploration-surface";
@@ -300,6 +301,7 @@
           campaignSeedingGate
           campaignStorageBoundingGate
           determinismGuardrailGate
+          fleetEquivalenceGate
         ];
 
         phases = [
@@ -383,6 +385,17 @@
               grep -q '^harness_lint_extension=distribution-metadata-flow$' "$determinism_guardrail_result"
               grep -q '^distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban$' "$determinism_guardrail_result"
 
+              fleet_equivalence_result="${fleetEquivalenceGate}/result"
+              grep -q '^PASS$' "$fleet_equivalence_result"
+              grep -q '^gate=gate:fleet-equivalence$' "$fleet_equivalence_result"
+              grep -q '^tasks=T-PLAN-3,T-DCE-8$' "$fleet_equivalence_result"
+              grep -q '^finding_set=content-addressed$' "$fleet_equivalence_result"
+              grep -q '^artifact_bytes=byte-identical$' "$fleet_equivalence_result"
+              grep -q '^structural_equivalence=root-budget-graph-exhaustion$' "$fleet_equivalence_result"
+              grep -q '^discovery_order=diagnostic-only$' "$fleet_equivalence_result"
+              grep -q '^real_qemu_slice_source=checks.crucible.phase2.gates.singleVmFingerprint$' "$fleet_equivalence_result"
+              grep -q '^divergence_bisection=SearchReplayOracleBisectionRequest$' "$fleet_equivalence_result"
+
               test -x "${fleetStore}/bin/crucible-fleet-store"
               test -x "${explorer}/bin/crucible"
               probe_root="$TMPDIR/crucible-fleet-store"
@@ -457,6 +470,7 @@
               campaign_seeding_gate_result=${campaignSeedingGate}/result
               campaign_storage_bounding_gate_result=${campaignStorageBoundingGate}/result
               determinism_guardrail_gate_result=${determinismGuardrailGate}/result
+              fleet_equivalence_gate_result=${fleetEquivalenceGate}/result
               fleet_store_component=${fleetStore}
               fleet_store_build_info=${fleetStore}/nix-support/crucible-fleet-store-build-info
               explorer_closure=${explorer}
@@ -523,6 +537,12 @@
               distribution_metadata_lint=distribution-metadata-flow
               distribution_metadata_forbidden_paths=reduce,Decision,content-key,artifact
               distribution_metadata_allowed_paths=claim-lease,affinity,telemetry,progress
+              fleet_equivalence_finding_set=content-addressed
+              fleet_equivalence_artifacts=byte-identical
+              fleet_equivalence_structural=root-budget-graph-exhaustion
+              fleet_equivalence_order=diagnostic-only
+              fleet_equivalence_real_qemu_slice=checks.crucible.phase2.gates.singleVmFingerprint
+              fleet_equivalence_bisection=SearchReplayOracleBisectionRequest
               distributed_search_surface=enabled
               continuous_campaign_surface=enabled
               hermetic_inputs=fleet-store,explorer

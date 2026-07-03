@@ -970,8 +970,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     publication from 16 concurrent writers with a single final object. The
     TCG-only `checks.fleet.crucible-distributed-continuous-exploration` surface
     consumes this source proof plus the AOS-built `pkgs.crucible-fleet-store`
-    package; four-layer dedup and full `gate:fleet-equivalence` execution remain
-    T-DCE-3 and T-DCE-8.
+    package; the full `gate:fleet-equivalence` proof consumes this shared store
+    as its fleet substrate.
 - [x] **T-DCE-2** Implement content-addressed CLAIM/LEASE work-stealing over the
   shared frontier (TTL leases, not static partitioning; lost/expired claim
   re-expands to a byte-identical deduped node), with soft hash-affinity as a
@@ -987,7 +987,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     partitioning, reclaims both an expired node lease and an abandoned claim-lock
     sidecar, then re-puts the same bytes through `SharedDagStore` to prove
     byte-identical dedup. Four-layer dedup, full fleet search equivalence, and
-    divergence localization remain T-DCE-3/T-DCE-8.
+    divergence localization are checked by the phase7 fleet-equivalence gate.
 - [x] **T-DCE-3** Implement the four dedup layers (exists()-gated expansion, shared
   coverage-map compare-and-merge admission, symmetry/partial-order reduction over
   shared fingerprints, claim-set anti-redundancy). — satisfies [DCE-8]; spec
@@ -1000,8 +1000,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     interrupted fingerprint-before-entry admission, shared reduction fingerprints
     retain one representative and prune covered candidates, and claim-set
     anti-redundancy sends a second host to an unleased frontier node.
-    Full single-host-vs-fleet equivalence and divergence localization remain
-    T-DCE-8.
+    The single-host-vs-fleet equivalence gate consumes these four dedup layers
+    before comparing content-addressed finding sets and artifact bytes.
 - [x] **T-DCE-4** Implement the persistent campaign store + the CAS-advanced
   campaign manifest (the only mutable, non-content-addressed object) naming
   corpus/coverage/findings roots, genesis pin, and provenance, with read-merge-retry
@@ -1034,8 +1034,8 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     evaluated against the campaign-lifetime map, coverage-root merge is
     commutative/idempotent grow-only union, and findings ledger entries replay from
     their stored artifacts while rediscovery deduplicates by content. Fleet
-    equivalence remains T-DCE-8, and the full campaign-continuity gate remains
-    T-DCE-9.
+    equivalence is checked by `gate:fleet-equivalence`, and the full
+    campaign-continuity gate remains T-DCE-9.
 - [x] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
   roots, fat→thin eviction (value preserved), and deterministic seeded corpus
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies
@@ -1055,8 +1055,9 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     authoritative implementation for checkpoint GC and value-preserving
     fat→thin realization through `TemporalGraph::garbage_collect`,
     `TemporalGraph::garbage_collect_store`, and
-    `TemporalGraph::evict_fat_checkpoint_to_thin`. Fleet equivalence remains
-    T-DCE-8, and the full campaign-continuity gate remains T-DCE-9.
+    `TemporalGraph::evict_fat_checkpoint_to_thin`. Fleet equivalence is checked
+    by `gate:fleet-equivalence`, and the full campaign-continuity gate remains
+    T-DCE-9.
 - [x] **T-DCE-7** Enforce the determinism distinction guardrail: distribution
   metadata MUST NOT flow into reduce/Decision/identity/artifact; extend
   `gate:harness-lint` to ban host id / lease timestamps / fleet size / peer count on
@@ -1070,14 +1071,30 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     Claim/lease/affinity/telemetry/progress coordination remains allowed, the
     phase7 `gate:fleet-equivalence` wrapper depends on this guard, and the fleet
     surface records the guard result before advertising distributed continuous
-    exploration. Full fleet equivalence remains T-DCE-8, and campaign continuity
-    remains T-DCE-9.
-- [ ] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
+    exploration. Campaign continuity remains T-DCE-9.
+- [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
   differ), running against the SimDouble fleet under adversarial host conditions and
   a real-QEMU slice, with divergence-bisection localization. — satisfies [DCE-20],
   [DCE-21], [DCE-25], [DCE-33]; spec §35.4.4, §35.5.4; cross-ref 24 §3/§7.
+  - Completed by `checks.crucible.phase7.gates.fleetEquivalence`: the Crucible
+    model now exposes `TemporalGraph::search_with_work_stealing_fleet`,
+    `FleetWorkStealingConfig`, `FleetWorkStealingSearchRun`, and
+    `FleetEquivalenceReport`. The gate test runs single-host exhaustive search
+    and deterministic shared-worklist fleet search over the same scenario family,
+    seed, and budget, requires both runs to exhaust the same content-addressed
+    graph, then compares order-insensitive content-addressed finding sets and
+    byte-identical reproduction artifacts while preserving discovery order only as
+    diagnostics. The test also drives one `SimDouble` lane per logical fleet host
+    under the shared `canonical_host_adversary_matrix` fixture and requires
+    profile-independent host-schedule witnesses. Negative controls drop a fleet
+    finding and cap the budget before exhaustion, verifying divergence-bisection
+    handoff through `SearchReplayOracleBisectionRequest`. The root TCG-only fleet
+    wrapper consumes this gate result before advertising distributed continuous
+    exploration, and the gate is dependency-ordered after
+    `checks.crucible.phase2.gates.singleVmFingerprint` as its real-QEMU fidelity
+    slice.
 - [ ] **T-DCE-9** Implement `gate:campaign-continuity` (seed-reproducibility of
   corpus entries across runs, monotone-non-decreasing accumulated coverage, and
   cross-provenance reuse refused / fresh-lineage fork), plus provenance gating of
