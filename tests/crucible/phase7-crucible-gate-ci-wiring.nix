@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleGateCiWiring",
-  taskIds ? ["T-PKG-14"],
+  taskIds ? ["T-PKG-4" "T-PKG-14"],
   dependencies ? [],
 }: let
   rootDefault = builtins.readFile ../../default.nix;
@@ -325,6 +325,10 @@
         needle = ''attrPath = "checks.integration.qemu-crucible-patch-microtests";'';
       }
       {
+        label = "package patch-microtests task ownership";
+        needle = ''taskIds = ["T-PKG-4" "T-HARN-20"'';
+      }
+      {
         label = "package patch-microtests uses package self";
         needle = "qemuPackage = self;";
       }
@@ -489,6 +493,14 @@
       {
         label = "T-PKG-14 checklist complete";
         needle = "- [x] **T-PKG-14**";
+      }
+      {
+        label = "T-PKG-4 checklist complete";
+        needle = "- [x] **T-PKG-4**";
+      }
+      {
+        label = "T-PKG-4 completion note";
+        needle = "Completed by `checks.crucible.phase7.crucibleGateCiWiring`";
       }
       {
         label = "T-PKG-14 completion note";

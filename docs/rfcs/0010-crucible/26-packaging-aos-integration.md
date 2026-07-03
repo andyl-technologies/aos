@@ -566,9 +566,15 @@ carries findings across an incompatible build.
   - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
     exposes `qemu-crucible-reference` from the same pinned source with
     `applyCruciblePatches = false` for the comparison.
-- [ ] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
+- [x] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
   build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
   series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
+  - Completed by `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
+    check collector exposes `qemu-crucible.checks.patch-microtests` as
+    `checks.integration.qemu-crucible-patch-microtests`, and that integration
+    check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so the
+    apply-clean, patched build, and per-patch micro-tests run against the package
+    output on series/pin/header drift.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
