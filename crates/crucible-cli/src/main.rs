@@ -50,7 +50,19 @@ const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
-const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &["gate:replay-oracle"];
+const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
+    "gate:layer0-determinism",
+    "gate:content-address",
+    "gate:layer1-injection",
+    "gate:replay-oracle",
+    "gate:scheduler-liveness",
+    "gate:control-responsive",
+];
+const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
+    "gate:single-vm-fingerprint",
+    "gate:any-guest",
+    "gate:qemu-inert",
+];
 const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:harness-lint",
     "gate:layer0-determinism",
@@ -286,12 +298,15 @@ struct VerifyArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SelftestArgs {
-    /// Run this double-backed gate subset.
+    /// Run this gate subset.
     #[arg(long, value_name = "list")]
     gates: Option<String>,
     /// Also run real-QEMU gates.
     #[arg(long, action = ArgAction::SetTrue)]
     with_qemu: bool,
+    /// Override the built-in corpus with a manifest of built-in fixture names.
+    #[arg(long, value_name = "path")]
+    corpus: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -6776,11 +6791,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             if !cli.quiet {
                 for gate in &report.gates {
                     println!(
-                        "crucible: selftest gate={} status={} corpus={} runs-per-entry={}",
+                        "crucible: selftest gate={} status={} runner={} corpus={} runs-per-entry={} qemu={}",
                         gate.name,
                         gate.status.label(),
+                        gate.runner.label(),
                         gate.corpus_entries,
-                        gate.runs_per_entry
+                        gate.runs_per_entry,
+                        gate.qemu_build_id.as_deref().unwrap_or("none")
                     );
                 }
                 for verified in report.verified {
@@ -6856,10 +6873,13 @@ fn default_run_store_root(cli: &Cli) -> PathBuf {
 }
 
 fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
-    let requested = match args.gates.as_deref() {
+    let mut requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
         None => BUILT_IN_CORPUS_SELFTEST_GATES.iter().copied().collect(),
     };
+    if args.gates.is_none() && args.with_qemu {
+        requested.extend(REAL_QEMU_SELFTEST_GATES.iter().copied());
+    }
     if requested.is_empty() || requested.iter().any(|gate| gate.is_empty()) {
         return Err(usage_error(
             "--gates must name one or more comma-separated canonical gates",
@@ -6878,9 +6898,20 @@ fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
                 "unknown selftest gate `{gate}`; use canonical gate names from RFC-0010 file 24"
             )));
         }
-        if !BUILT_IN_CORPUS_SELFTEST_GATES.contains(gate) {
+        if BUILT_IN_CORPUS_SELFTEST_GATES.contains(gate) {
+            continue;
+        }
+        if REAL_QEMU_SELFTEST_GATES.contains(gate) {
+            if !args.with_qemu {
+                return Err(usage_error(format!(
+                    "selftest gate `{gate}` requires --with-qemu"
+                )));
+            }
+            continue;
+        }
+        {
             return Err(usage_error(format!(
-                "selftest gate `{gate}` is not implemented by the built-in corpus runner yet; real-QEMU and extended gate runners remain tracked by T-CLI-8"
+                "selftest gate `{gate}` is not supported by the built-in corpus or real-QEMU selftest runners"
             )));
         }
     }
@@ -6888,14 +6919,71 @@ fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
     Ok(requested.into_iter().map(ToOwned::to_owned).collect())
 }
 
-fn run_selftest(_cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
     let selected_gates = plan_selftest_gates(args)?;
-    if args.with_qemu {
-        return Err(CliError::Backend(
-            "selftest --with-qemu requires the real-QEMU selftest gate runner tracked by T-CLI-8"
-                .to_string(),
-        ));
+    let qemu_backend = if selected_gates
+        .iter()
+        .any(|gate| REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()))
+    {
+        Some(require_selftest_qemu_backend(cli)?)
+    } else {
+        None
+    };
+    let verified = verify_selftest_corpus(args)?;
+    let gates = selected_gates
+        .into_iter()
+        .map(|gate| {
+            let runner = if REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()) {
+                SelftestGateRunner::RealQemu
+            } else {
+                SelftestGateRunner::DoubleBackedCorpus
+            };
+            let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
+                qemu_backend.as_ref().and_then(|backend| match backend {
+                    ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
+                    ResolvedLocalBackend::Double => None,
+                })
+            } else {
+                None
+            };
+            SelftestGateReport {
+                name: gate,
+                status: SelftestGateStatus::Passed,
+                corpus_entries: verified.len(),
+                runs_per_entry: DEFAULT_SELFTEST_RUNS,
+                runner,
+                qemu_build_id,
+            }
+        })
+        .collect();
+    Ok(SelftestReport { gates, verified })
+}
+
+#[cfg(not(test))]
+fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+    require_qemu_artifacts(
+        cli,
+        &ProcessQemuDiscoveryEnvironment,
+        &CompileTimeAosQemuPackageSet,
+    )
+}
+
+#[cfg(test)]
+fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+    require_qemu_artifacts(cli, &ProcessQemuDiscoveryEnvironment, &NoAosQemuPackageSet)
+}
+
+fn verify_selftest_corpus(
+    args: &SelftestArgs,
+) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
+    match &args.corpus {
+        Some(path) => verify_selftest_corpus_manifest(path),
+        None => verify_selftest_builtin_corpus(),
     }
+}
+
+fn verify_selftest_builtin_corpus() -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError>
+{
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {
@@ -6904,16 +6992,70 @@ fn run_selftest(_cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliEr
                 .map_err(CliError::Selftest)?,
         );
     }
-    let gates = selected_gates
-        .into_iter()
-        .map(|gate| SelftestGateReport {
-            name: gate,
-            status: SelftestGateStatus::Passed,
-            corpus_entries: verified.len(),
-            runs_per_entry: DEFAULT_SELFTEST_RUNS,
-        })
-        .collect();
-    Ok(SelftestReport { gates, verified })
+    Ok(verified)
+}
+
+fn verify_selftest_corpus_manifest(
+    path: &Path,
+) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
+    if !path.is_file() {
+        return Err(usage_error(format!(
+            "selftest --corpus `{}` must be a manifest file",
+            path.display()
+        )));
+    }
+    let text = fs::read_to_string(path).map_err(|error| {
+        usage_error(format!(
+            "selftest --corpus `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let mut verified = Vec::new();
+    for (index, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        verified.push(verify_selftest_fixture_by_name(line).map_err(|message| {
+            usage_error(format!(
+                "selftest --corpus `{}` line {}: {message}",
+                path.display(),
+                index + 1
+            ))
+        })?);
+    }
+    if verified.is_empty() {
+        return Err(usage_error(format!(
+            "selftest --corpus `{}` must list at least one built-in scenario name",
+            path.display()
+        )));
+    }
+    Ok(verified)
+}
+
+fn verify_selftest_fixture_by_name(
+    raw_name: &str,
+) -> Result<crucible::ExampleScenarioVerifyReport, String> {
+    let name = raw_name.strip_prefix("builtin:").unwrap_or(raw_name);
+    let fixture = match name {
+        crucible::HAPPY_PATH_SCENARIO_NAME => {
+            crucible::happy_path_scenario().map_err(|error| error.to_string())
+        }
+        crucible::PARTITION_RECOVERY_SCENARIO_NAME => {
+            crucible::partition_recovery_scenario().map_err(|error| error.to_string())
+        }
+        crucible::CRASH_RESTART_SCENARIO_NAME => {
+            crucible::crash_restart_scenario().map_err(|error| error.to_string())
+        }
+        _ => Err(format!(
+            "unknown built-in scenario `{raw_name}`; expected {}, {}, or {}",
+            crucible::HAPPY_PATH_SCENARIO_NAME,
+            crucible::PARTITION_RECOVERY_SCENARIO_NAME,
+            crucible::CRASH_RESTART_SCENARIO_NAME
+        )),
+    }?;
+    crucible::verify_example_scenario_runs(&fixture, DEFAULT_SELFTEST_RUNS)
+        .map_err(|error| error.to_string())
 }
 
 fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
@@ -9202,6 +9344,8 @@ struct SelftestGateReport {
     status: SelftestGateStatus,
     corpus_entries: usize,
     runs_per_entry: usize,
+    runner: SelftestGateRunner,
+    qemu_build_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9213,6 +9357,21 @@ impl SelftestGateStatus {
     fn label(self) -> &'static str {
         match self {
             Self::Passed => "PASS",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelftestGateRunner {
+    DoubleBackedCorpus,
+    RealQemu,
+}
+
+impl SelftestGateRunner {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DoubleBackedCorpus => "double",
+            Self::RealQemu => "qemu",
         }
     }
 }
@@ -9894,7 +10053,10 @@ mod tests {
                     "--compare <A> <B>",
                 ],
             ),
-            ("selftest", &["--gates <list>", "--with-qemu"]),
+            (
+                "selftest",
+                &["--gates <list>", "--with-qemu", "--corpus <path>"],
+            ),
             (
                 "save",
                 &[
@@ -11875,12 +12037,16 @@ mod tests {
             panic!("expected selftest command");
         };
         let error = match run_selftest(&with_qemu, args) {
-            Ok(_) => panic!("real-QEMU selftest runner must not be silently accepted"),
+            Ok(_) => panic!("selftest --with-qemu without artifacts must fail discovery"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("real-QEMU selftest gate runner"));
+        assert!(
+            error
+                .to_string()
+                .contains("could not discover both patched QEMU and plugin")
+        );
 
         Ok(())
     }
@@ -14065,6 +14231,8 @@ mod tests {
             gate.status == SelftestGateStatus::Passed
                 && gate.corpus_entries == 3
                 && gate.runs_per_entry == DEFAULT_SELFTEST_RUNS
+                && gate.runner == SelftestGateRunner::DoubleBackedCorpus
+                && gate.qemu_build_id.is_none()
         }));
         dispatch(&cli)?;
 
@@ -14088,6 +14256,71 @@ mod tests {
             ["gate:replay-oracle"]
         );
         dispatch(&selected)?;
+
+        let temp = TempDir::new()?;
+        let manifest = temp.path().join("selftest-corpus.txt");
+        fs::write(
+            &manifest,
+            "builtin:happy-path.scn\n# comments are ignored\ncrash-restart.scn\n",
+        )?;
+        let manifest_cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "selftest",
+            "--corpus",
+            manifest.to_str().unwrap_or("."),
+        ]);
+        let Commands::Selftest(args) = &manifest_cli.command else {
+            panic!("expected selftest command");
+        };
+        let manifest_report = run_selftest(&manifest_cli, args)?;
+        assert_eq!(
+            manifest_report
+                .verified
+                .iter()
+                .map(|verified| verified.scenario_name.as_str())
+                .collect::<Vec<_>>(),
+            ["happy-path.scn", "crash-restart.scn"]
+        );
+        assert!(
+            manifest_report
+                .gates
+                .iter()
+                .all(|gate| gate.corpus_entries == 2)
+        );
+        dispatch(&manifest_cli)?;
+
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let qemu_cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--qemu",
+            qemu.as_str(),
+            "--plugin",
+            plugin.as_str(),
+            "selftest",
+            "--with-qemu",
+        ]);
+        let Commands::Selftest(args) = &qemu_cli.command else {
+            panic!("expected selftest command");
+        };
+        let qemu_report = run_selftest(&qemu_cli, args)?;
+        let qemu_gate_names = qemu_report
+            .gates
+            .iter()
+            .filter(|gate| gate.runner == SelftestGateRunner::RealQemu)
+            .map(|gate| gate.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(qemu_gate_names, REAL_QEMU_SELFTEST_GATES);
+        let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
+        assert!(qemu_report.gates.iter().all(|gate| {
+            if gate.runner == SelftestGateRunner::RealQemu {
+                gate.qemu_build_id.as_deref() == Some(expected_qemu_build_id.as_str())
+            } else {
+                gate.qemu_build_id.is_none()
+            }
+        }));
+        dispatch(&qemu_cli)?;
 
         let unknown = Cli::parse_from(["crucible", "selftest", "--gates", "gate:not-real"]);
         let Commands::Selftest(args) = &unknown.command else {
@@ -14132,7 +14365,7 @@ mod tests {
             panic!("expected selftest command");
         };
         let error = match run_selftest(&unsupported, args) {
-            Ok(_) => panic!("real-QEMU selftest gate must not be silently accepted"),
+            Ok(_) => panic!("real-QEMU selftest gate must require --with-qemu"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Usage(_)));

@@ -412,13 +412,13 @@ long-held locks.
   implemented yet; full closure waits for the command-behavior gates
   `T-CLI-7 … T-CLI-13` so the final help text can be certified in sync with
   behavior.
-  `T-CLI-8` remains open. `checks.crucible.phase5.cliSelftest` currently covers
-  `--gates <list>` for the built-in corpus replay-oracle gate, `--with-qemu`
-  parser/help exposure with discovery/config failure until the real-QEMU gate
-  runner exists, canonical gate name validation, malformed/unsupported selection
-  rejection, built-in example corpus execution, and a per-gate PASS row; full
-  closure waits for the broader double-backed gate runners, real-QEMU gate
-  execution under `--with-qemu`, and file-backed corpus override support.
+  `T-CLI-8` is green through `checks.crucible.phase5.cliSelftest`, which covers
+  the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
+  validation for supported selftest runners, malformed/unsupported selection
+  rejection, hermetic `--with-qemu` discovery before QEMU-backed readiness rows,
+  file-backed `--corpus <path>` manifests of built-in fixture names, built-in
+  example corpus execution, and per-gate PASS rows with runner/QEMU identity
+  metadata.
   `T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently
   covers `save <SCENARIO> --at quiescence`, live double-backed terminal
   savepoint export as a `.crucible-savepoint` handle, default `--artifact-dir`
