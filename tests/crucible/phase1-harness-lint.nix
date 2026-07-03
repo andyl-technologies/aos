@@ -1052,6 +1052,19 @@
       "not a host-nondeterminism boundary"
       "outside supervision/diagnostics path"
       "public export from nondeterministic boundary source"
+      "DISTRIBUTION_METADATA_IDENTIFIERS"
+      "DISTRIBUTION_METADATA_FLOW_TARGETS"
+      "DISTRIBUTION_METADATA_COORDINATION_ONLY_TARGETS"
+      "DISTRIBUTION_METADATA_COORDINATION_FUNCTION_TERMS"
+      "distribution_metadata_flow_failures"
+      "distribution_metadata_identifier_is_guarded"
+      "distribution_metadata_function_is_coordination_only"
+      "claim_replay_artifact"
+      "progress_reduce"
+      "distribution-metadata-flow"
+      "harness_lint_rejects_distribution_metadata_in_identity_paths"
+      "harness_lint_allows_distribution_metadata_in_coordination_paths"
+      "distribution metadata reaching reduce/Decision/content key/artifact path"
     ];
     rustTierFailures =
       lib.concatMap (
@@ -1556,13 +1569,14 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
+            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
-            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments
+            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow
+            distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
             exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface
             predicate_dsl_host_closures=additive-unknown-named-predicates
             RESULT

@@ -538,6 +538,90 @@ fn harness_lint_rejects_custom_static_analysis_drift() {
 }
 
 #[test]
+fn harness_lint_rejects_distribution_metadata_in_identity_paths() {
+    let findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            fn metadata_reaches_artifact(host_id: String, lease_owner: String, fleet_size: usize) {
+                let owner_bytes = lease_owner.into_bytes();
+                let fleet_bytes = fleet_size.to_string().into_bytes();
+                let artifact = CampaignReplayArtifact::new(
+                    host_id.into_bytes(),
+                    [owner_bytes, fleet_bytes].concat(),
+                    b"schedule".to_vec(),
+                );
+                let _key = ContentHash::from_bytes(artifact.replay_hash().to_hex().as_bytes());
+            }
+
+            fn metadata_reaches_decision(peer_count: usize, schedule: &mut Schedule) {
+                let decision = Decision::Preemption(peer_count as u64);
+                schedule.push(decision);
+            }
+
+            fn metadata_reaches_reduce(now_tick: u64, def: ScenarioDef, schedule: Schedule) {
+                let _ = reduce(&def, &schedule);
+                consume(now_tick);
+            }
+
+            fn claim_replay_artifact(owner: String, acquired_at_tick: u64) {
+                let artifact = CampaignReplayArtifact::new(
+                    owner.into_bytes(),
+                    acquired_at_tick.to_string().into_bytes(),
+                    b"schedule".to_vec(),
+                );
+                consume(artifact);
+            }
+
+            fn progress_reduce(peer_count: usize, def: ScenarioDef, schedule: Schedule) {
+                let _ = reduce(&def, &schedule);
+                emit_telemetry(peer_count);
+            }
+        "#,
+    );
+
+    assert_contains(
+        &findings,
+        "distribution metadata reaching reduce/Decision/content key/artifact path",
+    );
+    assert_contains(&findings, "host_id");
+    assert_contains(&findings, "lease_owner");
+    assert_contains(&findings, "fleet_size");
+    assert_contains(&findings, "peer_count");
+    assert_contains(&findings, "now_tick");
+    assert_contains(&findings, "owner");
+    assert_contains(&findings, "acquired_at_tick");
+}
+
+#[test]
+fn harness_lint_allows_distribution_metadata_in_coordination_paths() {
+    let findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            fn claim_next(host_id: String, now_tick: u64) {
+                let expires_at_tick = now_tick + 5;
+                write_claim_metadata(host_id, expires_at_tick);
+            }
+
+            fn progress_report(fleet_size: usize, peer_count: usize) {
+                emit_telemetry(fleet_size, peer_count);
+            }
+
+            fn lease_record(owner: String, acquired_at_tick: u64, node: ContentHash) {
+                let lease_id = ContentHash::from_bytes(
+                    format!("{owner}:{acquired_at_tick}:{}", node.to_hex()).as_bytes(),
+                );
+                write_claim_metadata(owner, acquired_at_tick, lease_id);
+            }
+        "#,
+    );
+
+    assert!(
+        findings.is_empty(),
+        "coordination-only distribution metadata should be accepted: {findings:?}"
+    );
+}
+
+#[test]
 fn harness_lint_rejects_host_or_topology_mutation_in_fault_apply_path() {
     let findings = fault_apply_path_failures(
         Path::new("crucible/src/scheduler.rs"),

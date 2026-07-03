@@ -155,14 +155,14 @@
       needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "fleet equivalence waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
-      edge = "gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence";
-      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence waits for e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
+      edge = "gate:e2e-determinism+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence";
+      needle = "dependencies = [e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, frontier leases, and seam proof";
-      edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+same-seam->gate:fleet-equivalence-wrapper";
-      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
+      label = "fleet equivalence wrapper waits for e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
+      edge = "gate:e2e-determinism-wrapper+fleet-store+shared-dag-store+frontier-leases+four-layer-dedup+determinism-guardrail+same-seam->gate:fleet-equivalence-wrapper";
+      needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
     }
     {
       label = "campaign continuity waits for fleet equivalence, campaign manifest, campaign seeding, storage bounding, and campaign provenance";
@@ -421,6 +421,10 @@
         needle = "fourLayerDedupGate = crucibleChecks.phase7.crucibleFourLayerDedup;";
       }
       {
+        label = "distributed fleet wrapper consumes determinism guardrail gate";
+        needle = "determinismGuardrailGate = crucibleChecks.phase7.crucibleDeterminismGuardrail;";
+      }
+      {
         label = "distributed fleet wrapper records TCG-only execution";
         needle = "tcg_only=true";
       }
@@ -471,6 +475,10 @@
       {
         label = "T-DCE-6 campaign storage bounding guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignStorageBounding";'';
+      }
+      {
+        label = "T-DCE-7 determinism guardrail guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleDeterminismGuardrail";'';
       }
       {
         label = "T-PKG-22 campaign provenance guard is exposed";
@@ -596,6 +604,7 @@ in
             shared_dag_store_source=checks.crucible.phase7.crucibleSharedDagStore
             frontier_lease_source=checks.crucible.phase7.crucibleFrontierLeases
             four_layer_dedup_source=checks.crucible.phase7.crucibleFourLayerDedup
+            determinism_guardrail_source=checks.crucible.phase7.crucibleDeterminismGuardrail
             campaign_manifest_source=checks.crucible.phase7.crucibleCampaignManifest
             campaign_seeding_source=checks.crucible.phase7.crucibleCampaignSeeding
             campaign_storage_bounding_source=checks.crucible.phase7.crucibleCampaignStorageBounding

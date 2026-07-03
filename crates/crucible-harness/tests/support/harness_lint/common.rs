@@ -54,6 +54,53 @@ pub(super) const HASH_ITERATION_METHODS: &[&str] = &[
     "symmetric_difference",
     "union",
 ];
+pub(super) const DISTRIBUTION_METADATA_IDENTIFIERS: &[&str] = &[
+    "host_id",
+    "host_owner",
+    "claim_owner",
+    "lease_owner",
+    "owner",
+    "claim_order",
+    "claim_timestamp",
+    "lease_timestamp",
+    "acquired_at_tick",
+    "expires_at_tick",
+    "now_tick",
+    "fleet_size",
+    "peer_count",
+    "wall_clock",
+    "lease_id",
+];
+pub(super) const DISTRIBUTION_METADATA_FLOW_TARGETS: &[&str] = &[
+    "reduce",
+    "step",
+    "instantiate",
+    "Decision",
+    "ContentHash",
+    "State",
+    "RuntimeState",
+    "Configuration",
+    "ScenarioDef",
+    "Schedule",
+    "CampaignReplayArtifact",
+    "CampaignCorpusSeed",
+    "CampaignFinding",
+    "PersistedCampaignFinding",
+    "replay_hash",
+    "artifact_hash",
+    "persist_replay_artifact",
+    "persist_campaign_corpus",
+    "persist_findings_ledger",
+];
+pub(super) const DISTRIBUTION_METADATA_COORDINATION_ONLY_TARGETS: &[&str] = &["ContentHash"];
+pub(super) const DISTRIBUTION_METADATA_COORDINATION_FUNCTION_TERMS: &[&str] = &[
+    "claim",
+    "lease",
+    "frontier",
+    "affinity",
+    "telemetry",
+    "progress",
+];
 pub(super) const LINT_ALLOW_PREFIX: &str = "crucible-lint: allow ";
 pub(super) const LINT_ALLOW_SEPARATOR: &str = " -- ";
 pub(super) const LINT_RULES: &[&str] = &[
@@ -74,6 +121,7 @@ pub(super) const LINT_RULES: &[&str] = &[
     "direct-diagnostic",
     "stringly-error",
     "host-nondeterminism-state",
+    "distribution-metadata-flow",
 ];
 
 pub(super) fn workspace_root() -> PathBuf {

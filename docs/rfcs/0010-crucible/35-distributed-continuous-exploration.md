@@ -1033,9 +1033,9 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     bit-identically without live process state, accumulated coverage novelty is
     evaluated against the campaign-lifetime map, coverage-root merge is
     commutative/idempotent grow-only union, and findings ledger entries replay from
-    their stored artifacts while rediscovery deduplicates by content. Determinism
-    guardrails remain T-DCE-7, fleet equivalence remains T-DCE-8, and the full
-    campaign-continuity gate remains T-DCE-9.
+    their stored artifacts while rediscovery deduplicates by content. Fleet
+    equivalence remains T-DCE-8, and the full campaign-continuity gate remains
+    T-DCE-9.
 - [x] **T-DCE-6** Implement campaign storage bounding: GC rooted at the manifest's
   roots, fat→thin eviction (value preserved), and deterministic seeded corpus
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies
@@ -1055,14 +1055,23 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     authoritative implementation for checkpoint GC and value-preserving
     fat→thin realization through `TemporalGraph::garbage_collect`,
     `TemporalGraph::garbage_collect_store`, and
-    `TemporalGraph::evict_fat_checkpoint_to_thin`. Determinism guardrails remain
-    T-DCE-7, fleet equivalence remains T-DCE-8, and the full
-    campaign-continuity gate remains T-DCE-9.
-- [ ] **T-DCE-7** Enforce the determinism distinction guardrail: distribution
+    `TemporalGraph::evict_fat_checkpoint_to_thin`. Fleet equivalence remains
+    T-DCE-8, and the full campaign-continuity gate remains T-DCE-9.
+- [x] **T-DCE-7** Enforce the determinism distinction guardrail: distribution
   metadata MUST NOT flow into reduce/Decision/identity/artifact; extend
   `gate:harness-lint` to ban host id / lease timestamps / fleet size / peer count on
   any reduce/Decision/key/artifact path. — satisfies [DCE-16], [DCE-17], [DCE-18],
   [DCE-19]; spec §35.4; routes [INV-1], [INV-9].
+  - Completed by `checks.crucible.phase7.crucibleDeterminismGuardrail`: the
+    `gate:harness-lint` custom static tier now rejects distribution metadata
+    (`host_id`, lease owner aliases, lease timestamps/ticks, fleet size, peer
+    count, claim order, and wall-clock aliases) in functions touching `reduce`,
+    `Decision`, content key/identity, or reproduction artifact paths.
+    Claim/lease/affinity/telemetry/progress coordination remains allowed, the
+    phase7 `gate:fleet-equivalence` wrapper depends on this guard, and the fleet
+    surface records the guard result before advertising distributed continuous
+    exploration. Full fleet equivalence remains T-DCE-8, and campaign continuity
+    remains T-DCE-9.
 - [ ] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may

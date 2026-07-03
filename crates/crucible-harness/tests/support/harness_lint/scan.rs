@@ -136,6 +136,7 @@ pub(super) fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec
     findings.extend(unordered_select_failures(path, content, &tokens));
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
     findings.extend(fault_apply_path_failures(path, content));
+    findings.extend(distribution_metadata_flow_failures(path, content, &tokens));
     findings.extend(allow_annotation_failures(path, content));
     filter_cfg_test_findings(content, findings)
 }
@@ -481,6 +482,159 @@ fn token_matches_needle(token: &Token, needle: TokenNeedle) -> bool {
         (TokenNeedle::Punct(expected), TokenKind::Punct(actual)) => *actual == expected,
         (TokenNeedle::Ident(_) | TokenNeedle::Punct(_), _) => false,
     }
+}
+
+pub(super) fn distribution_metadata_flow_failures(
+    path: &Path,
+    content: &str,
+    tokens: &[Token],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for function in function_body_ranges(tokens) {
+        let body_tokens = &tokens[function.body.clone()];
+        let metadata_tokens = body_tokens
+            .iter()
+            .filter(|token| {
+                token.kind.as_ident().is_some_and(|identifier| {
+                    distribution_metadata_identifier_is_guarded(
+                        identifier,
+                        &function.name,
+                        body_tokens,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if metadata_tokens.is_empty() {
+            continue;
+        }
+        let target_identifiers = body_tokens
+            .iter()
+            .filter_map(|token| token.kind.as_ident())
+            .filter(|identifier| DISTRIBUTION_METADATA_FLOW_TARGETS.contains(identifier))
+            .collect::<BTreeSet<_>>();
+        if target_identifiers.is_empty() {
+            continue;
+        }
+        if distribution_metadata_function_is_coordination_only(&function.name, &target_identifiers)
+        {
+            continue;
+        }
+
+        for token in metadata_tokens {
+            let Some(identifier) = token.kind.as_ident() else {
+                continue;
+            };
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "distribution metadata reaching reduce/Decision/content key/artifact path",
+                identifier,
+                "distribution-metadata-flow",
+            );
+        }
+    }
+
+    findings
+}
+
+fn distribution_metadata_identifier_is_guarded(
+    identifier: &str,
+    function_name: &str,
+    body_tokens: &[Token],
+) -> bool {
+    if !DISTRIBUTION_METADATA_IDENTIFIERS.contains(&identifier) {
+        return false;
+    }
+    if identifier != "owner" {
+        return true;
+    }
+
+    distribution_metadata_body_has_coordination_context(function_name, body_tokens)
+}
+
+fn distribution_metadata_body_has_coordination_context(
+    function_name: &str,
+    body_tokens: &[Token],
+) -> bool {
+    distribution_metadata_name_has_coordination_term(function_name)
+        || body_tokens.iter().any(|token| {
+            matches!(
+                token.kind.as_ident(),
+                Some(
+                    "host_id"
+                        | "host_owner"
+                        | "claim_owner"
+                        | "lease_owner"
+                        | "claim_order"
+                        | "claim_timestamp"
+                        | "lease_timestamp"
+                        | "acquired_at_tick"
+                        | "expires_at_tick"
+                        | "lease_id"
+                )
+            )
+        })
+}
+
+fn distribution_metadata_function_is_coordination_only(
+    name: &str,
+    target_identifiers: &BTreeSet<&str>,
+) -> bool {
+    distribution_metadata_name_has_coordination_term(name)
+        && target_identifiers
+            .iter()
+            .all(|target| DISTRIBUTION_METADATA_COORDINATION_ONLY_TARGETS.contains(target))
+}
+
+fn distribution_metadata_name_has_coordination_term(name: &str) -> bool {
+    let normalized = name.replace('-', "_").to_ascii_lowercase();
+    DISTRIBUTION_METADATA_COORDINATION_FUNCTION_TERMS
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+fn function_body_ranges(tokens: &[Token]) -> Vec<FunctionBodyRange> {
+    let mut functions = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor + 1 < tokens.len() {
+        if tokens[cursor].kind.as_ident() != Some("fn") {
+            cursor += 1;
+            continue;
+        }
+        let Some(name) = tokens[cursor + 1].kind.as_ident() else {
+            cursor += 1;
+            continue;
+        };
+        let Some(open_brace) = tokens[cursor + 2..]
+            .iter()
+            .position(|token| matches!(token.kind, TokenKind::Punct('{')))
+            .map(|relative| cursor + 2 + relative)
+        else {
+            cursor += 1;
+            continue;
+        };
+        let Some(close_brace) = matching_brace(tokens, open_brace) else {
+            cursor = open_brace + 1;
+            continue;
+        };
+        functions.push(FunctionBodyRange {
+            name: name.to_string(),
+            body: open_brace + 1..close_brace,
+        });
+        cursor = close_brace + 1;
+    }
+
+    functions
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FunctionBodyRange {
+    name: String,
+    body: std::ops::Range<usize>,
 }
 
 fn fault_apply_forbidden_token_failures(
