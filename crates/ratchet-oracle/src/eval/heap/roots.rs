@@ -48,6 +48,7 @@ const MINOR_GC_OLD_FIELD_VALUES_TABLE: &str = "minor-GC old field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 const MINOR_GC_OBJECT_BYTE_COPY_REQUESTS_TABLE: &str = "minor-GC object byte-copy requests";
+const MINOR_GC_OBJECT_BODY_WRITES_TABLE: &str = "minor-GC object body writes";
 const MINOR_GC_OBJECT_GENERATION_WRITES_TABLE: &str = "minor-GC object generation writes";
 const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot buffer";
 const MINOR_GC_FORWARDING_VALUES_TABLE: &str = "minor-GC forwarding values";
@@ -1476,7 +1477,7 @@ fn validate_object_byte_copy_record_layout(
     copy: MinorGcObjectCopy,
     record: &HeapRecord,
 ) -> Result<(), EvalHeapError> {
-    if record.layout.size_bytes != copy.size_bytes() || record.layout.align != copy.align() {
+    if !heap_record_layout_matches(record.layout, copy.size_bytes(), copy.align()) {
         return Err(EvalHeapError::CollectorPollObjectByteCopyLayoutMismatch {
             address: copy.source(),
             expected_size: copy.size_bytes(),
@@ -1486,6 +1487,46 @@ fn validate_object_byte_copy_record_layout(
         });
     }
     Ok(())
+}
+
+fn validate_object_byte_copy_request_source_record_layout(
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    record: &HeapRecord,
+) -> Result<(), EvalHeapError> {
+    if !heap_record_layout_matches(record.layout, request.size_bytes(), request.align()) {
+        return Err(EvalHeapError::CollectorPollObjectByteCopyLayoutMismatch {
+            address: request.source(),
+            expected_size: request.size_bytes(),
+            actual_size: record.layout.size_bytes,
+            expected_align: request.align(),
+            actual_align: record.layout.align,
+        });
+    }
+    Ok(())
+}
+
+fn validate_object_body_write_destination_record_layout(
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    record: &HeapRecord,
+) -> Result<(), EvalHeapError> {
+    if !heap_record_layout_matches(record.layout, request.size_bytes(), request.align()) {
+        return Err(EvalHeapError::CollectorPollObjectBodyWriteLayoutMismatch {
+            address: request.destination(),
+            expected_size: request.size_bytes(),
+            actual_size: record.layout.size_bytes,
+            expected_align: request.align(),
+            actual_align: record.layout.align,
+        });
+    }
+    Ok(())
+}
+
+const fn heap_record_layout_matches(
+    layout: HeapRecordLayout,
+    size_bytes: usize,
+    align: usize,
+) -> bool {
+    layout.size_bytes == size_bytes && layout.align == align
 }
 
 /// Commit metadata for an allocation-poll minor-GC plan.
@@ -1819,6 +1860,13 @@ impl AllocationCollectorPollObjectByteCopyPlan {
         Self { requests }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_requests_for_test(
+        requests: Vec<AllocationCollectorPollObjectByteCopyRequest>,
+    ) -> Self {
+        Self::new(requests)
+    }
+
     /// Returns object byte-copy requests in commit order.
     pub fn requests(&self) -> &[AllocationCollectorPollObjectByteCopyRequest] {
         &self.requests
@@ -1894,6 +1942,59 @@ impl AllocationCollectorPollObjectByteCopyPlan {
     ) -> Result<AllocationCollectorPollObjectGenerationWritePlan, EvalHeapError> {
         AllocationCollectorPollObjectGenerationWritePlan::from_requests(&self.requests)
     }
+}
+
+/// A summary of heap-record object-body writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollObjectBodyWriteReport {
+    objects: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    payload_bytes: usize,
+}
+
+impl AllocationCollectorPollObjectBodyWriteReport {
+    fn record(&mut self, request: AllocationCollectorPollObjectByteCopyRequest) {
+        self.objects = self.objects.saturating_add(1);
+        self.payload_bytes = self.payload_bytes.saturating_add(request.size_bytes());
+        match request.action() {
+            MinorGcSurvivorAction::CopyToNursery => {
+                self.copied_to_nursery = self.copied_to_nursery.saturating_add(1);
+            }
+            MinorGcSurvivorAction::PromoteToOld => {
+                self.promoted_to_old = self.promoted_to_old.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns how many destination heap-record bodies were written.
+    pub const fn objects(self) -> usize {
+        self.objects
+    }
+
+    /// Returns how many body-write requests target next-nursery destinations.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns how many body-write requests target promoted old-generation destinations.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the total copied-object payload bytes covered by the writes.
+    pub const fn payload_bytes(self) -> usize {
+        self.payload_bytes
+    }
+}
+
+struct CollectorPollObjectBodyWrite {
+    destination_index: usize,
+    object: HeapObjectValue,
+    layout: HeapRecordLayout,
+    structural_hash: Option<HotXxh3Hash>,
+    value_hash: Option<ValueHash>,
+    captured_value_hash: Option<ValueHash>,
 }
 
 /// A summary of heap-record object-generation writes.
@@ -3417,6 +3518,147 @@ impl EvalHeap {
         Ok(plan.report())
     }
 
+    /// Applies heap-record object-body writes for relocated destinations.
+    ///
+    /// The object-copy plan must also satisfy the same global invariants as a
+    /// heap-record generation write plan: destination generation must agree with
+    /// survivor action, sources and destinations must be unique, destinations must
+    /// not be sources, and destinations must not overlap another survivor source.
+    /// Each source must still be a current young survivor with the layout captured
+    /// by the object-copy request, and each destination address must already
+    /// belong to a heap record with the same layout. The full plan is validated
+    /// before any destination body is changed, so an unknown source, unknown
+    /// destination, duplicate/overlapping copy identity, or stale layout leaves all
+    /// records unchanged. This writes the typed evaluator object body and
+    /// body-owned cache metadata on existing heap records; it assumes callers pass
+    /// unaliased collector-owned destination records because this side table does
+    /// not yet model semispace ownership. It does not allocate destination records,
+    /// write generation metadata, rewrite references, install forwarding headers,
+    /// publish remembered sets, or manage semispaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the object-copy plan violates generation-write
+    /// identity invariants, if planned scratch storage cannot be reserved, if a
+    /// source is unknown or no longer young, if a source or destination layout no
+    /// longer matches the object-copy request, or if a destination address does not
+    /// belong to this heap.
+    pub fn apply_collector_poll_minor_gc_object_body_writes(
+        &mut self,
+        plan: &AllocationCollectorPollObjectByteCopyPlan,
+    ) -> Result<AllocationCollectorPollObjectBodyWriteReport, EvalHeapError> {
+        let _ = plan.object_generation_write_plan()?;
+        let mut planned = Vec::new();
+        planned
+            .try_reserve_exact(plan.requests().len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_OBJECT_BODY_WRITES_TABLE,
+                entries: plan.requests().len(),
+            })?;
+
+        let mut report = AllocationCollectorPollObjectBodyWriteReport::default();
+        for request in plan.requests().iter().copied() {
+            let source_index = self.record_index_for_minor_gc_survivor(request.source())?;
+            validate_object_byte_copy_request_source_record_layout(
+                request,
+                &self.records[source_index],
+            )?;
+            let Some(destination_index) = self.records.iter().position(|record| {
+                record.ptr.as_ptr() as usize == request.destination().address_bits()
+            }) else {
+                return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+                    destination: request.destination(),
+                });
+            };
+            validate_object_body_write_destination_record_layout(
+                request,
+                &self.records[destination_index],
+            )?;
+
+            let source = &self.records[source_index];
+            planned.push(CollectorPollObjectBodyWrite {
+                destination_index,
+                object: source.object.clone(),
+                layout: source.layout,
+                structural_hash: source.structural_hash,
+                value_hash: source.value_hash.get(),
+                captured_value_hash: source.captured_value_hash.get(),
+            });
+            report.record(request);
+        }
+
+        for write in planned {
+            let destination = &mut self.records[write.destination_index];
+            destination.object = write.object;
+            destination.layout = write.layout;
+            destination.structural_hash = write.structural_hash;
+            destination.value_hash.set(write.value_hash);
+            destination
+                .captured_value_hash
+                .set(write.captured_value_hash);
+        }
+
+        Ok(report)
+    }
+
+    /// Validates that a relocated destination heap record has a bound object body.
+    ///
+    /// The source must still be a young survivor, source and destination layouts
+    /// must match the object-copy request, both records must carry `tag`, and the
+    /// destination body must be representation-equivalent to the source body. This
+    /// is the side-table body binding check used by narrow live-root writeback
+    /// applicators after [`Self::apply_collector_poll_minor_gc_object_body_writes`]
+    /// has installed destination bodies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if either heap record is missing, if the source is
+    /// no longer young, if either layout is stale, if a record tag disagrees with
+    /// `tag`, or if the destination object body does not match the source body.
+    pub fn validate_collector_poll_minor_gc_object_body_binding(
+        &self,
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        tag: ValueTag,
+    ) -> Result<(), EvalHeapError> {
+        let source_index = self.record_index_for_minor_gc_survivor(request.source())?;
+        let source = &self.records[source_index];
+        validate_object_byte_copy_request_source_record_layout(request, source)?;
+        if source.object.tag() != tag {
+            return Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+                source_address: request.source(),
+                destination: request.destination(),
+                reason: "source record tag does not match root writeback tag",
+            });
+        }
+
+        let Some(destination) = self
+            .records
+            .iter()
+            .find(|record| record.ptr.as_ptr() as usize == request.destination().address_bits())
+        else {
+            return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+                destination: request.destination(),
+            });
+        };
+        validate_object_body_write_destination_record_layout(request, destination)?;
+        if destination.object.tag() != tag {
+            return Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+                source_address: request.source(),
+                destination: request.destination(),
+                reason: "destination record tag does not match root writeback tag",
+            });
+        }
+        if !heap_object_value_raw_eq(&source.object, &destination.object) {
+            return Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+                source_address: request.source(),
+                destination: request.destination(),
+                reason: "destination record body does not match source record body",
+            });
+        }
+
+        Ok(())
+    }
+
     /// Returns the live side-table forwarding value installed for `address`.
     ///
     /// This exposes evaluator-owned forwarding metadata used by the tree-walk
@@ -4763,6 +5005,34 @@ fn gc_address_for_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapE
 
 const fn generation_for_record(record: &HeapRecord) -> HeapGeneration {
     record.generation
+}
+
+fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> bool {
+    match (left, right) {
+        (HeapObjectValue::String(left), HeapObjectValue::String(right))
+        | (HeapObjectValue::Path(left), HeapObjectValue::Path(right)) => left == right,
+        (HeapObjectValue::List(left), HeapObjectValue::List(right)) => left.raw_eq(right),
+        (
+            HeapObjectValue::Attrs {
+                shape: left_shape,
+                attrs: left_attrs,
+            },
+            HeapObjectValue::Attrs {
+                shape: right_shape,
+                attrs: right_attrs,
+            },
+        ) => left_shape == right_shape && left_attrs.raw_eq(right_attrs),
+        (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => {
+            std::rc::Rc::ptr_eq(left, right)
+        }
+        (HeapObjectValue::Primop(left), HeapObjectValue::Primop(right)) => {
+            std::rc::Rc::ptr_eq(left, right)
+        }
+        (HeapObjectValue::Thunk(left), HeapObjectValue::Thunk(right)) => {
+            std::rc::Rc::ptr_eq(left, right)
+        }
+        _ => false,
+    }
 }
 
 fn push_thunk_kind_edges(

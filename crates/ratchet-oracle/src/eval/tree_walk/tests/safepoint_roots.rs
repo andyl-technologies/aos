@@ -115,6 +115,65 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
     )
 }
 
+fn boundary_lambda_outcome_with_existing_destination() -> (EvalOutcome, Value, Value) {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let original = evaluator.eval_root().expect("lambda evaluates");
+    let destination = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("test destination lambda allocates");
+
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(original)
+        .expect("lambda value builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    (
+        EvalOutcome {
+            value: original,
+            heap: evaluator.heap,
+            stats,
+            attr_telemetry: evaluator.attr_telemetry,
+            trace_output: evaluator.trace_output,
+            warning_output: evaluator.warning_output,
+            impure_input_trace: evaluator.impure_input_trace,
+            impure_input_trace_complete: evaluator.impure_input_trace_complete,
+            persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+            derivations,
+            thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+            thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+            memory_budget_action: None,
+            cheap_memory_budget_plan: None,
+            cheap_memory_advice_report: None,
+            cold_hash_consed_value_materialization: None,
+            gc_stress_boundary_scans,
+            gc_stress_boundary_minor_gc_reference_writebacks:
+                EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+            gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
+            gc_stress_boundary_minor_gc_destination_storage:
+                EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+            gc_stress_boundary_minor_gc_object_generations:
+                EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+            gc_stress_boundary_minor_gc_writeback_destination_bindings:
+                EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
+        },
+        original,
+        destination,
+    )
+}
+
 fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
     scan.scan().roots().iter().any(|scan_root| {
         scan_root.source() == &EvalRootSource::ValueStack { slot: 0 }
@@ -1949,6 +2008,112 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
             generation: HeapGeneration::Young,
         })
     );
+}
+
+#[test]
+fn outcome_root_writebacks_update_bound_value_stack_root() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+    let old_base = static_gc_address(0x2000_0000);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, old_base),
+        )
+        .expect("live metadata installs with an already-bound destination");
+    let object_byte_copy_plan = live_metadata
+        .dry_run()
+        .preflights()
+        .worker()
+        .expect("worker preflight records object copies")
+        .object_byte_copy_plan()
+        .clone();
+    let body_report = outcome
+        .heap
+        .apply_collector_poll_minor_gc_object_body_writes(&object_byte_copy_plan)
+        .expect("destination body writes apply");
+    assert_eq!(live_metadata.reference_writebacks_installed(), 1);
+    assert_eq!(body_report.objects(), 1);
+    assert!(outcome.value().raw_eq(original_value));
+    assert!(!outcome.value().raw_eq(destination_value));
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_outcome_root_writebacks()
+        .expect("outcome value-stack root writeback applies");
+
+    assert_eq!(report.value_stack_roots(), 1);
+    assert_eq!(report.roots(), 1);
+    assert!(outcome.value().raw_eq(destination_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("destination value remains heap-bound"),
+        HeapGeneration::Young
+    );
+}
+
+#[test]
+fn outcome_root_writebacks_reject_unbound_destination_body_without_mutation() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with an existing but unbound destination");
+    assert!(outcome.value().raw_eq(original_value));
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_outcome_root_writebacks()
+        .expect_err("unbound destination body is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        } if source_address == gc_address(original_value) && destination == destination_address
+    ));
+    assert!(outcome.value().raw_eq(original_value));
+}
+
+#[test]
+fn outcome_root_writebacks_reject_stale_value_without_mutation() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+    let stale_value = Value::int(1);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with an already-bound destination");
+    assert!(outcome.value().raw_eq(original_value));
+    outcome.value = stale_value;
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_outcome_root_writebacks()
+        .expect_err("stale outcome value is rejected");
+
+    assert!(matches!(
+        err,
+        EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+            index: 0,
+            expected_tag: ValueTag::Lambda,
+            actual_tag: ValueTag::Int,
+            ..
+        }
+    ));
+    assert!(outcome.value().raw_eq(stale_value));
 }
 
 #[test]

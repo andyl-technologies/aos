@@ -53,8 +53,9 @@ pub use roots::{
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
-    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
-    AllocationCollectorPollObjectGenerationWrite, AllocationCollectorPollObjectGenerationWritePlan,
+    AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
+    AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollObjectGenerationWrite,
+    AllocationCollectorPollObjectGenerationWritePlan,
     AllocationCollectorPollObjectGenerationWriteReport, AllocationCollectorPollReferenceSlot,
     AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
     AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
@@ -409,7 +410,7 @@ impl EvalHeapColdHashConsedValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum HeapObjectValue {
     String(NixString),
     Path(NixString),
@@ -1174,6 +1175,94 @@ pub enum EvalHeapError {
         destination: GcHeapAddress,
         /// The generation carried by the destination binding.
         generation: HeapGeneration,
+    },
+    /// A boundary outcome-root writer was asked to mutate a root it does not own.
+    #[error(
+        "boundary minor-GC outcome root writeback cannot write unsupported root source {root_source:?}"
+    )]
+    BoundaryMinorGcOutcomeRootWritebackUnsupportedSource {
+        /// The root source that is not owned by the evaluation outcome value.
+        root_source: EvalRootSource,
+    },
+    /// A boundary outcome-root writer was asked to rewrite one physical slot twice.
+    #[error(
+        "boundary minor-GC outcome root writeback cannot write duplicate value-stack slot 0 at index {index} from {root_source:?}"
+    )]
+    BoundaryMinorGcOutcomeRootWritebackDuplicateValueStackRoot {
+        /// The duplicated write index in the validated root-writeback plan.
+        index: usize,
+        /// The root source that duplicates the outcome-owned slot.
+        root_source: EvalRootSource,
+    },
+    /// The source object for an outcome root writeback is no longer young.
+    #[error(
+        "boundary minor-GC outcome root writeback for {root_source:?} source 0x{source_address:x} has generation {actual:?}, expected {expected:?}",
+        source_address = source_address.address_bits()
+    )]
+    BoundaryMinorGcOutcomeRootWritebackSourceGenerationMismatch {
+        /// The outcome-owned root source being rewritten.
+        root_source: EvalRootSource,
+        /// The from-space object expected in the outcome root.
+        source_address: GcHeapAddress,
+        /// The generation required for a minor-GC source.
+        expected: HeapGeneration,
+        /// The current heap-record generation for the source object.
+        actual: HeapGeneration,
+    },
+    /// The destination object for an outcome root writeback has the wrong generation.
+    #[error(
+        "boundary minor-GC outcome root writeback for {root_source:?} destination 0x{destination:x} has generation {actual:?}, expected {expected:?}",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcOutcomeRootWritebackDestinationGenerationMismatch {
+        /// The outcome-owned root source being rewritten.
+        root_source: EvalRootSource,
+        /// The destination object written into the outcome root.
+        destination: GcHeapAddress,
+        /// The generation carried by the validated root writeback.
+        expected: HeapGeneration,
+        /// The current heap-record generation for the destination object.
+        actual: HeapGeneration,
+    },
+    /// A minor-GC object-body write plan references a destination outside the heap.
+    #[error(
+        "collector-poll object-body write destination 0x{destination:x} does not belong to this heap",
+        destination = destination.address_bits()
+    )]
+    UnknownCollectorPollObjectBodyDestination {
+        /// The destination address that should already resolve to a heap record.
+        destination: GcHeapAddress,
+    },
+    /// A minor-GC object-body write's destination record has stale layout metadata.
+    #[error(
+        "collector-poll object-body write layout mismatch at 0x{address:x}: expected {expected_size} bytes/{expected_align} align, got {actual_size} bytes/{actual_align} align",
+        address = address.address_bits()
+    )]
+    CollectorPollObjectBodyWriteLayoutMismatch {
+        /// The source or destination object address whose side-table layout failed validation.
+        address: GcHeapAddress,
+        /// The byte size captured by the object-copy request.
+        expected_size: usize,
+        /// The byte size currently stored on the heap record.
+        actual_size: usize,
+        /// The alignment captured by the object-copy request.
+        expected_align: usize,
+        /// The alignment currently stored on the heap record.
+        actual_align: usize,
+    },
+    /// A minor-GC object-body write has not been applied for a destination record.
+    #[error(
+        "collector-poll object-body binding mismatch for source 0x{source_address:x} -> destination 0x{destination:x}: {reason}",
+        source_address = source_address.address_bits(),
+        destination = destination.address_bits()
+    )]
+    CollectorPollObjectBodyWriteBindingMismatch {
+        /// The planned from-space source object.
+        source_address: GcHeapAddress,
+        /// The planned destination object.
+        destination: GcHeapAddress,
+        /// The validation condition that failed.
+        reason: &'static str,
     },
     /// A destination byte-copy request disagrees with its own survivor action.
     #[error(

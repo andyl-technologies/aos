@@ -1380,6 +1380,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       bound to live heap-object records, and no path allocates destination
       records, binds object bodies, swaps semispaces, mutates roots/fields,
       writes ABI object headers, or invokes Tier B.
+- [x] Current heap-record object-body write applicator precursor:
+      `EvalHeap::apply_collector_poll_minor_gc_object_body_writes` consumes an
+      `AllocationCollectorPollObjectByteCopyPlan`, validates every source is
+      still a young survivor with the planned layout, validates every destination
+      already resolves to a heap record with the same layout, enforces the same
+      duplicate/overlap/destination-is-source invariants as the object-generation
+      writer, and then atomically copies the typed source object body plus
+      body-owned hash/cache metadata into the destination record.
+      `EvalHeap::validate_collector_poll_minor_gc_object_body_binding`
+      is the matching predicate for later root writers: it proves source and
+      destination records, layouts, tags, and representation-level object bodies
+      agree. Tests cover binding an existing destination record, report counts,
+      unchanged destination generation, malformed-plan rejection with no mutation,
+      and unbound-body rejection through the outcome-root applicator. This is
+      still an already-bound-record applicator with an explicit caller
+      responsibility: destination records must be unaliased collector-owned
+      scratch records, because the current evaluator heap side table cannot prove
+      semispace ownership. It does not allocate destination records, reserve
+      semispace storage, write heap-record generations, mutate roots/fields, write
+      ABI object headers, or invoke Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -1427,6 +1447,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       not mutate evaluator roots, bind destination bytes to heap-object bodies,
       mutate heap-record generations, manage semispaces, mutate heap fields,
       write ABI object headers, or invoke Tier B.
+- [x] Current boundary outcome value-stack root writeback applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_outcome_root_writebacks`
+      consumes the installed root-writeback write plan for the outcome-owned
+      transient `ValueStack { slot: 0 }` root, validates that the returned value
+      still contains the expected young from-space object, verifies that both
+      source and replacement destination are already bound to live heap records
+      with the required generations, requires the destination object body to be
+      bound through `EvalHeap::validate_collector_poll_minor_gc_object_body_binding`,
+      rejects duplicate writes to the same physical outcome slot, and then
+      rewrites `EvalOutcome::value`. Tests cover a copied boundary root after an
+      explicit object-body write, unbound destination-body rejection with no
+      mutation, duplicate physical slot rejection, and stale returned-value
+      rejection with no mutation. This is only an already-bound outcome-root
+      applicator: synthetic boundary destination addresses remain rejected until
+      destination records exist as unaliased collector-owned scratch records and
+      their object bodies are bound, and active evaluator frames, import caches,
+      arbitrary value-stack roots, JIT stack maps, heap fields, ABI object
+      headers, semispace storage, and Tier-B dispatch remain open.
 - [x] Current boundary live heap-field writeback write-plan bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_write_plan`
       validates installed live heap-field writeback slots against installed
@@ -2301,6 +2339,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       young sources and destination-record bindings. Boundary dry-runs still do
       not bind their destination bytes or addresses to live heap-object records,
       so this writer is not yet wired into the boundary commit path.
+      `EvalHeap::apply_collector_poll_minor_gc_object_body_writes` separately
+      binds typed source object bodies and body-owned cache metadata into
+      already-resolved destination records after validating the same object-copy
+      layouts and duplicate/overlap invariants; it still assumes those records
+      are unaliased collector-owned scratch destinations and does not allocate
+      destination records or reserve semispace storage.
       `EvalOutcome::gc_stress_boundary_minor_gc_forwarding_destination_bindings`
       validates each installed destination-byte snapshot against its matching
       source forwarding value and rejects installed forwarding cells without
@@ -2323,6 +2367,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       producing the immutable root-source/domain, typed replacement value,
       generation metadata, destination, request, and payload records for a
       future live root writer.
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_outcome_root_writebacks`
+      can apply the subset for the outcome-owned `ValueStack { slot: 0 }` root
+      when the replacement destination is already bound to a live heap record and
+      its typed object body has been bound to the planned source, while still
+      leaving active-frame/import-cache/JIT root storage and synthetic
+      destination allocation/binding open.
       `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
       validates installed heap-field writebacks against the replacement
       destination snapshots, and for copied nursery-field writes also validates

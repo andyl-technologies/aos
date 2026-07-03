@@ -1,10 +1,13 @@
 //! Evaluation outcome, derivation, statistics, trace, IFD-realization, and warning types.
 
+use std::ptr::NonNull;
+
 use super::*;
 use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
 use crate::eval::heap::EvalRootSource;
 use crate::heap::HeapGeneration;
+use crate::value::HeapObject;
 
 type IfdRealizerCallback =
     dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
@@ -2058,6 +2061,28 @@ impl EvalGcStressBoundaryMinorGcRootWritebackWritePlan {
     }
 }
 
+/// Counts for outcome-owned root slots rewritten by a boundary minor-GC plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
+    value_stack_roots: usize,
+}
+
+impl EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport {
+    const fn new(value_stack_roots: usize) -> Self {
+        Self { value_stack_roots }
+    }
+
+    /// Returns how many outcome-owned value-stack roots were rewritten.
+    pub const fn value_stack_roots(self) -> usize {
+        self.value_stack_roots
+    }
+
+    /// Returns the total number of outcome-owned roots rewritten.
+    pub const fn roots(self) -> usize {
+        self.value_stack_roots
+    }
+}
+
 /// A heap-field writeback matched to installed destination-byte snapshots.
 ///
 /// The binding is validation metadata for a future object-field writer. It
@@ -3459,6 +3484,107 @@ fn root_writeback_write_matches_binding(
         && write.replacement_tag() == binding.replacement_tag()
         && write.destination() == binding.destination()
         && write.generation() == binding.generation()
+}
+
+fn apply_boundary_minor_gc_outcome_root_writebacks(
+    outcome_value: &mut Value,
+    heap: &EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+) -> Result<EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport, EvalHeapError> {
+    let value_stack_roots = validate_boundary_minor_gc_outcome_root_writeback_sources(plan)?;
+    let mut replacement = None;
+
+    for write in plan.writes() {
+        let expected =
+            boundary_minor_gc_heap_value(write.replacement_tag(), write.request().source())?;
+        if !outcome_value.raw_eq(expected) {
+            return Err(EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+                index: 0,
+                expected_tag: expected.tag(),
+                expected_payload: expected.payload_bits(),
+                actual_tag: outcome_value.tag(),
+                actual_payload: outcome_value.payload_bits(),
+            });
+        }
+
+        let source_generation = heap.generation(expected)?;
+        if source_generation != HeapGeneration::Young {
+            return Err(
+                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackSourceGenerationMismatch {
+                    root_source: write.root_source().clone(),
+                    source_address: write.request().source(),
+                    expected: HeapGeneration::Young,
+                    actual: source_generation,
+                },
+            );
+        }
+
+        let next = write.replacement_value();
+        let destination_generation = heap.generation(next)?;
+        if destination_generation != write.generation() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackDestinationGenerationMismatch {
+                    root_source: write.root_source().clone(),
+                    destination: write.destination(),
+                    expected: write.generation(),
+                    actual: destination_generation,
+                },
+            );
+        }
+        heap.validate_collector_poll_minor_gc_object_body_binding(
+            write.request(),
+            write.replacement_tag(),
+        )?;
+        replacement = Some(next);
+    }
+
+    if let Some(next) = replacement {
+        *outcome_value = next;
+    }
+
+    Ok(EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport::new(
+        value_stack_roots,
+    ))
+}
+
+fn validate_boundary_minor_gc_outcome_root_writeback_sources(
+    plan: &EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
+) -> Result<usize, EvalHeapError> {
+    let mut value_stack_zero_seen = false;
+    let mut value_stack_roots = 0usize;
+
+    for (index, write) in plan.writes().iter().enumerate() {
+        let EvalRootSource::ValueStack { slot: 0 } = write.root_source() else {
+            return Err(
+                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackUnsupportedSource {
+                    root_source: write.root_source().clone(),
+                },
+            );
+        };
+        if value_stack_zero_seen {
+            return Err(
+                EvalHeapError::BoundaryMinorGcOutcomeRootWritebackDuplicateValueStackRoot {
+                    index,
+                    root_source: write.root_source().clone(),
+                },
+            );
+        }
+
+        value_stack_zero_seen = true;
+        value_stack_roots = value_stack_roots.saturating_add(1);
+    }
+
+    Ok(value_stack_roots)
+}
+
+fn boundary_minor_gc_heap_value(
+    tag: ValueTag,
+    address: GcHeapAddress,
+) -> Result<Value, EvalHeapError> {
+    let ptr = NonNull::new(address.address_bits() as *mut HeapObject).ok_or(
+        EvalHeapError::Value(crate::value::ValueError::NullHeapPointer { tag }),
+    )?;
+    Value::heap(tag, ptr).map_err(EvalHeapError::Value)
 }
 
 #[derive(Clone, Debug)]
@@ -5950,6 +6076,63 @@ mod root_writeback_destination_binding_tests {
             write_plan.writes()[0].destination_bytes(),
             destination_bytes
         );
+    }
+
+    #[test]
+    fn outcome_root_writebacks_reject_duplicate_physical_value_stack_slot() {
+        let source = address(0x1000);
+        let first_destination = address(0x2000);
+        let second_destination = address(0x3000);
+        let root_source = root_source(0);
+        let first_replacement = heap_value(ValueTag::Lambda, first_destination);
+        let second_replacement = heap_value(ValueTag::Lambda, second_destination);
+        let plan = EvalGcStressBoundaryMinorGcRootWritebackWritePlan::new(vec![
+            EvalGcStressBoundaryMinorGcRootWritebackWrite {
+                allocation_domain: HeapAllocationDomain::Worker,
+                root_source: root_source.clone(),
+                replacement_tag: ValueTag::Lambda,
+                replacement_value: first_replacement,
+                destination: first_destination,
+                generation: HeapGeneration::Young,
+                replacement_metadata: heap(first_destination, HeapGeneration::Young),
+                request: request(
+                    source,
+                    first_destination,
+                    MinorGcSurvivorAction::CopyToNursery,
+                ),
+                destination_bytes: vec![1, 2, 3, 4],
+            },
+            EvalGcStressBoundaryMinorGcRootWritebackWrite {
+                allocation_domain: HeapAllocationDomain::PermanentShared,
+                root_source: root_source.clone(),
+                replacement_tag: ValueTag::Lambda,
+                replacement_value: second_replacement,
+                destination: second_destination,
+                generation: HeapGeneration::Young,
+                replacement_metadata: heap(second_destination, HeapGeneration::Young),
+                request: request(
+                    source,
+                    second_destination,
+                    MinorGcSurvivorAction::CopyToNursery,
+                ),
+                destination_bytes: vec![1, 2, 3, 4],
+            },
+        ]);
+        let mut outcome_value = heap_value(ValueTag::Lambda, source);
+        let original_value = outcome_value;
+        let heap = EvalHeap::new();
+
+        let err = apply_boundary_minor_gc_outcome_root_writebacks(&mut outcome_value, &heap, &plan)
+            .expect_err("duplicate physical outcome root is rejected");
+
+        assert!(matches!(
+            err,
+            EvalHeapError::BoundaryMinorGcOutcomeRootWritebackDuplicateValueStackRoot {
+                index: 1,
+                root_source: actual_root_source,
+            } if actual_root_source == root_source
+        ));
+        assert!(outcome_value.raw_eq(original_value));
     }
 
     #[test]
@@ -8959,6 +9142,37 @@ impl EvalOutcome {
             &self.gc_stress_boundary_minor_gc_reference_writebacks,
             &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
         )
+    }
+
+    /// Applies supported boundary root writes to this outcome's returned value.
+    ///
+    /// This is a narrow live-root precursor for the synthetic boundary
+    /// value-stack root published by
+    /// `TreeWalk::gc_stress_boundary_scans`. It accepts only
+    /// `ValueStack { slot: 0 }`, validates that [`Self::value`] still contains
+    /// the expected young from-space object, and validates that the replacement
+    /// destination already belongs to this outcome's heap with the generation
+    /// carried by the write plan. It also requires the destination object body to
+    /// be bound to the planned source by
+    /// [`EvalHeap::validate_collector_poll_minor_gc_object_body_binding`] before
+    /// mutating the returned value. It does not bind destination bodies itself,
+    /// allocate destination records, mutate active evaluator frames, rewrite
+    /// import caches, update JIT stack maps, or commit semispace state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed root-writeback metadata is
+    /// inconsistent, if the write plan contains a root source other than the
+    /// outcome-owned value-stack slot 0, if more than one write targets that
+    /// physical outcome slot, if the returned value no longer holds the expected
+    /// from-space source, if the source/destination heap records are missing or
+    /// have the wrong generation, or if the destination object body is not bound
+    /// to the planned source.
+    pub fn apply_gc_stress_boundary_minor_gc_outcome_root_writebacks(
+        &mut self,
+    ) -> Result<EvalGcStressBoundaryMinorGcOutcomeRootWritebackReport, EvalHeapError> {
+        let plan = self.gc_stress_boundary_minor_gc_root_writeback_write_plan()?;
+        apply_boundary_minor_gc_outcome_root_writebacks(&mut self.value, &self.heap, &plan)
     }
 
     /// Matches installed heap-field writebacks to destination-byte snapshots.
