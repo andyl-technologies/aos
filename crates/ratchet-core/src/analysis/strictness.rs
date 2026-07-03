@@ -28,7 +28,7 @@ pub struct StrictnessAnalysisReport {
     pub nodes_marked_strict: usize,
 }
 
-/// Errors returned when strictness analysis sees malformed IR side tables.
+/// Errors returned when strictness analysis sees malformed IR storage.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StrictnessAnalysisError {
     /// A node id did not exist in the arena.
@@ -50,6 +50,16 @@ pub enum StrictnessAnalysisError {
         id: IrId,
         /// The invalid child slice.
         slice: IrChildSlice,
+    },
+    /// A node's payload did not match its node kind.
+    #[error("invalid payload for {kind:?} node {id:?}: expected {expected}")]
+    InvalidPayload {
+        /// The node with the invalid payload.
+        id: IrId,
+        /// The node kind whose payload was invalid.
+        kind: IrKind,
+        /// The expected payload shape.
+        expected: &'static str,
     },
     /// A binding slice did not resolve through the binding table.
     #[error("invalid binding slice {slice:?} at IR node {id:?}")]
@@ -93,9 +103,9 @@ pub enum StrictnessAnalysisError {
 ///
 /// # Errors
 ///
-/// Returns [`StrictnessAnalysisError`] if the IR arena, child pool, binding
-/// table, attribute-path table, symbol table, or fact table is internally
-/// inconsistent.
+/// Returns [`StrictnessAnalysisError`] if an arena node payload does not match
+/// its kind, or if the IR arena, child pool, binding table, attribute-path
+/// table, symbol table, or fact table is internally inconsistent.
 pub fn annotate_strictness(
     ir: &mut Ir,
 ) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
@@ -106,7 +116,92 @@ pub fn annotate_strictness(
             actual: ir.facts.len(),
         });
     }
+    for index in 0..node_count {
+        let id = IrId::new(index as u32);
+        let node = *ir
+            .arena
+            .node(id)
+            .ok_or(StrictnessAnalysisError::InvalidNode { id })?;
+        validate_payload(id, node)?;
+        ir.facts
+            .get(id)
+            .ok_or(StrictnessAnalysisError::MissingFact { id })?;
+    }
     StrictnessAnalyzer::new(ir).run()
+}
+
+fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), StrictnessAnalysisError> {
+    let valid = match node.kind {
+        IrKind::Int => matches!(node.data, IrData::Int(_)),
+        IrKind::Float => matches!(node.data, IrData::Float(_)),
+        IrKind::Bool => matches!(node.data, IrData::Bool(_)),
+        IrKind::Null => matches!(node.data, IrData::None),
+        IrKind::Str | IrKind::Path | IrKind::Uri | IrKind::GlobalVar | IrKind::BuiltinAttr => {
+            matches!(node.data, IrData::Symbol(_))
+        }
+        IrKind::LocalVar => matches!(node.data, IrData::Local { .. }),
+        IrKind::UpvalVar => matches!(node.data, IrData::Upval { .. }),
+        IrKind::SearchPath => matches!(node.data, IrData::SearchPath { .. }),
+        IrKind::List => matches!(node.data, IrData::Children(_)),
+        IrKind::AttrSet => matches!(node.data, IrData::AttrSet { .. }),
+        IrKind::Lambda => matches!(node.data, IrData::Lambda { .. }),
+        IrKind::FormalSet => matches!(node.data, IrData::FormalSet { .. }),
+        IrKind::Formal => matches!(node.data, IrData::Formal { .. }),
+        IrKind::Apply | IrKind::With | IrKind::Assert => matches!(node.data, IrData::Pair { .. }),
+        IrKind::Select => matches!(node.data, IrData::Select { .. }),
+        IrKind::HasAttr => matches!(node.data, IrData::HasAttr { .. }),
+        IrKind::Let => matches!(node.data, IrData::Let { .. }),
+        IrKind::If => matches!(node.data, IrData::Triple { .. }),
+        IrKind::BinOp => matches!(node.data, IrData::Binary { .. }),
+        IrKind::UnaryOp => matches!(node.data, IrData::Unary { .. }),
+        IrKind::Interp => matches!(
+            node.data,
+            IrData::Node(_) | IrData::Children(_) | IrData::None
+        ),
+        IrKind::ThunkAlloc => matches!(node.data, IrData::Node(_)),
+        IrKind::PrimOp => matches!(
+            node.data,
+            IrData::PrimOp { .. } | IrData::DialectNode { .. } | IrData::DialectScopeVar { .. }
+        ),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(StrictnessAnalysisError::InvalidPayload {
+            id,
+            kind: node.kind,
+            expected: expected_payload(node.kind),
+        })
+    }
+}
+
+fn expected_payload(kind: IrKind) -> &'static str {
+    match kind {
+        IrKind::Int => "integer payload",
+        IrKind::Float => "float payload",
+        IrKind::Bool => "boolean payload",
+        IrKind::Null => "empty payload",
+        IrKind::Str | IrKind::Path | IrKind::Uri => "symbol payload",
+        IrKind::LocalVar => "local slot payload",
+        IrKind::UpvalVar => "upvalue slot payload",
+        IrKind::GlobalVar | IrKind::BuiltinAttr => "symbol payload",
+        IrKind::SearchPath => "search-path payload",
+        IrKind::List => "children payload",
+        IrKind::AttrSet => "attrset payload",
+        IrKind::Lambda => "lambda payload",
+        IrKind::FormalSet => "formal-set payload",
+        IrKind::Formal => "formal payload",
+        IrKind::Apply | IrKind::With | IrKind::Assert => "pair payload",
+        IrKind::Select => "select payload",
+        IrKind::HasAttr => "hasAttr payload",
+        IrKind::Let => "let payload",
+        IrKind::If => "triple payload",
+        IrKind::BinOp => "binary payload",
+        IrKind::UnaryOp => "unary payload",
+        IrKind::Interp => "interpolation payload",
+        IrKind::ThunkAlloc => "thunk body",
+        IrKind::PrimOp => "primop payload",
+    }
 }
 
 #[derive(Debug)]

@@ -6847,6 +6847,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       strictness entries outside the IR arena. This is a fact-substrate
       consistency check only; it does not extend the demand lattice or the
       whole-program fixpoint.
+- [x] Current strictness payload-validation hardening:
+      `annotate_strictness` now validates every arena node's kind/payload shape
+      before demand propagation marks facts, so malformed raw/imported IR cannot
+      silently downgrade demand precision or leave a partially-mutated fact
+      table. This is an analyzer-boundary check only; it does not add
+      whole-program call-graph demand propagation or worker/wrapper rewriting.
 - [x] Current worker-wrapper planning precursor:
       `ratchet-core::analysis::worker_wrapper` consumes strictness facts for
       direct literal lambda applications and reports where a simple-formal

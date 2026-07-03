@@ -65,6 +65,50 @@ fn strictness_rejects_fact_table_length_mismatches() {
 }
 
 #[test]
+fn strictness_rejects_malformed_payloads_before_marking_facts() {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Null,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root: IrId::new(0),
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_strictness(&mut ir).expect_err("invalid payload rejects");
+
+    assert!(matches!(
+        error,
+        StrictnessAnalysisError::InvalidPayload {
+            id,
+            kind: IrKind::LocalVar,
+            expected: "local slot payload",
+        } if id == IrId::new(1)
+    ));
+    assert_eq!(strictness(&ir, ir.root), Strictness::Unknown);
+}
+
+#[test]
 fn strictness_marks_root_and_guaranteed_strict_children_only() {
     let ir = annotate("if 1 == 1 then [ (1 / 0) ] else 0");
     let root = ir.root;
