@@ -2726,6 +2726,8 @@ impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitPreflightReport {
 pub struct EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
     forwarding_header_write_plan_report: EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
     reference_writeback_apply_report: EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport,
+    remembered_set_published_edges: usize,
+    card_table_clear_report: GcCardTableClearReport,
 }
 
 impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
@@ -2734,10 +2736,14 @@ impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
             EvalGcStressBoundaryMinorGcForwardingHeaderWritePlanReport,
         reference_writeback_apply_report:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebackApplyReport,
+        remembered_set_published_edges: usize,
+        card_table_clear_report: GcCardTableClearReport,
     ) -> Self {
         Self {
             forwarding_header_write_plan_report,
             reference_writeback_apply_report,
+            remembered_set_published_edges,
+            card_table_clear_report,
         }
     }
 
@@ -2843,6 +2849,21 @@ impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
     /// Returns how many supported references were rewritten.
     pub const fn references(self) -> usize {
         self.reference_writeback_apply_report.references()
+    }
+
+    /// Returns the number of remembered edges kept published for the next epoch.
+    pub const fn remembered_set_published_edges(self) -> usize {
+        self.remembered_set_published_edges
+    }
+
+    /// Returns the report for the post-reference live card-table clear.
+    pub const fn card_table_clear_report(self) -> GcCardTableClearReport {
+        self.card_table_clear_report
+    }
+
+    /// Returns how many dirty-card markers were cleared from live outcome state.
+    pub const fn card_table_dirty_cards_cleared(self) -> usize {
+        self.card_table_clear_report.dirty_cards()
     }
 }
 
@@ -4368,6 +4389,34 @@ fn validate_boundary_minor_gc_live_reference_writebacks(
             heap_field_plan.report(),
         ),
     )
+}
+
+fn validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+    remembered_set: &RememberedSet,
+    live_bindings: &EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings,
+) -> Result<(), EvalHeapError> {
+    for binding in live_bindings.heap_field_writeback_bindings() {
+        if binding.writeback_object_request().is_some()
+            || binding.replacement_generation() != HeapGeneration::Young
+        {
+            continue;
+        }
+
+        let expected_edge = RememberedEdge::new(
+            binding.writeback_object(),
+            binding.replacement_destination(),
+        );
+        if !remembered_set.edges().contains(&expected_edge) {
+            return Err(
+                EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
+                    source_address: expected_edge.source(),
+                    target_address: expected_edge.target(),
+                },
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_boundary_minor_gc_reference_writeback_direct_destination_aliases(
@@ -11057,14 +11106,16 @@ impl EvalOutcome {
     /// Preflights the existing-destination live commit bridge without mutation.
     ///
     /// This validates installed live forwarding cells against installed
-    /// forwarding-destination bindings, then validates the installed live
+    /// forwarding-destination bindings, verifies that prior live metadata
+    /// publication left the card table clean, then validates the installed live
     /// root/heap-field writeback metadata through the read-only reference
     /// writeback preflight. It covers the currently modeled live commit
     /// projections for existing destination records: forwarding-header metadata,
     /// paired object-body/generation staging, outcome-owned value-stack root
     /// writeback, supported record-owned heap-field writes, direct
-    /// owner/destination alias rejection, and remembered-set/card-table barrier
-    /// staging against side-table clones.
+    /// owner/destination alias rejection, published remembered-set coherence for
+    /// installed direct old/permanent-to-young writebacks, and remembered-set/card-table
+    /// barrier staging against side-table clones.
     ///
     /// This is a read-only GC-stress orchestration bridge. It does not write ABI
     /// object headers, commit destination bodies or generations, mutate roots or
@@ -11076,9 +11127,12 @@ impl EvalOutcome {
     /// Returns [`EvalHeapError`] if forwarding-header metadata is missing,
     /// absent for installed reference writebacks, or stale, if installed
     /// root/heap-field writeback metadata is inconsistent, if live roots or
-    /// fields no longer hold the expected from-space values, if a destination
-    /// heap record aliases a direct in-place heap-field write owner, or if
-    /// existing destination records reject paired body/generation staging.
+    /// fields no longer hold the expected from-space values, if the card table
+    /// is dirty after live metadata publication, if the already-published
+    /// remembered set is missing a direct old/permanent-to-young edge required
+    /// by installed writeback metadata, if a destination heap record aliases a
+    /// direct in-place heap-field write owner, or if existing destination
+    /// records reject paired body/generation staging.
     /// Whether this returns `Ok` or `Err`, live forwarding cells, destination
     /// object bodies/generations, roots, heap fields, remembered-set/card-table
     /// state, and the outcome value are left unchanged.
@@ -11101,6 +11155,17 @@ impl EvalOutcome {
             forwarding_header_write_plan.report(),
             installed_references,
         )?;
+        if !self.thunk_resolve_card_table.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcExistingDestinationCommitDirtyCardTable {
+                    dirty_cards: self.thunk_resolve_card_table.len(),
+                },
+            );
+        }
+        validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+            &self.thunk_resolve_remembered_set,
+            &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
+        )?;
         let reference_writeback_preflight =
             self.validate_gc_stress_boundary_minor_gc_live_reference_writebacks()?;
         Ok(
@@ -11117,12 +11182,16 @@ impl EvalOutcome {
     /// [`Self::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`].
     /// It first validates installed live forwarding cells against installed
     /// forwarding-destination bindings, including the zero-coverage guard for
-    /// independently installed reference metadata. It then consumes installed
-    /// root and heap-field writeback metadata plus installed writeback
-    /// destination bindings through the live-reference applicator, binding
-    /// destination object bodies/generations, rewriting supported record-owned
-    /// heap fields, publishing staged remembered/card-table barriers, and
-    /// finally updating the prevalidated outcome root.
+    /// independently installed reference metadata, verifies that prior live
+    /// metadata publication left the card table clean, checks that the
+    /// already-published remembered set covers direct old/permanent-to-young
+    /// edges from the installed writeback batch, and clones that remembered set
+    /// before mutation. It then consumes installed root and heap-field writeback
+    /// metadata plus installed writeback destination bindings through the
+    /// live-reference applicator, binding destination object bodies/generations,
+    /// rewriting supported record-owned heap fields, updating the prevalidated
+    /// outcome root, restoring the published remembered set, and clearing the
+    /// card table dirt introduced by the apply-time direct barriers.
     ///
     /// This is a narrow GC-stress orchestration bridge for existing destination
     /// records. It validates forwarding-header metadata but does not write ABI
@@ -11140,10 +11209,14 @@ impl EvalOutcome {
     /// fields no longer hold the expected from-space values, if a destination
     /// heap record aliases a direct in-place heap-field write owner, if existing
     /// destination records reject paired body/generation writes, or if supported
-    /// field or remembered/card-table writes cannot be staged. Forwarding
-    /// metadata validation happens before destination object bodies,
-    /// generations, roots, heap fields, remembered-set/card-table state, or the
-    /// outcome value are changed.
+    /// field or remembered/card-table writes cannot be staged, if the card table
+    /// is dirty after live metadata publication, if the already-published
+    /// remembered set is missing a direct old/permanent-to-young edge required
+    /// by installed writeback metadata, or if the published remembered set
+    /// cannot be cloned before mutation. Forwarding metadata, card-table, and
+    /// remembered-set coherence validation happen before destination object
+    /// bodies, generations, roots, heap fields, remembered-set/card-table state,
+    /// or the outcome value are changed.
     pub fn apply_gc_stress_boundary_minor_gc_live_existing_destination_commit(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport, EvalHeapError>
@@ -11158,6 +11231,19 @@ impl EvalOutcome {
             forwarding_header_write_plan.report(),
             installed_references,
         )?;
+        if !self.thunk_resolve_card_table.is_empty() {
+            return Err(
+                EvalHeapError::BoundaryMinorGcExistingDestinationCommitDirtyCardTable {
+                    dirty_cards: self.thunk_resolve_card_table.len(),
+                },
+            );
+        }
+        validate_boundary_minor_gc_existing_destination_commit_published_remembered_edges(
+            &self.thunk_resolve_remembered_set,
+            &self.gc_stress_boundary_minor_gc_writeback_destination_bindings,
+        )?;
+        let published_remembered_set = self.thunk_resolve_remembered_set.try_clone()?;
+        let remembered_set_published_edges = published_remembered_set.len();
         let root_plan = self.gc_stress_boundary_minor_gc_root_writeback_write_plan()?;
         let heap_field_plan = self.gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()?;
         let reference_writeback_apply_report = apply_boundary_minor_gc_live_reference_writebacks(
@@ -11168,11 +11254,15 @@ impl EvalOutcome {
             &root_plan,
             &heap_field_plan,
         )?;
+        self.thunk_resolve_remembered_set = published_remembered_set;
+        let card_table_clear_report = self.thunk_resolve_card_table.clear_dirty_cards();
 
         Ok(
             EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport::new(
                 forwarding_header_write_plan.report(),
                 reference_writeback_apply_report,
+                remembered_set_published_edges,
+                card_table_clear_report,
             ),
         )
     }

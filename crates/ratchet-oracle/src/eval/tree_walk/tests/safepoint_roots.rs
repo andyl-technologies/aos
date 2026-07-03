@@ -5903,6 +5903,8 @@ fn live_existing_destination_commit_validate_headers_and_references_without_muta
     );
     assert_eq!(live_metadata.object_body_preflight_objects(), 1);
     assert_eq!(live_metadata.object_generation_preflight_objects(), 1);
+    assert!(live_metadata.live_metadata().remembered_set_published());
+    assert!(outcome.thunk_resolve_card_table().is_empty());
     let root_plan = outcome
         .gc_stress_boundary_minor_gc_root_writeback_write_plan()
         .expect("root writeback plan validates");
@@ -6135,6 +6137,9 @@ fn live_existing_destination_commit_applies_references_after_header_validation()
     );
     assert_eq!(live_metadata.object_body_preflight_objects(), 1);
     assert_eq!(live_metadata.object_generation_preflight_objects(), 1);
+    assert!(live_metadata.live_metadata().remembered_set_published());
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+    let published_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
     let root_plan = outcome
         .gc_stress_boundary_minor_gc_root_writeback_write_plan()
         .expect("root writeback plan validates");
@@ -6161,6 +6166,11 @@ fn live_existing_destination_commit_applies_references_after_header_validation()
     assert_eq!(report.roots(), 1);
     assert_eq!(report.fields(), 1);
     assert_eq!(report.references(), 2);
+    assert_eq!(
+        report.remembered_set_published_edges(),
+        published_remembered_edges.len()
+    );
+    assert_eq!(report.card_table_dirty_cards_cleared(), 1);
     assert!(outcome.value().raw_eq(destination));
     let lambda = outcome
         .heap()
@@ -6192,8 +6202,209 @@ fn live_existing_destination_commit_applies_references_after_header_validation()
             .expect("source forwarding cell remains readable"),
         forwarding_before
     );
-    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        published_remembered_edges.as_slice()
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn live_existing_destination_commit_apply_rejects_dirty_card_table_before_mutation() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let source_address = gc_address(child);
+    let destination_address = gc_address(destination);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("existing-destination live metadata installs for mixed writebacks");
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let forwarding_before = outcome
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("source forwarding cell is readable");
+    let original_outcome_value = outcome.value();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let original_remembered_edges = outcome.thunk_resolve_remembered_set().edges().to_vec();
+    let dirty_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(dirty_source)
+        .expect("stale dirty card marks");
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect_err("dirty card table rejects before existing-destination commit");
+
+    assert_eq!(
+        err,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitDirtyCardTable { dirty_cards: 1 }
+    );
+    assert!(outcome.value().raw_eq(original_outcome_value));
+    assert!(
+        outcome
+            .heap()
+            .get_lambda(parent)
+            .expect("parent lambda remains typed")
+            .with_scope_env()
+            .scopes()[0]
+            .value()
+            .raw_eq(child)
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("source forwarding cell remains readable"),
+        forwarding_before
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        original_remembered_edges.as_slice()
+    );
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
+    assert_eq!(
+        outcome.thunk_resolve_card_table().dirty_cards()[0].source(),
+        dirty_source
+    );
+}
+
+#[test]
+fn live_existing_destination_commit_rejects_stale_published_remembered_set_before_mutation() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let source_address = gc_address(child);
+    let writeback_source = gc_address(parent);
+    let destination_address = gc_address(destination);
+    let expected_edge = RememberedEdge::new(writeback_source, destination_address);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("existing-destination live metadata installs for mixed writebacks");
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+    assert!(
+        outcome
+            .thunk_resolve_remembered_set()
+            .edges()
+            .contains(&expected_edge)
+    );
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan validates");
+    let root_write = &root_plan.writes()[0];
+    let forwarding_before = outcome
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("source forwarding cell is readable");
+    let original_outcome_value = outcome.value();
+    let original_destination_generation = outcome
+        .heap()
+        .generation(destination)
+        .expect("original destination is heap-bound");
+    let stale_edge = RememberedEdge::new(writeback_source, static_gc_address(0x3000_0000));
+    let mut stale_remembered_set =
+        RememberedSet::with_epoch(outcome.thunk_resolve_remembered_set().epoch());
+    stale_remembered_set
+        .record(stale_edge)
+        .expect("stale remembered edge records");
+    outcome.thunk_resolve_remembered_set = stale_remembered_set;
+
+    let validate_err = outcome
+        .validate_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect_err("stale remembered set rejects existing-destination preflight");
+    assert_eq!(
+        validate_err,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
+            source_address: writeback_source,
+            target_address: destination_address,
+        }
+    );
+    let apply_err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_existing_destination_commit()
+        .expect_err("stale remembered set rejects before existing-destination commit");
+
+    assert_eq!(
+        apply_err,
+        EvalHeapError::BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
+            source_address: writeback_source,
+            target_address: destination_address,
+        }
+    );
+    assert!(outcome.value().raw_eq(original_outcome_value));
+    assert!(
+        outcome
+            .heap()
+            .get_lambda(parent)
+            .expect("parent lambda remains typed")
+            .with_scope_env()
+            .scopes()[0]
+            .value()
+            .raw_eq(child)
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("source forwarding cell remains readable"),
+        forwarding_before
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                root_write.request(),
+                root_write.replacement_tag(),
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+    assert_eq!(
+        outcome.thunk_resolve_remembered_set().edges(),
+        &[stale_edge]
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
 #[test]

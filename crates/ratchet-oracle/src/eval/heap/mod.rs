@@ -827,6 +827,28 @@ pub enum EvalHeapError {
         /// The relocation value whose address collides with the source set.
         destination: ResolvedValueGeneration,
     },
+    /// An existing-destination boundary commit found a dirty live card table
+    /// after metadata publication should have cleared it.
+    #[error(
+        "boundary minor-GC existing-destination commit expected a clean live card table after metadata publication, found {dirty_cards} dirty cards"
+    )]
+    BoundaryMinorGcExistingDestinationCommitDirtyCardTable {
+        /// The number of dirty-card markers still present.
+        dirty_cards: usize,
+    },
+    /// An existing-destination boundary commit found that its already-published
+    /// remembered set does not cover an installed direct heap-field writeback.
+    #[error(
+        "boundary minor-GC existing-destination commit published remembered set is missing direct writeback edge 0x{source_address:x} -> 0x{target_address:x}",
+        source_address = source_address.address_bits(),
+        target_address = target_address.address_bits()
+    )]
+    BoundaryMinorGcExistingDestinationCommitMissingRememberedEdge {
+        /// The old or permanent source object whose field will be rewritten.
+        source_address: GcHeapAddress,
+        /// The young replacement destination required by the installed writeback.
+        target_address: GcHeapAddress,
+    },
     /// Boundary live destination-byte snapshots have already been installed.
     #[error(
         "boundary minor-GC live destination storage already contains {existing} object snapshots"

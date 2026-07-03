@@ -6277,7 +6277,9 @@ and helps the oracle directly.
       object-body/generation staging, the outcome-owned value-stack root,
       supported record-owned heap fields, direct owner/destination aliasing, and
       barrier staging against cloned remembered/card side tables without
-      committing any staged writes. Unit tests cover a mixed root plus dirty
+      committing any staged writes. It also requires the live card table to
+      already be clean after live metadata publication. Unit tests cover a mixed
+      root plus dirty
       permanent lambda-capture field whose existing scratch replacement is
       copied to young without mutating forwarding cells, destination
       body/generation state, heap fields, remembered/card side tables, or the
@@ -6294,14 +6296,20 @@ and helps the oracle directly.
       composes installed forwarding-header metadata validation with the
       mutating live reference writeback bridge. It validates live forwarding
       cells and the zero forwarding-header coverage gate before deriving
-      root/field write plans or committing writes, then binds paired
+      root/field write plans or committing writes, requires the live card table
+      to already be clean after live metadata publication, clones the already
+      published remembered set after checking it covers the installed direct
+      old/permanent-to-young writeback edges, then binds paired
       object-body/generation writes, rewrites the supported outcome-owned
-      value-stack root and record-owned heap fields, and publishes staged
-      remembered/card-table barriers through the live-reference applicator.
+      value-stack root and record-owned heap fields, restores the published
+      remembered set, and clears the card-table dirt introduced by apply-time
+      direct barriers.
       Unit tests cover mixed root plus dirty permanent lambda-capture field
-      success with the preinstalled forwarding cell unchanged, reference-only
-      metadata rejection before stale-root validation or mutation, and
-      stale-forwarding rejection before reference mutation. This still requires
+      success with the preinstalled forwarding cell unchanged and the card table
+      empty afterward, dirty-card-table and stale-published-remembered-set
+      rejection before mutation, reference-only metadata rejection before
+      stale-root validation or mutation, and stale-forwarding rejection before
+      reference mutation. This still requires
       destination records and metadata to already exist, validates but does not
       write ABI object headers, does not allocate synthetic destinations or own
       semispace storage, and does not cover active evaluator frames, import
@@ -7166,8 +7174,14 @@ and helps the oracle directly.
       value write.
       `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`
       layers forwarding-header metadata validation over that read-only reference
-      preflight, so missing or stale forwarding cells fail before a future
-      existing-destination commit would publish headers or reference writes.
+      preflight and requires the card table to be clean after live metadata
+      publication and the published remembered set to cover the installed direct
+      old/permanent-to-young writeback edges, so missing or stale forwarding
+      cells, stale dirty cards, and stale remembered-set publication fail before
+      a future existing-destination commit would publish headers or reference
+      writes. The existing-destination commit applicator preserves the
+      already-published remembered set after that edge-coverage check and clears
+      the card-table dirt introduced while applying direct heap-field barriers.
       The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
