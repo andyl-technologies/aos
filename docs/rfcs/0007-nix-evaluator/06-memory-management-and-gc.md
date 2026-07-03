@@ -2590,21 +2590,30 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
       then uses that same complete-partition prevalidation before writing the
       supported tree-walk root storage while leaving heap-field rewrites in
-      caller-owned buffers. Tests cover the poll-derived all-root rewrite,
-      direct stale-poll rejection before mutation in the planning wrapper,
-      root-only applicator, and buffer applicator, stale typed-root,
+      caller-owned buffers.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
+      carries the same current-poll object-copy plan into the existing-destination
+      live heap-field writer, prevalidates typed roots and live heap-field slots,
+      applies paired object-body/generation writes to already-bound destination
+      records, rewrites supported tree-walk root storage and record-owned heap
+      fields, and stages direct old/permanent-to-young write barriers into the
+      evaluator remembered/card side tables. Tests cover the poll-derived
+      all-root rewrite, direct stale-poll rejection before mutation in the
+      planning wrapper, root-only applicator, buffer applicator, stale typed-root,
       heap-field metadata, and live heap-field buffer rejection before either
       buffer partition is rewritten, complete mixed root/field partition
-      reporting down to the remembered list-field
-      owner/source/replacement, mixed root/heap-field buffer application, and
-      mixed root-storage plus heap-field-buffer application, stale live
-      heap-field rejection before root mutation, and dirty permanent-list
-      mixed-plan rejection before mutating the value stack, active frame root,
-      or ready import-cache root. These helpers still do not
-      validate object liveness, bind semispace storage, mutate interned
-      roots, detached primop metadata, or JIT stack-map slots, copy object
-      bodies, update heap fields, publish remembered/card-table state, or wire
-      root writebacks into automatic allocation-safepoint collection.
+      reporting down to the remembered list-field owner/source/replacement,
+      mixed root/heap-field buffer application, mixed root-storage plus
+      heap-field-buffer application, mixed root-storage plus live heap-field
+      application through a pre-existing scratch destination, synthetic
+      destination rejection before root or field mutation, stale live heap-field
+      rejection before root mutation, and dirty permanent-list mixed-plan
+      rejection before mutating the value stack, active frame root, or ready
+      import-cache root. These helpers still do not bind semispace storage,
+      allocate destination records, mutate interned roots, detached primop
+      metadata, or JIT stack-map slots, install forwarding headers, publish a
+      full remembered-set refresh, or wire root writebacks into automatic
+      allocation-safepoint collection.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;
@@ -2771,11 +2780,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       buffers without mutating evaluator storage, and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
       writes supported tree-walk roots only after the complete partition
-      validates. The
+      validates while leaving heap fields in caller-owned buffers.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
+      now carries the current-poll object-copy plan into an existing-destination
+      live applicator that binds paired object bodies/generations, rewrites
+      supported tree-walk roots and record-owned heap fields, and stages direct
+      old/permanent-to-young barriers against the evaluator remembered/card
+      side tables. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints beyond this explicit
-      bridge, and do not cover
+      bridge, do not publish a full remembered-set refresh, and do not cover
       shared lexical frame slots, blackholed thunk deferred-work/capture fields,
       forced thunk cached-result fields, real ABI object-header forwarding
       storage, semispace storage, or Tier-B dispatch.

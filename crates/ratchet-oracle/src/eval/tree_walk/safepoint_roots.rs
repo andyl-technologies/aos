@@ -10,7 +10,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::eval::heap::EvalRootSource;
+use crate::eval::heap::{
+    AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    AllocationCollectorPollObjectByteCopyPlan, EvalRootSource,
+};
 
 use super::*;
 
@@ -181,6 +184,7 @@ pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
     scanned_objects: usize,
     survivors: usize,
     reference_slots: usize,
+    object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
     writebacks: AllocationCollectorPollReferenceWritebackPlan,
 }
 
@@ -191,6 +195,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
         scanned_objects: usize,
         survivors: usize,
         reference_slots: usize,
+        object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
         writebacks: AllocationCollectorPollReferenceWritebackPlan,
     ) -> Self {
         Self {
@@ -199,6 +204,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
             scanned_objects,
             survivors,
             reference_slots,
+            object_body_plan,
             writebacks,
         }
     }
@@ -226,6 +232,16 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
     /// Returns the number of reference slots in the commit plan.
     pub const fn reference_slots(&self) -> usize {
         self.reference_slots
+    }
+
+    /// Returns the object-copy plan for relocated destination records.
+    pub const fn object_body_plan(&self) -> &AllocationCollectorPollObjectByteCopyPlan {
+        &self.object_body_plan
+    }
+
+    /// Returns the number of relocated object bodies in the plan.
+    pub fn object_bodies(&self) -> usize {
+        self.object_body_plan.requests().len()
     }
 
     /// Returns the complete root and heap-field writeback plan.
@@ -427,6 +443,119 @@ impl TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication {
     /// fields, after applying planned replacements.
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         self.buffers.heap_field_writeback_slots()
+    }
+}
+
+/// Applied tree-walk roots and live heap-field writes for existing destinations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
+    root_storage: TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication,
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    live_heap_field_writebacks: usize,
+}
+
+impl TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
+    fn new(
+        root_storage: TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication,
+        object_body_and_generation_write_report:
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+        live_heap_field_writebacks: usize,
+    ) -> Self {
+        Self {
+            root_storage,
+            object_body_and_generation_write_report,
+            live_heap_field_writebacks,
+        }
+    }
+
+    /// Returns the root-storage application used for live root writes.
+    pub const fn root_storage(
+        &self,
+    ) -> &TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication {
+        &self.root_storage
+    }
+
+    /// Returns the paired object-body and object-generation write report.
+    pub const fn object_body_and_generation_write_report(
+        &self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
+    /// Returns how many destination object bodies were written.
+    pub const fn object_bodies_written(&self) -> usize {
+        self.object_body_and_generation_write_report
+            .body_write_report()
+            .objects()
+    }
+
+    /// Returns how many destination object generations were written.
+    pub const fn object_generations_written(&self) -> usize {
+        self.object_body_and_generation_write_report
+            .generation_write_report()
+            .objects()
+    }
+
+    /// Returns how many live heap fields were rewritten.
+    pub const fn live_heap_field_writebacks(&self) -> usize {
+        self.live_heap_field_writebacks
+    }
+
+    /// Returns the collector poll used to derive the writebacks.
+    pub const fn poll(&self) -> AllocationCollectorPoll {
+        self.root_storage.poll()
+    }
+
+    /// Returns the number of explicit roots in the safepoint scan.
+    pub const fn scanned_roots(&self) -> usize {
+        self.root_storage.scanned_roots()
+    }
+
+    /// Returns the number of heap objects reached by the safepoint scan.
+    pub const fn scanned_objects(&self) -> usize {
+        self.root_storage.scanned_objects()
+    }
+
+    /// Returns the number of young survivors in the minor-GC plan.
+    pub const fn survivors(&self) -> usize {
+        self.root_storage.survivors()
+    }
+
+    /// Returns the number of reference slots in the commit plan.
+    pub const fn reference_slots(&self) -> usize {
+        self.root_storage.reference_slots()
+    }
+
+    /// Returns the number of planned root writebacks.
+    pub const fn root_writebacks(&self) -> usize {
+        self.root_storage.root_writebacks()
+    }
+
+    /// Returns the number of planned heap-field writebacks.
+    pub const fn heap_field_writebacks(&self) -> usize {
+        self.root_storage.heap_field_writebacks()
+    }
+
+    /// Returns the number of live tree-walk root slots rewritten.
+    pub const fn applied_root_writebacks(&self) -> usize {
+        self.root_storage.applied_root_writebacks()
+    }
+
+    /// Returns the total number of live root and heap-field references rewritten.
+    pub const fn applied_live_writebacks(&self) -> usize {
+        self.applied_root_writebacks()
+            .saturating_add(self.live_heap_field_writebacks)
+    }
+
+    /// Returns root slots used to update live tree-walk root storage.
+    pub fn root_value_writeback_slots(&self) -> &[AllocationCollectorPollRootValueWritebackSlot] {
+        self.root_storage.root_value_writeback_slots()
+    }
+
+    /// Returns heap-field buffer slots used to prevalidate live heap-field writes.
+    pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
+        self.root_storage.heap_field_writeback_slots()
     }
 }
 
@@ -727,6 +856,9 @@ impl TreeWalk {
         let commit_plan = minor_gc
             .commit_plan(&destinations)
             .map_err(EvalHeapError::from)?;
+        let object_body_plan = self
+            .heap
+            .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
         let writebacks = self
             .heap
             .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
@@ -736,6 +868,7 @@ impl TreeWalk {
             scanned_objects,
             survivors,
             reference_slots,
+            object_body_plan,
             writebacks,
         ))
     }
@@ -883,6 +1016,110 @@ impl TreeWalk {
             value_stack,
         )?;
         self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers(
+            &plan,
+            value_stack,
+        )
+    }
+
+    /// Applies complete reference writebacks to roots and live heap fields.
+    ///
+    /// This is a narrow existing-destination live-reference bridge for
+    /// tree-walk allocation safepoints. It first validates and applies the
+    /// complete root+heap-field partition to caller-owned typed root slots and
+    /// live heap-field slots. It then binds the plan's paired object
+    /// body/generation writes to already-existing destination records, applies
+    /// supported record-owned heap-field writes with remembered/card-table
+    /// barrier staging, and finally writes the prevalidated root slots back to
+    /// supported tree-walk root storage.
+    ///
+    /// This still requires destination heap records to pre-exist and does not
+    /// allocate semispace storage, install forwarding headers, publish a full
+    /// remembered-set refresh, consume JIT stack maps, or dispatch Tier B from
+    /// allocation sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
+    /// longer current, if root storage cannot be read or written, if current
+    /// root or heap-field validation fails, if object-copy request metadata is
+    /// inconsistent, if a destination heap record is missing or rejects paired
+    /// body/generation writes, or if a supported live heap-field write cannot
+    /// be staged.
+    pub fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+        &mut self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let application =
+            self.apply_reference_writebacks_to_safepoint_buffers(plan, value_stack)?;
+        let (copied_writes, direct_writes) = self
+            .heap
+            .collector_poll_minor_gc_live_heap_field_write_inputs(
+                plan.object_body_plan(),
+                plan.writebacks().heap_field_writebacks(),
+            )?;
+        let (object_body_and_generation_write_report, copied_report, direct_report) = self
+            .heap
+            .apply_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+                plan.object_body_plan(),
+                &copied_writes,
+                &direct_writes,
+                &mut self.thunk_resolve_remembered_set,
+                &mut self.thunk_resolve_card_table,
+            )?;
+        let live_heap_field_writebacks = copied_report
+            .fields()
+            .saturating_add(direct_report.fields());
+        debug_assert_eq!(
+            live_heap_field_writebacks,
+            application.applied_heap_field_writebacks()
+        );
+        for slot in application.root_value_writeback_slots() {
+            self.write_safepoint_root_writeback_value(slot.source(), slot.value(), value_stack)?;
+        }
+
+        Ok(
+            TreeWalkSafepointMinorGcLiveReferenceWritebackApplication::new(
+                TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication::new(application),
+                object_body_and_generation_write_report,
+                live_heap_field_writebacks,
+            ),
+        )
+    }
+
+    /// Derives and applies complete live reference writebacks from a current poll.
+    ///
+    /// This derives the complete current root+heap-field reference writeback
+    /// partition and object-copy plan, then applies the existing-destination live
+    /// reference bridge in
+    /// [`Self::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if planning fails, if
+    /// current root or heap-field validation fails, if existing destination
+    /// records are missing or reject paired body/generation writes, or if live
+    /// root or heap-field mutation fails.
+    pub fn apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+        &mut self,
+        poll: AllocationCollectorPoll,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+        value_stack: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let plan = self.collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            promotion_policy,
+            bases,
+            value_stack,
+        )?;
+        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
             &plan,
             value_stack,
         )

@@ -1271,6 +1271,18 @@ pub enum EvalHeapError {
         /// The validation condition that failed.
         reason: &'static str,
     },
+    /// A reference writeback could not be matched to an object-copy request.
+    #[error(
+        "collector-poll reference writeback {index} has no object-copy request for {expected:?} -> {replacement:?}"
+    )]
+    CollectorPollReferenceWritebackObjectCopyRequestMissing {
+        /// The reference-writeback slot index.
+        index: usize,
+        /// The expected from-space value for the root or field.
+        expected: ResolvedValueGeneration,
+        /// The relocated replacement value for the root or field.
+        replacement: ResolvedValueGeneration,
+    },
     /// A destination byte-copy request disagrees with its own survivor action.
     #[error(
         "boundary minor-GC destination request for 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",

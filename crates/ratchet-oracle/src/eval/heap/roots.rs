@@ -3186,6 +3186,104 @@ fn apply_heap_field_writeback_slots(
     }
 }
 
+fn object_copy_request_for_reference_writeback(
+    object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+    index: usize,
+    expected: ResolvedValueGeneration,
+    replacement: ResolvedValueGeneration,
+) -> Result<AllocationCollectorPollObjectByteCopyRequest, EvalHeapError> {
+    let ResolvedValueGeneration::Heap {
+        address: source, ..
+    } = expected
+    else {
+        return Err(
+            EvalHeapError::CollectorPollReferenceWritebackObjectCopyRequestMissing {
+                index,
+                expected,
+                replacement,
+            },
+        );
+    };
+    let ResolvedValueGeneration::Heap {
+        address: destination,
+        ..
+    } = replacement
+    else {
+        return Err(
+            EvalHeapError::CollectorPollReferenceWritebackObjectCopyRequestMissing {
+                index,
+                expected,
+                replacement,
+            },
+        );
+    };
+
+    object_copy_request_for_reference_writeback_address(
+        object_body_plan,
+        index,
+        source,
+        destination,
+    )
+    .map_err(
+        |_| EvalHeapError::CollectorPollReferenceWritebackObjectCopyRequestMissing {
+            index,
+            expected,
+            replacement,
+        },
+    )
+}
+
+fn object_copy_request_for_reference_writeback_address(
+    object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+    index: usize,
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+) -> Result<AllocationCollectorPollObjectByteCopyRequest, EvalHeapError> {
+    object_body_plan
+        .requests()
+        .iter()
+        .copied()
+        .find(|request| request.source() == source && request.destination() == destination)
+        .ok_or(
+            EvalHeapError::CollectorPollReferenceWritebackObjectCopyRequestMissing {
+                index,
+                expected: ResolvedValueGeneration::Heap {
+                    address: source,
+                    generation: HeapGeneration::Young,
+                },
+                replacement: ResolvedValueGeneration::Heap {
+                    address: destination,
+                    generation: HeapGeneration::Young,
+                },
+            },
+        )
+}
+
+fn validate_collector_poll_minor_gc_reference_writeback_direct_destination_aliases(
+    object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+    direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+) -> Result<(), EvalHeapError> {
+    for write in direct_writes {
+        if object_body_plan
+            .requests()
+            .iter()
+            .any(|request| request.destination() == write.writeback_object())
+        {
+            return Err(
+                EvalHeapError::BoundaryMinorGcLiveReferenceWritebackDestinationAliasesDirectWriteback {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    field_index: write.field_index(),
+                    field_source: write.source().clone(),
+                    destination: write.writeback_object(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Caller-owned mutable storage for one heap-field writeback.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollHeapFieldWritebackSlot {
@@ -5797,6 +5895,81 @@ impl EvalHeap {
         }
 
         Ok(slots)
+    }
+
+    pub(crate) fn collector_poll_minor_gc_live_heap_field_write_inputs(
+        &self,
+        object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+        plan: &AllocationCollectorPollHeapFieldWritebackPlan,
+    ) -> Result<
+        (
+            Vec<AllocationCollectorPollCopiedHeapFieldWrite>,
+            Vec<AllocationCollectorPollDirectHeapFieldWrite>,
+        ),
+        EvalHeapError,
+    > {
+        let writebacks = plan.writebacks();
+        let mut copied_writes = Vec::new();
+        let mut direct_writes = Vec::new();
+        copied_writes
+            .try_reserve_exact(writebacks.len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE,
+                entries: writebacks.len(),
+            })?;
+        direct_writes
+            .try_reserve_exact(writebacks.len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries: writebacks.len(),
+            })?;
+
+        for writeback in writebacks {
+            let allocation_domain = self.allocation_domain_for_address(
+                writeback.validation_object(),
+                "heap-field writeback validation object",
+            )?;
+            let replacement_request = object_copy_request_for_reference_writeback(
+                object_body_plan,
+                writeback.slot(),
+                writeback.expected(),
+                writeback.replacement(),
+            )?;
+            if writeback.validation_object() == writeback.writeback_object() {
+                direct_writes.push(AllocationCollectorPollDirectHeapFieldWrite::new(
+                    allocation_domain,
+                    writeback.writeback_object(),
+                    writeback.field_index(),
+                    writeback.source().clone(),
+                    writeback.replacement(),
+                    replacement_request,
+                ));
+            } else {
+                let writeback_object_request = object_copy_request_for_reference_writeback_address(
+                    object_body_plan,
+                    writeback.slot(),
+                    writeback.validation_object(),
+                    writeback.writeback_object(),
+                )?;
+                copied_writes.push(AllocationCollectorPollCopiedHeapFieldWrite::new(
+                    allocation_domain,
+                    writeback.validation_object(),
+                    writeback.writeback_object(),
+                    writeback.field_index(),
+                    writeback.source().clone(),
+                    writeback.replacement(),
+                    replacement_request,
+                    writeback_object_request,
+                ));
+            }
+        }
+
+        validate_collector_poll_minor_gc_reference_writeback_direct_destination_aliases(
+            object_body_plan,
+            &direct_writes,
+        )?;
+
+        Ok((copied_writes, direct_writes))
     }
 
     /// Derives all root-backed and heap-field-backed reference writebacks.

@@ -6811,22 +6811,30 @@ and helps the oracle directly.
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers`
       then uses that same complete-partition prevalidation before writing the
       supported tree-walk root storage while leaving heap-field rewrites in
-      caller-owned buffers. Tests cover a
-      real poll rewriting every supported mutable tree-walk root kind, direct
-      stale-poll rejection before mutation in the planning wrapper, root-only
-      applicator, and buffer applicator, stale typed-root, heap-field metadata,
-      and live heap-field buffer rejection before either buffer partition is
-      rewritten, complete mixed root/field partition reporting down to the
-      remembered list-field
-      owner/source/replacement, mixed root/heap-field buffer application, and a
-      mixed root-storage plus heap-field-buffer application, stale live
-      heap-field rejection before root mutation, and a dirty permanent-list remembered edge whose mixed
-      root/field plan is rejected without touching the value stack, active frame
-      root, or ready import-cache root. This is still not automatic
-      allocation-site dispatch and still does not allocate destination records,
-      copy object bodies, mutate heap fields, install forwarding headers, publish
-      remembered/card-table state, reserve semispace storage, or consume JIT
-      stack maps.
+      caller-owned buffers.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
+      carries the same current-poll object-copy plan into the
+      existing-destination live heap-field writer, prevalidates typed roots and
+      live heap-field slots, applies paired object-body/generation writes to
+      already-bound destination records, rewrites supported tree-walk root
+      storage and record-owned heap fields, and stages direct
+      old/permanent-to-young write barriers into the evaluator remembered/card
+      side tables. Unit tests cover a real poll rewriting every supported
+      mutable tree-walk root kind, direct stale-poll rejection before mutation
+      in the planning wrapper, root-only applicator, buffer applicator, stale
+      typed-root, heap-field metadata, and live heap-field buffer rejection
+      before either buffer partition is rewritten, complete mixed root/field
+      partition reporting down to the remembered list-field
+      owner/source/replacement, mixed root/heap-field buffer application, mixed
+      root-storage plus heap-field-buffer application, mixed root-storage plus
+      live heap-field application through a pre-existing scratch destination,
+      synthetic destination rejection before root or field mutation, stale live
+      heap-field rejection before root mutation, and a dirty permanent-list
+      remembered edge whose mixed root/field plan is rejected without touching
+      the value stack, active frame root, or ready import-cache root. This is
+      still not automatic allocation-site dispatch and still does not allocate
+      destination records, reserve semispace storage, install forwarding
+      headers, publish a full remembered-set refresh, or consume JIT stack maps.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -7167,7 +7175,13 @@ and helps the oracle directly.
       caller-owned typed root and live heap-field buffers without mutating
       evaluator storage, and its root-storage plus heap-field-buffer applicator
       writes supported tree-walk roots only after the complete partition
-      validates.
+      validates while leaving heap fields in caller-owned buffers.
+      `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields`
+      now carries the current-poll object-copy plan into an existing-destination
+      live applicator that binds paired object bodies/generations, rewrites
+      supported tree-walk roots and record-owned heap fields, and stages direct
+      old/permanent-to-young barriers against the evaluator remembered/card
+      side tables.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

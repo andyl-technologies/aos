@@ -726,6 +726,64 @@ fn tree_walk_with_mixed_root_and_heap_field_writebacks()
     (evaluator, child, parent, poll, vec![child])
 }
 
+fn tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination() -> (
+    TreeWalk,
+    Value,
+    Value,
+    Value,
+    AllocationCollectorPoll,
+    Vec<Value>,
+) {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let destination = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("scratch destination lambda allocates");
+    let parent = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent parent list allocates");
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(parent, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark parent permanent");
+    evaluator
+        .thunk_resolve_remembered_set
+        .record(RememberedEdge::new(gc_address(parent), gc_address(child)))
+        .expect("remembered edge records");
+    evaluator
+        .thunk_resolve_card_table
+        .mark_source(gc_address(parent))
+        .expect("parent dirty card marks");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, child).expect("frame slot sets");
+    evaluator.env.push(frame);
+    evaluator.import_cache.insert(
+        PathBuf::from("/tmp/safepoint-root-writeback-existing-destination-import.nix"),
+        ImportCacheEntry::Ready {
+            value: child,
+            trace: Some(Vec::new()),
+            force_cache_trace_complete: true,
+        },
+    );
+    let poll = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requested a collector poll");
+    (evaluator, child, parent, destination, poll, vec![child])
+}
+
 fn assert_supported_mutable_roots_eq(evaluator: &TreeWalk, value_stack: &[Value], expected: Value) {
     assert!(value_stack[0].raw_eq(expected));
     assert_supported_tree_walk_roots_eq(evaluator, expected);
@@ -1497,6 +1555,156 @@ fn reference_writebacks_apply_root_storage_after_field_buffer_validation() {
             .get(0)
             .expect("parent list element exists"),
         child,
+    );
+}
+
+#[test]
+fn reference_writebacks_apply_root_storage_and_live_heap_fields_for_existing_destination() {
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let destination_address = gc_address(destination);
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives for existing destination");
+    assert_eq!(plan.object_bodies(), 1);
+    let request = plan.object_body_plan().requests()[0];
+    assert_eq!(request.source(), gc_address(child));
+    assert_eq!(request.destination(), destination_address);
+
+    let application = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            &plan,
+            &mut value_stack,
+        )
+        .expect("mixed reference writebacks apply to roots and live heap fields");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 4);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 5);
+    assert_eq!(application.root_writebacks(), 3);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 4);
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, relocated);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    evaluator
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Lambda)
+        .expect("existing destination body is bound");
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    assert!(
+        evaluator
+            .thunk_resolve_remembered_set
+            .edges()
+            .contains(&RememberedEdge::new(
+                gc_address(parent),
+                destination_address
+            ))
+    );
+    assert!(
+        evaluator
+            .thunk_resolve_card_table
+            .snapshot()
+            .covers_source(gc_address(parent))
+    );
+}
+
+#[test]
+fn reference_writebacks_reject_synthetic_destination_before_root_or_field_mutation() {
+    let synthetic_destination = static_gc_address(0x1000_0000);
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let original_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+    let original_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+
+    let err = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(synthetic_destination, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+        )
+        .expect_err("synthetic destination rejects before live mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Heap(
+            EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+                destination: synthetic_destination,
+            },
+        )
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        original_dirty_cards.as_slice()
     );
 }
 
