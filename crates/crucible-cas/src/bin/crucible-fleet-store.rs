@@ -18,7 +18,8 @@ use std::sync::Barrier;
 use std::thread;
 
 use crucible_cas::{
-    ContentHash, DagStore, ExpansionDedupDecision, FrontierClaimRequest, SharedDagStore,
+    CampaignCasOutcome, CampaignManifest, CampaignProvenance, ContentHash, DagStore,
+    ExpansionDedupDecision, FrontierClaimRequest, SharedCampaignStore, SharedDagStore,
     SharedDedupIndex, SharedFrontier, SoftHashAffinity,
 };
 
@@ -78,6 +79,7 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     }
     prove_frontier_claim_leases(&root.join("leases"))?;
     prove_four_layer_dedup(&root.join("dedup"))?;
+    prove_campaign_manifest_store(&root.join("campaign"))?;
 
     println!("crucible-fleet-store probe");
     println!("root={}", root.display());
@@ -107,6 +109,18 @@ fn run_probe(root: PathBuf) -> Result<(), Box<dyn Error>> {
     println!("coverage_map_duplicate=skipped");
     println!("reduction_fingerprint=shared-prune");
     println!("claim_set_anti_redundancy=unclaimed-first");
+    println!("campaign_store=persistent-dagstore");
+    println!("campaign_manifest=content-addressed");
+    println!("campaign_head=cas-advanced");
+    println!("campaign_head_lock=advisory-head-file");
+    println!("campaign_head_log=append-only-checksummed");
+    println!("manifest_head_only_mutable=true");
+    println!("manifest_roots=corpus,coverage,findings,genesis,provenance");
+    println!("manifest_root_objects=required");
+    println!("provenance_triple=recorded");
+    println!("lost_cas=bookkeeping-only");
+    println!("read_merge_retry=enabled");
+    println!("merge_roots=materialized-objects");
     Ok(())
 }
 
@@ -405,6 +419,116 @@ fn prove_four_layer_dedup(root: &Path) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn prove_campaign_manifest_store(root: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Box::new(source)),
+    }
+    let campaign = SharedCampaignStore::new(root);
+    let first = probe_campaign_manifest(&campaign, "corpus-a", "coverage-a", "findings-a")?;
+    let second = probe_campaign_manifest(&campaign, "corpus-b", "coverage-b", "findings-b")?;
+    let first_hash = campaign.persist_manifest(&first)?;
+    let mirror = SharedCampaignStore::new(root.join("mirror"));
+    let mirror_first = probe_campaign_manifest(&mirror, "corpus-a", "coverage-a", "findings-a")?;
+    if mirror.persist_manifest(&mirror_first)? != first_hash {
+        return Err(input_error(
+            "campaign manifest identity depended on store location",
+        ));
+    }
+    if campaign.head_path() == campaign.manifest_store().object_path(&first_hash) {
+        return Err(input_error("campaign head was stored as a manifest object"));
+    }
+
+    let first_head = match campaign.compare_and_swap_head(None, &first)? {
+        CampaignCasOutcome::Advanced(head) => head,
+        CampaignCasOutcome::LostUpdate { .. } => {
+            return Err(input_error("initial campaign head CAS lost"));
+        }
+    };
+    let proposed_manifest_hash = match campaign.compare_and_swap_head(None, &second)? {
+        CampaignCasOutcome::LostUpdate {
+            current,
+            proposed_manifest_hash,
+            ..
+        } => {
+            if current != Some(first_head.manifest_hash) {
+                return Err(input_error("lost campaign CAS reported wrong current head"));
+            }
+            proposed_manifest_hash
+        }
+        CampaignCasOutcome::Advanced(_) => {
+            return Err(input_error("stale campaign head CAS advanced"));
+        }
+    };
+    if !campaign.manifest_store().has(&proposed_manifest_hash)? {
+        return Err(input_error(
+            "lost campaign CAS did not retain proposed manifest",
+        ));
+    }
+    if campaign.read_head()?.map(|head| head.manifest_hash) != Some(first_head.manifest_hash) {
+        return Err(input_error("lost campaign CAS changed the head"));
+    }
+
+    let merged = campaign.advance_head_with_merge(&second, 3)?;
+    if merged.head.manifest_hash == first_head.manifest_hash {
+        return Err(input_error(
+            "read-merge-retry did not advance campaign head",
+        ));
+    }
+    if merged.head.manifest.provenance != first.provenance {
+        return Err(input_error("campaign manifest lost provenance triple"));
+    }
+    if merged.head.manifest.genesis_pin != first.genesis_pin {
+        return Err(input_error("campaign manifest lost genesis pin"));
+    }
+    for root in [
+        merged.head.manifest.corpus_root,
+        merged.head.manifest.coverage_map_root,
+        merged.head.manifest.findings_root,
+    ] {
+        if !campaign.manifest_store().has(&root)? {
+            return Err(input_error("campaign merged root object was not stored"));
+        }
+    }
+    if campaign.read_head()?.map(|head| head.manifest_hash) != Some(merged.head.manifest_hash) {
+        return Err(input_error(
+            "campaign head did not point at merged manifest",
+        ));
+    }
+
+    Ok(())
+}
+
+fn probe_campaign_manifest(
+    campaign: &SharedCampaignStore,
+    corpus: &str,
+    coverage: &str,
+    findings: &str,
+) -> Result<CampaignManifest, Box<dyn Error>> {
+    Ok(CampaignManifest::new(
+        probe_campaign_root(campaign, "corpus", corpus)?,
+        probe_campaign_root(campaign, "coverage-map", coverage)?,
+        probe_campaign_root(campaign, "findings", findings)?,
+        ContentHash::from_bytes(b"genesis-pin"),
+        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1"),
+    ))
+}
+
+fn probe_campaign_root(
+    campaign: &SharedCampaignStore,
+    label: &str,
+    value: &str,
+) -> Result<ContentHash, Box<dyn Error>> {
+    campaign
+        .manifest_store()
+        .put(
+            format!("format=crucible.campaign-root-probe.v1\nlabel={label}\nvalue={value}\n")
+                .as_bytes(),
+        )
+        .map_err(|error| Box::new(error) as Box<dyn Error>)
 }
 
 fn probe_content_path(root: &Path, node: &ContentHash) -> PathBuf {

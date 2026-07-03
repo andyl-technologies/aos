@@ -25,7 +25,8 @@
 //! [`MemoryDagStore`], [`LocalDagStore`], [`SharedDagStore`],
 //! [`SharedFrontier`], [`FrontierClaimRequest`], [`FrontierLease`],
 //! [`SoftHashAffinity`], [`SharedDedupIndex`], [`ExpansionDedupDecision`],
-//! [`CoverageAdmission`], [`ReductionAdmission`], and the invalidation types
+//! [`CoverageAdmission`], [`ReductionAdmission`], [`SharedCampaignStore`],
+//! [`CampaignManifest`], [`CampaignProvenance`], and the invalidation types
 //! [`DependencySnapshot`], [`InvalidationQuery`], and [`InvalidationDecision`].
 
 #![forbid(unsafe_code)]
@@ -36,11 +37,15 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
 /// Marks the future RFC-0007 merge seam for the standalone CAS substrate.
@@ -152,6 +157,14 @@ pub enum CasError {
     /// A shared-frontier marker or claim record was malformed.
     #[error("shared frontier record is invalid at {path}: {reason}")]
     InvalidFrontierRecord {
+        /// The invalid record path.
+        path: PathBuf,
+        /// The reason the record is invalid.
+        reason: &'static str,
+    },
+    /// A campaign manifest or head record was malformed.
+    #[error("campaign record is invalid at {path}: {reason}")]
+    InvalidCampaignRecord {
         /// The invalid record path.
         path: PathBuf,
         /// The reason the record is invalid.
@@ -1333,6 +1346,471 @@ impl ReductionAdmission {
     }
 }
 
+/// Persistent campaign store with a content-addressed manifest and CAS head.
+///
+/// Campaign manifests are immutable objects in the same [`SharedDagStore`] used
+/// by the fleet. The only durable non-content-addressed path owned by this type is
+/// [`Self::head_path`], a tiny mutable ref containing the current manifest hash.
+/// Concurrent writers serialize through an advisory lock on that same file.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SharedCampaignStore {
+    root: PathBuf,
+    store: SharedDagStore,
+}
+
+impl SharedCampaignStore {
+    /// Builds a persistent campaign store rooted at `root`.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let store = SharedDagStore::new(root.join("objects"));
+        Self { root, store }
+    }
+
+    /// Returns the campaign store root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the content-addressed manifest object store.
+    #[must_use]
+    pub fn manifest_store(&self) -> &SharedDagStore {
+        &self.store
+    }
+
+    /// Returns the single mutable campaign head path.
+    #[must_use]
+    pub fn head_path(&self) -> PathBuf {
+        self.root.join("campaign-head")
+    }
+
+    /// Persists `manifest` as an immutable content-addressed object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the manifest is invalid or cannot be stored.
+    pub fn persist_manifest(&self, manifest: &CampaignManifest) -> Result<ContentHash, CasError> {
+        validate_campaign_manifest(manifest)?;
+        self.validate_manifest_roots(manifest)?;
+        self.store
+            .put(manifest_record_material(manifest).as_bytes())
+    }
+
+    /// Reads the current campaign head, if one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the head or named manifest cannot be read or
+    /// parsed.
+    pub fn read_head(&self) -> Result<Option<CampaignHead>, CasError> {
+        let _guard = self.acquire_head_lock(FlockOperation::LockShared)?;
+        self.read_head_unlocked()
+    }
+
+    fn read_head_unlocked(&self) -> Result<Option<CampaignHead>, CasError> {
+        let Some(manifest_hash) = self.read_head_hash()? else {
+            return Ok(None);
+        };
+        let material = String::from_utf8(self.store.get(&manifest_hash)?).map_err(|_| {
+            CasError::InvalidCampaignRecord {
+                path: self.store.object_path(&manifest_hash),
+                reason: "campaign manifest object is not UTF-8",
+            }
+        })?;
+        let manifest = parse_manifest_record(&self.store.object_path(&manifest_hash), &material)?;
+        self.validate_manifest_roots(&manifest)?;
+        Ok(Some(CampaignHead {
+            manifest_hash,
+            manifest,
+        }))
+    }
+
+    /// Compares the current head to `expected` and swaps it to `manifest`.
+    ///
+    /// The proposed manifest is persisted before the compare step. If the compare
+    /// fails, the proposed manifest remains content-addressed and recoverable, so
+    /// the lost CAS loses only manifest-head bookkeeping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the current or proposed manifest cannot be read,
+    /// parsed, stored, or written to the head.
+    pub fn compare_and_swap_head(
+        &self,
+        expected: Option<ContentHash>,
+        manifest: &CampaignManifest,
+    ) -> Result<CampaignCasOutcome, CasError> {
+        let proposed_manifest_hash = self.persist_manifest(manifest)?;
+        let mut guard = self.acquire_head_lock(FlockOperation::LockExclusive)?;
+        let current_pointer = self.read_head_pointer()?;
+        let current = current_pointer.map(|pointer| pointer.manifest_hash);
+        if current != expected {
+            return Ok(CampaignCasOutcome::LostUpdate {
+                expected,
+                current,
+                proposed_manifest_hash,
+            });
+        }
+        self.write_head(&mut guard, current_pointer, proposed_manifest_hash)?;
+        let head = self
+            .read_head_unlocked()?
+            .ok_or_else(|| CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "campaign head disappeared after CAS",
+            })?;
+        Ok(CampaignCasOutcome::Advanced(head))
+    }
+
+    /// Advances the campaign head with read-merge-retry semantics.
+    ///
+    /// On CAS conflict, this reads the winning head, merges the proposed roots
+    /// into it, and retries. Provenance and genesis pins must match; provenance
+    /// lineage forking is owned by later campaign-continuity work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the head cannot be read or advanced, when
+    /// compatible roots cannot be merged, or when `max_attempts` is exhausted.
+    pub fn advance_head_with_merge(
+        &self,
+        proposed: &CampaignManifest,
+        max_attempts: usize,
+    ) -> Result<CampaignAdvanceReport, CasError> {
+        if max_attempts == 0 {
+            return Err(CasError::InvalidCampaignRecord {
+                path: self.head_path(),
+                reason: "campaign head merge retry requires at least one attempt",
+            });
+        }
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let current = self.read_head()?;
+            let expected = current.as_ref().map(|head| head.manifest_hash);
+            let next = match current {
+                Some(head) => self.merge_manifests(&head.manifest, proposed)?,
+                None => proposed.clone(),
+            };
+            match self.compare_and_swap_head(expected, &next)? {
+                CampaignCasOutcome::Advanced(head) => {
+                    return Ok(CampaignAdvanceReport { attempts, head });
+                }
+                CampaignCasOutcome::LostUpdate { .. } if attempts < max_attempts => continue,
+                CampaignCasOutcome::LostUpdate { .. } => {
+                    return Err(CasError::InvalidCampaignRecord {
+                        path: self.head_path(),
+                        reason: "campaign head CAS retry budget exhausted",
+                    });
+                }
+            }
+        }
+    }
+
+    fn validate_manifest_roots(&self, manifest: &CampaignManifest) -> Result<(), CasError> {
+        self.require_manifest_root("corpus_root", manifest.corpus_root)?;
+        self.require_manifest_root("coverage_map_root", manifest.coverage_map_root)?;
+        self.require_manifest_root("findings_root", manifest.findings_root)?;
+        Ok(())
+    }
+
+    fn require_manifest_root(
+        &self,
+        field: &'static str,
+        root: ContentHash,
+    ) -> Result<(), CasError> {
+        if self.store.has(&root)? {
+            return Ok(());
+        }
+        Err(CasError::InvalidCampaignRecord {
+            path: self.store.object_path(&root),
+            reason: match field {
+                "corpus_root" => "campaign corpus root object is missing",
+                "coverage_map_root" => "campaign coverage-map root object is missing",
+                "findings_root" => "campaign findings root object is missing",
+                _ => "campaign manifest root object is missing",
+            },
+        })
+    }
+
+    fn merge_manifests(
+        &self,
+        current: &CampaignManifest,
+        proposed: &CampaignManifest,
+    ) -> Result<CampaignManifest, CasError> {
+        validate_campaign_lineage(current, proposed)?;
+        Ok(CampaignManifest {
+            corpus_root: self.merge_manifest_root(
+                "corpus",
+                current.corpus_root,
+                proposed.corpus_root,
+            )?,
+            coverage_map_root: self.merge_manifest_root(
+                "coverage-map",
+                current.coverage_map_root,
+                proposed.coverage_map_root,
+            )?,
+            findings_root: self.merge_manifest_root(
+                "findings",
+                current.findings_root,
+                proposed.findings_root,
+            )?,
+            genesis_pin: current.genesis_pin,
+            provenance: current.provenance.clone(),
+        })
+    }
+
+    fn merge_manifest_root(
+        &self,
+        label: &'static str,
+        left: ContentHash,
+        right: ContentHash,
+    ) -> Result<ContentHash, CasError> {
+        self.require_manifest_root(campaign_root_field(label), left)?;
+        self.require_manifest_root(campaign_root_field(label), right)?;
+        if left == right {
+            return Ok(left);
+        }
+        let (first, second) = ordered_manifest_roots(left, right);
+        let merged = self
+            .store
+            .put(campaign_root_merge_record_material(label, first, second).as_bytes())?;
+        debug_assert_eq!(merged, campaign_root_merge_hash(label, left, right));
+        Ok(merged)
+    }
+
+    fn acquire_head_lock(&self, operation: FlockOperation) -> Result<CampaignHeadLock, CasError> {
+        let path = self.head_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| CasError::Io {
+                operation: "create-dir",
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .map_err(|source| CasError::Io {
+                operation: "open",
+                path: path.clone(),
+                source,
+            })?;
+        flock(&file, operation).map_err(|source| CasError::Io {
+            operation: "lock",
+            path,
+            source: source.into(),
+        })?;
+        Ok(CampaignHeadLock { file })
+    }
+
+    fn read_head_hash(&self) -> Result<Option<ContentHash>, CasError> {
+        Ok(self
+            .read_head_pointer()?
+            .map(|pointer| pointer.manifest_hash))
+    }
+
+    fn read_head_pointer(&self) -> Result<Option<CampaignHeadPointer>, CasError> {
+        let path = self.head_path();
+        let material = match fs::read_to_string(&path) {
+            Ok(material) => material,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(CasError::Io {
+                    operation: "read",
+                    path,
+                    source,
+                });
+            }
+        };
+        if material.trim().is_empty() {
+            return Ok(None);
+        }
+        parse_campaign_head_record(&path, &material)
+    }
+
+    fn write_head(
+        &self,
+        lock: &mut CampaignHeadLock,
+        current: Option<CampaignHeadPointer>,
+        manifest_hash: ContentHash,
+    ) -> Result<(), CasError> {
+        let path = self.head_path();
+        let next_generation = current
+            .map(|pointer| pointer.generation)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| CasError::InvalidCampaignRecord {
+                path: path.clone(),
+                reason: "campaign head generation overflows u64",
+            })?;
+        let metadata = lock.file.metadata().map_err(|source| CasError::Io {
+            operation: "stat",
+            path: path.clone(),
+            source,
+        })?;
+        lock.file
+            .seek(SeekFrom::End(0))
+            .map_err(|source| CasError::Io {
+                operation: "seek",
+                path: path.clone(),
+                source,
+            })?;
+        if metadata.len() != 0 {
+            lock.file
+                .seek(SeekFrom::End(-1))
+                .map_err(|source| CasError::Io {
+                    operation: "seek",
+                    path: path.clone(),
+                    source,
+                })?;
+            let mut last_byte = [0_u8; 1];
+            lock.file
+                .read_exact(&mut last_byte)
+                .map_err(|source| CasError::Io {
+                    operation: "read",
+                    path: path.clone(),
+                    source,
+                })?;
+            lock.file
+                .seek(SeekFrom::End(0))
+                .map_err(|source| CasError::Io {
+                    operation: "seek",
+                    path: path.clone(),
+                    source,
+                })?;
+            if last_byte != [b'\n'] {
+                lock.file.write_all(b"\n").map_err(|source| CasError::Io {
+                    operation: "write",
+                    path: path.clone(),
+                    source,
+                })?;
+            }
+        }
+        lock.file
+            .write_all(campaign_head_entry_material(next_generation, manifest_hash).as_bytes())
+            .map_err(|source| CasError::Io {
+                operation: "write",
+                path: path.clone(),
+                source,
+            })?;
+        lock.file.sync_data().map_err(|source| CasError::Io {
+            operation: "sync",
+            path,
+            source,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct CampaignHeadLock {
+    file: fs::File,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CampaignHeadPointer {
+    generation: u64,
+    manifest_hash: ContentHash,
+}
+
+/// Immutable manifest named by a persistent campaign head.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignManifest {
+    /// Root of the retained campaign corpus set.
+    pub corpus_root: ContentHash,
+    /// Root of the accumulated coverage map.
+    pub coverage_map_root: ContentHash,
+    /// Root of the campaign findings ledger.
+    pub findings_root: ContentHash,
+    /// Baked genesis checkpoint pin for this lineage.
+    pub genesis_pin: ContentHash,
+    /// Provenance triple that owns this campaign lineage.
+    pub provenance: CampaignProvenance,
+}
+
+impl CampaignManifest {
+    /// Builds a campaign manifest from content-addressed roots.
+    #[must_use]
+    pub fn new(
+        corpus_root: ContentHash,
+        coverage_map_root: ContentHash,
+        findings_root: ContentHash,
+        genesis_pin: ContentHash,
+        provenance: CampaignProvenance,
+    ) -> Self {
+        Self {
+            corpus_root,
+            coverage_map_root,
+            findings_root,
+            genesis_pin,
+            provenance,
+        }
+    }
+}
+
+/// Provenance triple recorded in a campaign manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignProvenance {
+    /// Crucible software version.
+    pub crucible_version: String,
+    /// QEMU build identity plus applied series hash.
+    pub qemu_build: String,
+    /// Combined shmem, guest-host channel, and RPC ABI versions.
+    pub abi_versions: String,
+}
+
+impl CampaignProvenance {
+    /// Builds a campaign provenance triple.
+    #[must_use]
+    pub fn new(
+        crucible_version: impl Into<String>,
+        qemu_build: impl Into<String>,
+        abi_versions: impl Into<String>,
+    ) -> Self {
+        Self {
+            crucible_version: crucible_version.into(),
+            qemu_build: qemu_build.into(),
+            abi_versions: abi_versions.into(),
+        }
+    }
+}
+
+/// Current content-addressed campaign manifest head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignHead {
+    /// Content hash of the manifest object.
+    pub manifest_hash: ContentHash,
+    /// Parsed immutable manifest object.
+    pub manifest: CampaignManifest,
+}
+
+/// Result of a campaign manifest-head compare-and-swap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignCasOutcome {
+    /// The head was advanced to the supplied manifest.
+    Advanced(CampaignHead),
+    /// The head changed before the compare-and-swap could publish the proposal.
+    LostUpdate {
+        /// Head hash expected by the caller.
+        expected: Option<ContentHash>,
+        /// Current head hash observed during CAS.
+        current: Option<ContentHash>,
+        /// Content-addressed proposal retained in the store.
+        proposed_manifest_hash: ContentHash,
+    },
+}
+
+/// Report from read-merge-retry campaign-head advancement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignAdvanceReport {
+    /// Number of CAS attempts made.
+    pub attempts: usize,
+    /// Final advanced campaign head.
+    pub head: CampaignHead,
+}
+
 fn content_path(root: &Path, key: &ContentHash) -> PathBuf {
     let hex = key.to_hex();
     root.join(&hex[0..2]).join(hex)
@@ -1429,6 +1907,38 @@ fn reduction_record_material(fingerprint: &ContentHash, representative: &Content
         "format=crucible.reduction-fingerprint.v1\nfingerprint={}\nrepresentative={}\n",
         fingerprint.to_hex(),
         representative.to_hex()
+    )
+}
+
+fn manifest_record_material(manifest: &CampaignManifest) -> String {
+    format!(
+        "format=crucible.campaign-manifest.v1\ncorpus_root={}\ncoverage_map_root={}\nfindings_root={}\ngenesis_pin={}\nprovenance.crucible_version={}\nprovenance.qemu_build={}\nprovenance.abi_versions={}\n",
+        manifest.corpus_root.to_hex(),
+        manifest.coverage_map_root.to_hex(),
+        manifest.findings_root.to_hex(),
+        manifest.genesis_pin.to_hex(),
+        manifest.provenance.crucible_version,
+        manifest.provenance.qemu_build,
+        manifest.provenance.abi_versions,
+    )
+}
+
+fn campaign_head_entry_material(generation: u64, manifest_hash: ContentHash) -> String {
+    let checksum = campaign_head_entry_checksum(generation, manifest_hash);
+    format!(
+        "entry generation={generation} manifest={} checksum={}\n",
+        manifest_hash.to_hex(),
+        checksum.to_hex()
+    )
+}
+
+fn campaign_head_entry_checksum(generation: u64, manifest_hash: ContentHash) -> ContentHash {
+    ContentHash::from_bytes(
+        format!(
+            "crucible.campaign-head-entry.v1\ngeneration={generation}\nmanifest={}\n",
+            manifest_hash.to_hex()
+        )
+        .as_bytes(),
     )
 }
 
@@ -1556,6 +2066,104 @@ fn parse_reduction_record(
     parse_required_hash(path, &fields, "representative")
 }
 
+fn parse_manifest_record(path: &Path, material: &str) -> Result<CampaignManifest, CasError> {
+    let fields = parse_key_value_record(path, material, "campaign manifest")?;
+    if fields.get("format") != Some(&"crucible.campaign-manifest.v1") {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign manifest format is unsupported",
+        });
+    }
+    let manifest = CampaignManifest {
+        corpus_root: parse_required_campaign_hash(path, &fields, "corpus_root")?,
+        coverage_map_root: parse_required_campaign_hash(path, &fields, "coverage_map_root")?,
+        findings_root: parse_required_campaign_hash(path, &fields, "findings_root")?,
+        genesis_pin: parse_required_campaign_hash(path, &fields, "genesis_pin")?,
+        provenance: CampaignProvenance {
+            crucible_version: parse_required_string(path, &fields, "provenance.crucible_version")?,
+            qemu_build: parse_required_string(path, &fields, "provenance.qemu_build")?,
+            abi_versions: parse_required_string(path, &fields, "provenance.abi_versions")?,
+        },
+    };
+    validate_campaign_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn parse_campaign_head_record(
+    path: &Path,
+    material: &str,
+) -> Result<Option<CampaignHeadPointer>, CasError> {
+    parse_campaign_head_log_record(path, material)
+}
+
+fn parse_campaign_head_log_record(
+    path: &Path,
+    material: &str,
+) -> Result<Option<CampaignHeadPointer>, CasError> {
+    let mut latest = None;
+    for line in material.lines() {
+        match parse_campaign_head_entry(path, line) {
+            Ok(pointer) => {
+                if latest
+                    .map(|current: CampaignHeadPointer| pointer.generation > current.generation)
+                    .unwrap_or(true)
+                {
+                    latest = Some(pointer);
+                }
+            }
+            Err(error) if line.starts_with("entry ") => {
+                let _ = error;
+            }
+            Err(error) => {
+                let _ = error;
+            }
+        }
+    }
+    Ok(latest)
+}
+
+fn parse_campaign_head_entry(path: &Path, line: &str) -> Result<CampaignHeadPointer, CasError> {
+    let Some(fields_material) = line.strip_prefix("entry ") else {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign head log line is unsupported",
+        });
+    };
+    let mut fields = BTreeMap::new();
+    for field in fields_material.split_whitespace() {
+        let Some((key, value)) = field.split_once('=') else {
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason: "campaign head entry field is missing '='",
+            });
+        };
+        fields.insert(key, value);
+    }
+    let generation = fields
+        .get("generation")
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign head entry is missing generation",
+        })?
+        .parse::<u64>()
+        .map_err(|_| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign head entry generation is invalid",
+        })?;
+    let manifest_hash = parse_required_campaign_hash(path, &fields, "manifest")?;
+    let checksum = parse_required_campaign_hash(path, &fields, "checksum")?;
+    if checksum != campaign_head_entry_checksum(generation, manifest_hash) {
+        return Err(CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign head entry checksum is invalid",
+        });
+    }
+    Ok(CampaignHeadPointer {
+        generation,
+        manifest_hash,
+    })
+}
+
 fn parse_claim_lock_record(
     path: &Path,
     expected_node: &ContentHash,
@@ -1601,6 +2209,29 @@ fn parse_claim_lock_record(
     })
 }
 
+fn parse_key_value_record<'a>(
+    path: &Path,
+    material: &'a str,
+    label: &'static str,
+) -> Result<BTreeMap<&'a str, &'a str>, CasError> {
+    let mut fields = BTreeMap::new();
+    for line in material.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            let reason = match label {
+                "campaign manifest" => "campaign manifest line is missing '='",
+                "campaign head" => "campaign head line is missing '='",
+                _ => "record line is missing '='",
+            };
+            return Err(CasError::InvalidCampaignRecord {
+                path: path.to_path_buf(),
+                reason,
+            });
+        };
+        fields.insert(key, value);
+    }
+    Ok(fields)
+}
+
 fn parse_required_hash(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
@@ -1616,6 +2247,116 @@ fn parse_required_hash(
         path: path.to_path_buf(),
         reason: "claim record hash field is invalid",
     })
+}
+
+fn parse_required_string(
+    path: &Path,
+    fields: &BTreeMap<&str, &str>,
+    name: &'static str,
+) -> Result<String, CasError> {
+    let value = fields
+        .get(name)
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign record is missing string field",
+        })?;
+    Ok((*value).to_string())
+}
+
+fn parse_required_campaign_hash(
+    path: &Path,
+    fields: &BTreeMap<&str, &str>,
+    name: &'static str,
+) -> Result<ContentHash, CasError> {
+    let value = fields
+        .get(name)
+        .ok_or_else(|| CasError::InvalidCampaignRecord {
+            path: path.to_path_buf(),
+            reason: "campaign record is missing hash field",
+        })?;
+    ContentHash::from_hex(value).ok_or_else(|| CasError::InvalidCampaignRecord {
+        path: path.to_path_buf(),
+        reason: "campaign record hash field is invalid",
+    })
+}
+
+fn validate_campaign_manifest(manifest: &CampaignManifest) -> Result<(), CasError> {
+    validate_campaign_provenance_field(&manifest.provenance.crucible_version)?;
+    validate_campaign_provenance_field(&manifest.provenance.qemu_build)?;
+    validate_campaign_provenance_field(&manifest.provenance.abi_versions)?;
+    Ok(())
+}
+
+fn validate_campaign_provenance_field(value: &str) -> Result<(), CasError> {
+    if value.is_empty() {
+        return Err(CasError::InvalidCampaignRecord {
+            path: PathBuf::from("campaign-manifest"),
+            reason: "campaign provenance field must not be empty",
+        });
+    }
+    if value.contains('\n') {
+        return Err(CasError::InvalidCampaignRecord {
+            path: PathBuf::from("campaign-manifest"),
+            reason: "campaign provenance field must not contain newlines",
+        });
+    }
+    Ok(())
+}
+
+fn validate_campaign_lineage(
+    current: &CampaignManifest,
+    proposed: &CampaignManifest,
+) -> Result<(), CasError> {
+    if current.genesis_pin != proposed.genesis_pin {
+        return Err(CasError::InvalidCampaignRecord {
+            path: PathBuf::from("campaign-manifest"),
+            reason: "campaign manifests with different genesis pins cannot merge",
+        });
+    }
+    if current.provenance != proposed.provenance {
+        return Err(CasError::InvalidCampaignRecord {
+            path: PathBuf::from("campaign-manifest"),
+            reason: "campaign manifests with different provenance cannot merge",
+        });
+    }
+    Ok(())
+}
+
+fn campaign_root_field(label: &str) -> &'static str {
+    match label {
+        "corpus" => "corpus_root",
+        "coverage-map" => "coverage_map_root",
+        "findings" => "findings_root",
+        _ => "manifest_root",
+    }
+}
+
+fn campaign_root_merge_hash(label: &str, left: ContentHash, right: ContentHash) -> ContentHash {
+    if left == right {
+        return left;
+    }
+    let (first, second) = ordered_manifest_roots(left, right);
+    ContentHash::from_bytes(campaign_root_merge_record_material(label, first, second).as_bytes())
+}
+
+fn campaign_root_merge_record_material(
+    label: &str,
+    first: ContentHash,
+    second: ContentHash,
+) -> String {
+    format!(
+        "format=crucible.campaign-root-merge.v1\nlabel={label}\nleft={}\nright={}\n",
+        first.to_hex(),
+        second.to_hex()
+    )
+}
+
+fn ordered_manifest_roots(left: ContentHash, right: ContentHash) -> (ContentHash, ContentHash) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
 }
 
 static FRONTIER_CLAIM_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2170,6 +2911,255 @@ mod tests {
         assert!(!frontier.claimable_nodes(3)?.contains(&first_claim.node));
 
         Ok(())
+    }
+
+    #[test]
+    fn campaign_manifest_is_content_addressed_with_single_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let left = tempfile::tempdir()?;
+        let right = tempfile::tempdir()?;
+        let left_store = SharedCampaignStore::new(left.path());
+        let right_store = SharedCampaignStore::new(right.path());
+        let manifest =
+            campaign_manifest_fixture(&left_store, "corpus-a", "coverage-a", "findings-a")?;
+        let right_manifest =
+            campaign_manifest_fixture(&right_store, "corpus-a", "coverage-a", "findings-a")?;
+
+        let left_hash = left_store.persist_manifest(&manifest)?;
+        let right_hash = right_store.persist_manifest(&right_manifest)?;
+
+        assert_eq!(left_hash, right_hash);
+        assert_eq!(manifest, right_manifest);
+        assert_eq!(left_store.head_path(), left.path().join("campaign-head"));
+        assert_ne!(
+            left_store.head_path(),
+            left_store.manifest_store().object_path(&left_hash)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_cas_loses_only_bookkeeping() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let first = campaign_manifest_fixture(&campaign, "corpus-a", "coverage-a", "findings-a")?;
+        let second = campaign_manifest_fixture(&campaign, "corpus-b", "coverage-b", "findings-b")?;
+
+        let first_head = match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(head) => head,
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        };
+        let lost = match campaign.compare_and_swap_head(None, &second)? {
+            CampaignCasOutcome::LostUpdate {
+                current,
+                proposed_manifest_hash,
+                ..
+            } => {
+                assert_eq!(current, Some(first_head.manifest_hash));
+                assert!(campaign.manifest_store().has(&proposed_manifest_hash)?);
+                proposed_manifest_hash
+            }
+            CampaignCasOutcome::Advanced(_) => {
+                return Err(std::io::Error::other("stale campaign CAS advanced").into());
+            }
+        };
+        assert_eq!(
+            campaign
+                .read_head()?
+                .ok_or_else(|| std::io::Error::other("campaign head missing"))?
+                .manifest_hash,
+            first_head.manifest_hash
+        );
+        assert!(campaign.manifest_store().has(&lost)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_ignores_torn_final_log_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let first = campaign_manifest_fixture(&campaign, "corpus-a", "coverage-a", "findings-a")?;
+        let second = campaign_manifest_fixture(&campaign, "corpus-b", "coverage-b", "findings-b")?;
+
+        let first_head = match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(head) => head,
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        };
+        let mut head_file = OpenOptions::new().append(true).open(campaign.head_path())?;
+        head_file.write_all(b"entry generation=2 manifest=partial")?;
+        drop(head_file);
+
+        assert_eq!(
+            campaign
+                .read_head()?
+                .ok_or_else(|| std::io::Error::other("campaign head missing after torn append"))?
+                .manifest_hash,
+            first_head.manifest_hash
+        );
+        match campaign.compare_and_swap_head(Some(first_head.manifest_hash), &second)? {
+            CampaignCasOutcome::Advanced(head) => {
+                assert_ne!(head.manifest_hash, first_head.manifest_hash);
+                assert_eq!(head.manifest, second);
+            }
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("campaign CAS lost after torn append").into());
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_recovers_from_torn_initial_log_entry() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let first = campaign_manifest_fixture(&campaign, "corpus-a", "coverage-a", "findings-a")?;
+        fs::write(campaign.head_path(), b"entry generation=1 manifest=partial")?;
+
+        match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(head) => {
+                assert_eq!(head.manifest, first);
+            }
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(
+                    std::io::Error::other("campaign CAS lost after torn initial log").into(),
+                );
+            }
+        }
+        assert!(campaign.read_head()?.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_cas_serializes_contending_writers() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let workers = 12;
+        let barrier = Arc::new(Barrier::new(workers));
+        let mut manifests = Vec::new();
+        for worker in 0..workers {
+            manifests.push(campaign_manifest_fixture(
+                &campaign,
+                &format!("corpus-{worker}"),
+                &format!("coverage-{worker}"),
+                &format!("findings-{worker}"),
+            )?);
+        }
+
+        let mut handles = Vec::new();
+        for manifest in manifests {
+            let campaign = campaign.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                campaign.compare_and_swap_head(None, &manifest)
+            }));
+        }
+
+        let mut advanced = 0;
+        let mut lost = 0;
+        for handle in handles {
+            match handle
+                .join()
+                .map_err(|_| std::io::Error::other("campaign CAS worker panicked"))??
+            {
+                CampaignCasOutcome::Advanced(_) => advanced += 1,
+                CampaignCasOutcome::LostUpdate {
+                    proposed_manifest_hash,
+                    ..
+                } => {
+                    lost += 1;
+                    assert!(campaign.manifest_store().has(&proposed_manifest_hash)?);
+                }
+            }
+        }
+
+        assert_eq!(advanced, 1);
+        assert_eq!(lost, workers - 1);
+        assert!(campaign.read_head()?.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn campaign_head_read_merge_retry_advances_union_manifest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let campaign = SharedCampaignStore::new(temp.path());
+        let first = campaign_manifest_fixture(&campaign, "corpus-a", "coverage-a", "findings-a")?;
+        let second = campaign_manifest_fixture(&campaign, "corpus-b", "coverage-b", "findings-b")?;
+        let first_hash = campaign.persist_manifest(&first)?;
+
+        match campaign.compare_and_swap_head(None, &first)? {
+            CampaignCasOutcome::Advanced(_) => {}
+            CampaignCasOutcome::LostUpdate { .. } => {
+                return Err(std::io::Error::other("initial campaign CAS lost").into());
+            }
+        }
+        let report = campaign.advance_head_with_merge(&second, 3)?;
+
+        assert_eq!(report.attempts, 1);
+        assert_ne!(report.head.manifest_hash, first_hash);
+        let expected_corpus =
+            campaign_root_merge_hash("corpus", first.corpus_root, second.corpus_root);
+        let expected_coverage = campaign_root_merge_hash(
+            "coverage-map",
+            first.coverage_map_root,
+            second.coverage_map_root,
+        );
+        let expected_findings =
+            campaign_root_merge_hash("findings", first.findings_root, second.findings_root);
+        assert_eq!(report.head.manifest.corpus_root, expected_corpus);
+        assert_eq!(report.head.manifest.coverage_map_root, expected_coverage);
+        assert_eq!(report.head.manifest.findings_root, expected_findings);
+        assert!(campaign.manifest_store().has(&expected_corpus)?);
+        assert!(campaign.manifest_store().has(&expected_coverage)?);
+        assert!(campaign.manifest_store().has(&expected_findings)?);
+        assert_eq!(report.head.manifest.genesis_pin, first.genesis_pin);
+        assert_eq!(report.head.manifest.provenance, first.provenance);
+        assert_eq!(
+            campaign
+                .read_head()?
+                .ok_or_else(|| std::io::Error::other("campaign head missing"))?
+                .manifest_hash,
+            report.head.manifest_hash
+        );
+
+        Ok(())
+    }
+
+    fn campaign_manifest_fixture(
+        campaign: &SharedCampaignStore,
+        corpus: &str,
+        coverage: &str,
+        findings: &str,
+    ) -> Result<CampaignManifest, CasError> {
+        Ok(CampaignManifest::new(
+            campaign_root_fixture(campaign, "corpus", corpus)?,
+            campaign_root_fixture(campaign, "coverage-map", coverage)?,
+            campaign_root_fixture(campaign, "findings", findings)?,
+            ContentHash::from_bytes(b"genesis-pin"),
+            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+        ))
+    }
+
+    fn campaign_root_fixture(
+        campaign: &SharedCampaignStore,
+        label: &str,
+        value: &str,
+    ) -> Result<ContentHash, CasError> {
+        campaign.manifest_store().put(
+            format!("format=crucible.campaign-root-fixture.v1\nlabel={label}\nvalue={value}\n")
+                .as_bytes(),
+        )
     }
 
     #[test]

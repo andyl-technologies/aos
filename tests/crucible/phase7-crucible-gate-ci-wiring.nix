@@ -165,14 +165,14 @@
       needle = "dependencies = [e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleCasFleetRatchetSeam];";
     }
     {
-      label = "campaign continuity waits for fleet equivalence and campaign provenance";
-      edge = "gate:fleet-equivalence+campaign-provenance->gate:campaign-continuity";
-      needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignProvenance];";
+      label = "campaign continuity waits for fleet equivalence, campaign manifest, and campaign provenance";
+      edge = "gate:fleet-equivalence+campaign-manifest+campaign-provenance->gate:campaign-continuity";
+      needle = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignProvenance];";
     }
     {
-      label = "campaign continuity wrapper waits for fleet equivalence and campaign provenance";
-      edge = "gate:fleet-equivalence-wrapper+campaign-provenance->gate:campaign-continuity-wrapper";
-      needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignProvenance];";
+      label = "campaign continuity wrapper waits for fleet equivalence, campaign manifest, and campaign provenance";
+      edge = "gate:fleet-equivalence-wrapper+campaign-manifest+campaign-provenance->gate:campaign-continuity-wrapper";
+      needle = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignProvenance];";
     }
   ];
 
@@ -461,6 +461,10 @@
         needle = ''attrPath = "checks.crucible.phase7.crucibleCasFleetRatchetSeam";'';
       }
       {
+        label = "T-DCE-4 campaign manifest guard is exposed";
+        needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignManifest";'';
+      }
+      {
         label = "T-PKG-22 campaign provenance guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";'';
       }
@@ -584,6 +588,7 @@ in
             shared_dag_store_source=checks.crucible.phase7.crucibleSharedDagStore
             frontier_lease_source=checks.crucible.phase7.crucibleFrontierLeases
             four_layer_dedup_source=checks.crucible.phase7.crucibleFourLayerDedup
+            campaign_manifest_source=checks.crucible.phase7.crucibleCampaignManifest
             fleet_check_surface=checks.fleet.crucible-e2e-determinism,checks.fleet.crucible-distributed-continuous-exploration
             RESULT
           '';
