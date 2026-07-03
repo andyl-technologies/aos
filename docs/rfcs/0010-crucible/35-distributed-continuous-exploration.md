@@ -1114,10 +1114,18 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     coverage, findings, and genesis roots, records a content-addressed
     fresh-lineage baseline event, installs the fresh manifest as the campaign head,
     and leaves prior ledger findings reproducible.
-- [ ] **T-DCE-10** Add `gate:fleet-equivalence` and `gate:campaign-continuity` to
+- [x] **T-DCE-10** Add `gate:fleet-equivalence` and `gate:campaign-continuity` to
   the canonical gate catalog (24 §1.1) verbatim and wire them into the phase plan
   after the search/fuzzing + replay-oracle gates; document the ratchet seam
   (crucible-cas interface, RFC-0007 future home) as text with Crucible standalone;
   wire the fleet store as an AOS from-source VM/fleet check (TCG-only). — satisfies
   [DCE-1], [DCE-28], [DCE-29], [DCE-30], [DCE-31], [DCE-32]; spec §35.6.2,
   §35.7, §35.8, §35.10; cross-ref 24 §1.1, 25, 26 §26.9.
+  - Completed by `checks.crucible.phase7.crucibleDceIntegration`: RFC 24 now
+    carries the §35.10 `gate:fleet-equivalence` and `gate:campaign-continuity`
+    rows with their explicit DCE requirements and one-line criteria; the harness
+    phase plan and gate-target mapping expose both implemented gates after the
+    replay/search/fuzzing ladder; the `crucible-cas` ratchet seam remains documented
+    text with no RFC-0007 dependency; and `pkgs.crucible-fleet-store` is wired into
+    `checks.fleet.crucible-distributed-continuous-exploration` as a from-source,
+    TCG-only AOS fleet surface.
