@@ -2560,6 +2560,16 @@ in rec {
       attrPath = "checks.crucible.phase7.machineIndependentReproduction";
       taskIds = ["T-HARN-25"];
     };
+    crucibleDceIntegration = import ./phase7-crucible-dce-integration.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crucibleDceIntegration";
+      taskIds = ["T-DCE-10"];
+      dependencies = [
+        phase7.crucibleCasFleetRatchetSeam
+        phase7.crucibleFleetStore
+        phase7.crucibleGateCiWiring
+      ];
+    };
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
