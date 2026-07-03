@@ -1044,6 +1044,15 @@ branch on the verdict without parsing output:
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
+  Work in progress under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
+  parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
+  `--interactive`, and `--watch`, decodes `.crucible-savepoint` handles exported
+  by `save`, accepts direct `blake3:<hash>` checkpoint references, validates
+  malformed handles as artifact errors, and fails execution explicitly until the
+  checkpoint-instantiation runner exists. Full closure remains blocked on
+  materializing the referenced configuration through the temporal graph,
+  replay-oracle validation, real-QEMU coverage, and continuing the resumed
+  session to the requested terminal condition.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
