@@ -8,6 +8,7 @@
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
@@ -52,6 +53,63 @@ impl QemuSpawnHostResources {
     #[must_use]
     pub const fn region_len(&self) -> u64 {
         self.region_len
+    }
+
+    /// Consumes retained host descriptors into setup-driver resources.
+    #[must_use]
+    pub fn into_setup_resources(self) -> QemuSpawnSetupResources {
+        QemuSpawnSetupResources {
+            control_socket: UnixStream::from(self.control_socket),
+            shmem_fd: self.shmem_fd,
+            wake_fd: self.wake_fd,
+            region_len: self.region_len,
+        }
+    }
+}
+
+/// Host-side descriptors in the shape required by the setup protocol driver.
+#[derive(Debug)]
+pub struct QemuSpawnSetupResources {
+    control_socket: UnixStream,
+    shmem_fd: OwnedFd,
+    wake_fd: OwnedFd,
+    region_len: u64,
+}
+
+impl QemuSpawnSetupResources {
+    /// Returns the host end of the plugin IPC control socket.
+    #[must_use]
+    pub fn control_socket_fd(&self) -> RawFd {
+        self.control_socket.as_raw_fd()
+    }
+
+    /// Returns the host shared-memory descriptor.
+    #[must_use]
+    pub fn shmem_fd(&self) -> RawFd {
+        self.shmem_fd.as_raw_fd()
+    }
+
+    /// Returns the host wake event descriptor.
+    #[must_use]
+    pub fn wake_fd(&self) -> RawFd {
+        self.wake_fd.as_raw_fd()
+    }
+
+    /// Returns the shared-memory region length used to size the memfd.
+    #[must_use]
+    pub const fn region_len(&self) -> u64 {
+        self.region_len
+    }
+
+    /// Consumes the setup resources into their owned parts.
+    #[must_use]
+    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64) {
+        (
+            self.control_socket,
+            self.shmem_fd,
+            self.wake_fd,
+            self.region_len,
+        )
     }
 }
 
@@ -154,6 +212,18 @@ fn create_spawn_resources(
             shmem_fd: child_shmem,
             wake_fd: child_wake,
         },
+    ))
+}
+
+#[cfg(test)]
+/// Creates host setup resources and the child-side control socket for tests.
+pub(crate) fn create_test_spawn_resource_pair(
+    region_len: u64,
+) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
+    let (host_resources, child_resources) = create_spawn_resources(region_len)?;
+    Ok((
+        host_resources,
+        UnixStream::from(child_resources.control_socket),
     ))
 }
 

@@ -14,6 +14,7 @@
 //! round-robin TCG model, QEMU serializes registered vCPU-thread callbacks so
 //! plugin callback state is not accessed concurrently.
 
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 use crate::{
@@ -21,6 +22,7 @@ use crate::{
     QemuInjectPreemptionFn, QemuReadRrCursorFn, QemuReadVcpuRegsFn, SynchronousIdleAdvance,
     SynchronousIdleAdvanceError,
 };
+use crate::{PLUGIN_ARG_SIMFD, PluginArgs, PluginArgsParseError};
 use crate::{PluginPreemptionInjector, PreemptionError};
 use crate::{PluginVcpuIntrospector, VcpuIntrospectionError};
 
@@ -590,6 +592,24 @@ pub enum QemuPluginAbiError {
     /// QEMU did not provide plugin information.
     #[error("QEMU plugin install info pointer is null")]
     MissingInfo,
+    /// One plugin argument pointer was null.
+    #[error("QEMU plugin install argv[{index}] is null")]
+    NullArgvEntry {
+        /// Index of the null argument pointer.
+        index: usize,
+    },
+    /// One plugin argument was not valid UTF-8.
+    #[error("QEMU plugin install argv[{index}] is not valid UTF-8")]
+    InvalidArgvUtf8 {
+        /// Index of the non-UTF-8 argument.
+        index: usize,
+    },
+    /// QEMU's plugin arguments failed Crucible's fail-closed parser.
+    #[error("QEMU plugin install arguments are invalid: {source}")]
+    PluginArgs {
+        /// Underlying argument parser error.
+        source: PluginArgsParseError,
+    },
     /// QEMU's supported plugin API range does not include this plugin.
     #[error("QEMU plugin API range {min}..={cur} does not include required version {required}")]
     UnsupportedPluginApi {
@@ -663,6 +683,62 @@ pub fn validate_install_boundary(
         return Err(QemuPluginAbiError::MissingArgv { argc });
     }
     Ok(())
+}
+
+/// Parses the QEMU plugin argument vector into Crucible's typed launch args.
+///
+/// QEMU exposes comma-separated `-plugin` options to plugins as an argument
+/// vector. This helper accepts both QEMU's split vector form and the testable
+/// single-string form by joining argv entries with commas before feeding the
+/// existing fail-closed parser.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError`] when `argc`/`argv` violate the raw ABI
+/// boundary, an argv entry is null or non-UTF-8, or the parsed plugin arguments
+/// omit required Crucible keys such as `simfd` and `slot`.
+pub fn parse_install_plugin_args(
+    argc: c_int,
+    argv: *mut *mut c_char,
+) -> Result<PluginArgs, QemuPluginAbiError> {
+    if argc < 0 {
+        return Err(QemuPluginAbiError::NegativeArgc { argc });
+    }
+    if argc > 0 && argv.is_null() {
+        return Err(QemuPluginAbiError::MissingArgv { argc });
+    }
+
+    let argc = usize::try_from(argc).map_err(|_error| QemuPluginAbiError::NegativeArgc { argc })?;
+    if argc == 0 {
+        return Err(QemuPluginAbiError::PluginArgs {
+            source: PluginArgsParseError::MissingRequiredKey {
+                key: PLUGIN_ARG_SIMFD,
+            },
+        });
+    }
+
+    let mut raw_args = Vec::with_capacity(argc);
+    for index in 0..argc {
+        let arg = unsafe {
+            // SAFETY: `argv` is non-null for positive `argc`, and QEMU provides
+            // at least `argc` entries for the duration of `qemu_plugin_install`.
+            *argv.add(index)
+        };
+        if arg.is_null() {
+            return Err(QemuPluginAbiError::NullArgvEntry { index });
+        }
+        let arg = unsafe {
+            // SAFETY: QEMU plugin argv entries are NUL-terminated C strings.
+            CStr::from_ptr(arg)
+        };
+        let arg = arg
+            .to_str()
+            .map_err(|_error| QemuPluginAbiError::InvalidArgvUtf8 { index })?;
+        raw_args.push(arg);
+    }
+
+    PluginArgs::parse(&raw_args.join(","))
+        .map_err(|source| QemuPluginAbiError::PluginArgs { source })
 }
 
 /// Extracts and validates the execution model from QEMU install information.
@@ -1380,6 +1456,7 @@ fn install_required_runtime_api_scaffold_from_boundary(
     argv: *mut *mut c_char,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     validate_install_boundary(info, argc, argv)?;
+    let _args = parse_install_plugin_args(argc, argv)?;
     // SAFETY: `validate_install_boundary` rejected null, and QEMU's plugin ABI
     // guarantees `info` points at a live `qemu_info_t` for this install call.
     // Only scalar fields are copied before the pointer lifetime ends.
@@ -1499,6 +1576,7 @@ pub extern "C" fn crucible_qemu_plugin_inert_vcpu_resume_cb(
 mod tests {
     use super::*;
 
+    use std::ffi::CString;
     use std::ptr::NonNull;
 
     const fn qemu_info_fixture(smp_vcpus: c_int, api_min: c_int, api_cur: c_int) -> QemuPluginInfo {
@@ -1526,6 +1604,110 @@ mod tests {
         unsafe { qemu_plugin_install(7, info, argc, argv) }
     }
 
+    fn plugin_argv(args: &[&str]) -> (Vec<CString>, Vec<*mut c_char>) {
+        let strings = args
+            .iter()
+            .map(|arg| {
+                CString::new(*arg).unwrap_or_else(|error| {
+                    panic!("test plugin arg should not contain interior NUL: {error}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let ptrs = strings
+            .iter()
+            .map(|arg| arg.as_ptr().cast_mut())
+            .collect::<Vec<_>>();
+        (strings, ptrs)
+    }
+
+    fn valid_plugin_argv() -> (Vec<CString>, Vec<*mut c_char>) {
+        plugin_argv(&[
+            "simfd=3",
+            "slot=0",
+            "shmemfd=4",
+            "wakefd=5",
+            "whitebox=off",
+            "coverage=off",
+        ])
+    }
+
+    fn call_qemu_plugin_install_with_valid_args(info: *const QemuPluginInfo) -> c_int {
+        let (_strings, mut argv) = valid_plugin_argv();
+        call_qemu_plugin_install(info, argv.len() as c_int, argv.as_mut_ptr())
+    }
+
+    #[test]
+    fn abi_install_parses_qemu_plugin_argv_before_runtime_activation() {
+        let (_strings, mut split_argv) = plugin_argv(&[
+            "simfd=3",
+            "slot=2",
+            "shmemfd=4",
+            "wakefd=5",
+            "whitebox=off",
+            "coverage=on",
+        ]);
+
+        let args = parse_install_plugin_args(split_argv.len() as c_int, split_argv.as_mut_ptr())
+            .unwrap_or_else(|error| panic!("split QEMU argv should parse: {error}"));
+
+        assert_eq!(args.sim_fd(), 3);
+        assert_eq!(args.slot(), 2);
+        assert_eq!(
+            args.inherited_fds(),
+            Some(crate::PluginInheritedFds {
+                shmem_fd: 4,
+                wake_fd: 5,
+            })
+        );
+        assert!(!args.whitebox().is_on());
+        assert!(args.coverage().is_on());
+
+        let (_strings, mut single_argv) =
+            plugin_argv(&["simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off"]);
+        let args = parse_install_plugin_args(1, single_argv.as_mut_ptr())
+            .unwrap_or_else(|error| panic!("single QEMU argv should parse: {error}"));
+
+        assert_eq!(args.sim_fd(), 3);
+        assert_eq!(args.slot(), 0);
+        assert!(args.whitebox().is_on());
+        assert!(!args.coverage().is_on());
+    }
+
+    #[test]
+    fn abi_install_plugin_argv_fails_closed_for_missing_and_malformed_args() {
+        assert_eq!(
+            parse_install_plugin_args(0, std::ptr::null_mut()).map(|_args| ()),
+            Err(QemuPluginAbiError::PluginArgs {
+                source: PluginArgsParseError::MissingRequiredKey {
+                    key: PLUGIN_ARG_SIMFD,
+                },
+            })
+        );
+
+        let (_strings, mut missing_slot) = plugin_argv(&["simfd=3"]);
+        assert_eq!(
+            parse_install_plugin_args(1, missing_slot.as_mut_ptr()).map(|_args| ()),
+            Err(QemuPluginAbiError::PluginArgs {
+                source: PluginArgsParseError::MissingRequiredKey { key: "slot" },
+            })
+        );
+
+        let mut null_entry = [std::ptr::null_mut()];
+        assert_eq!(
+            parse_install_plugin_args(1, null_entry.as_mut_ptr()).map(|_args| ()),
+            Err(QemuPluginAbiError::NullArgvEntry { index: 0 })
+        );
+
+        let invalid_utf8 = CString::new(vec![0xff]).unwrap_or_else(|error| {
+            panic!("test invalid UTF-8 argument should not contain interior NUL: {error}")
+        });
+        let mut invalid_utf8_argv = [invalid_utf8.as_ptr().cast_mut()];
+        assert_eq!(
+            parse_install_plugin_args(1, invalid_utf8_argv.as_mut_ptr()).map(|_args| ()),
+            Err(QemuPluginAbiError::InvalidArgvUtf8 { index: 0 })
+        );
+    }
+
     #[test]
     fn abi_install_entrypoint_validates_raw_boundary_and_builds_inert_model() {
         let info = NonNull::<QemuPluginInfo>::dangling().as_ptr();
@@ -1536,7 +1718,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
+            call_qemu_plugin_install_with_valid_args(&valid_info),
             QEMU_PLUGIN_INSTALL_ERROR
         );
         assert!(
@@ -1616,7 +1798,7 @@ mod tests {
 
         assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
         assert_eq!(
-            call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
+            call_qemu_plugin_install_with_valid_args(&valid_info),
             QEMU_PLUGIN_INSTALL_ERROR
         );
         assert_eq!(
@@ -1645,7 +1827,7 @@ mod tests {
         assert_eq!(deadline(), 4096);
         assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
         assert_eq!(
-            call_qemu_plugin_install(&valid_info, 0, std::ptr::null_mut()),
+            call_qemu_plugin_install_with_valid_args(&valid_info),
             QEMU_PLUGIN_INSTALL_ERROR
         );
     }
