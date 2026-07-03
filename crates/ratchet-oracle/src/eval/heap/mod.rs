@@ -813,6 +813,109 @@ pub enum EvalHeapError {
         /// The object-copy action that implied the expected generation.
         action: MinorGcSurvivorAction,
     },
+    /// A destination byte-copy request disagrees with its own survivor action.
+    #[error(
+        "boundary minor-GC destination request for 0x{destination:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        destination = destination.address_bits()
+    )]
+    BoundaryMinorGcDestinationActionGenerationMismatch {
+        /// The copied or promoted destination address.
+        destination: GcHeapAddress,
+        /// The generation implied by the survivor action.
+        expected: HeapGeneration,
+        /// The generation carried by the destination request.
+        actual: HeapGeneration,
+        /// The object-copy action that implied the expected generation.
+        action: MinorGcSurvivorAction,
+    },
+    /// A heap-field writeback replacement is not heap-backed metadata.
+    #[error(
+        "boundary minor-GC heap-field writeback for 0x{writeback_object:x}[{field_index}] {field_source:?} replacement is not heap metadata: {value:?}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackReplacementNonHeap {
+        /// The heap object whose copied field slot would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The non-heap replacement metadata.
+        value: ResolvedValueGeneration,
+    },
+    /// A heap-field writeback replacement points at no destination-byte snapshot.
+    #[error(
+        "boundary minor-GC heap-field writeback for 0x{writeback_object:x}[{field_index}] {field_source:?} points at missing replacement destination 0x{replacement:x}",
+        writeback_object = writeback_object.address_bits(),
+        replacement = replacement.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackReplacementMissing {
+        /// The heap object whose copied field slot would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address without an installed snapshot.
+        replacement: GcHeapAddress,
+    },
+    /// A heap-field writeback replacement generation disagrees with its copy action.
+    #[error(
+        "boundary minor-GC heap-field writeback for 0x{writeback_object:x}[{field_index}] {field_source:?} replacement 0x{replacement:x} has generation {actual:?}, expected {expected:?} from action {action:?}",
+        writeback_object = writeback_object.address_bits(),
+        replacement = replacement.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackReplacementGenerationMismatch {
+        /// The heap object whose copied field slot would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address.
+        replacement: GcHeapAddress,
+        /// The generation implied by the replacement copy action.
+        expected: HeapGeneration,
+        /// The generation carried by the replacement metadata.
+        actual: HeapGeneration,
+        /// The object-copy action that implied the expected generation.
+        action: MinorGcSurvivorAction,
+    },
+    /// A copied nursery-field writeback object has no destination-byte snapshot.
+    #[error(
+        "boundary minor-GC heap-field writeback for 0x{validation_object:x}[{field_index}] {field_source:?} targets missing writeback object 0x{writeback_object:x}",
+        validation_object = validation_object.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackObjectMissing {
+        /// The from-space object used to validate the copied field label.
+        validation_object: GcHeapAddress,
+        /// The relocated object whose copied field slot would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A copied nursery-field writeback object snapshot belongs to another source.
+    #[error(
+        "boundary minor-GC heap-field writeback for 0x{validation_object:x}[{field_index}] {field_source:?} targets destination 0x{writeback_object:x} from source 0x{actual_source:x}",
+        validation_object = validation_object.address_bits(),
+        writeback_object = writeback_object.address_bits(),
+        actual_source = actual_source.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackObjectSourceMismatch {
+        /// The from-space object used to validate the copied field label.
+        validation_object: GcHeapAddress,
+        /// The relocated object whose copied field slot would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The source address recorded by the installed destination snapshot.
+        actual_source: GcHeapAddress,
+    },
     /// A live forwarding installation received an empty forwarding slot.
     #[error(
         "collector-poll minor-GC forwarding slot for 0x{address:x} at index {index} has no forwarded value",

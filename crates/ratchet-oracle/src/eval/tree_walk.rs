@@ -57,7 +57,7 @@ use super::heap::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
     EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode,
     EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, HeapAllocationDomain, PreciseHeapScan,
+    EvalThunkKind, HeapAllocationDomain, HeapEdgeSource, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -340,6 +340,7 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcCommitApplications, EvalGcStressBoundaryMinorGcCommitDryRun,
     EvalGcStressBoundaryMinorGcCommitDryRunSummary, EvalGcStressBoundaryMinorGcCommitPreflight,
     EvalGcStressBoundaryMinorGcCommitPreflights,
+    EvalGcStressBoundaryMinorGcHeapFieldWritebackDestinationBinding,
     EvalGcStressBoundaryMinorGcLiveDestinationObjectBytes,
     EvalGcStressBoundaryMinorGcLiveDestinationStorage,
     EvalGcStressBoundaryMinorGcLiveDestinationStorageCommitDryRun,

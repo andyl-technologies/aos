@@ -6503,6 +6503,11 @@ and helps the oracle directly.
       then validates installed typed/generation root writebacks against
       installed destination-byte snapshots, producing root-to-destination binding
       metadata for a later live root writer without mutating evaluator roots.
+      `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
+      validates installed heap-field writebacks against their replacement
+      destination snapshots, and requires copied nursery-field writes to target
+      installed writeback-object destination snapshots, producing field binding
+      metadata for a later live object-field writer without mutating heap fields.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

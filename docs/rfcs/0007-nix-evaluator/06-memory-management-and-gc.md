@@ -2129,6 +2129,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       validates that installed typed/generation root writebacks point at
       installed destination-byte snapshots before a future live root writer can
       bind them.
+      `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings`
+      validates installed heap-field writebacks against the replacement
+      destination snapshots, and for copied nursery-field writes also validates
+      the relocated writeback object's destination snapshot, before a future
+      live object-field writer can bind them.
       These helpers still do not bind those bytes to live heap-object bodies,
       live root/field storage, real ABI object-header forwarding storage,
       object-generation metadata, or semispace storage, and they do not commit

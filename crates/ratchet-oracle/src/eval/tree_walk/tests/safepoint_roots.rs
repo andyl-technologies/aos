@@ -2269,6 +2269,81 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
             generation: HeapGeneration::Young,
         }
     );
+    let binding_err = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings()
+        .expect_err("destination binding requires installed destination bytes");
+    assert!(matches!(
+        binding_err,
+        EvalHeapError::BoundaryMinorGcHeapFieldWritebackReplacementMissing {
+            replacement,
+            ..
+        } if replacement == nursery_base
+    ));
+    let live_destination_dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("dirty old-field boundary installs live destination storage");
+    let live_destination_storage = outcome.gc_stress_boundary_minor_gc_destination_storage();
+    let live_object_copy = live_destination_dry_run
+        .dry_run()
+        .commit_applications()
+        .worker()
+        .expect("worker destination storage records object copy")
+        .object_byte_copies()[0]
+        .clone();
+    assert_eq!(live_destination_storage.len(), 1);
+    assert_eq!(
+        live_destination_storage.object_bytes()[0].request(),
+        live_object_copy.request()
+    );
+    let field_bindings = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_destination_bindings()
+        .expect("heap-field writeback destination bindings validate");
+    assert_eq!(field_bindings.len(), summary.heap_field_writebacks());
+    let dirty_field_binding = field_bindings
+        .iter()
+        .find(|binding| {
+            binding.validation_object() == gc_address(permanent_parent)
+                && binding.writeback_object() == gc_address(permanent_parent)
+        })
+        .expect("dirty old-field binding records");
+    assert_eq!(
+        dirty_field_binding.allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        dirty_field_binding.validation_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        dirty_field_binding.writeback_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(dirty_field_binding.field_index(), 0);
+    assert_eq!(
+        dirty_field_binding.source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(dirty_field_binding.replacement_destination(), nursery_base);
+    assert_eq!(
+        dirty_field_binding.replacement_generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        dirty_field_binding.replacement_request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        dirty_field_binding.replacement_destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+    assert_eq!(dirty_field_binding.writeback_object_request(), None);
+    assert_eq!(
+        dirty_field_binding.writeback_object_destination_bytes(),
+        None
+    );
 
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let live_card_table_dry_run = outcome
