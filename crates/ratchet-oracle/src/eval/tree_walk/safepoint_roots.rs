@@ -173,6 +173,77 @@ impl TreeWalkSafepointMinorGcRootWritebackReport {
     }
 }
 
+/// A tree-walk safepoint minor-GC reference-writeback plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
+    poll: AllocationCollectorPoll,
+    scanned_roots: usize,
+    scanned_objects: usize,
+    survivors: usize,
+    reference_slots: usize,
+    writebacks: AllocationCollectorPollReferenceWritebackPlan,
+}
+
+impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
+    fn new(
+        poll: AllocationCollectorPoll,
+        scanned_roots: usize,
+        scanned_objects: usize,
+        survivors: usize,
+        reference_slots: usize,
+        writebacks: AllocationCollectorPollReferenceWritebackPlan,
+    ) -> Self {
+        Self {
+            poll,
+            scanned_roots,
+            scanned_objects,
+            survivors,
+            reference_slots,
+            writebacks,
+        }
+    }
+
+    /// Returns the collector poll used to derive this plan.
+    pub const fn poll(&self) -> AllocationCollectorPoll {
+        self.poll
+    }
+
+    /// Returns the number of explicit roots in the safepoint scan.
+    pub const fn scanned_roots(&self) -> usize {
+        self.scanned_roots
+    }
+
+    /// Returns the number of heap objects reached by the safepoint scan.
+    pub const fn scanned_objects(&self) -> usize {
+        self.scanned_objects
+    }
+
+    /// Returns the number of young survivors in the minor-GC plan.
+    pub const fn survivors(&self) -> usize {
+        self.survivors
+    }
+
+    /// Returns the number of reference slots in the commit plan.
+    pub const fn reference_slots(&self) -> usize {
+        self.reference_slots
+    }
+
+    /// Returns the complete root and heap-field writeback plan.
+    pub const fn writebacks(&self) -> &AllocationCollectorPollReferenceWritebackPlan {
+        &self.writebacks
+    }
+
+    /// Returns the number of root writebacks in the plan.
+    pub fn root_writebacks(&self) -> usize {
+        self.writebacks.root_writebacks().len()
+    }
+
+    /// Returns the number of heap-field writebacks in the plan.
+    pub fn heap_field_writebacks(&self) -> usize {
+        self.writebacks.heap_field_writebacks().len()
+    }
+}
+
 impl TreeWalk {
     /// Builds the explicit heap roots live at the current tree-walk safepoint.
     ///
@@ -411,6 +482,60 @@ impl TreeWalk {
         value_stack: &mut [Value],
     ) -> Result<TreeWalkSafepointMinorGcRootWritebackReport, TreeWalkSafepointRootWritebackError>
     {
+        let reference_plan = self.collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            promotion_policy,
+            bases,
+            value_stack,
+        )?;
+        let root_writebacks = reference_plan.root_writebacks();
+        let heap_field_writebacks = reference_plan.heap_field_writebacks();
+        if heap_field_writebacks != 0 {
+            return Err(
+                TreeWalkSafepointRootWritebackError::UnsupportedHeapFieldWritebacks {
+                    heap_field_writebacks,
+                },
+            );
+        }
+
+        let applied = self.apply_root_value_writebacks_to_safepoint_roots(
+            reference_plan.writebacks().root_writebacks(),
+            value_stack,
+        )?;
+        Ok(TreeWalkSafepointMinorGcRootWritebackReport::new(
+            reference_plan.poll(),
+            reference_plan.scanned_roots(),
+            reference_plan.scanned_objects(),
+            reference_plan.survivors(),
+            reference_plan.reference_slots(),
+            root_writebacks,
+            heap_field_writebacks,
+            applied.writebacks(),
+        ))
+    }
+
+    /// Derives complete reference writebacks from a current minor-GC poll.
+    ///
+    /// This helper runs the current tree-walk safepoint scan, card-table-aware
+    /// minor-GC planning, destination materialization, commit-plan derivation,
+    /// and reference-writeback extraction without mutating roots, heap fields,
+    /// object bytes, forwarding headers, remembered sets, or card tables. It is
+    /// the shared planning bridge for root-only and future full live-reference
+    /// safepoint applicators.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the supplied poll is
+    /// stale, if safepoint scanning or minor-GC planning fails, or if relocation,
+    /// commit, or reference-writeback metadata cannot be derived.
+    pub fn collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+        &self,
+        poll: AllocationCollectorPoll,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+        value_stack: &[Value],
+    ) -> Result<TreeWalkSafepointMinorGcReferenceWritebackPlan, TreeWalkSafepointRootWritebackError>
+    {
         let scan = self.safepoint_collector_poll_scan(poll, value_stack.iter().copied())?;
         let scanned_roots = scan.scan().roots().len();
         let scanned_objects = scan.scan().objects().len();
@@ -432,32 +557,16 @@ impl TreeWalk {
         let commit_plan = minor_gc
             .commit_plan(&destinations)
             .map_err(EvalHeapError::from)?;
-        let reference_writebacks = self
+        let writebacks = self
             .heap
             .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
-        let root_writebacks = reference_writebacks.root_writebacks().len();
-        let heap_field_writebacks = reference_writebacks.heap_field_writebacks().len();
-        if heap_field_writebacks != 0 {
-            return Err(
-                TreeWalkSafepointRootWritebackError::UnsupportedHeapFieldWritebacks {
-                    heap_field_writebacks,
-                },
-            );
-        }
-
-        let applied = self.apply_root_value_writebacks_to_safepoint_roots(
-            reference_writebacks.root_writebacks(),
-            value_stack,
-        )?;
-        Ok(TreeWalkSafepointMinorGcRootWritebackReport::new(
+        Ok(TreeWalkSafepointMinorGcReferenceWritebackPlan::new(
             poll,
             scanned_roots,
             scanned_objects,
             survivors,
             reference_slots,
-            root_writebacks,
-            heap_field_writebacks,
-            applied.writebacks(),
+            writebacks,
         ))
     }
 

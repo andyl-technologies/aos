@@ -6643,14 +6643,20 @@ and helps the oracle directly.
       relocation destinations and commit reference writebacks, rejects mixed
       plans that contain heap-field writebacks before mutating any root, and then
       delegates the root partition to the typed tree-walk root adaptor above.
-      Tests cover a real poll rewriting every supported mutable tree-walk root
-      kind, direct stale-poll rejection before mutation, and a dirty
-      permanent-list remembered edge whose mixed root/field plan is rejected
-      without touching the value stack, active frame root, or ready import-cache
-      root. This is still not automatic allocation-site dispatch and still does
-      not allocate destination records, copy object bodies, mutate heap fields,
-      install forwarding headers, publish remembered/card-table state, reserve
-      semispace storage, or consume JIT stack maps.
+      `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
+      exposes the complete root+heap-field writeback partition with scan,
+      survivor, and reference-slot counts for the future full live-reference
+      writer. Tests cover a real poll rewriting every supported mutable
+      tree-walk root kind, direct stale-poll rejection before mutation in both
+      the planning wrapper and root-only applicator, complete mixed root/field
+      partition reporting down to the remembered list-field
+      owner/source/replacement, and a dirty permanent-list remembered edge whose
+      mixed root/field plan is rejected without touching the value stack, active
+      frame root, or ready import-cache root. This is still not automatic
+      allocation-site dispatch and still does not allocate destination records,
+      copy object bodies, mutate heap fields, install forwarding headers, publish
+      remembered/card-table state, reserve semispace storage, or consume JIT
+      stack maps.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -6956,7 +6962,11 @@ and helps the oracle directly.
       remembered-set/card-table snapshots, caller-supplied destination bases, and
       the transient value stack; it rejects mixed plans with heap-field
       writebacks before root mutation so a root-only bridge cannot publish a
-      partial live collection.
+      partial live collection. The underlying
+      `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
+      wrapper preserves the complete root+heap-field writeback partition for the
+      future full live-reference writer, including exact remembered-field
+      writeback metadata.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

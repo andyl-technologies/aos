@@ -2419,11 +2419,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       now derives that root partition from a current collector poll, live
       remembered-set/card-table snapshots, caller-supplied destination bases, and
       the transient value stack, then delegates to the tree-walk root adaptor only
-      after rejecting mixed plans with heap-field writebacks. Tests cover the
-      poll-derived all-root rewrite, direct stale-poll rejection before mutation,
-      and dirty permanent-list mixed-plan rejection before mutating the value
-      stack, active frame root, or ready import-cache root. These helpers still
-      do not validate object liveness, bind semispace storage, mutate interned
+      after rejecting mixed plans with heap-field writebacks.
+      `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
+      exposes the complete root+heap-field writeback partition with scan,
+      survivor, and reference-slot counts for the future full live-reference
+      writer. Tests cover the poll-derived all-root rewrite, direct stale-poll
+      rejection before mutation in both the planning wrapper and root-only
+      applicator, complete mixed root/field partition reporting down to the
+      remembered list-field owner/source/replacement, and dirty permanent-list
+      mixed-plan rejection before mutating the value stack, active frame root, or
+      ready import-cache root. These helpers still do not validate object
+      liveness, bind semispace storage, mutate interned
       roots, detached primop metadata, or JIT stack-map slots, copy object
       bodies, update heap fields, publish remembered/card-table state, or wire
       root writebacks into automatic allocation-safepoint collection.
@@ -2558,7 +2564,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
       derives the same root partition from a current collector poll and the live
       remembered-set/card-table snapshots, and rejects plans that also require
-      heap-field writebacks before mutating root storage. The
+      heap-field writebacks before mutating root storage.
+      `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
+      preserves the complete root+heap-field partition for the future full
+      live-reference writer, including exact remembered-field writeback metadata.
+      The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
       root storage automatically at allocation safepoints, and do not cover
