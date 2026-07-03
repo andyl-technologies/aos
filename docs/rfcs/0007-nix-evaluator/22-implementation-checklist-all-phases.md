@@ -6951,13 +6951,22 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       escape facts and returns the immediate scalar nodes whose current facts
       license non-heap representation. The planner admits only `int`, `float`,
       `bool`, `null`, and immediate-scalar direct primop nodes with both
-      `Strict` and `NoEscape`, retains scalar nodes with missing proofs, retains
-      non-scalar `Strict + NoEscape` facts as unsupported by this precursor, and
+      `Strict` and `NoEscape`, retains scalar nodes with missing proofs, and
       rejects missing facts, malformed scalar payloads, or malformed primop side
       tables before admitting a primop. This is a planning precursor only:
-      optimized storage lowering, aggregate scalar replacement, the full primop
-      escape surface, and frame-local thunk/attrset escape integration remain
-      open.
+      optimized storage lowering, aggregate decomposition/lowering, the full
+      primop escape surface, and frame-local thunk/attrset escape integration
+      remain open.
+- [x] Current aggregate scalar-primop replacement planning precursor:
+      `scalar_replacement_plan` now admits `List` and `AttrSet` aggregate
+      scratch candidates only when their facts prove `Strict + NoEscape` and
+      the planner can independently recheck the unique immediate-scalar primop
+      consumer shape after validating the aggregate payload and side tables.
+      Forged or stale aggregate facts that fail this consumer shape are still
+      retained as unsupported; malformed aggregate payloads are rejected. This
+      exposes a lowering-safe plan surface for the narrow aggregate escape
+      precursor, but it still does not rewrite IR, decompose aggregate fields,
+      or provide optimized storage lowering.
 - [x] Current primop escape-signature precursor:
       `ratchet-core::analysis::escape_signature` classifies only direct primops
       whose result is guaranteed to be an immediate scalar, and `annotate_escape`

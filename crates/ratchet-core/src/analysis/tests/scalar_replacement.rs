@@ -138,6 +138,401 @@ fn scalar_replacement_plan_admits_strict_no_escape_primop_scalars() {
 }
 
 #[test]
+fn scalar_replacement_plan_admits_strict_no_escape_aggregate_scalar_primop_arguments() {
+    let mut length_ir = lowered("builtins.length [ (1 / 0) ]");
+    let length_args = primop_args(&length_ir, length_ir.root);
+    let list = length_args[0];
+
+    annotate_ir(&mut length_ir).expect("analysis succeeds");
+    let length_plan =
+        scalar_replacement_plan(&length_ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(length_plan.aggregate_candidate_count(), 1);
+    assert!(
+        length_plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == list
+                && replacement.kind() == ScalarReplacementKind::ListAggregate)
+    );
+    assert!(
+        length_plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == length_ir.root
+                && replacement.kind() == ScalarReplacementKind::PrimOpImmediateScalar)
+    );
+
+    let mut has_attr_ir = lowered(r#"builtins.hasAttr "a" { a = 1; }"#);
+    let has_attr_args = primop_args(&has_attr_ir, has_attr_ir.root);
+    let attrset = has_attr_args[1];
+
+    annotate_ir(&mut has_attr_ir).expect("analysis succeeds");
+    let has_attr_plan =
+        scalar_replacement_plan(&has_attr_ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(has_attr_plan.aggregate_candidate_count(), 1);
+    assert!(
+        has_attr_plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == attrset
+                && replacement.kind() == ScalarReplacementKind::AttrSetAggregate)
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_retains_shared_aggregate_despite_forged_proofs() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: list,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(primop, IrId::new(1));
+    assert_eq!(plan.aggregate_candidate_count(), 0);
+    assert!(
+        !plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == list)
+    );
+    assert!(plan.retained().iter().any(|retention| {
+        retention.node() == list
+            && retention.reason()
+                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+    }));
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_malformed_list_aggregate_payloads() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir).expect_err("malformed list payload rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidPayload {
+            id: list,
+            kind: IrKind::List,
+            expected: "list child slice"
+        }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_malformed_list_aggregate_children() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let missing_child = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 1)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(1, 1),
+                },
+            ),
+        ],
+        vec![missing_child, list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir).expect_err("malformed list child rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_child }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_malformed_attrset_aggregate_bindings() {
+    let attrset = IrId::new(0);
+    let key_node = IrId::new(1);
+    let primop = IrId::new(2);
+    let missing_value = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"a").expect("key symbol interns");
+    let symbol = symbols.intern(b"hasAttr").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::AttrSet,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::AttrSet {
+                    shape: crate::ir::IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Str,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Symbol(key),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 2),
+                },
+            ),
+        ],
+        vec![key_node, attrset],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(3),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([IrBinding {
+            key: IrAttrPathSegment::Static(key),
+            position: None,
+            value: missing_value,
+        }]),
+        shapes: Box::new([IrShape::new(Box::new([key]))]),
+    };
+    set_facts(&mut ir, attrset, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir).expect_err("malformed attrset binding rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_value }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_retains_with_chain_aggregate_despite_forged_proofs() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([IrWithChain::new(Box::new([list]))]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(plan.aggregate_candidate_count(), 0);
+    assert!(
+        !plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == list)
+    );
+    assert!(plan.retained().iter().any(|retention| {
+        retention.node() == list
+            && retention.reason()
+                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+    }));
+}
+
+#[test]
+fn scalar_replacement_plan_retains_dynamic_attr_path_aggregate_despite_forged_proofs() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let receiver = IrId::new(2);
+    let has_attr = IrId::new(3);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::Null,
+                Span::new(3, 7),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::HasAttr,
+                Span::new(0, 7),
+                EffectClass::pure(),
+                IrData::HasAttr {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver,
+                    path: IrAttrPathId::new(0),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(4),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Dynamic(list)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(has_attr, IrId::new(3));
+    assert_eq!(plan.aggregate_candidate_count(), 0);
+    assert!(
+        !plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == list)
+    );
+    assert!(plan.retained().iter().any(|retention| {
+        retention.node() == list
+            && retention.reason()
+                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+    }));
+}
+
+#[test]
 fn scalar_replacement_plan_retains_conservative_primops_despite_facts() {
     let mut ir = lowered("builtins.toString 1");
     let root = ir.root;

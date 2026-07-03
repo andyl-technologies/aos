@@ -1,31 +1,39 @@
 //! Scalar replacement planning over strictness and escape facts.
 //!
 //! Scalar replacement is a representation optimization: optimized tiers may keep
-//! proven-strict, proven-non-escaping immediate scalar values out of the heap.
-//! This module does not rewrite IR. It is a conservative consumer boundary for
-//! the current fact table so lowering code can ask which nodes are licensed for
-//! scalar storage without re-deriving the proof predicate.
+//! proven-strict, proven-non-escaping values out of the heap. Immediate scalars
+//! are admitted directly. Aggregate values are only admitted for the current
+//! narrow scratch-allocation case where the aggregate appears exactly once as an
+//! argument to an immediate-scalar primitive operation and nowhere else. This
+//! module does not rewrite IR. It is a conservative consumer boundary for the
+//! current fact table so lowering code can ask which nodes are licensed for
+//! non-heap storage without re-deriving every proof predicate.
 
 use thiserror::Error;
 
 use crate::analysis::{PrimOpEscapeSignature, primop_escape_signature};
 use crate::builtins::direct_builtin;
-use crate::ir::{Escape, Ir, IrChildSlice, IrData, IrId, IrKind, Strictness};
+use crate::ir::{
+    Escape, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
+    IrKind, IrShapeId, Strictness,
+};
 use crate::syntax::Symbol;
 
 /// Builds a scalar replacement plan for the current IR facts.
 ///
 /// Immediate scalar literals and direct primops are admitted only when their
-/// facts prove both [`Strictness::Strict`] and [`Escape::NoEscape`]. Scalar
+/// facts prove both [`Strictness::Strict`] and [`Escape::NoEscape`]. Strict
+/// no-escape lists and attrsets are admitted only when the planner can recheck
+/// that they are uniquely consumed by an immediate-scalar primop. Scalar
 /// candidates with missing proofs are retained with their current facts, while
-/// non-scalar nodes carrying the same proof pair are retained as unsupported by
-/// this precursor.
+/// unsupported non-scalar nodes carrying the same proof pair are retained as
+/// unsupported by this precursor.
 ///
 /// # Errors
 ///
 /// Returns [`ScalarReplacementError`] if the fact table is missing an arena
 /// entry, if an immediate scalar node carries a payload that does not match its
-/// kind, or if a scalar-returning primop references malformed side tables.
+/// kind, or if a candidate replacement references malformed side tables.
 pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarReplacementError> {
     let mut plan = ScalarReplacementPlan {
         node_count: ir.arena.nodes().len(),
@@ -52,6 +60,15 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
                     },
                 });
             }
+            continue;
+        }
+
+        if facts.strictness == Strictness::Strict
+            && facts.escape == Escape::NoEscape
+            && let Some(kind) = aggregate_kind(ir, id, node.kind, node.data)?
+        {
+            plan.aggregate_candidate_count += 1;
+            plan.replacements.push(ScalarReplacement { node: id, kind });
             continue;
         }
 
@@ -92,6 +109,188 @@ fn scalar_kind(
         IrKind::PrimOp => primop_scalar_kind(ir, id, data),
         _ => Ok(None),
     }
+}
+
+fn aggregate_kind(
+    ir: &Ir,
+    id: IrId,
+    kind: IrKind,
+    data: IrData,
+) -> Result<Option<ScalarReplacementKind>, ScalarReplacementError> {
+    let replacement = match kind {
+        IrKind::List => {
+            let IrData::Children(children) = data else {
+                return Err(invalid_payload(id, kind, "list child slice"));
+            };
+            validate_child_slice(ir, id, children)?;
+            ScalarReplacementKind::ListAggregate
+        }
+        IrKind::AttrSet => {
+            let IrData::AttrSet {
+                shape, bindings, ..
+            } = data
+            else {
+                return Err(invalid_payload(id, kind, "attrset binding payload"));
+            };
+            validate_shape(ir, id, shape)?;
+            validate_binding_slice(ir, id, bindings)?;
+            ScalarReplacementKind::AttrSetAggregate
+        }
+        _ => return Ok(None),
+    };
+    if unique_scalar_primop_argument(ir, id)? {
+        Ok(Some(replacement))
+    } else {
+        Ok(None)
+    }
+}
+
+fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, ScalarReplacementError> {
+    let mut reference_count = count_id(ir.root, argument);
+    let mut scalar_argument_count = 0usize;
+
+    for with_chain in &ir.with_chains {
+        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+    }
+
+    for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
+        let current = IrId::new(index as u32);
+        reference_count =
+            reference_count.saturating_add(reference_count_in_node(ir, current, node, argument)?);
+
+        let IrData::PrimOp { args, .. } = node.data else {
+            continue;
+        };
+        if primop_scalar_kind(ir, current, node.data)?.is_none() {
+            continue;
+        }
+        scalar_argument_count = scalar_argument_count
+            .saturating_add(count_ids(child_ids(ir, current, args)?, argument));
+    }
+
+    Ok(reference_count == 1 && scalar_argument_count == 1)
+}
+
+fn reference_count_in_node(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+    target: IrId,
+) -> Result<usize, ScalarReplacementError> {
+    match node.data {
+        IrData::None
+        | IrData::Int(_)
+        | IrData::Float(_)
+        | IrData::Bool(_)
+        | IrData::Symbol(_)
+        | IrData::Local { .. }
+        | IrData::Upval { .. }
+        | IrData::DialectScopeVar { .. } => Ok(0),
+        IrData::SearchPath { search_path, .. } => Ok(count_optional_id(search_path, target)),
+        IrData::Node(child) => Ok(count_id(child, target)),
+        IrData::Pair { first, second } => Ok(count_id(first, target) + count_id(second, target)),
+        IrData::Triple {
+            first,
+            second,
+            third,
+        } => Ok(count_id(first, target) + count_id(second, target) + count_id(third, target)),
+        IrData::Children(slice) | IrData::PrimOp { args: slice, .. } => {
+            Ok(count_ids(child_ids(ir, id, slice)?, target))
+        }
+        IrData::Bindings(slice) => count_binding_references(ir, id, slice, target),
+        IrData::Binary { lhs, rhs, .. } => Ok(count_id(lhs, target) + count_id(rhs, target)),
+        IrData::Unary { operand, .. } => Ok(count_id(operand, target)),
+        IrData::Select {
+            receiver,
+            path,
+            default,
+            ..
+        } => Ok(count_id(receiver, target)
+            + count_optional_id(default, target)
+            + count_attr_path_references(ir, id, path, target)?),
+        IrData::HasAttr { receiver, path, .. } => {
+            Ok(count_id(receiver, target) + count_attr_path_references(ir, id, path, target)?)
+        }
+        IrData::DialectNode { argument, .. } => Ok(count_id(argument, target)),
+        IrData::Lambda { pattern, body, .. } => {
+            Ok(count_id(pattern, target) + count_id(body, target))
+        }
+        IrData::Let { bindings, body, .. } => {
+            Ok(count_binding_references(ir, id, bindings, target)? + count_id(body, target))
+        }
+        IrData::AttrSet { bindings, .. } => count_binding_references(ir, id, bindings, target),
+        IrData::FormalSet { formals, .. } => Ok(count_ids(child_ids(ir, id, formals)?, target)),
+        IrData::Formal { default, .. } => Ok(count_optional_id(default, target)),
+    }
+}
+
+fn count_binding_references(
+    ir: &Ir,
+    id: IrId,
+    slice: IrBindingSlice,
+    target: IrId,
+) -> Result<usize, ScalarReplacementError> {
+    let bindings = binding_slice(ir, id, slice)?;
+
+    let mut count = 0usize;
+    for binding in bindings {
+        if let IrAttrPathSegment::Dynamic(key) = binding.key {
+            count += count_id(key, target);
+        }
+        count += count_id(binding.value, target);
+    }
+    Ok(count)
+}
+
+fn binding_slice(
+    ir: &Ir,
+    id: IrId,
+    slice: IrBindingSlice,
+) -> Result<&[crate::ir::IrBinding], ScalarReplacementError> {
+    let start = slice.start as usize;
+    let end = start
+        .checked_add(slice.len())
+        .ok_or(ScalarReplacementError::InvalidBindingSlice { id, slice })?;
+    ir.bindings
+        .get(start..end)
+        .ok_or(ScalarReplacementError::InvalidBindingSlice { id, slice })
+}
+
+fn count_attr_path_references(
+    ir: &Ir,
+    id: IrId,
+    path: IrAttrPathId,
+    target: IrId,
+) -> Result<usize, ScalarReplacementError> {
+    let segments = ir
+        .attr_paths
+        .get(path.index())
+        .ok_or(ScalarReplacementError::InvalidAttrPath { id, path })?;
+    Ok(segments
+        .iter()
+        .map(|segment| match segment {
+            IrAttrPathSegment::Static(_) => 0,
+            IrAttrPathSegment::Dynamic(dynamic) => count_id(*dynamic, target),
+        })
+        .sum())
+}
+
+fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], ScalarReplacementError> {
+    ir.arena
+        .child_slice(slice)
+        .ok_or(ScalarReplacementError::InvalidChildSlice { id, slice })
+}
+
+fn count_ids(ids: &[IrId], target: IrId) -> usize {
+    ids.iter().filter(|id| **id == target).count()
+}
+
+fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {
+    id.map_or(0, |id| count_id(id, target))
+}
+
+fn count_id(id: IrId, target: IrId) -> usize {
+    usize::from(id == target)
 }
 
 fn primop_scalar_kind(
@@ -135,16 +334,40 @@ fn validate_child_slice(
     id: IrId,
     slice: IrChildSlice,
 ) -> Result<usize, ScalarReplacementError> {
-    let children = ir
-        .arena
-        .child_slice(slice)
-        .ok_or(ScalarReplacementError::InvalidChildSlice { id, slice })?;
+    let children = child_ids(ir, id, slice)?;
     for child in children {
-        ir.arena
-            .node(*child)
-            .ok_or(ScalarReplacementError::InvalidNode { id: *child })?;
+        validate_node(ir, *child)?;
     }
     Ok(children.len())
+}
+
+fn validate_binding_slice(
+    ir: &Ir,
+    id: IrId,
+    slice: IrBindingSlice,
+) -> Result<usize, ScalarReplacementError> {
+    let bindings = binding_slice(ir, id, slice)?;
+    for binding in bindings {
+        if let IrAttrPathSegment::Dynamic(key) = binding.key {
+            validate_node(ir, key)?;
+        }
+        validate_node(ir, binding.value)?;
+    }
+    Ok(bindings.len())
+}
+
+fn validate_shape(ir: &Ir, id: IrId, shape: IrShapeId) -> Result<(), ScalarReplacementError> {
+    ir.shapes
+        .get(shape.index())
+        .ok_or(ScalarReplacementError::InvalidShape { id, shape })?;
+    Ok(())
+}
+
+fn validate_node(ir: &Ir, id: IrId) -> Result<(), ScalarReplacementError> {
+    ir.arena
+        .node(id)
+        .ok_or(ScalarReplacementError::InvalidNode { id })?;
+    Ok(())
 }
 
 fn invalid_payload(id: IrId, kind: IrKind, expected: &'static str) -> ScalarReplacementError {
@@ -156,6 +379,7 @@ fn invalid_payload(id: IrId, kind: IrKind, expected: &'static str) -> ScalarRepl
 pub struct ScalarReplacementPlan {
     node_count: usize,
     scalar_candidate_count: usize,
+    aggregate_candidate_count: usize,
     replacements: Vec<ScalarReplacement>,
     retained: Vec<ScalarReplacementRetention>,
 }
@@ -171,7 +395,12 @@ impl ScalarReplacementPlan {
         self.scalar_candidate_count
     }
 
-    /// Returns scalar nodes licensed for non-heap representation.
+    /// Returns the number of aggregate scratch candidates admitted.
+    pub const fn aggregate_candidate_count(&self) -> usize {
+        self.aggregate_candidate_count
+    }
+
+    /// Returns nodes licensed for non-heap representation.
     pub fn replacements(&self) -> &[ScalarReplacement] {
         &self.replacements
     }
@@ -181,13 +410,13 @@ impl ScalarReplacementPlan {
         &self.retained
     }
 
-    /// Returns whether no scalar node can be replaced.
+    /// Returns whether no node can be replaced.
     pub fn is_empty(&self) -> bool {
         self.replacements.is_empty()
     }
 }
 
-/// One immediate scalar node licensed for non-heap representation.
+/// One IR node licensed for non-heap representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScalarReplacement {
     node: IrId,
@@ -200,13 +429,13 @@ impl ScalarReplacement {
         self.node
     }
 
-    /// Returns the scalar representation class.
+    /// Returns the non-heap representation class.
     pub const fn kind(self) -> ScalarReplacementKind {
         self.kind
     }
 }
 
-/// Immediate scalar value classes supported by this planner.
+/// Non-heap representation classes supported by this planner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarReplacementKind {
     /// An integer scalar.
@@ -219,6 +448,10 @@ pub enum ScalarReplacementKind {
     Null,
     /// A direct primitive operation whose result is an immediate scalar.
     PrimOpImmediateScalar,
+    /// A list allocation uniquely consumed by an immediate-scalar primop.
+    ListAggregate,
+    /// An attrset allocation uniquely consumed by an immediate-scalar primop.
+    AttrSetAggregate,
 }
 
 /// One node retained by the scalar replacement planner.
@@ -250,7 +483,7 @@ pub enum ScalarReplacementRetentionReason {
         /// The escape fact that prevented replacement.
         escape: Escape,
     },
-    /// The node is not an immediate scalar supported by this precursor.
+    /// The node is not a replacement kind supported by this precursor.
     UnsupportedNodeKind {
         /// The unsupported node kind.
         kind: IrKind,
@@ -283,6 +516,30 @@ pub enum ScalarReplacementError {
         id: IrId,
         /// The invalid child slice.
         slice: IrChildSlice,
+    },
+    /// A binding slice did not resolve through the binding table.
+    #[error("invalid binding slice {slice:?} at IR node {id:?}")]
+    InvalidBindingSlice {
+        /// The node that referenced the invalid binding slice.
+        id: IrId,
+        /// The invalid binding slice.
+        slice: IrBindingSlice,
+    },
+    /// An attribute path id did not resolve through the attribute-path table.
+    #[error("invalid attribute path {path:?} at IR node {id:?}")]
+    InvalidAttrPath {
+        /// The node that referenced the invalid path.
+        id: IrId,
+        /// The invalid path id.
+        path: IrAttrPathId,
+    },
+    /// An attribute-set shape id did not resolve through the shape table.
+    #[error("invalid attribute-set shape {shape:?} at IR node {id:?}")]
+    InvalidShape {
+        /// The node that referenced the invalid shape.
+        id: IrId,
+        /// The invalid shape id.
+        shape: IrShapeId,
     },
     /// A child id did not resolve through the arena.
     #[error("invalid IR node id {id:?}")]
