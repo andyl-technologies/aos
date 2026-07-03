@@ -831,6 +831,68 @@ fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
     assert_eq!(escape(&ir, IrId::new(1)), Escape::Escapes);
 }
 
+#[test]
+fn escape_rejects_fact_table_length_mismatches() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Int(1),
+        )],
+        Vec::new(),
+    );
+    let mut overlong = Ir {
+        root: IrId::new(0),
+        arena: arena.clone(),
+        facts: IrFacts::conservative(2),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    overlong
+        .facts
+        .get_mut(IrId::new(1))
+        .expect("stale fact exists")
+        .escape = Escape::NoEscape;
+
+    let error = annotate_escape(&mut overlong).expect_err("overlong fact table rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_eq!(escape(&overlong, IrId::new(1)), Escape::NoEscape);
+
+    let mut short = Ir {
+        root: IrId::new(0),
+        arena,
+        facts: IrFacts::conservative(0),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_escape(&mut short).expect_err("short fact table rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidFactTableLength {
+            expected: 1,
+            actual: 0,
+        }
+    );
+}
+
 mod dead_binding;
 mod escape_signature;
 mod scalar_replacement;

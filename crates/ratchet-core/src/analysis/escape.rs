@@ -79,6 +79,14 @@ pub enum EscapeAnalysisError {
         /// The actual lowered argument count.
         actual: usize,
     },
+    /// The fact table length did not match the arena node count.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of fact records required by the arena.
+        expected: usize,
+        /// The number of fact records present.
+        actual: usize,
+    },
 }
 
 /// Annotates nodes whose result is proven not to publish an allocation.
@@ -96,6 +104,13 @@ pub enum EscapeAnalysisError {
 /// malformed side-table entries.
 pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalysisError> {
     let mut report = EscapeAnalysisReport::default();
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(EscapeAnalysisError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
     for index in 0..ir.facts.len() {
         let id = IrId::new(index as u32);
         let facts = ir
@@ -108,7 +123,6 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
         }
     }
 
-    let node_count = ir.arena.nodes().len();
     for index in 0..node_count {
         let id = IrId::new(index as u32);
         let node = *ir

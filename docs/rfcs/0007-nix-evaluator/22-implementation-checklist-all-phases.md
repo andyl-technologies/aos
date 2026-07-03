@@ -6898,6 +6898,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       malformed IR cannot silently retain stale `NoEscape` facts. Aggregate
       escape analysis, the full primop escape surface, scalar replacement, and
       frame-local thunk integration remain open.
+- [x] Current escape fact-table validation hardening:
+      `annotate_escape` now rejects fact-table/node-count mismatches before
+      scrubbing or producing escape facts, so overlong imported fact tables
+      cannot retain stale `NoEscape` records outside the arena. This is still a
+      fact-substrate validation check; it does not add aggregate escape
+      inference or new scalar-replacement cases.
 - [x] Current scalar replacement planning precursor:
       `ratchet-core::analysis::scalar_replacement` consumes strictness and
       escape facts and returns the immediate scalar nodes whose current facts
