@@ -759,9 +759,25 @@ carries findings across an incompatible build.
     excludes `.git`, `target`, and `result`, rejects wall-clock timestamp
     emitters in the package metadata paths, and is a dependency of
     `checks.crucible.phase7.gates.e2eDeterminism`.
-- [ ] **T-PKG-20** Record the full provenance triple in every reproduction artifact
+- [x] **T-PKG-20** Record the full provenance triple in every reproduction artifact
   so `crucible replay` refuses a mismatched build. — satisfies [PKG-38]; spec
   §26.10, coordinates with [`23-cli.md`](23-cli.md) §4, §12.
+  - Completed by `checks.crucible.phase7.reproductionProvenanceTriple`: the
+    canonical reproduction artifact schema is now `crucible.reproduction-artifact.v2`
+    and its pinned identity records the Crucible software version, QEMU build
+    identity, QEMU patch-series hash, shmem ABI version, guest-host protocol
+    version, RPC ABI version/build tag, and plugin ABI. `crucible replay`
+    decodes that full identity, derives the local QEMU patch-series and shmem ABI
+    from the discovered AOS QEMU/plugin markers, derives the guest-host and RPC
+    ABI versions from Rust source constants, and rejects any identity mismatch
+    before replay. Remote-daemon replay and mock failure artifact emission refuse
+    to synthesize local-double provenance when the producer build identity is not
+    available, and remote verify divergences skip side reproduction artifacts
+    rather than stamping them with fallback local provenance. The gate also
+    verifies the mock e2e and replay-oracle artifact identities carry the same
+    provenance fields and makes
+    `checks.crucible.phase7.gates.e2eDeterminism` depend on the provenance check
+    alongside the release manifest check.
 - [ ] **T-PKG-21** Build the fleet-visible content-addressed `DagStore` backend as
   an AOS from-source component and wire the distributed-search / continuous-campaign
   capability as a TCG-only AOS VM/fleet check (no `kvm` feature), building the

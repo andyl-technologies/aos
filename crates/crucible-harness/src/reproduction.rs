@@ -8,9 +8,9 @@
 //! with percent-escaped string fields.
 //!
 //! ```text
-//! schema  crucible.reproduction-artifact.v1
+//! schema  crucible.reproduction-artifact.v2
 //! seed    42
-//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v1  crucible-hash:...  plugin-abi:v1
+//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v2  crucible-hash:...  crucible-hash:...  1  1  2.0.0  crucible-rpc-abi-v2  plugin-abi:v1
 //! scenario  scenario_def  cluster.scn  crucible-hash:...  cas:crucible-hash:...  application/vnd.crucible.scenario+text  128
 //! payload  crucible-hash:...  7363656e6172696f
 //! schedule  crucible-hash:...  12
@@ -30,7 +30,7 @@ use crate::e2e::{
 };
 
 /// Current reproduction artifact schema identifier.
-pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
+pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 
 /// Media type for the canonical artifact encoding.
 pub const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -74,7 +74,7 @@ pub struct ReproductionArtifact {
     pub schema_version: String,
     /// Deterministic root seed used by the run.
     pub seed: u64,
-    /// Pinned engine, ABI, and QEMU/plugin identities for the producer.
+    /// Pinned engine, QEMU, ABI, and plugin identities for the producer.
     pub build_identity: PinnedBuildIdentity,
     /// Content-addressed scenario definition reference.
     pub scenario: ContentAddressedComponent,
@@ -264,6 +264,11 @@ impl ReproductionArtifact {
                 &self.build_identity.engine_abi,
                 &self.build_identity.artifact_abi,
                 &self.build_identity.qemu_build_id,
+                &self.build_identity.qemu_patch_series_hash,
+                &self.build_identity.shmem_abi_version,
+                &self.build_identity.guest_host_protocol_version,
+                &self.build_identity.rpc_abi_version,
+                &self.build_identity.rpc_abi_build,
                 &self.build_identity.plugin_abi,
             ],
         );
@@ -333,6 +338,16 @@ pub struct PinnedBuildIdentity {
     pub artifact_abi: String,
     /// Content address of the QEMU build identity used by the producer.
     pub qemu_build_id: String,
+    /// Hash of the ordered QEMU patch series applied to the producer QEMU.
+    pub qemu_patch_series_hash: String,
+    /// Shared-memory ABI version used by the producer.
+    pub shmem_abi_version: String,
+    /// Guest-host channel protocol version used by the producer.
+    pub guest_host_protocol_version: String,
+    /// Control-plane RPC ABI semantic version used by the producer.
+    pub rpc_abi_version: String,
+    /// Control-plane RPC ABI build tag used by the producer.
+    pub rpc_abi_build: String,
     /// Plugin ABI version used by the producer.
     pub plugin_abi: String,
 }
@@ -348,6 +363,17 @@ impl PinnedBuildIdentity {
         require_non_empty("build_identity.engine_version", &self.engine_version)?;
         require_non_empty("build_identity.engine_abi", &self.engine_abi)?;
         require_non_empty("build_identity.artifact_abi", &self.artifact_abi)?;
+        require_non_empty(
+            "build_identity.qemu_patch_series_hash",
+            &self.qemu_patch_series_hash,
+        )?;
+        require_non_empty("build_identity.shmem_abi_version", &self.shmem_abi_version)?;
+        require_non_empty(
+            "build_identity.guest_host_protocol_version",
+            &self.guest_host_protocol_version,
+        )?;
+        require_non_empty("build_identity.rpc_abi_version", &self.rpc_abi_version)?;
+        require_non_empty("build_identity.rpc_abi_build", &self.rpc_abi_build)?;
         require_non_empty("build_identity.plugin_abi", &self.plugin_abi)?;
         validate_digest("build_identity.qemu_build_id", &self.qemu_build_id)?;
         Ok(())
@@ -716,16 +742,26 @@ impl fmt::Display for ReproductionArtifactError {
             }
             Self::BuildIdentityMismatch { expected, actual } => write!(
                 formatter,
-                "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`",
+                "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
                 expected.engine_version,
                 expected.engine_abi,
                 expected.artifact_abi,
                 expected.qemu_build_id,
+                expected.qemu_patch_series_hash,
+                expected.shmem_abi_version,
+                expected.guest_host_protocol_version,
+                expected.rpc_abi_version,
+                expected.rpc_abi_build,
                 expected.plugin_abi,
                 actual.engine_version,
                 actual.engine_abi,
                 actual.artifact_abi,
                 actual.qemu_build_id,
+                actual.qemu_patch_series_hash,
+                actual.shmem_abi_version,
+                actual.guest_host_protocol_version,
+                actual.rpc_abi_version,
+                actual.rpc_abi_build,
                 actual.plugin_abi
             ),
             Self::MissingDifferentMachineProfile => write!(
@@ -1098,7 +1134,7 @@ fn decode_artifact(text: &str) -> Result<ReproductionArtifact, ReproductionArtif
                 set_once(&mut seed, line_index, tag, parsed)?;
             }
             "identity" => {
-                require_field_count(line_index, tag, &fields, 6)?;
+                require_field_count(line_index, tag, &fields, 11)?;
                 set_once(
                     &mut build_identity,
                     line_index,
@@ -1108,7 +1144,12 @@ fn decode_artifact(text: &str) -> Result<ReproductionArtifact, ReproductionArtif
                         engine_abi: fields[2].clone(),
                         artifact_abi: fields[3].clone(),
                         qemu_build_id: fields[4].clone(),
-                        plugin_abi: fields[5].clone(),
+                        qemu_patch_series_hash: fields[5].clone(),
+                        shmem_abi_version: fields[6].clone(),
+                        guest_host_protocol_version: fields[7].clone(),
+                        rpc_abi_version: fields[8].clone(),
+                        rpc_abi_build: fields[9].clone(),
+                        plugin_abi: fields[10].clone(),
                     },
                 )?;
             }
@@ -1225,11 +1266,16 @@ fn parse_component(
 
 fn pinned_identity_from_e2e(source: &E2eBuildIdentity) -> PinnedBuildIdentity {
     PinnedBuildIdentity {
-        engine_version: env!("CARGO_PKG_VERSION").to_string(),
+        engine_version: source.crucible_version.clone(),
         engine_abi: source.harness_abi.clone(),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id: content_address_bytes(source.backend_build_id.as_bytes()),
-        plugin_abi: format!("{}-plugin-abi", source.backend),
+        qemu_patch_series_hash: source.qemu_patch_series_hash.clone(),
+        shmem_abi_version: source.shmem_abi_version.clone(),
+        guest_host_protocol_version: source.guest_host_protocol_version.clone(),
+        rpc_abi_version: source.rpc_abi_version.clone(),
+        rpc_abi_build: source.rpc_abi_build.clone(),
+        plugin_abi: source.plugin_abi.clone(),
     }
 }
 
@@ -1338,9 +1384,16 @@ fn reconstructed_e2e_artifact_digest(
     material.record(
         "build",
         &[
+            E2eCanonicalField::Str(&artifact.build_identity.engine_version),
             E2eCanonicalField::Str(&artifact.build_identity.engine_abi),
             E2eCanonicalField::Str(backend),
             E2eCanonicalField::Str(&backend_build_id),
+            E2eCanonicalField::Str(&artifact.build_identity.qemu_patch_series_hash),
+            E2eCanonicalField::Str(&artifact.build_identity.shmem_abi_version),
+            E2eCanonicalField::Str(&artifact.build_identity.guest_host_protocol_version),
+            E2eCanonicalField::Str(&artifact.build_identity.rpc_abi_version),
+            E2eCanonicalField::Str(&artifact.build_identity.rpc_abi_build),
+            E2eCanonicalField::Str(&artifact.build_identity.plugin_abi),
         ],
     );
     push_scenario_material(&mut material, &scenario_material)?;

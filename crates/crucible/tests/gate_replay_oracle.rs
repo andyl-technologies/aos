@@ -1238,9 +1238,18 @@ fn replay_reproduction_artifact(
 
 fn simdouble_replay_build_identity() -> ReplayOracleBuildIdentity {
     ReplayOracleBuildIdentity {
+        crucible_version: env!("CARGO_PKG_VERSION").to_string(),
         harness_abi: String::from("crucible-replay-oracle-artifact-v1"),
         backend: String::from("SimDouble"),
         backend_build_id: String::from("crucible-model-test-double-v1"),
+        qemu_patch_series_hash: String::from(
+            "crucible-hash:9aa30c89f10ee512ab3ec9fb12f9b22a95d6d2859f7b1e9581678a113d0fbcf3",
+        ),
+        shmem_abi_version: String::from("1"),
+        guest_host_protocol_version: String::from("1"),
+        rpc_abi_version: String::from("2.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v2"),
+        plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }
 
