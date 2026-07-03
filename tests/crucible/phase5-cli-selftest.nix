@@ -71,6 +71,10 @@
         needle = "gates: Option<String>";
       }
       {
+        label = "selftest qemu flag";
+        needle = "with_qemu: bool";
+      }
+      {
         label = "built-in corpus selftest gate subset";
         needle = "BUILT_IN_CORPUS_SELFTEST_GATES";
       }
@@ -109,6 +113,18 @@
       {
         label = "unsupported qemu gate rejection";
         needle = "real-QEMU selftest gate must not be silently accepted";
+      }
+      {
+        label = "with-qemu discovery error";
+        needle = "real-QEMU selftest gate runner";
+      }
+      {
+        label = "gate validation before qemu discovery";
+        needle = "invalid selftest gate must be rejected before qemu discovery";
+      }
+      {
+        label = "with-qemu exit code";
+        needle = "assert_eq!(error.exit_code(), 4);";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
