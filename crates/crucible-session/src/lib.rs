@@ -21,15 +21,16 @@ pub mod engine {
         DagStoreError, DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
         DebugFailureFooterCommand, DebugGdbEndpoint, DebugReverseStepGrain, EventAttributeValue,
         EventDiagnosticPayload, EventLevel, EventLogOffset, ExampleCorpusError,
-        ExampleScenarioVerifyReport, FailureClusterFinding, FailureClusterReportFormat,
-        FailureClusterReportSet, FailureClusteringResult, FailureFindingsLedger,
-        FailureSignaturePreservingMinimizationResult, FailureTriageResult,
+        ExampleScenarioVerifyReport, FAULT_CAMPAIGN_FAMILY_NAME, FailureClusterFinding,
+        FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
+        FailureFindingsLedger, FailureSignaturePreservingMinimizationResult, FailureTriageResult,
         FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
         FailureTriageStoredArtifact, FingerprintSample, Icount, LocalDagStore, NodeId, QuantumLoop,
         QuantumOutcome, QuantumRequest, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm,
         SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, SearchBudget, SearchStrategy,
         Seed, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimulationBackend, VirtualTime,
-        built_in_example_corpus, happy_path_scenario, verify_example_scenario_runs,
+        built_in_example_corpus, happy_path_scenario, run_fault_campaign_example,
+        verify_example_scenario_runs,
     };
 }
 

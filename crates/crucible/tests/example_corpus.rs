@@ -4,11 +4,13 @@
 
 use crucible::{
     Action, AssertionPhase, CRASH_RESTART_SCENARIO_NAME, Decision, ExampleCorpusError,
-    ExampleScenarioRunOutcome, FramePredicate, GuestWorkloadBinary, GuestWorkloadParameterKey,
-    HAPPY_PATH_SCENARIO_NAME, HostAssertionOutcomeKind, IoEventKind, MembershipFault,
-    ObservableEventPayload, PARTITION_RECOVERY_SCENARIO_NAME, Predicate, Property, RestartPolicy,
-    ScenarioDefForm, SchedulerTopologyChangeTrigger, WhiteBoxPolicy, built_in_example_corpus,
-    crash_restart_scenario, happy_path_scenario, partition_recovery_scenario, run_example_scenario,
+    ExampleScenarioRunOutcome, FAULT_CAMPAIGN_FAMILY_NAME, FindingDiscoveryPath, FramePredicate,
+    GuestWorkloadBinary, GuestWorkloadParameterKey, HAPPY_PATH_SCENARIO_NAME,
+    HostAssertionOutcomeKind, IoEventKind, MembershipFault, ObservableEventPayload,
+    PARTITION_RECOVERY_SCENARIO_NAME, Predicate, Property, RestartPolicy, ScenarioDefForm,
+    SchedulerTopologyChangeTrigger, UnifiedGraphOperationKind, WhiteBoxPolicy,
+    built_in_example_corpus, crash_restart_scenario, fault_campaign_family, happy_path_scenario,
+    partition_recovery_scenario, run_example_scenario, run_fault_campaign_example_default,
     verify_example_scenario_runs,
 };
 
@@ -59,6 +61,174 @@ fn crash_restart_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCor
     assert!(!fixture.requires_white_box);
     assert_eq!(fixture.scenario.world().nodes().len(), 3);
     assert_eq!(fixture.scenario.world().links().len(), 3);
+    Ok(())
+}
+
+#[test]
+fn fault_campaign_is_shipped_as_builtin_family() -> Result<(), ExampleCorpusError> {
+    let family = fault_campaign_family()?;
+    assert_eq!(FAULT_CAMPAIGN_FAMILY_NAME, "fault-campaign.fam");
+    assert_eq!(family.space().seeds().len(), 8);
+    assert_eq!(family.space().topology_size().min(), 3);
+    assert_eq!(family.space().topology_size().max(), 5);
+    assert_eq!(
+        family.space().topology_shapes(),
+        &[crucible::TopologyShape::Ring, crucible::TopologyShape::Mesh]
+    );
+    assert!(
+        family.space().fault_density().min().millionths() > 0,
+        "A.4 family must generate an actual fault campaign"
+    );
+
+    let sample = family.instantiate_sample(0)?;
+    assert_eq!(sample.form().world().nodes().len(), 3);
+    assert!(!sample.form().plan().entries().is_empty());
+    assert!(
+        sample
+            .form()
+            .plan()
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, crucible::PlanEntry::Activate { .. }))
+    );
+    assert!(
+        sample
+            .form()
+            .properties()
+            .assertions()
+            .iter()
+            .any(|assertion| assertion.id.name == "no-split-brain")
+    );
+    assert!(sample.form().world().nodes().iter().all(|node| {
+        node.white_box == WhiteBoxPolicy::Disabled && node.cmdline.contains("cluster=crucible-a4")
+    }));
+    Ok(())
+}
+
+#[test]
+fn fault_campaign_fuzz_replay_save_resume_and_fork_are_proven() -> Result<(), ExampleCorpusError> {
+    let report = run_fault_campaign_example_default()?;
+    assert_eq!(report.family_name, FAULT_CAMPAIGN_FAMILY_NAME);
+    assert_eq!(
+        report.fuzz_run.iterations.len(),
+        report.config.iterations as usize
+    );
+    assert_eq!(report.coverage_fingerprints.len(), 2);
+    assert!(
+        report
+            .fuzz_run
+            .iterations
+            .iter()
+            .any(|iteration| iteration.new_coverage)
+    );
+    assert_eq!(
+        report.finding.discovery_path,
+        FindingDiscoveryPath::CoverageGuidedFuzzing
+    );
+    assert!(!report.violation_observations.is_empty());
+    assert!(!report.violation_event_log.is_empty());
+    assert!(report.violation_observations.iter().any(|observation| {
+        matches!(
+            observation.payload(),
+            ObservableEventPayload::NetworkDelivered { payload, .. }
+                if payload
+                    .windows(b"split_brain=true".len())
+                    .any(|window| window == b"split_brain=true")
+        )
+    }));
+    assert!(report.violation_report.verdict().is_failed());
+    assert!(
+        report
+            .violation_report
+            .violations()
+            .iter()
+            .any(|violation| {
+                violation.assertion.name == "no-split-brain"
+                    && violation.detail.contains("always predicate remains true")
+            })
+    );
+    assert!(
+        report
+            .violation_report
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.assertion.name == "no-split-brain"
+                && outcome.kind == HostAssertionOutcomeKind::Violated)
+    );
+    assert_eq!(
+        report.violation_replay.artifact,
+        report.finding.artifact.id()
+    );
+    assert_eq!(
+        report.violation_replay.replay.artifact,
+        report.finding.artifact.id()
+    );
+    assert_eq!(
+        report.violation_replay.expected,
+        report.violation_replay.reproduced
+    );
+    assert_eq!(report.violation_report, report.violation_replay.reproduced);
+    assert!(
+        report
+            .violation_replay
+            .reproduced
+            .violations()
+            .iter()
+            .any(
+                |violation| violation.reproduction_artifact == report.finding.artifact.id()
+                    && violation.assertion.name == "no-split-brain"
+            )
+    );
+    assert_ne!(
+        report.finding.configuration,
+        report.discovered_iteration.configuration_id()
+    );
+    assert_eq!(
+        report.finding.artifact.scenario_form().id(),
+        report.discovered_iteration.scenario.form().id()
+    );
+    assert_eq!(
+        report.finding.artifact.schedule().len(),
+        report.discovered_iteration.schedule().len() + 1
+    );
+    assert!(matches!(
+        report.finding.artifact.schedule().decisions().last(),
+        Some(Decision::Override(override_decision))
+            if override_decision
+                .point
+                .key
+                .contains("fault-campaign/violation")
+                && override_decision.choice.name.contains("network-delivered")
+    ));
+    assert_eq!(report.finding.artifact.replay()?, report.finding.replay);
+    assert_eq!(
+        report.fuzz_report.operation,
+        UnifiedGraphOperationKind::CoverageGuidedFuzzing
+    );
+    assert_eq!(
+        report.reproduction_report.operation,
+        UnifiedGraphOperationKind::ReproductionArtifact
+    );
+    assert_eq!(
+        report.save_report.operation,
+        UnifiedGraphOperationKind::Save
+    );
+    assert_eq!(
+        report.resume_report.operation,
+        UnifiedGraphOperationKind::Resume
+    );
+    assert_eq!(
+        report.fork_report.operation,
+        UnifiedGraphOperationKind::Fork
+    );
+    assert_eq!(report.save.configuration, report.resume.configuration);
+    assert_eq!(report.save.checkpoint, report.resume.checkpoint);
+    assert_ne!(report.fork.branch.id(), report.save.configuration);
+    assert_eq!(report.fork.branch.schedule.len(), 1);
+    assert!(matches!(
+        report.fork.branch.schedule.decisions(),
+        [Decision::Override(_)]
+    ));
     Ok(())
 }
 

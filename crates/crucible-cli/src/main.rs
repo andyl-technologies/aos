@@ -430,10 +430,10 @@ struct SearchArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct FuzzArgs {
-    /// ScenarioFamily file or content hash.
+    /// ScenarioFamily file, built-in name, or content hash.
     #[arg(value_name = "FAMILY")]
     family: Option<String>,
-    /// ScenarioFamily file or content hash.
+    /// ScenarioFamily file, built-in name, or content hash.
     #[arg(long = "family", value_name = "path|hash")]
     family_flag: Option<String>,
     /// Number of family instances to run.
@@ -1422,6 +1422,7 @@ struct FuzzDriverPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FuzzFamilyRef {
+    BuiltInFaultCampaign,
     File(PathBuf),
     Stored(crucible::ContentHash),
 }
@@ -1429,9 +1430,14 @@ enum FuzzFamilyRef {
 impl FuzzFamilyRef {
     fn label(&self) -> String {
         match self {
+            Self::BuiltInFaultCampaign => crucible::FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
             Self::File(path) => path.display().to_string(),
             Self::Stored(reference) => format_content_hash_ref(*reference),
         }
+    }
+
+    fn is_builtin_fault_campaign(&self) -> bool {
+        matches!(self, Self::BuiltInFaultCampaign)
     }
 }
 
@@ -2174,6 +2180,9 @@ fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
         return Err(backend_error(
             "family reference must not be empty or multiline",
         ));
+    }
+    if value == crucible::FAULT_CAMPAIGN_FAMILY_NAME || value == "builtin:fault-campaign" {
+        return Ok(FuzzFamilyRef::BuiltInFaultCampaign);
     }
     if value.starts_with(CONTENT_ADDRESS_PREFIX) {
         return Err(backend_error(format!(
@@ -6410,6 +6419,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_search_backend_error(search_plan));
         }
         if let Some(fuzz_plan) = &fuzz_plan {
+            if fuzz_plan.family.is_builtin_fault_campaign() {
+                run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
+                return Ok(());
+            }
             return Err(unsupported_fuzz_backend_error(fuzz_plan));
         }
         let mut outcome = execute_backend_routed_command(
@@ -6740,6 +6753,39 @@ fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
         plan.source.label(),
         plan.label
     ))
+}
+
+fn run_builtin_fault_campaign_fuzz(cli: &Cli, plan: &FuzzDriverPlan) -> Result<(), CliError> {
+    let report = crucible::run_fault_campaign_example(plan.config).map_err(|error| {
+        backend_error(format!(
+            "built-in fault-campaign fuzz proof failed: {error}"
+        ))
+    })?;
+    if should_emit_human_dispatch_output(cli) {
+        println!(
+            "crucible: fuzzed built-in {} with coverage={}",
+            report.family_name,
+            plan.coverage.label()
+        );
+        println!(
+            "crucible: {} iterations, {} coverage fingerprints, discovered configuration {}",
+            report.fuzz_run.iterations.len(),
+            report.coverage_fingerprints.len(),
+            format_content_hash_ref(report.discovered_iteration.configuration_id())
+        );
+        println!(
+            "crucible: captured self-contained artifact {}; replay state {}",
+            format_content_hash_ref(report.finding.artifact.id()),
+            format_content_hash_ref(report.finding.replay.state)
+        );
+        println!(
+            "crucible: save {}, resume {}, fork {}",
+            format_content_hash_ref(report.save.checkpoint),
+            format_content_hash_ref(report.resume.checkpoint),
+            format_content_hash_ref(report.fork.branch.id())
+        );
+    }
+    Ok(())
 }
 
 fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
@@ -10924,6 +10970,30 @@ mod tests {
         let hash_plan = plan_fuzz_invocation(args, &hash_seed)?;
         assert!(matches!(hash_plan.family, FuzzFamilyRef::Stored(_)));
 
+        let builtin_cli = Cli::parse_from([
+            "crucible",
+            "--seed",
+            "0x55",
+            "fuzz",
+            "--family",
+            crucible::FAULT_CAMPAIGN_FAMILY_NAME,
+        ]);
+        let Commands::Fuzz(args) = &builtin_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let builtin_seed = plan_determinism_ergonomics(
+            &builtin_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(2),
+        )?
+        .expect("built-in fuzz should resolve a seed");
+        let builtin_plan = plan_fuzz_invocation(args, &builtin_seed)?;
+        assert_eq!(builtin_plan.family, FuzzFamilyRef::BuiltInFaultCampaign);
+        assert_eq!(
+            builtin_plan.config,
+            crucible::CoverageGuidedFuzzConfig::new(crucible::Seed::from_u64(0x55), 1)
+        );
+
         let malformed_hash = FuzzArgs {
             family: Some(String::from("blake3:not-a-hash")),
             runs: 1,
@@ -10978,6 +11048,25 @@ mod tests {
         assert_eq!(error.exit_code(), 4);
 
         Ok(())
+    }
+
+    #[test]
+    fn cli_fuzz_runs_builtin_fault_campaign_family() {
+        let cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--backend",
+            "double",
+            "--seed",
+            "0x33a4",
+            "fuzz",
+            "--family",
+            crucible::FAULT_CAMPAIGN_FAMILY_NAME,
+            "--runs",
+            "2",
+        ]);
+
+        dispatch(&cli).expect("built-in fault campaign fuzz should run on the local proof path");
     }
 
     #[test]

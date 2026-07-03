@@ -1125,11 +1125,23 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   and `reconverges` as crash-triggered bounded liveness, is exercised by
   `crucible selftest`, and verifies five independent local reductions as
   byte-identical.
-- [ ] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
+- [x] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
   `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
   reduces to a self-contained artifact that `crucible replay` reproduces
   bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
   satisfies [EX-1], [EX-2], [EX-3]; spec §A.4; cross-ref 22, 06 §7.
+  Completed by `checks.crucible.phase7.faultCampaignExample`: the built-in
+  `fault-campaign.fam` fixture exports a deterministic `ScenarioFamily`
+  over seed, fault density, topology size, and topology shape; `crucible fuzz
+  --family fault-campaign.fam` runs the local proof path with unified event-log
+  basic-block coverage feedback, evaluates a planted black-box
+  `split_brain=true` observation into a violated `no-split-brain`
+  `HostAssertionReport`, captures that discoverable finding as a
+  self-contained reproduction artifact whose schedule carries the violation
+  observation, reconstructs the replay-side assertion log from that artifact,
+  validates replay byte-identity through the unified temporal graph, and proves the
+  pre-failure neighborhood can be saved, resumed, and forked through the same
+  graph path. Generic file/hash fuzz execution remains tracked by T-CLI-13.
 - [ ] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
   the divergence-bisection report (A.5): assert all examples are DETERMINISTIC
   under the hostile host matrix, and golden-test the divergence-report shape on a
