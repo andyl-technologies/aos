@@ -651,9 +651,17 @@ carries findings across an incompatible build.
     and the QEMU marker/build-identity proof to
     `checks.crucible.phase2.qemuPatchRegeneration` plus the patch-microtest
     aggregate.
-- [ ] **T-PKG-11** Wire `gate:abi-conformance` (shmem/protocol/RPC golden vectors,
+- [x] **T-PKG-11** Wire `gate:abi-conformance` (shmem/protocol/RPC golden vectors,
   version-field checks) as an eval/double-backed AOS check. — satisfies [PKG-19],
   [PKG-21], [PKG-23]; spec §26.6, §26.8.
+  - Completed by `checks.crucible.phase7.cruciblePackageAbiConformance`: the
+    package gate verifies that `checks.crucible.phase2.abiConformance` is an AOS
+    `pkgs.mkDerivation` check using vendored, frozen/offline Cargo execution and
+    that `checks.crucible.phase2.gates.abiConformance` wraps the same gate in the
+    phase ladder. It requires the shmem generated-header/layout/golden-vector
+    suite, the protocol and doorbell golden-vector suites, the RPC semantic
+    version/golden-vector/major-mismatch suite, and the engine test-double
+    aggregate to stay wired.
 - [ ] **T-PKG-12** Build the determinism guest kernel `linux-crucible` via
   `pkgs.linuxWith` extraConfig (single-vCPU, fixed timer, virtio drivers,
   `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, no auto-module-load, no ACPI; no
