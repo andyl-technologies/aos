@@ -1115,6 +1115,186 @@ pub enum EvalHeapError {
         /// The source address recorded by the installed destination snapshot.
         actual_source: GcHeapAddress,
     },
+    /// A heap-field writeback write plan has no installed destination binding.
+    #[error(
+        "boundary minor-GC heap-field writeback write for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} -> 0x{replacement:x}/{generation:?} has no installed destination binding",
+        writeback_object = writeback_object.address_bits(),
+        replacement = replacement.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteMissingBinding {
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination address.
+        replacement: GcHeapAddress,
+        /// The replacement generation.
+        generation: HeapGeneration,
+    },
+    /// A heap-field writeback write plan found stale destination-binding metadata.
+    #[error(
+        "boundary minor-GC heap-field writeback write for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} expected 0x{expected_replacement:x}/{expected_generation:?}, found 0x{actual_replacement:x}/{actual_generation:?}",
+        writeback_object = writeback_object.address_bits(),
+        expected_replacement = expected_replacement.address_bits(),
+        actual_replacement = actual_replacement.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteBindingMismatch {
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination carried by the live writeback.
+        expected_replacement: GcHeapAddress,
+        /// The replacement generation carried by the live writeback.
+        expected_generation: HeapGeneration,
+        /// The replacement destination carried by the installed binding.
+        actual_replacement: GcHeapAddress,
+        /// The replacement generation carried by the installed binding.
+        actual_generation: HeapGeneration,
+    },
+    /// A heap-field writeback write plan found duplicated live writeback metadata.
+    #[error(
+        "boundary minor-GC heap-field writeback write for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} appears more than once at index {index}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteDuplicateSource {
+        /// The duplicated source index.
+        index: usize,
+        /// The allocator domain whose boundary application produced the writeback.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A heap-field writeback write plan found duplicated destination-binding metadata.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} appears more than once at index {index}",
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteDuplicateBinding {
+        /// The duplicated binding index.
+        index: usize,
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A heap-field writeback destination binding's request points at another replacement.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} expected replacement request destination 0x{binding_replacement:x}, found 0x{request_destination:x}",
+        writeback_object = writeback_object.address_bits(),
+        binding_replacement = binding_replacement.address_bits(),
+        request_destination = request_destination.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteReplacementRequestDestinationMismatch {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination carried by the installed binding.
+        binding_replacement: GcHeapAddress,
+        /// The destination carried by the binding's replacement request.
+        request_destination: GcHeapAddress,
+    },
+    /// A heap-field writeback destination binding has malformed writeback-object metadata.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{validation_object:x}[{field_index}] {field_source:?} targets 0x{writeback_object:x} with malformed writeback-object metadata",
+        validation_object = validation_object.address_bits(),
+        writeback_object = writeback_object.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteObjectBindingMalformed {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The object used to validate the copied field label.
+        validation_object: GcHeapAddress,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+    },
+    /// A heap-field writeback-object request points at another destination.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{validation_object:x}[{field_index}] {field_source:?} expected writeback-object request destination 0x{writeback_object:x}, found 0x{request_destination:x}",
+        validation_object = validation_object.address_bits(),
+        writeback_object = writeback_object.address_bits(),
+        request_destination = request_destination.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteObjectRequestDestinationMismatch {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The object used to validate the copied field label.
+        validation_object: GcHeapAddress,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The destination carried by the binding's writeback-object request.
+        request_destination: GcHeapAddress,
+    },
+    /// A heap-field writeback-object request belongs to another source object.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{validation_object:x}[{field_index}] {field_source:?} targets writeback object 0x{writeback_object:x} from source 0x{actual_source:x}",
+        validation_object = validation_object.address_bits(),
+        writeback_object = writeback_object.address_bits(),
+        actual_source = actual_source.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteObjectRequestSourceMismatch {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The object used to validate the copied field label.
+        validation_object: GcHeapAddress,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The source recorded by the writeback-object request.
+        actual_source: GcHeapAddress,
+    },
+    /// A heap-field destination binding has no installed live writeback.
+    #[error(
+        "boundary minor-GC heap-field writeback binding for {allocation_domain:?} 0x{writeback_object:x}[{field_index}] {field_source:?} -> 0x{replacement:x}/{generation:?} has no installed live writeback",
+        writeback_object = writeback_object.address_bits(),
+        replacement = replacement.address_bits()
+    )]
+    BoundaryMinorGcHeapFieldWritebackWriteUnboundBinding {
+        /// The allocator domain recorded by the destination binding.
+        allocation_domain: HeapAllocationDomain,
+        /// The heap object whose field would be rewritten.
+        writeback_object: GcHeapAddress,
+        /// The field index in precise scanner order.
+        field_index: usize,
+        /// The copied field source label.
+        field_source: HeapEdgeSource,
+        /// The replacement destination carried by the binding.
+        replacement: GcHeapAddress,
+        /// The replacement generation carried by the binding.
+        generation: HeapGeneration,
+    },
     /// A forwarding-header write plan has no installed forwarding value for a binding.
     #[error(
         "boundary minor-GC forwarding-header write for 0x{source_address:x} is missing live forwarding value {expected:?}",

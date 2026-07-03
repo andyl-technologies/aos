@@ -5966,6 +5966,26 @@ and helps the oracle directly.
       bytes to heap-object bodies, mutate heap-record generations, manage
       semispaces, mutate heap fields, write ABI object headers, or invoke
       Tier B.
+- [x] Current boundary live heap-field writeback write-plan bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_write_plan`
+      validates installed live heap-field writeback slots against installed
+      heap-field writeback-destination binding metadata, rejects writebacks
+      without bindings, rejects stale binding metadata for the same field,
+      rejects bindings without installed live writebacks, rejects duplicate
+      source/binding identities, revalidates replacement request generation and
+      payload length, revalidates copied nursery-field writeback-object
+      request/source/payload metadata, and returns immutable
+      validation/writeback object, field-source, replacement metadata, request,
+      and payload records that a later live object-field writer would consume.
+      Empty boundaries return an empty plan. Unit tests cover coherent dirty
+      old-field live metadata, direct dirty-field and copied-field plan
+      generation, empty plans, missing-binding rejection, stale-binding mismatch
+      rejection, duplicate-source/binding rejection, unbound-binding rejection,
+      malformed replacement payload rejection, and malformed copied
+      writeback-object metadata rejection. This remains write planning only: it
+      does not mutate evaluator object fields, bind destination bytes to
+      heap-object bodies, mutate heap-record generations, manage semispaces,
+      mutate roots, write ABI object headers, or invoke Tier B.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
@@ -6628,6 +6648,12 @@ and helps the oracle directly.
       installed writeback-object destination snapshots, producing field binding
       metadata for the live writeback-destination binding side-table bridge and
       a later live object-field writer without mutating heap fields.
+      `EvalOutcome::gc_stress_boundary_minor_gc_heap_field_writeback_write_plan`
+      then validates that installed live heap-field writebacks and installed
+      heap-field writeback-destination binding metadata are exact mirrors before
+      producing the immutable validation/writeback object, field-source,
+      replacement metadata, request, and payload records for a future live
+      object-field writer.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths

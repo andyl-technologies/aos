@@ -3307,6 +3307,92 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         })
         .expect("installed dirty old-field binding records");
     assert_eq!(installed_dirty_field_binding, dirty_field_binding);
+    let heap_field_writeback_write_plan = outcome
+        .gc_stress_boundary_minor_gc_heap_field_writeback_write_plan()
+        .expect("heap-field writeback write plan validates installed live metadata");
+    assert_eq!(
+        heap_field_writeback_write_plan.len(),
+        summary.heap_field_writebacks()
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.report().fields(),
+        summary.heap_field_writebacks()
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan
+            .report()
+            .copied_replacements_to_nursery(),
+        summary.heap_field_writebacks()
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan
+            .report()
+            .promoted_replacements_to_old(),
+        0
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan
+            .report()
+            .replacement_payload_bytes(),
+        live_object_copy
+            .destination_bytes()
+            .len()
+            .saturating_mul(summary.heap_field_writebacks())
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan
+            .report()
+            .writeback_object_payload_bytes(),
+        0
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].validation_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].writeback_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(heap_field_writeback_write_plan.writes()[0].field_index(), 0);
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].replacement_destination(),
+        nursery_base
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].replacement_generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].replacement_metadata(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].replacement_request(),
+        live_object_copy.request()
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].replacement_destination_bytes(),
+        live_object_copy.destination_bytes()
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].writeback_object_request(),
+        None
+    );
+    assert_eq!(
+        heap_field_writeback_write_plan.writes()[0].writeback_object_destination_bytes(),
+        None
+    );
 
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
     let live_card_table_dry_run = outcome
