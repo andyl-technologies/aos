@@ -87,6 +87,7 @@ fn boundary_remembered_edge_outcome() -> (EvalOutcome, Value) {
             memory_budget_action: None,
             cheap_memory_budget_plan: None,
             cheap_memory_advice_report: None,
+            cold_hash_consed_value_materialization: None,
             gc_stress_boundary_scans,
             gc_stress_boundary_minor_gc_reference_writebacks:
                 EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
@@ -1843,6 +1844,7 @@ fn boundary_owned_commit_buffers_publish_dirty_old_field_rescan_edges() {
         memory_budget_action: None,
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
+        cold_hash_consed_value_materialization: None,
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
@@ -2088,6 +2090,7 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
         memory_budget_action: None,
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
+        cold_hash_consed_value_materialization: None,
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
@@ -2164,6 +2167,7 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
         memory_budget_action: None,
         cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
+        cold_hash_consed_value_materialization: None,
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),

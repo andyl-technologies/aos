@@ -122,8 +122,11 @@ fn eval_whnf_owned_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
     let memory_budget_action = evaluator.heap.last_memory_budget_action();
-    let (cheap_memory_budget_plan, cheap_memory_advice_report) =
-        post_eval_cheap_memory_budget_reports(&evaluator);
+    let (
+        cheap_memory_budget_plan,
+        cheap_memory_advice_report,
+        cold_hash_consed_value_materialization,
+    ) = post_eval_heap_memory_reports(&mut evaluator);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -140,6 +143,7 @@ fn eval_whnf_owned_with_evaluator(
         memory_budget_action,
         cheap_memory_budget_plan,
         cheap_memory_advice_report,
+        cold_hash_consed_value_materialization,
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
@@ -243,8 +247,11 @@ fn eval_instantiation_attr_path_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
     let memory_budget_action = evaluator.heap.last_memory_budget_action();
-    let (cheap_memory_budget_plan, cheap_memory_advice_report) =
-        post_eval_cheap_memory_budget_reports(&evaluator);
+    let (
+        cheap_memory_budget_plan,
+        cheap_memory_advice_report,
+        cold_hash_consed_value_materialization,
+    ) = post_eval_heap_memory_reports(&mut evaluator);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -261,6 +268,7 @@ fn eval_instantiation_attr_path_with_evaluator(
         memory_budget_action,
         cheap_memory_budget_plan,
         cheap_memory_advice_report,
+        cold_hash_consed_value_materialization,
         gc_stress_boundary_scans,
         gc_stress_boundary_minor_gc_reference_writebacks:
             EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
@@ -269,14 +277,15 @@ fn eval_instantiation_attr_path_with_evaluator(
     })
 }
 
-fn post_eval_cheap_memory_budget_reports(
-    evaluator: &TreeWalk,
+fn post_eval_heap_memory_reports(
+    evaluator: &mut TreeWalk,
 ) -> (
     Option<EvalHeapCheapMemoryBudgetPlan>,
     Option<EvalHeapCheapMemoryAdviceReport>,
+    Option<ColdHashConsedValueMaterializationReport>,
 ) {
     let Some(min_idle_epochs) = evaluator.options.heap_cheap_memory_advice_min_idle_epochs() else {
-        return (None, None);
+        return (None, None, None);
     };
 
     let cheap_memory_budget_plan = evaluator.options.heap_memory_budget().map(|budget| {
@@ -284,13 +293,23 @@ fn post_eval_cheap_memory_budget_reports(
             .heap
             .plan_memory_budget_with_cheap_memory_advice(budget, min_idle_epochs)
     });
+    let should_materialize_cold_values = cheap_memory_budget_plan
+        .and_then(EvalHeapCheapMemoryBudgetPlan::cheap_advice_report)
+        .is_some()
+        && evaluator.options.persist_cache_root().is_some();
+    let cold_hash_consed_value_materialization = should_materialize_cold_values
+        .then(|| evaluator.materialize_cold_hash_consed_values_indexed(min_idle_epochs));
     let cheap_memory_advice_report = Some(
         cheap_memory_budget_plan
             .and_then(EvalHeapCheapMemoryBudgetPlan::cheap_advice_report)
             .unwrap_or_else(|| evaluator.heap.advise_cheap_memory_ranges(min_idle_epochs)),
     );
 
-    (cheap_memory_budget_plan, cheap_memory_advice_report)
+    (
+        cheap_memory_budget_plan,
+        cheap_memory_advice_report,
+        cold_hash_consed_value_materialization,
+    )
 }
 
 fn gc_stress_boundary_scans_for_outcome(

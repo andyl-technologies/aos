@@ -2483,6 +2483,8 @@ pub struct EvalOutcome {
     pub(crate) memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
     pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
+    pub(crate) cold_hash_consed_value_materialization:
+        Option<ColdHashConsedValueMaterializationReport>,
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
     pub(crate) gc_stress_boundary_minor_gc_reference_writebacks:
         EvalGcStressBoundaryMinorGcLiveReferenceWritebacks,
@@ -2516,6 +2518,10 @@ impl std::fmt::Debug for EvalOutcome {
             .field(
                 "cheap_memory_advice_report",
                 &self.cheap_memory_advice_report,
+            )
+            .field(
+                "cold_hash_consed_value_materialization",
+                &self.cold_hash_consed_value_materialization,
             )
             .field("gc_stress_boundary_scans", &self.gc_stress_boundary_scans)
             .field(
@@ -2611,6 +2617,20 @@ impl EvalOutcome {
     /// Returns the post-evaluation cheap heap advice report, if one was requested.
     pub const fn cheap_memory_advice_report(&self) -> Option<EvalHeapCheapMemoryAdviceReport> {
         self.cheap_memory_advice_report
+    }
+
+    /// Returns post-evaluation cold value-pack materialization telemetry.
+    ///
+    /// This report is present only when the cold-aware heap budget plan asked
+    /// for reclaim and a spill-preparation pass ran. It is not evidence that
+    /// resident bytes were reclaimed, heap records were replaced, or value
+    /// access can rematerialize content-hash handles. The pass captures
+    /// payloads through normal heap reads, so coldness diagnostics on
+    /// [`Self::heap`] may reflect those post-evaluation touches.
+    pub fn cold_hash_consed_value_materialization(
+        &self,
+    ) -> Option<&ColdHashConsedValueMaterializationReport> {
+        self.cold_hash_consed_value_materialization.as_ref()
     }
 
     /// Returns GC-stress scans recorded at the successful evaluation boundary.

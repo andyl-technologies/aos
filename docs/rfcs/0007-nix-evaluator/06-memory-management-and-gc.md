@@ -1600,7 +1600,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       `MADV_PAGEOUT` hash-consed advice as telemetry, while the automatic
       allocation-safepoint response and `memory_budget_action()` still stay
       conservative and credit zero cold reclaim until CA-store
-      spill/rematerialization exists.
+      spill/rematerialization exists. When callers configure a heap budget, a
+      post-evaluation cheap-advice idle threshold, and a persistent cache root,
+      the owned outcome can now run the cold value-pack materialization
+      precursor below when the cold-aware plan asks for reclaim; this is still
+      telemetry and spill preparation rather than resident-byte reclaim.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 
@@ -1632,8 +1636,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       payload into a fresh evaluator heap. This is still a spill precursor only:
       resident heap records are not replaced by content-hash handles, no bytes
       are reclaimed, the capture pass uses normal heap reads that may refresh
-      candidate access epochs, automatic budget actions do not invoke it, and
-      on-demand rematerialization is not wired into value access.
+      candidate access epochs, allocation-time automatic budget actions do not
+      invoke it directly, and on-demand rematerialization is not wired into
+      value access.
+- [x] Current post-evaluation budget-triggered value-pack precursor:
+      Owned root and attr-path outcomes now carry
+      `EvalOutcome::cold_hash_consed_value_materialization()`. When callers
+      configure all three prerequisites — a heap memory budget, the
+      post-evaluation cheap-advice idle threshold, and a persistent cache root —
+      and the cold-aware budget plan requests reclaim, the outcome builder runs
+      `TreeWalk::materialize_cold_hash_consed_values_indexed` and reports the
+      selected candidates, captured payloads, ensured value hashes, and
+      advisory failures. Tests pin that the report is absent without a
+      persistent cache root, present when the cold-aware plan asks for reclaim
+      with a root, and that each reported hash loads from the indexed
+      `values/` pack. This still runs after successful evaluation, derivation
+      snapshotting, stats capture, and cheap-advice planning; it does not change
+      output values, `memory_budget_action()`, allocation-time budget polling,
+      resident-byte accounting, heap handles, or value-access rematerialization.
 - [x] `madvise` portability shim (`advise_dead`/`advise_free`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
 - [x] Current `madvise`/arena-tail closure:
       `ratchet-value::heap::advice` provides the advisory memory API over

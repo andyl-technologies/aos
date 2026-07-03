@@ -350,12 +350,60 @@ fn heap_budget_and_cheap_advice_options_report_cold_aware_plan() {
         .cheap_advice_report()
         .expect("over-budget cold-aware planning records advice telemetry");
     assert_eq!(outcome.cheap_memory_advice_report(), Some(plan_report));
+    assert_eq!(outcome.cold_hash_consed_value_materialization(), None);
     assert_eq!(plan_report.unused_tails().kind(), MemoryAdviceKind::Dead);
     assert_eq!(
         plan_report.cold_hash_consed().kind(),
         MemoryAdviceKind::Evict
     );
     assert_eq!(plan_report.cold_hash_consed().min_idle_epochs(), 0);
+}
+
+#[test]
+fn heap_budget_and_persistent_cache_materialize_cold_values_after_reclaim_plan() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let persist_root = unique_temp_dir("heap-budget-cold-value-materialization");
+    let ir = lower("\"spill-prep\"");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_cheap_memory_advice_min_idle_epochs(0);
+    options.set_persist_cache_root(&persist_root);
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("string evaluates");
+
+    let plan = outcome
+        .cheap_memory_budget_plan()
+        .expect("combined options record a cold-aware budget plan");
+    assert!(
+        plan.cheap_advice_report().is_some(),
+        "the tiny budget should request reclaim"
+    );
+    let materialization = outcome
+        .cold_hash_consed_value_materialization()
+        .expect("persistent cache root enables cold value materialization");
+    assert!(materialization.candidates() >= 1);
+    assert_eq!(materialization.captured(), materialization.candidates());
+    assert_eq!(materialization.uncapturable(), 0);
+    assert_eq!(materialization.errors(), 0);
+    assert_eq!(materialization.cache_unavailable(), 0);
+    assert_eq!(
+        materialization.materialized_hashes().len(),
+        materialization.materialized()
+    );
+    assert!(
+        !materialization.materialized_hashes().is_empty(),
+        "the outcome report should name the ensured indexed value payloads"
+    );
+
+    let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
+    for value_hash in materialization.materialized_hashes() {
+        let payload = persist_cache
+            .load_cached_expression_value_indexed(*value_hash)
+            .expect("indexed value load succeeds")
+            .expect("indexed value exists");
+        assert_eq!(payload.value_hash().expect("payload hashes"), *value_hash);
+    }
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
 }
 
 #[test]
@@ -378,6 +426,7 @@ fn heap_budget_and_cheap_advice_options_fall_back_to_cold_advice_under_soft_limi
     let report = outcome
         .cheap_memory_advice_report()
         .expect("under-budget combined options still record plain advice telemetry");
+    assert_eq!(outcome.cold_hash_consed_value_materialization(), None);
     assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
     assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
     assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
