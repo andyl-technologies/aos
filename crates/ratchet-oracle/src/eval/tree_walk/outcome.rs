@@ -7,7 +7,8 @@ use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
 use crate::eval::heap::{
     AllocationCollectorPollObjectBodyAndGenerationWriteReport,
-    AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectGenerationWritePlan,
+    AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
+    AllocationCollectorPollObjectGenerationWritePlan,
     AllocationCollectorPollObjectGenerationWriteReport, EvalRootSource,
 };
 use crate::heap::HeapGeneration;
@@ -3202,6 +3203,22 @@ fn object_generation_write_matches_binding(
         && write.request() == binding.request()
 }
 
+fn apply_boundary_minor_gc_live_object_bodies(
+    heap: &mut EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
+) -> Result<AllocationCollectorPollObjectBodyWriteReport, EvalHeapError> {
+    let heap_plan = boundary_minor_gc_object_body_heap_write_plan(plan)?;
+    let report = heap.apply_collector_poll_minor_gc_object_body_writes(&heap_plan)?;
+    debug_assert_eq!(report.objects(), plan.report().objects());
+    debug_assert_eq!(
+        report.copied_to_nursery(),
+        plan.report().copied_to_nursery()
+    );
+    debug_assert_eq!(report.promoted_to_old(), plan.report().promoted_to_old());
+    debug_assert_eq!(report.payload_bytes(), plan.report().payload_bytes());
+    Ok(report)
+}
+
 fn apply_boundary_minor_gc_live_object_generations(
     heap: &mut EvalHeap,
     plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
@@ -3218,9 +3235,9 @@ fn apply_boundary_minor_gc_live_object_generations(
     Ok(report)
 }
 
-fn boundary_minor_gc_object_generation_heap_write_plan(
+fn boundary_minor_gc_object_body_heap_write_plan(
     plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
-) -> Result<AllocationCollectorPollObjectGenerationWritePlan, EvalHeapError> {
+) -> Result<AllocationCollectorPollObjectByteCopyPlan, EvalHeapError> {
     let mut requests = Vec::new();
     requests
         .try_reserve_exact(plan.writes().len())
@@ -3229,8 +3246,15 @@ fn boundary_minor_gc_object_generation_heap_write_plan(
             entries: plan.writes().len(),
         })?;
     requests.extend(plan.writes().iter().map(|write| write.request()));
-    AllocationCollectorPollObjectByteCopyPlan::from_requests(requests)
-        .object_generation_write_plan()
+    Ok(AllocationCollectorPollObjectByteCopyPlan::from_requests(
+        requests,
+    ))
+}
+
+fn boundary_minor_gc_object_generation_heap_write_plan(
+    plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
+) -> Result<AllocationCollectorPollObjectGenerationWritePlan, EvalHeapError> {
+    boundary_minor_gc_object_body_heap_write_plan(plan)?.object_generation_write_plan()
 }
 
 fn validate_boundary_minor_gc_destination_generation_objects(
@@ -10119,6 +10143,33 @@ impl EvalOutcome {
             &self.gc_stress_boundary_minor_gc_destination_storage,
             &self.gc_stress_boundary_minor_gc_object_generations,
         )
+    }
+
+    /// Binds relocated destination bodies to live heap records.
+    ///
+    /// This consumes the installed boundary object-generation write plan,
+    /// revalidates the installed destination-byte and generation metadata,
+    /// lowers its object-copy requests to the heap-level body writer, and
+    /// mutates only existing destination heap records by cloning current source
+    /// record bodies. It still does not write installed byte buffers directly,
+    /// write destination generation metadata, allocate synthetic destination
+    /// records, reserve semispace storage, mutate roots or heap fields, write
+    /// ABI object headers, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed destination/object-generation
+    /// metadata is inconsistent, if a source is no longer a young survivor, if a
+    /// source or destination layout no longer matches the request, if a
+    /// destination address does not belong to the evaluator heap, if a request's
+    /// action and generation disagree, or if the heap-level body write plan
+    /// cannot reserve storage. When an error is returned, destination heap-record
+    /// bodies are left unchanged.
+    pub fn apply_gc_stress_boundary_minor_gc_live_object_bodies(
+        &mut self,
+    ) -> Result<AllocationCollectorPollObjectBodyWriteReport, EvalHeapError> {
+        let plan = self.gc_stress_boundary_minor_gc_object_generation_write_plan()?;
+        apply_boundary_minor_gc_live_object_bodies(&mut self.heap, &plan)
     }
 
     /// Applies installed object-generation metadata to live heap records.

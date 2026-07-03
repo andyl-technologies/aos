@@ -3610,6 +3610,176 @@ fn owned_eval_installs_gc_stress_boundary_live_metadata_together() {
 }
 
 #[test]
+fn live_object_bodies_bind_existing_copied_destination_record_body() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with an existing copied destination");
+    let object_generation_plan = outcome
+        .gc_stress_boundary_minor_gc_object_generation_write_plan()
+        .expect("object-generation write plan validates");
+    assert_eq!(object_generation_plan.len(), 1);
+    let write = &object_generation_plan.writes()[0];
+    assert_eq!(write.source(), gc_address(original_value));
+    assert_eq!(write.destination(), destination_address);
+    assert_eq!(write.action(), MinorGcSurvivorAction::CopyToNursery);
+    assert_eq!(write.generation(), HeapGeneration::Young);
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_live_object_bodies()
+        .expect("live copied destination binds existing destination record body");
+
+    assert_eq!(report.objects(), 1);
+    assert_eq!(report.copied_to_nursery(), 1);
+    assert_eq!(report.promoted_to_old(), 0);
+    assert_eq!(report.payload_bytes(), write.destination_bytes().len());
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(write.request(), ValueTag::Lambda)
+        .expect("copied destination body is bound after live body applicator");
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("body-only applicator leaves copied generation unchanged"),
+        HeapGeneration::Young
+    );
+    assert!(outcome.value().raw_eq(original_value));
+}
+
+#[test]
+fn live_object_bodies_bind_existing_promoted_destination_record_body() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let destination_address = gc_address(destination_value);
+
+    let live_metadata = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), destination_address),
+        )
+        .expect("live metadata installs with an existing old destination");
+    assert_eq!(live_metadata.object_copies_installed(), 1);
+    let object_generation_plan = outcome
+        .gc_stress_boundary_minor_gc_object_generation_write_plan()
+        .expect("object-generation write plan validates");
+    let write = &object_generation_plan.writes()[0];
+    assert_eq!(write.source(), gc_address(original_value));
+    assert_eq!(write.destination(), destination_address);
+    assert_eq!(write.action(), MinorGcSurvivorAction::PromoteToOld);
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(write.request(), ValueTag::Lambda),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(original_value) && destination == destination_address
+    ));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("destination starts heap-bound"),
+        HeapGeneration::Young
+    );
+
+    let report = outcome
+        .apply_gc_stress_boundary_minor_gc_live_object_bodies()
+        .expect("live destination bytes bind existing destination record body");
+
+    assert_eq!(report.objects(), 1);
+    assert_eq!(report.copied_to_nursery(), 0);
+    assert_eq!(report.promoted_to_old(), 1);
+    assert_eq!(report.payload_bytes(), write.destination_bytes().len());
+    assert!(outcome.value().raw_eq(original_value));
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(write.request(), ValueTag::Lambda)
+        .expect("destination body is bound after live body applicator");
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("body-only applicator leaves generation unchanged"),
+        HeapGeneration::Young
+    );
+}
+
+#[test]
+fn live_object_bodies_reject_unknown_destination_without_mutation() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let unchanged_destination_request = outcome
+        .heap()
+        .collector_poll_minor_gc_object_byte_copy_request_for_test(
+            original_value,
+            destination_value,
+            MinorGcSurvivorAction::PromoteToOld,
+        )
+        .expect("test request for existing destination builds");
+    let destination_generation_before = outcome
+        .heap()
+        .generation(destination_value)
+        .expect("destination starts heap-bound");
+    let missing_destination = static_gc_address(0x1000_0000);
+
+    outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_live_metadata(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(missing_destination, static_gc_address(0x2000_0000)),
+        )
+        .expect("live metadata installs with synthetic destination storage");
+    let object_generation_plan = outcome
+        .gc_stress_boundary_minor_gc_object_generation_write_plan()
+        .expect("object-generation write plan validates");
+    assert_eq!(object_generation_plan.len(), 1);
+    assert_eq!(
+        object_generation_plan.writes()[0].destination(),
+        missing_destination
+    );
+
+    let err = outcome
+        .apply_gc_stress_boundary_minor_gc_live_object_bodies()
+        .expect_err("synthetic destination body remains unsupported");
+
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+            destination: missing_destination,
+        }
+    );
+    assert!(outcome.value().raw_eq(original_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("unrelated destination remains heap-bound"),
+        destination_generation_before
+    );
+    assert!(matches!(
+        outcome
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(
+                unchanged_destination_request,
+                ValueTag::Lambda,
+            ),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            source_address,
+            destination,
+            reason: "destination record body does not match source record body",
+        }) if source_address == gc_address(original_value) && destination == gc_address(destination_value)
+    ));
+}
+
+#[test]
 fn live_object_generations_update_existing_destination_record_generation() {
     let (mut outcome, original_value, destination_value) =
         boundary_lambda_outcome_with_existing_destination();

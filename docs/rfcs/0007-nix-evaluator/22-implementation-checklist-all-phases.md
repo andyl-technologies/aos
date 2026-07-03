@@ -5897,11 +5897,14 @@ and helps the oracle directly.
       installs reject without partial mutation. Unit tests cover copied-young,
       promoted-old, multi-tier overlapping-source merge, repeat-install
       rejection/no-mutation, and empty-boundary no-op behavior. This is still
-      not a full live collector commit: installed bytes are not bound to live
-      heap-object bodies or semispace pages, and live root/field mutation, real
-      ABI object-header forwarding writes, real heap-record object-generation
-      mutation, remembered-source field mutation, and Tier-B dispatch remain
-      open.
+      not a full live collector commit: installed bytes are metadata only and
+      are not used as direct live body storage; the narrow existing-destination
+      object-body applicator below can bind matching heap-record bodies by
+      cloning current source records after validating those byte snapshots.
+      Semispace pages remain unbound, and live root/field mutation, real ABI
+      object-header forwarding writes, real heap-record object-generation
+      mutation for synthetic destinations, remembered-source field mutation, and
+      Tier-B dispatch remain open.
 - [x] Current boundary live object-generation side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_object_generations`
       derives the same owned boundary commit dry run, validates sibling
@@ -5917,9 +5920,9 @@ and helps the oracle directly.
       live collector commit: the metadata is not written back to evaluator heap
       records unless the narrow existing-destination applicator below is called,
       synthetic destination allocation and semispace ownership remain open, and
-      live root/field mutation, live heap-object byte binding, real ABI
-      object-header forwarding writes, remembered-source field mutation, and
-      Tier-B dispatch remain open.
+      live root/field mutation, live heap-object byte binding beyond existing
+      destination records, real ABI object-header forwarding writes,
+      remembered-source field mutation, and Tier-B dispatch remain open.
 - [x] Current boundary live object-generation write-plan bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_object_generation_write_plan`
       validates installed live object-generation metadata against installed
@@ -5937,6 +5940,19 @@ and helps the oracle directly.
       it does not mutate heap-record generations, bind destination bytes to
       heap-object bodies, manage semispaces, mutate roots/fields, write ABI
       object headers, or invoke Tier B.
+- [x] Current boundary live object-body applicator:
+      `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_object_bodies`
+      consumes the installed live object-generation write plan, lowers its
+      object-copy requests to the heap-record body writer, and mutates only
+      destination heap records that already exist in the evaluator heap side
+      table by cloning current source record bodies rather than writing stored
+      byte buffers directly. Unit tests cover copied and promoted
+      existing-destination body binding while leaving generation metadata
+      unchanged, and synthetic destination rejection without mutating unrelated
+      heap records. This remains an already-bound-record bridge: it does not
+      write destination generation metadata, allocate synthetic destination
+      records, reserve semispace storage, mutate roots/fields, write ABI object
+      headers, or invoke Tier B.
 - [x] Current boundary live object-generation applicator:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_object_generations`
       consumes the installed live object-generation write plan, lowers it to the
