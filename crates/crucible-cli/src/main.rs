@@ -1483,6 +1483,11 @@ struct SavepointHandle {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RunScenarioRef {
+    BuiltInExample {
+        name: String,
+        form: crucible::ScenarioDefForm,
+        scenario: crucible::ScenarioDef,
+    },
     File {
         path: PathBuf,
         form: crucible::ScenarioDefForm,
@@ -1498,6 +1503,7 @@ enum RunScenarioRef {
 impl RunScenarioRef {
     fn label(&self) -> String {
         match self {
+            Self::BuiltInExample { name, .. } => name.clone(),
             Self::File { path, .. } => path.display().to_string(),
             Self::Stored { reference, .. } => format_content_hash_ref(*reference),
         }
@@ -1505,19 +1511,25 @@ impl RunScenarioRef {
 
     fn scenario_id(&self) -> crucible::ContentHash {
         match self {
-            Self::File { scenario, .. } | Self::Stored { scenario, .. } => scenario.id(),
+            Self::BuiltInExample { scenario, .. }
+            | Self::File { scenario, .. }
+            | Self::Stored { scenario, .. } => scenario.id(),
         }
     }
 
     fn scenario_def(&self) -> &crucible::ScenarioDef {
         match self {
-            Self::File { scenario, .. } | Self::Stored { scenario, .. } => scenario,
+            Self::BuiltInExample { scenario, .. }
+            | Self::File { scenario, .. }
+            | Self::Stored { scenario, .. } => scenario,
         }
     }
 
     fn scenario_form(&self) -> &crucible::ScenarioDefForm {
         match self {
-            Self::File { form, .. } | Self::Stored { form, .. } => form,
+            Self::BuiltInExample { form, .. }
+            | Self::File { form, .. }
+            | Self::Stored { form, .. } => form,
         }
     }
 }
@@ -2613,6 +2625,9 @@ fn resolve_command_scenario(
 
     let path = Path::new(value);
     if !path.exists() {
+        if let Some(scenario) = resolve_builtin_example_scenario(value)? {
+            return Ok(scenario);
+        }
         return Err(invalid_scenario(format!(
             "scenario `{value}` does not exist"
         )));
@@ -2632,6 +2647,56 @@ fn resolve_command_scenario(
         form,
         scenario,
     })
+}
+
+fn resolve_builtin_example_scenario(value: &str) -> Result<Option<RunScenarioRef>, CliError> {
+    let name = value.strip_prefix("builtin:").unwrap_or(value);
+    let fixture = match name {
+        crucible::HAPPY_PATH_SCENARIO_NAME | "happy-path" => Some(crucible::happy_path_scenario()),
+        crucible::PARTITION_RECOVERY_SCENARIO_NAME | "partition-recovery" => {
+            Some(crucible::partition_recovery_scenario())
+        }
+        crucible::CRASH_RESTART_SCENARIO_NAME | "crash-restart" => {
+            Some(crucible::crash_restart_scenario())
+        }
+        _ => None,
+    };
+    if let Some(fixture) = fixture {
+        let fixture = fixture.map_err(|error| {
+            invalid_scenario(format!(
+                "built-in example scenario `{value}` failed validation: {error}"
+            ))
+        })?;
+        let scenario = fixture.scenario.scenario_def();
+        return Ok(Some(RunScenarioRef::BuiltInExample {
+            name: fixture.name,
+            form: fixture.scenario,
+            scenario,
+        }));
+    }
+    if matches!(
+        name,
+        crucible::FAULT_CAMPAIGN_FAMILY_NAME | "fault-campaign"
+    ) {
+        let family = crucible::fault_campaign_family().map_err(|error| {
+            invalid_scenario(format!(
+                "built-in example family `{value}` failed validation: {error}"
+            ))
+        })?;
+        let sample = family.instantiate_sample(0).map_err(|error| {
+            invalid_scenario(format!(
+                "built-in example family `{value}` sample 0 failed validation: {error}"
+            ))
+        })?;
+        let form = sample.into_form();
+        let scenario = form.scenario_def();
+        return Ok(Some(RunScenarioRef::BuiltInExample {
+            name: crucible::FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
+            form,
+            scenario,
+        }));
+    }
+    Ok(None)
 }
 
 fn parse_run_scenario_bytes(
@@ -2670,6 +2735,11 @@ fn reseed_run_scenario_ref(
     })?;
     let seeded_scenario = seeded_form.scenario_def();
     Ok(match scenario {
+        RunScenarioRef::BuiltInExample { name, .. } => RunScenarioRef::BuiltInExample {
+            name: name.clone(),
+            form: seeded_form,
+            scenario: seeded_scenario,
+        },
         RunScenarioRef::File { path, .. } => RunScenarioRef::File {
             path: path.clone(),
             form: seeded_form,
@@ -12007,6 +12077,91 @@ mod tests {
     }
 
     #[test]
+    fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        for scenario_name in [
+            crucible::HAPPY_PATH_SCENARIO_NAME,
+            crucible::PARTITION_RECOVERY_SCENARIO_NAME,
+            crucible::CRASH_RESTART_SCENARIO_NAME,
+            crucible::FAULT_CAMPAIGN_FAMILY_NAME,
+        ] {
+            let cli = Cli::parse_from([
+                String::from("crucible"),
+                String::from("--backend"),
+                String::from("double"),
+                String::from("--seed"),
+                String::from("31"),
+                String::from("verify"),
+                scenario_name.to_owned(),
+                String::from("--runs"),
+                String::from("2"),
+                String::from("--adversarial"),
+                String::from("--bisect"),
+            ]);
+            let Commands::Verify(args) = &cli.command else {
+                panic!("expected verify command");
+            };
+
+            let verify_plan = plan_verify_invocation(args, temp.path())?;
+            assert!(matches!(
+                &verify_plan.mode,
+                VerifyMode::RunScenario {
+                    scenario: RunScenarioRef::BuiltInExample { .. }
+                }
+            ));
+            assert_eq!(
+                verify_plan.reductions.len(),
+                2 * VERIFY_HOSTILE_PROFILES.len()
+            );
+            assert!(verify_plan.applies_hostile_condition_matrix);
+            assert!(verify_plan.print_bisection_state_dump);
+
+            let seed_plan = plan_determinism_ergonomics(
+                &cli,
+                &FakeSeedEnvironment::default(),
+                &mut FakeSeedEntropySource::new(0),
+            )?
+            .expect("verify should resolve a seed");
+            let outcome = execute_backend_routed_command(
+                &plan_cli_invocation(&cli),
+                &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
+                Some(&seed_plan),
+                None,
+                Some(&verify_plan),
+                &mut NullBackendCommandRunner,
+            )?;
+
+            assert_eq!(outcome.status, BackendCommandStatus::Passed);
+            assert_eq!(
+                outcome
+                    .stdout
+                    .iter()
+                    .filter(|line| line.starts_with("verify-run\t"))
+                    .count(),
+                2 * VERIFY_HOSTILE_PROFILES.len()
+            );
+            for profile in VERIFY_HOSTILE_PROFILES {
+                assert!(
+                    outcome
+                        .stdout
+                        .iter()
+                        .any(|line| line.contains(&format!("\tprofile={}", profile.label()))),
+                    "missing verify output for hostile profile {}",
+                    profile.label()
+                );
+            }
+            assert!(
+                outcome
+                    .stdout
+                    .iter()
+                    .any(|line| line.contains("verify-result\tstatus=passed"))
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
@@ -12202,13 +12357,9 @@ mod tests {
     fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
-        let scenario_path = write_valid_run_scenario(&temp)?;
-        let scenario =
-            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
-                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
-                    scenario
-                }
-            };
+        let scenario = crucible::partition_recovery_scenario()?
+            .scenario
+            .scenario_def();
         let entries = canonical_trace_entries();
         let first_samples = vec![VerifyFingerprintSample {
             index: 0,
@@ -12281,6 +12432,30 @@ mod tests {
         assert_eq!(outcome.status, BackendCommandStatus::Failed);
         assert_eq!(outcome.exit_code, 1);
         assert_eq!(outcome.side_reproduction_artifacts.len(), 2);
+        let divergence_line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("verify-divergence\t"))
+            .expect("divergence report line should be emitted");
+        assert!(divergence_line.contains("\tleft=0\tright=1\t"));
+        assert!(divergence_line.contains("\tmismatch=canonical-log+fingerprint-stream\t"));
+        assert!(divergence_line.contains("\tfirst_decision=1\t"));
+        assert!(divergence_line.contains("\tfirst_fingerprint_sample=0\t"));
+        assert!(divergence_line.contains("\tfirst_instruction=12\t"));
+        assert!(divergence_line.contains("\tnode=node-b\t"));
+        assert!(divergence_line.contains("\tbyte="));
+        let bisect_line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("verify-bisect-state\t"))
+            .expect("bisection state line should be emitted");
+        assert!(bisect_line.starts_with("verify-bisect-state\tleft_state=crucible-hash:"));
+        assert!(bisect_line.contains("\tright_state=crucible-hash:"));
+        assert!(bisect_line.contains("\tleft_dump=scenario=crucible-hash:"));
+        assert!(
+            bisect_line.contains(" seed=12 decisions=2 fingerprints=1 schedule=crucible-hash:")
+        );
+        assert!(bisect_line.contains("\tright_dump=scenario=crucible-hash:"));
         assert!(
             outcome
                 .stdout
@@ -12317,11 +12492,9 @@ mod tests {
         let temp = TempDir::new()?;
         let scenario_path = write_valid_run_scenario(&temp)?;
         let scenario =
-            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
-                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
-                    scenario
-                }
-            };
+            resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
+                .scenario_def()
+                .clone();
         let mut entries = canonical_trace_entries();
         let first_samples = vec![VerifyFingerprintSample {
             index: 0,
@@ -13441,11 +13614,9 @@ mod tests {
         let check_path = temp.path().join("original.jsonl");
         let scenario_path = write_valid_run_scenario(&temp)?;
         let scenario =
-            match resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())? {
-                RunScenarioRef::File { scenario, .. } | RunScenarioRef::Stored { scenario, .. } => {
-                    scenario
-                }
-            };
+            resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
+                .scenario_def()
+                .clone();
         let entries = canonical_trace_entries();
         let samples = vec![VerifyFingerprintSample {
             index: 0,

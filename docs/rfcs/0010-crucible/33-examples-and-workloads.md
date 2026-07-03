@@ -1142,8 +1142,14 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   validates replay byte-identity through the unified temporal graph, and proves the
   pre-failure neighborhood can be saved, resumed, and forked through the same
   graph path. Generic file/hash fuzz execution remains tracked by T-CLI-13.
-- [ ] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
+- [x] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
   the divergence-bisection report (A.5): assert all examples are DETERMINISTIC
   under the hostile host matrix, and golden-test the divergence-report shape on a
   deliberately seeded divergence. — satisfies [EX-2], [EX-3]; spec §A.5; cross-ref
   24 §5, §7.
+  Completed by `checks.crucible.phase7.adversarialExampleVerify`: `crucible
+  verify` now resolves shipped example names (including the fault-campaign sample)
+  through the ordinary adversarial reduction planner, which applies the hostile
+  host-condition profiles to the control-client observation path; the CLI golden
+  test also asserts the `verify-divergence`/`verify-bisect-state` report shape on
+  a deliberately seeded partition-recovery divergence.
