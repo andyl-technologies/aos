@@ -5002,6 +5002,53 @@ fn collector_poll_minor_gc_object_body_and_generation_writes_bind_body_and_promo
 }
 
 #[test]
+fn collector_poll_minor_gc_object_body_and_generation_writes_validate_without_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let source = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(7),
+            IrId::new(8),
+            FrameId::new(9),
+            EvalEnv::default(),
+        ))
+        .expect("source lambda allocates");
+    let destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(0),
+            IrId::new(0),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("destination lambda allocates");
+    let request = AllocationCollectorPollObjectByteCopyRequest::for_test(
+        gc_address(source),
+        gc_address(destination),
+        MinorGcSurvivorAction::PromoteToOld,
+        HeapGeneration::Old,
+        record_layout_size(&heap, source),
+        record_layout_align(&heap, source),
+    );
+    let plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![request]);
+
+    let report = heap
+        .validate_collector_poll_minor_gc_object_body_and_generation_writes(&plan)
+        .expect("paired body/generation writes validate");
+
+    assert_eq!(report.body_write_report().objects(), 1);
+    assert_eq!(report.body_write_report().promoted_to_old(), 1);
+    assert_eq!(report.generation_write_report().objects(), 1);
+    assert_eq!(report.generation_write_report().promoted_to_old(), 1);
+    assert_eq!(heap_generation(&heap, destination), HeapGeneration::Young);
+    assert!(matches!(
+        heap.validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Lambda),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn collector_poll_minor_gc_object_body_and_generation_writes_reject_duplicate_destination_without_mutation()
  {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");

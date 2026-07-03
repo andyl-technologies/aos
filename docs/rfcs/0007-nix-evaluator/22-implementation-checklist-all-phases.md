@@ -5975,6 +5975,17 @@ and helps the oracle directly.
       byte buffers directly, does not allocate synthetic destination records,
       reserve semispace storage, mutate roots/fields, write ABI object headers,
       or invoke Tier B.
+- [x] Current boundary live paired object body/generation validation bridge:
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_object_bodies_and_generations`
+      consumes the installed live object-generation write plan, lowers its
+      object-copy requests to the heap-record paired body/generation validator,
+      and proves the existing destination records can accept those body and
+      generation writes without committing either side. Unit tests cover promoted
+      existing-destination validation with unchanged destination body/generation
+      state and synthetic destination rejection without mutating unrelated heap
+      records. This remains an already-bound-record preflight: it does not
+      allocate synthetic destination records, reserve semispace storage, mutate
+      roots/fields, write ABI object headers, or invoke Tier B.
 - [x] Current heap-record generation-state precursor:
       `EvalHeap` records store explicit `HeapGeneration` metadata separately
       from allocator ownership. Worker allocations initialize as young,
@@ -6032,12 +6043,18 @@ and helps the oracle directly.
       writes and destination `HeapGeneration` writes together, validates the
       body-write layout/liveness checks and generation-write identity checks
       before mutating either side, then commits both staged projections to
-      existing destination records. Unit tests cover promoted destination body
-      binding plus generation update, and duplicate-destination rejection with no
-      body or generation mutation. This still assumes destination records already
-      exist in the evaluator heap side table; it does not allocate destination
-      records, reserve semispace storage, install forwarding headers, publish
-      remembered sets, rewrite roots/fields, or invoke Tier B.
+      existing destination records.
+      `EvalHeap::validate_collector_poll_minor_gc_object_body_and_generation_writes`
+      stages the same paired projections and returns the same report shape
+      without committing them, so higher-level orchestration can preflight
+      existing destinations before a broader mutation sequence. Unit tests cover
+      promoted destination body binding plus generation update in the applicator,
+      validation without body/generation mutation, and applicator
+      duplicate-destination rejection with no body or generation mutation. This
+      still assumes destination records already exist in the evaluator heap side
+      table; it does not allocate destination records, reserve semispace storage,
+      install forwarding headers, publish remembered sets, rewrite roots/fields,
+      or invoke Tier B.
 - [x] Current boundary live reference-writeback side-table bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_reference_writebacks`
       derives the same owned boundary commit dry run, validates sibling survivor
@@ -6937,6 +6954,11 @@ and helps the oracle directly.
       the body, generation, or paired heap-record writers, but full boundary
       commits still do not allocate destination records or bind synthetic
       destination addresses to semispace storage.
+      `EvalHeap::validate_collector_poll_minor_gc_object_body_and_generation_writes`
+      and
+      `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_object_bodies_and_generations`
+      reuse the paired staging path as a no-mutation existing-destination
+      preflight for later commit orchestration.
       `EvalHeap::apply_collector_poll_minor_gc_object_body_writes` separately
       binds typed source object bodies and body-owned cache metadata into
       already-resolved destination records after validating the same object-copy

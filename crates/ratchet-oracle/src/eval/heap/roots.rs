@@ -2019,7 +2019,7 @@ impl AllocationCollectorPollObjectBodyWriteReport {
         }
     }
 
-    /// Returns how many destination heap-record bodies were written.
+    /// Returns how many destination heap-record bodies are covered.
     pub const fn objects(self) -> usize {
         self.objects
     }
@@ -2034,7 +2034,7 @@ impl AllocationCollectorPollObjectBodyWriteReport {
         self.promoted_to_old
     }
 
-    /// Returns the total copied-object payload bytes covered by the writes.
+    /// Returns the total copied-object payload bytes covered by the report.
     pub const fn payload_bytes(self) -> usize {
         self.payload_bytes
     }
@@ -2130,22 +2130,22 @@ impl AllocationCollectorPollObjectGenerationWriteReport {
         }
     }
 
-    /// Returns how many destination heap records were written.
+    /// Returns how many destination heap records are covered.
     pub const fn objects(self) -> usize {
         self.objects
     }
 
-    /// Returns how many writes kept destinations in the young generation.
+    /// Returns how many requests kept destinations in the young generation.
     pub const fn copied_to_nursery(self) -> usize {
         self.copied_to_nursery
     }
 
-    /// Returns how many writes promoted destinations to the old generation.
+    /// Returns how many requests promoted destinations to the old generation.
     pub const fn promoted_to_old(self) -> usize {
         self.promoted_to_old
     }
 
-    /// Returns the total copied-object payload bytes covered by the writes.
+    /// Returns the total copied-object payload bytes covered by the report.
     pub const fn payload_bytes(self) -> usize {
         self.payload_bytes
     }
@@ -4002,6 +4002,42 @@ impl EvalHeap {
         let (planned, report) = self.stage_collector_poll_minor_gc_object_body_writes(plan)?;
         self.commit_collector_poll_minor_gc_object_body_writes(planned);
         Ok(report)
+    }
+
+    /// Validates paired heap-record body and generation writes without mutation.
+    ///
+    /// This stages the same object-body and generation writes as
+    /// [`Self::apply_collector_poll_minor_gc_object_body_and_generation_writes`],
+    /// then drops the staged writes instead of committing them. It is intended as
+    /// a commit-orchestration preflight for callers that need to prove the
+    /// existing-destination heap records can accept relocated object bodies and
+    /// generation metadata before starting a larger mutation sequence. It does
+    /// not allocate destination records, rewrite references, install forwarding
+    /// headers, publish remembered sets, or manage semispaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] under the same conditions as
+    /// [`Self::apply_collector_poll_minor_gc_object_body_and_generation_writes`].
+    /// Whether this returns `Ok` or `Err`, heap-record object bodies and
+    /// generation metadata are left unchanged.
+    pub fn validate_collector_poll_minor_gc_object_body_and_generation_writes(
+        &self,
+        plan: &AllocationCollectorPollObjectByteCopyPlan,
+    ) -> Result<AllocationCollectorPollObjectBodyAndGenerationWriteReport, EvalHeapError> {
+        let generation_plan = plan.object_generation_write_plan()?;
+        let (_body_writes, body_write_report) =
+            self.stage_collector_poll_minor_gc_object_body_writes(plan)?;
+        let _generation_writes =
+            self.stage_collector_poll_minor_gc_object_generation_writes(&generation_plan)?;
+        let generation_write_report = generation_plan.report();
+
+        Ok(
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
+                body_write_report,
+                generation_write_report,
+            ),
+        )
     }
 
     /// Applies paired heap-record body and generation writes for relocated destinations.

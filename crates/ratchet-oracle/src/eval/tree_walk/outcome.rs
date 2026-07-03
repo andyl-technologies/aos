@@ -3261,6 +3261,32 @@ fn apply_boundary_minor_gc_live_object_bodies_and_generations(
     Ok(report)
 }
 
+fn validate_boundary_minor_gc_live_object_bodies_and_generations(
+    heap: &EvalHeap,
+    plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
+) -> Result<AllocationCollectorPollObjectBodyAndGenerationWriteReport, EvalHeapError> {
+    let heap_plan = boundary_minor_gc_object_body_heap_write_plan(plan)?;
+    let report =
+        heap.validate_collector_poll_minor_gc_object_body_and_generation_writes(&heap_plan)?;
+    debug_assert_eq!(
+        report.body_write_report().objects(),
+        plan.report().objects()
+    );
+    debug_assert_eq!(
+        report.generation_write_report().objects(),
+        plan.report().objects()
+    );
+    debug_assert_eq!(
+        report.body_write_report().payload_bytes(),
+        plan.report().payload_bytes()
+    );
+    debug_assert_eq!(
+        report.generation_write_report().payload_bytes(),
+        plan.report().payload_bytes()
+    );
+    Ok(report)
+}
+
 fn boundary_minor_gc_object_body_heap_write_plan(
     plan: &EvalGcStressBoundaryMinorGcObjectGenerationWritePlan,
 ) -> Result<AllocationCollectorPollObjectByteCopyPlan, EvalHeapError> {
@@ -10220,6 +10246,32 @@ impl EvalOutcome {
     ) -> Result<AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError> {
         let plan = self.gc_stress_boundary_minor_gc_object_generation_write_plan()?;
         apply_boundary_minor_gc_live_object_generations(&mut self.heap, &plan)
+    }
+
+    /// Validates relocated destination bodies and generations against live heap records.
+    ///
+    /// This consumes the installed boundary object-generation write plan,
+    /// revalidates the installed destination-byte and generation metadata, and
+    /// stages the heap-level paired body/generation writes without committing
+    /// them. It is a read-only preflight for existing destination records only:
+    /// it does not write object bodies, mutate generation metadata, allocate
+    /// synthetic destination records, reserve semispace storage, mutate roots or
+    /// heap fields, write ABI object headers, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if installed destination/object-generation
+    /// metadata is inconsistent, if a source is no longer a young survivor, if a
+    /// source or destination layout no longer matches the request, if a
+    /// destination address does not belong to the evaluator heap, if a request's
+    /// action and generation disagree, or if paired heap-level write planning
+    /// cannot reserve storage. Whether this returns `Ok` or `Err`, destination
+    /// heap-record bodies and generations are left unchanged.
+    pub fn validate_gc_stress_boundary_minor_gc_live_object_bodies_and_generations(
+        &self,
+    ) -> Result<AllocationCollectorPollObjectBodyAndGenerationWriteReport, EvalHeapError> {
+        let plan = self.gc_stress_boundary_minor_gc_object_generation_write_plan()?;
+        validate_boundary_minor_gc_live_object_bodies_and_generations(&self.heap, &plan)
     }
 
     /// Binds relocated destination bodies and generations to live heap records.
