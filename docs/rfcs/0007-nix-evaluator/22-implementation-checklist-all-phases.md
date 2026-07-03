@@ -6117,22 +6117,27 @@ and helps the oracle directly.
       that the current field still contains the expected young from-space value,
       merges copied and direct field edits into one staged object per target
       record, rewrites record-owned list elements, attrset bindings, primop
-      arguments, and lambda dynamic/global capture arrays, publishes direct
-      old/permanent-to-young remembered edges and dirty cards through cloned outcome-owned
-      side tables, and clears stale hash caches on mutated records. Unit tests
-      cover copied list/attr/primop-argument/lambda-capture writes, same-object
-      copied-field staging, mixed copied/direct same-record staging, malformed
-      copied and cross-branch request sets, direct old
-      list/attr/primop-argument/lambda-capture writes, stale direct-field
-      rejection without mutation, permanent-shared direct list writes,
-      strict-path direct old-to-young rejection, barrier-aware direct
-      old/permanent-to-young publication, attr symbol-slot stale metadata
-      rejection, and outcome-level direct-write routing. Shared lexical frame
-      slots, thunk fields, synthetic destination allocation, ABI object headers,
-      semispace storage, and Tier-B dispatch remain open, and copied destination
-      records inherit the current unaliased collector-owned scratch record
-      assumption because semispace ownership is not modeled yet. The historical
-      copied-only
+      arguments, lambda dynamic/global capture arrays, suspended thunk
+      apply/apply2/select deferred-work fields, and suspended thunk dynamic/global
+      capture arrays, publishes direct old/permanent-to-young remembered edges
+      and dirty cards through cloned outcome-owned side tables, and clears stale
+      hash caches on mutated records. Unit tests cover copied
+      list/attr/primop-argument/lambda-capture writes, copied suspended
+      select-thunk receiver writes, same-object copied-field staging, mixed
+      copied/direct same-record staging, malformed copied and cross-branch
+      request sets, direct old list/attr/primop-argument/lambda-capture writes,
+      direct suspended apply-thunk argument writes, forced cached-result and
+      blackholed deferred-work rejection without resetting thunk state, suspended
+      thunk capture rewrites, stale direct-field rejection without mutation,
+      permanent-shared direct list writes, strict-path direct old-to-young
+      rejection, barrier-aware direct old/permanent-to-young publication, attr
+      symbol-slot stale metadata rejection, and outcome-level direct-write
+      routing. Shared lexical frame slots, blackholed thunk deferred-work/capture
+      fields, forced thunk cached-result fields, synthetic destination
+      allocation, ABI object headers, semispace storage, and Tier-B dispatch
+      remain open, and copied destination records inherit the current unaliased
+      collector-owned scratch record assumption because semispace ownership is
+      not modeled yet. The historical copied-only
       `apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks` method now
       delegates to the broader applicator.
 - [x] Current boundary live heap-field writeback bridge:
@@ -6151,8 +6156,9 @@ and helps the oracle directly.
       is changed, and direct owner / destination alias rejection before mutation.
       This still requires destination records to already exist as
       unaliased collector-owned scratch records, does not allocate synthetic
-      destinations, and does not cover shared lexical frame slots, thunk fields,
-      ABI object headers, semispace storage, or Tier-B dispatch.
+      destinations, and does not cover shared lexical frame slots, blackholed
+      thunk deferred-work/capture fields, forced thunk cached-result fields, ABI
+      object headers, semispace storage, or Tier-B dispatch.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
@@ -6172,7 +6178,8 @@ and helps the oracle directly.
       destination records to already exist as unaliased collector-owned scratch
       records, does not allocate synthetic destinations, and does not rewrite
       active evaluator frames, import caches, arbitrary value-stack roots, JIT
-      stack maps, shared lexical frame slots, thunk fields, ABI object headers,
+      stack maps, shared lexical frame slots, blackholed thunk deferred-work/
+      capture fields, forced thunk cached-result fields, ABI object headers,
       semispace storage, or Tier-B dispatch.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
@@ -6961,7 +6968,8 @@ and helps the oracle directly.
       transaction, and then rewrites the already prevalidated outcome value. The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
-      root storage, and do not cover shared lexical frame slots, thunk fields,
+      root storage, and do not cover shared lexical frame slots, blackholed
+      thunk deferred-work/capture fields, forced thunk cached-result fields,
       real ABI object-header forwarding storage, semispace storage, or Tier-B
       dispatch.
       `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` separately

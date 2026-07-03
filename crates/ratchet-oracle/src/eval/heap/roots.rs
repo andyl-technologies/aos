@@ -2102,6 +2102,7 @@ enum RecordOwnedHeapFieldWriteObjectError {
     UnsupportedSource,
     Attr(AttrError),
     Environment(EvalEnvError),
+    Thunk(ForceError),
 }
 
 /// A summary of heap-record object-generation writes.
@@ -6799,6 +6800,11 @@ fn validate_copied_heap_field_write_object_source(
                 index,
             },
         ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
+        (HeapObjectValue::Thunk(thunk), source)
+            if validate_suspended_thunk_field_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
         _ => Err(
             EvalHeapError::CollectorPollCopiedHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6841,6 +6847,11 @@ fn validate_direct_heap_field_write_object_source(
                 index,
             },
         ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
+        (HeapObjectValue::Thunk(thunk), source)
+            if validate_suspended_thunk_field_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
         _ => Err(
             EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
                 writeback_object: write.writeback_object(),
@@ -6867,6 +6878,7 @@ fn copied_heap_field_write_object_error(
         RecordOwnedHeapFieldWriteObjectError::Environment(source) => {
             EvalHeapError::Environment(source)
         }
+        RecordOwnedHeapFieldWriteObjectError::Thunk(source) => EvalHeapError::Thunk(source),
     }
 }
 
@@ -6886,6 +6898,7 @@ fn direct_heap_field_write_object_error(
         RecordOwnedHeapFieldWriteObjectError::Environment(source) => {
             EvalHeapError::Environment(source)
         }
+        RecordOwnedHeapFieldWriteObjectError::Thunk(source) => EvalHeapError::Thunk(source),
     }
 }
 
@@ -6975,6 +6988,263 @@ fn record_owned_heap_field_write_object(
                 lambda.env().clone(),
                 lambda.with_scope_env().clone(),
                 scoped_globals,
+            ))))
+        }
+        (HeapObjectValue::Thunk(thunk), source) => {
+            rewrite_suspended_thunk_field(thunk, source, replacement)
+        }
+        _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
+    }
+}
+
+fn validate_suspended_thunk_field_write_source(
+    thunk: &EvalThunk,
+    source: &HeapEdgeSource,
+) -> Result<bool, EvalHeapError> {
+    thunk_supports_suspended_field_write(thunk, source).map_err(EvalHeapError::Thunk)
+}
+
+fn thunk_supports_suspended_field_write(
+    thunk: &EvalThunk,
+    source: &HeapEdgeSource,
+) -> Result<bool, ForceError> {
+    if thunk.cell().state()? != ThunkState::Suspended {
+        return Ok(false);
+    }
+
+    Ok(matches!(
+        (thunk.kind(), source),
+        (
+            EvalThunkKind::Node { with_env, .. },
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Thunk,
+                index,
+            },
+        ) if *index < with_env.scopes().len()
+    ) || matches!(
+        (thunk.kind(), source),
+        (
+            EvalThunkKind::Node { scoped_globals, .. },
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Thunk,
+                index,
+            },
+        ) if *index < scoped_globals.scopes().len()
+    ) || matches!(
+        (thunk.kind(), source),
+        (
+            EvalThunkKind::Apply { .. },
+            HeapEdgeSource::ThunkApplyFunction | HeapEdgeSource::ThunkApplyArgument,
+        )
+    ) || matches!(
+        (thunk.kind(), source),
+        (
+            EvalThunkKind::Apply2 { .. },
+            HeapEdgeSource::ThunkApply2Function
+                | HeapEdgeSource::ThunkApply2FirstArgument
+                | HeapEdgeSource::ThunkApply2SecondArgument,
+        )
+    ) || matches!(
+        (thunk.kind(), source),
+        (
+            EvalThunkKind::Select { .. },
+            HeapEdgeSource::ThunkSelectReceiver
+        )
+    ))
+}
+
+fn rewrite_suspended_thunk_field(
+    thunk: &EvalThunk,
+    source: &HeapEdgeSource,
+    replacement: Value,
+) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
+    if thunk
+        .cell()
+        .state()
+        .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?
+        != ThunkState::Suspended
+    {
+        return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+    }
+
+    match (thunk.kind(), source) {
+        (
+            EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            },
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Thunk,
+                index,
+            },
+        ) => {
+            let mut scopes = with_env.scopes().to_vec();
+            let Some(scope) = scopes.get_mut(*index) else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
+            let with_env = EvalWithEnv::capture(&scopes)
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
+            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::with_captures(
+                body.module(),
+                body.id(),
+                env.clone(),
+                with_env,
+                scoped_globals.clone(),
+            ))))
+        }
+        (
+            EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            },
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Thunk,
+                index,
+            },
+        ) => {
+            let mut scopes = scoped_globals.scopes().to_vec();
+            let Some(scope) = scopes.get_mut(*index) else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            *scope = replacement;
+            let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
+            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::with_captures(
+                body.module(),
+                body.id(),
+                env.clone(),
+                with_env.clone(),
+                scoped_globals,
+            ))))
+        }
+        (
+            EvalThunkKind::Apply {
+                function,
+                function_span,
+                argument,
+                argument_value,
+                ..
+            },
+            HeapEdgeSource::ThunkApplyFunction,
+        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply(
+            function.module(),
+            function.id(),
+            *function_span,
+            replacement,
+            argument.module(),
+            argument.id(),
+            *argument_value,
+        )))),
+        (
+            EvalThunkKind::Apply {
+                function,
+                function_span,
+                function_value,
+                argument,
+                ..
+            },
+            HeapEdgeSource::ThunkApplyArgument,
+        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply(
+            function.module(),
+            function.id(),
+            *function_span,
+            *function_value,
+            argument.module(),
+            argument.id(),
+            replacement,
+        )))),
+        (
+            EvalThunkKind::Apply2 {
+                function,
+                function_span,
+                first_argument,
+                first_argument_span,
+                first_argument_value,
+                second_argument,
+                second_argument_span,
+                second_argument_value,
+                ..
+            },
+            HeapEdgeSource::ThunkApply2Function,
+        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
+            function.module(),
+            function.id(),
+            *function_span,
+            replacement,
+            first_argument.module(),
+            first_argument.id(),
+            *first_argument_span,
+            *first_argument_value,
+            second_argument.module(),
+            second_argument.id(),
+            *second_argument_span,
+            *second_argument_value,
+        )))),
+        (
+            EvalThunkKind::Apply2 {
+                function,
+                function_span,
+                function_value,
+                first_argument,
+                first_argument_span,
+                second_argument,
+                second_argument_span,
+                second_argument_value,
+                ..
+            },
+            HeapEdgeSource::ThunkApply2FirstArgument,
+        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
+            function.module(),
+            function.id(),
+            *function_span,
+            *function_value,
+            first_argument.module(),
+            first_argument.id(),
+            *first_argument_span,
+            replacement,
+            second_argument.module(),
+            second_argument.id(),
+            *second_argument_span,
+            *second_argument_value,
+        )))),
+        (
+            EvalThunkKind::Apply2 {
+                function,
+                function_span,
+                function_value,
+                first_argument,
+                first_argument_span,
+                first_argument_value,
+                second_argument,
+                second_argument_span,
+                ..
+            },
+            HeapEdgeSource::ThunkApply2SecondArgument,
+        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
+            function.module(),
+            function.id(),
+            *function_span,
+            *function_value,
+            first_argument.module(),
+            first_argument.id(),
+            *first_argument_span,
+            *first_argument_value,
+            second_argument.module(),
+            second_argument.id(),
+            *second_argument_span,
+            replacement,
+        )))),
+        (EvalThunkKind::Select { select, path, .. }, HeapEdgeSource::ThunkSelectReceiver) => {
+            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::select(
+                select.module(),
+                select.id(),
+                replacement,
+                *path,
             ))))
         }
         _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),

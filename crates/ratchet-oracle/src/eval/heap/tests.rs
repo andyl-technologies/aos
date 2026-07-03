@@ -5263,6 +5263,85 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_list_fields() 
 }
 
 #[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_thunk_select_receiver() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let receiver = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("receiver thunk allocates");
+    let receiver_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("receiver destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::select(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            receiver,
+            IrAttrPathId::new(0),
+        ))
+        .expect("parent select thunk allocates");
+    let parent_destination = heap
+        .alloc_thunk(EvalThunk::select(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Value::int(0),
+            IrAttrPathId::new(0),
+        ))
+        .expect("parent destination thunk allocates");
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let receiver_request = object_copy_request_for_values(
+        &heap,
+        receiver,
+        receiver_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        receiver_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        gc_address(parent_destination),
+        0,
+        HeapEdgeSource::ThunkSelectReceiver,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(receiver_destination),
+            generation: HeapGeneration::Old,
+        },
+        receiver_request,
+        parent_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
+        .expect("copied thunk select receiver write applies");
+
+    assert_eq!(report.fields(), 1);
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, parent_destination)
+        .expect("destination thunk root records");
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, parent_destination).edges();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].source(), &HeapEdgeSource::ThunkSelectReceiver);
+    assert!(edges[0].value().raw_eq(receiver_destination));
+}
+
+#[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let first_child = heap
@@ -6804,6 +6883,366 @@ fn collector_poll_minor_gc_heap_field_writes_publish_lambda_capture_barrier() {
         )]
     );
     assert!(card_table.snapshot().covers_source(gc_address(parent)));
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_suspended_thunk_apply_argument() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let function = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("function lambda allocates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("argument thunk allocates");
+    let argument_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(4)))
+        .expect("argument destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(5),
+            Span::new(0, 1),
+            function,
+            EvalModuleId::ROOT,
+            IrId::new(6),
+            argument,
+        ))
+        .expect("parent apply thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+
+    let argument_request = object_copy_request_for_values(
+        &heap,
+        argument,
+        argument_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![argument_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        1,
+        HeapEdgeSource::ThunkApplyArgument,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(argument_destination),
+            generation: HeapGeneration::Old,
+        },
+        argument_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct thunk apply argument write applies");
+
+    assert_eq!(report.fields(), 1);
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, parent)
+        .expect("apply thunk root records");
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, parent).edges();
+    assert_eq!(edges.len(), 2);
+    assert!(edges.iter().any(|edge| {
+        edge.source() == &HeapEdgeSource::ThunkApplyFunction && edge.value().raw_eq(function)
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source() == &HeapEdgeSource::ThunkApplyArgument
+            && edge.value().raw_eq(argument_destination)
+    }));
+}
+
+#[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_suspended_thunk_captures() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let with_child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("with child thunk allocates");
+    let global_child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("global child thunk allocates");
+    let with_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("with destination thunk allocates");
+    let global_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(4)))
+        .expect("global destination thunk allocates");
+    let with_env = EvalWithEnv::capture(&[EvalWithScope::new(
+        EvalModuleId::ROOT,
+        IrId::new(5),
+        with_child,
+    )])
+    .expect("with env captures");
+    let scoped_globals =
+        EvalScopedGlobalEnv::capture(&[global_child]).expect("scoped globals capture");
+    let parent = heap
+        .alloc_thunk(EvalThunk::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(6),
+            EvalEnv::default(),
+            with_env,
+            scoped_globals,
+        ))
+        .expect("parent thunk allocates");
+    let parent_destination = heap
+        .alloc_thunk(EvalThunk::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(6),
+            EvalEnv::default(),
+            EvalWithEnv::default(),
+            EvalScopedGlobalEnv::default(),
+        ))
+        .expect("parent destination thunk allocates");
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let with_request = object_copy_request_for_values(
+        &heap,
+        with_child,
+        with_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let global_request = object_copy_request_for_values(
+        &heap,
+        global_child,
+        global_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        with_request,
+        global_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let writes = [
+        AllocationCollectorPollCopiedHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            gc_address(parent_destination),
+            0,
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Thunk,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(with_destination),
+                generation: HeapGeneration::Old,
+            },
+            with_request,
+            parent_request,
+        ),
+        AllocationCollectorPollCopiedHeapFieldWrite::new(
+            HeapAllocationDomain::Worker,
+            gc_address(parent),
+            gc_address(parent_destination),
+            1,
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Thunk,
+                index: 0,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(global_destination),
+                generation: HeapGeneration::Old,
+            },
+            global_request,
+            parent_request,
+        ),
+    ];
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&writes)
+        .expect("copied thunk capture writes apply");
+
+    assert_eq!(report.fields(), 2);
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, parent_destination)
+        .expect("destination thunk root records");
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, parent_destination).edges();
+    assert_eq!(edges.len(), 2);
+    assert!(edges.iter().any(|edge| {
+        edge.source()
+            == &HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Thunk,
+                index: 0,
+            }
+            && edge.value().raw_eq(with_destination)
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source()
+            == &HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Thunk,
+                index: 0,
+            }
+            && edge.value().raw_eq(global_destination)
+    }));
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_field() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("argument thunk allocates");
+    let argument_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("argument destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(0, 1),
+            Value::int(1),
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            argument,
+        ))
+        .expect("parent thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    let claim = parent_thunk.cell().begin_force().expect("force begins");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new parent thunk should be claimable");
+    };
+
+    let argument_request = object_copy_request_for_values(
+        &heap,
+        argument,
+        argument_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![argument_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ThunkApplyArgument,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(argument_destination),
+            generation: HeapGeneration::Old,
+        },
+        argument_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("blackholed thunk writes remain unsupported");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+            writeback_object: gc_address(parent),
+            field_index: 0,
+            field_source: HeapEdgeSource::ThunkApplyArgument,
+        }
+    );
+    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Blackhole));
+    guard.abort().expect("claim aborts");
+    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_forced_thunk_cached_result() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let forced = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("forced result thunk allocates");
+    let forced_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("forced destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("parent thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    let claim = parent_thunk.cell().begin_force().expect("force begins");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new parent thunk should be claimable");
+    };
+    guard.finish(forced).expect("forced result publishes");
+
+    let forced_request = object_copy_request_for_values(
+        &heap,
+        forced,
+        forced_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![forced_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ThunkCachedResult,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(forced_destination),
+            generation: HeapGeneration::Old,
+        },
+        forced_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("forced cached-result rewrites remain unsupported");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+            writeback_object: gc_address(parent),
+            field_index: 0,
+            field_source: HeapEdgeSource::ThunkCachedResult,
+        }
+    );
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
+    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Forced));
+    assert!(
+        parent_thunk
+            .cell()
+            .cached_value()
+            .expect("cached value reads")
+            .expect("forced cached result exists")
+            .raw_eq(forced)
+    );
 }
 
 #[test]
