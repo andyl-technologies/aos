@@ -118,13 +118,6 @@ const PROTOCOL_CODEC_ACTIVATION_MARKERS: &[&str] = &[
     "ProtocolFrame",
     "FrameCodec",
 ];
-const REPRO_ARTIFACT_ACTIVATION_MARKERS: &[&str] = &[
-    "ReproductionArtifact",
-    "serialize_reproduction",
-    "deserialize_reproduction",
-    "replay_artifact",
-];
-
 const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     CoverageSurface {
         id: "scheduler-quantum-loop",
@@ -216,30 +209,29 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
         activation_markers: &[],
         activation_source_roots: &[],
     },
-];
-
-const PLANNED_DETERMINISM_CORE_COVERAGE: &[CoverageSurface] = &[
     CoverageSurface {
         id: "protocol-codec",
         source_path: "crates/crucible-protocol/src/lib.rs",
         test_path: "crates/crucible-protocol/tests/gate_abi_conformance.rs",
-        status: CoverageStatus::Planned,
+        status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: PROTOCOL_CODEC_MARKERS,
-        activation_markers: PROTOCOL_CODEC_ACTIVATION_MARKERS,
-        activation_source_roots: &["crates/crucible-protocol/src"],
+        activation_markers: &[],
+        activation_source_roots: &[],
     },
     CoverageSurface {
         id: "reproduction-artifact-serializer",
-        source_path: "crates/crucible/src/lib.rs",
+        source_path: "crates/crucible/src/model.rs",
         test_path: "crates/crucible/tests/gate_replay_oracle.rs",
-        status: CoverageStatus::Planned,
+        status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: REPRO_ARTIFACT_MARKERS,
-        activation_markers: REPRO_ARTIFACT_ACTIVATION_MARKERS,
-        activation_source_roots: &["crates/crucible/src"],
+        activation_markers: &[],
+        activation_source_roots: &[],
     },
 ];
+
+const PLANNED_DETERMINISM_CORE_COVERAGE: &[CoverageSurface] = &[];
 
 #[test]
 fn determinism_core_coverage_floor_names_required_surfaces() {

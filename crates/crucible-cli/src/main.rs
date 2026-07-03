@@ -23,7 +23,6 @@ use std::time::Duration;
 
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
-use crucible::DagStore;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
@@ -32,6 +31,7 @@ use crucible_api::{
 use crucible_session::{
     CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
     SessionCommandKind,
+    engine::{self as crucible, DagStore},
 };
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v1";
@@ -49,6 +49,26 @@ const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
 const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &["gate:replay-oracle"];
+const CANONICAL_GATE_NAMES: &[&str] = &[
+    "gate:harness-lint",
+    "gate:layer0-determinism",
+    "gate:single-vm-fingerprint",
+    "gate:layer1-injection",
+    "gate:content-address",
+    "gate:replay-oracle",
+    "gate:divergence-bisect",
+    "gate:scheduler-liveness",
+    "gate:control-responsive",
+    "gate:any-guest",
+    "gate:qemu-inert",
+    "gate:abi-conformance",
+    "gate:patch-microtests",
+    "gate:adversarial-determinism",
+    "gate:e2e-determinism",
+    "gate:perf-bench",
+    "gate:fleet-equivalence",
+    "gate:campaign-continuity",
+];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(
@@ -3636,7 +3656,7 @@ fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
 fn required_qemu_plugin_abi() -> String {
     format!(
         "{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{}",
-        crucible_shmem::ABI_VERSION
+        crucible::SHMEM_ABI_VERSION
     )
 }
 
@@ -5343,6 +5363,7 @@ where
         });
     tokio::pin!(server);
     tokio::pin!(shutdown);
+    // crucible-lint: allow unordered-select -- serve shutdown races only with host daemon drainage.
     tokio::select! {
         result = &mut server => {
             result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
@@ -5370,6 +5391,7 @@ async fn serve_shutdown_signal() -> Result<(), CliError> {
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
     let mut terminate = signal(SignalKind::terminate())
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
+    // crucible-lint: allow unordered-select -- signal choice is host shutdown policy, not replay state.
     tokio::select! {
         _ = interrupt.recv() => Ok(()),
         _ = terminate.recv() => Ok(()),
@@ -6546,7 +6568,7 @@ fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
                 "duplicate selftest gate `{gate}` in --gates"
             )));
         }
-        if crucible_harness::find_gate(gate).is_none() {
+        if !CANONICAL_GATE_NAMES.contains(gate) {
             return Err(usage_error(format!(
                 "unknown selftest gate `{gate}`; use canonical gate names from RFC-0010 file 24"
             )));
@@ -13182,6 +13204,16 @@ mod tests {
             "--recompute-signatures found a discovery-time signature mismatch".to_string(),
         );
         assert_eq!(self_check_failure.exit_code(), 1);
+    }
+
+    #[test]
+    fn cli_selftest_canonical_gate_names_match_harness_catalog() {
+        let harness_gate_names = crucible_harness::canonical_gates()
+            .iter()
+            .map(|gate| gate.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(CANONICAL_GATE_NAMES, harness_gate_names.as_slice());
     }
 
     #[test]

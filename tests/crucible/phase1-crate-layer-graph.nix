@@ -97,6 +97,14 @@
     })
     runtimeSpecs
   );
+  hostAdapterUpwardEdgeExceptions = [
+    {
+      from = "crucible-qemu";
+      to = "crucible";
+    }
+  ];
+  isHostAdapterUpwardEdgeException = edge:
+    builtins.any (exception: exception.from == edge.from && exception.to == edge.to) hostAdapterUpwardEdgeExceptions;
 
   dependencyPackageName = name: value:
     if builtins.isAttrs value && value ? package
@@ -166,7 +174,7 @@
             then [
               "in-VM L2 crate `${edge.from}` may depend directly only on L1 crates, found `${edge.to}` in L${builtins.toString toLayer}"
             ]
-            else if (!fromSpec.inVm) && toLayer > fromSpec.layer
+            else if (!fromSpec.inVm) && toLayer > fromSpec.layer && !(isHostAdapterUpwardEdgeException edge)
             then [
               "upward dependency `${edge.from}` (L${builtins.toString fromSpec.layer}) -> `${edge.to}` (L${builtins.toString toLayer})"
             ]
@@ -255,6 +263,7 @@ in
             runtime_crates=13
             test_only_crates=1
             upward_edges=0
+            host_adapter_upward_edge_exceptions=1
             dependency_cycles=0
             in_vm_non_l1_direct_edges=0
             RESULT

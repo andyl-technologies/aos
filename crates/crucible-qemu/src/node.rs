@@ -222,6 +222,7 @@ pub struct QemuNodeChild {
 impl QemuNodeChild {
     /// Takes ownership of a spawned QEMU child process.
     #[must_use]
+    // crucible-lint: allow rust-allow -- non-Linux builds do not construct child wrappers in this target.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) const fn new(child: Child) -> Self {
         Self {

@@ -10,6 +10,21 @@
   version = "0.1.0";
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
+  nonCrucibleWorkspacePackages = [
+    "aos"
+    "aos-core"
+    "aos-net"
+    "aos-proto"
+    "aos-server"
+    "aos-cache"
+    "aos-remote"
+    "aos-doc"
+    "aos-package"
+    "aos-systemd"
+  ];
+  workspaceCargoFlags = builtins.concatStringsSep " " (
+    ["--workspace"] ++ map (package: "--exclude ${package}") nonCrucibleWorkspacePackages
+  );
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") packages);
   docPackages = builtins.filter (package: package != "crucible-cli") packages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
@@ -26,8 +41,8 @@ in
       hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
     };
 
-    cargoFlags = packageFlags;
-    cargoTestFlags = packageFlags;
+    cargoFlags = workspaceCargoFlags;
+    cargoTestFlags = workspaceCargoFlags;
     doCheck = true;
     buildDeps = [rust.dev];
     runtimeDeps = [qemu-crucible crucible-qemu-plugin];
@@ -47,7 +62,7 @@ in
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        ${packageFlags} \
+        ${workspaceCargoFlags} \
         -- \
         -D warnings
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
@@ -84,7 +99,8 @@ in
       build_system=mkCargoPackage
       cargo_deps=fetchCargoDeps
       cargo_workspace=crates
-      cargo_packages=${packageFlags}
+      cargo_workspace_flags=${workspaceCargoFlags}
+      cargo_member_flags=${packageFlags}
       cargo_doc=warning-free
       cargo_doctest=hermetic
       rustdocflags=-D warnings -D missing_docs

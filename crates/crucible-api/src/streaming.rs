@@ -1059,6 +1059,7 @@ async fn recv_api_frame(
     events: &mut SessionEventLogStream,
     state_updates: &mut SessionStateTransitionStream,
 ) -> Result<Option<StreamingFrame>, StreamingApiError> {
+    // crucible-lint: allow unordered-select -- API stream multiplexing preserves per-source ordering.
     tokio::select! {
         event = recv_api_event(events) => event.map(|frame| frame.map(StreamingFrame::Event)),
         state_update = recv_api_state_update(session, state_updates) => {

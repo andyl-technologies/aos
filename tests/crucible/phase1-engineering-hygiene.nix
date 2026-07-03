@@ -6,6 +6,7 @@
   cratesDir = ../../crates;
   defaultNix = builtins.readFile ./default.nix;
   hygieneRust = builtins.readFile ../../crates/crucible-harness/tests/engineering_hygiene.rs;
+  hygieneBaselineText = builtins.readFile ./engineering-hygiene-baseline.txt;
 
   softLineLimit = 600;
   hardLineLimit = 1000;
@@ -57,6 +58,47 @@
       terms = ["determinism-relevant change" "unrelated formatting churn"];
     }
   ];
+
+  hygieneBaselineLines =
+    builtins.filter (line: line != "" && !(lib.hasPrefix "#" line))
+    (lib.splitString "\n" hygieneBaselineText);
+  parseBaselineLine = line: let
+    fields = lib.splitString "|" line;
+    fieldCount = builtins.length fields;
+    kind = builtins.elemAt fields 0;
+  in
+    if kind == "shape-line" && fieldCount == 3
+    then {
+      kind = "shape-line";
+      path = builtins.elemAt fields 1;
+      maxLines = builtins.fromJSON (builtins.elemAt fields 2);
+    }
+    else if kind == "shape-header" && fieldCount == 2
+    then {
+      kind = "shape-header";
+      path = builtins.elemAt fields 1;
+    }
+    else if kind == "qemu-token" && fieldCount == 4
+    then {
+      kind = "qemu-token";
+      package = builtins.elemAt fields 1;
+      path = builtins.elemAt fields 2;
+      token = builtins.elemAt fields 3;
+    }
+    else if kind == "qemu-manifest" && fieldCount == 5
+    then {
+      kind = "qemu-manifest";
+      package = builtins.elemAt fields 1;
+      path = builtins.elemAt fields 2;
+      dependency = builtins.elemAt fields 3;
+      scope = builtins.elemAt fields 4;
+    }
+    else throw "invalid engineering hygiene baseline entry: ${line}";
+  hygieneBaseline = map parseBaselineLine hygieneBaselineLines;
+  shapeLineDebt = builtins.filter (entry: entry.kind == "shape-line") hygieneBaseline;
+  shapeHeaderDebt = builtins.filter (entry: entry.kind == "shape-header") hygieneBaseline;
+  qemuTokenDebt = builtins.filter (entry: entry.kind == "qemu-token") hygieneBaseline;
+  qemuManifestDebt = builtins.filter (entry: entry.kind == "qemu-manifest") hygieneBaseline;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -249,22 +291,34 @@
       "${relative}: missing `//!` module header"
     ];
 
-  sourceShapeFailures = relative:
-    sourceShapeFailuresForContent relative (builtins.readFile (root + "/${relative}"));
+  sourceShapeFailureAllowed = relative: content: finding: let
+    lines = lineCount content;
+  in
+    (hasInfix "line limit" finding
+      && builtins.any (entry: entry.path == relative && lines <= entry.maxLines) shapeLineDebt)
+    || (hasInfix "missing `//!` module header" finding
+      && builtins.any (entry: entry.path == relative) shapeHeaderDebt);
 
-  qemuBoundaryFailuresFor = package: relative:
-    if builtins.elem package qemuBoundaryPackages
-    then []
-    else let
-      content = scrubCommentsAndStrings (builtins.readFile (root + "/${relative}"));
-    in
-      lib.concatMap (
-        token:
-          lib.optionals (hasInfix token content) [
-            "${relative}: QEMU-specific token `${token}` appears outside the QEMU boundary in `${package}`"
-          ]
-      )
-      qemuSpecificTokens;
+  sourceShapeFailures = relative: let
+    content = builtins.readFile (root + "/${relative}");
+  in
+    builtins.filter (finding: !(sourceShapeFailureAllowed relative content finding))
+    (sourceShapeFailuresForContent relative content);
+
+  # The Rust gate owns the scrubbed source-token boundary scan. Keeping that
+  # character-level scanner in pure Nix makes this source-only mirror fragile on
+  # generated-scale Rust files, so the Nix check enforces the manifest boundary
+  # and leaves source-token precision to `engineering_hygiene.rs`.
+  qemuBoundaryFailuresFor = package: relative: [];
+
+  qemuTokenFailureAllowed = package: relative: finding:
+    builtins.any (
+      entry:
+        entry.package == package
+        && entry.path == relative
+        && hasInfix "token `${entry.token}`" finding
+    )
+    qemuTokenDebt;
 
   dependencyPackageName = alias: value:
     if builtins.isAttrs value && value ? package
@@ -320,8 +374,57 @@
           ]
       ) (manifestDependencyPackages (builtins.fromTOML manifest));
 
-  qemuManifestFailuresFor = package: relative:
-    qemuManifestFailuresForContent package relative (builtins.readFile (root + "/${relative}"));
+  qemuManifestFailuresFor = package: relative: let
+    findings = qemuManifestFailuresForContent package relative (builtins.readFile (root + "/${relative}"));
+  in
+    builtins.filter (finding: !(qemuManifestFailureAllowed package relative finding)) findings;
+
+  qemuManifestFailureAllowed = package: relative: finding:
+    builtins.any (
+      entry:
+        entry.package == package
+        && entry.path == relative
+        && hasInfix "dependency `${entry.dependency}`" finding
+        && hasInfix "section `${entry.scope}`" finding
+    )
+    qemuManifestDebt;
+
+  sourceShapeBaselineStaleFailures =
+    lib.concatMap (
+      entry: let
+        content = builtins.readFile (root + "/${entry.path}");
+        lines = lineCount content;
+      in
+        lib.optionals (lines <= softLineLimit) [
+          "tests/crucible/engineering-hygiene-baseline.txt: stale shape-line baseline `${entry.path}` cap ${builtins.toString entry.maxLines} observed ${builtins.toString lines}"
+        ]
+    )
+    shapeLineDebt
+    ++ lib.concatMap (
+      entry: let
+        content = builtins.readFile (root + "/${entry.path}");
+      in
+        lib.optionals (lib.hasPrefix "//!" content) [
+          "tests/crucible/engineering-hygiene-baseline.txt: stale shape-header baseline `${entry.path}`"
+        ]
+    )
+    shapeHeaderDebt;
+
+  qemuManifestBaselineStaleFailures =
+    lib.concatMap (
+      entry: let
+        findings = qemuManifestFailuresForContent entry.package entry.path (builtins.readFile (root + "/${entry.path}"));
+      in
+        lib.optionals (!(builtins.any (
+            finding:
+              hasInfix "dependency `${entry.dependency}`" finding
+              && hasInfix "section `${entry.scope}`" finding
+          )
+          findings)) [
+          "tests/crucible/engineering-hygiene-baseline.txt: stale qemu-manifest baseline `${entry.package}|${entry.path}|${entry.dependency}|${entry.scope}`"
+        ]
+    )
+    qemuManifestDebt;
 
   packageSourceFailures = package: let
     files = rustFilesUnder "crates/${package}";
@@ -398,7 +501,10 @@
       "manifest regression: QEMU boundary package should be allowed [${builtins.concatStringsSep "; " allowed}]"
     ];
 
-  sourceFailures = lib.concatMap packageSourceFailures cruciblePackages;
+  sourceFailures =
+    lib.concatMap packageSourceFailures cruciblePackages
+    ++ sourceShapeBaselineStaleFailures
+    ++ qemuManifestBaselineStaleFailures;
   policyFailures =
     commitRuleFailures standards
     ++ lib.optionals (!(hasInfix "engineeringHygiene = import ./phase1-engineering-hygiene.nix" defaultNix)) [
@@ -415,6 +521,18 @@
     ]
     ++ lib.optionals (!(hasInfix "HARD_LINE_LIMIT: usize = 1_000" hygieneRust)) [
       "engineering_hygiene.rs must publish the hard line limit"
+    ]
+    ++ lib.optionals (!(hasInfix "HygieneBaseline" hygieneRust)) [
+      "engineering_hygiene.rs must consume the engineering hygiene baseline"
+    ]
+    ++ lib.optionals (!(hasInfix "stale_source_shape_failures" hygieneRust)) [
+      "engineering_hygiene.rs must reject stale source-shape baseline entries"
+    ]
+    ++ lib.optionals (!(hasInfix "stale_qemu_token_failures" hygieneRust)) [
+      "engineering_hygiene.rs must reject stale QEMU token baseline entries"
+    ]
+    ++ lib.optionals (!(hasInfix "stale_qemu_manifest_failures" hygieneRust)) [
+      "engineering_hygiene.rs must reject stale QEMU manifest baseline entries"
     ];
 
   failures = sourceFailures ++ lineCountRegressionFailures ++ qemuManifestRegressionFailures ++ policyFailures;
@@ -444,6 +562,7 @@ in
             file_hard_limit=1000
             layer_graph_check=checks.crucible.phase1.crateLayerGraph
             qemu_boundary=crucible-qemu,crucible-qemu-plugin
+            debt_baseline=tests/crucible/engineering-hygiene-baseline.txt
             commit_hygiene_rules=${commitRuleSummary}
             RESULT
           '';

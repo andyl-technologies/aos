@@ -26,7 +26,10 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
         &default_checks,
         "qemuInert = import ./phase2-qemu-inert.nix",
     );
-    assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
+    assert_contains(
+        &default_checks,
+        "patchMicrotests = patchMicrotests.rawGate;",
+    );
     assert_contains(&patch_microtests, "qemuInertImplementedGateWired =");
 
     assert_contains(&inert_gate, "referenceQemu = pkgs.qemu-crucible-reference");

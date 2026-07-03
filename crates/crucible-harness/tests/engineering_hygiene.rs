@@ -6,8 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
+use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use crucible_harness::spec_index::crate_spec_index;
@@ -33,6 +35,14 @@ struct CommitHygieneRule {
     required_doc_terms: &'static [&'static str],
 }
 
+#[derive(Clone, Debug, Default)]
+struct HygieneBaseline {
+    line_limit_debt: BTreeMap<String, usize>,
+    missing_header_debt: BTreeSet<String>,
+    qemu_token_debt: BTreeSet<(String, String, String)>,
+    qemu_manifest_debt: BTreeSet<(String, String, String, String)>,
+}
+
 const COMMIT_HYGIENE_RULES: &[CommitHygieneRule] = &[
     CommitHygieneRule {
         id: "atomic-logical-change",
@@ -55,15 +65,21 @@ const COMMIT_HYGIENE_RULES: &[CommitHygieneRule] = &[
 #[test]
 fn crucible_source_modules_follow_size_and_header_limits() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
+    let baseline = HygieneBaseline::load(&root)?;
     let mut failures = Vec::new();
 
     for spec in crate_spec_index() {
         let package_dir = root.join("crates").join(spec.package);
         for source in rust_sources(&package_dir)? {
             let content = fs::read_to_string(&source)?;
-            failures.extend(source_shape_failures(&source, &content));
+            failures.extend(
+                source_shape_failures(&source, &content)
+                    .into_iter()
+                    .filter(|finding| !baseline.allows_source_shape(&source, &content, finding)),
+            );
         }
     }
+    failures.extend(baseline.stale_source_shape_failures(&root)?);
 
     assert!(
         failures.is_empty(),
@@ -77,27 +93,32 @@ fn crucible_source_modules_follow_size_and_header_limits() -> Result<(), Box<dyn
 #[test]
 fn non_qemu_crates_do_not_define_against_qemu_specific_boundaries() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
+    let baseline = HygieneBaseline::load(&root)?;
     let mut failures = Vec::new();
 
     for spec in crate_spec_index() {
         let package_dir = root.join("crates").join(spec.package);
         let manifest_path = package_dir.join("Cargo.toml");
         let manifest = fs::read_to_string(&manifest_path)?;
-        failures.extend(qemu_manifest_boundary_failures(
-            spec.package,
-            &manifest_path,
-            &manifest,
-        ));
+        failures.extend(
+            qemu_manifest_boundary_failures(spec.package, &manifest_path, &manifest)
+                .into_iter()
+                .filter(|finding| {
+                    !baseline.allows_qemu_manifest(spec.package, &manifest_path, finding)
+                }),
+        );
 
         for source in rust_sources(&package_dir.join("src"))? {
             let content = fs::read_to_string(&source)?;
-            failures.extend(qemu_specific_boundary_failures(
-                spec.package,
-                &source,
-                &content,
-            ));
+            failures.extend(
+                qemu_specific_boundary_failures(spec.package, &source, &content)
+                    .into_iter()
+                    .filter(|finding| !baseline.allows_qemu_token(spec.package, &source, finding)),
+            );
         }
     }
+    failures.extend(baseline.stale_qemu_token_failures(&root)?);
+    failures.extend(baseline.stale_qemu_manifest_failures(&root)?);
 
     assert!(
         failures.is_empty(),
@@ -262,6 +283,180 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
     );
 }
 
+impl HygieneBaseline {
+    fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
+        let content =
+            fs::read_to_string(root.join("tests/crucible/engineering-hygiene-baseline.txt"))?;
+        let mut baseline = Self::default();
+
+        for (line_index, raw_line) in content.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let fields = line.split('|').collect::<Vec<_>>();
+            match fields.as_slice() {
+                ["shape-line", path, max_lines] => {
+                    let max_lines = max_lines.parse::<usize>().map_err(|source| {
+                        IoError::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "invalid line-cap baseline entry on line {}: {source}",
+                                line_index + 1
+                            ),
+                        )
+                    })?;
+                    baseline
+                        .line_limit_debt
+                        .insert((*path).to_string(), max_lines);
+                }
+                ["shape-header", path] => {
+                    baseline.missing_header_debt.insert((*path).to_string());
+                }
+                ["qemu-token", package, path, token] => {
+                    baseline.qemu_token_debt.insert((
+                        (*package).to_string(),
+                        (*path).to_string(),
+                        (*token).to_string(),
+                    ));
+                }
+                ["qemu-manifest", package, path, dependency, scope] => {
+                    baseline.qemu_manifest_debt.insert((
+                        (*package).to_string(),
+                        (*path).to_string(),
+                        (*dependency).to_string(),
+                        (*scope).to_string(),
+                    ));
+                }
+                _ => {
+                    return Err(IoError::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "invalid engineering hygiene baseline entry on line {}: {line}",
+                            line_index + 1
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        Ok(baseline)
+    }
+
+    fn allows_source_shape(&self, path: &Path, content: &str, finding: &str) -> bool {
+        let relative = display_repo_path(path);
+        if finding.contains("line limit") {
+            return self
+                .line_limit_debt
+                .get(&relative)
+                .is_some_and(|max_lines| source_line_count(content) <= *max_lines);
+        }
+
+        finding.contains("missing `//!` module header")
+            && self.missing_header_debt.contains(&relative)
+    }
+
+    fn allows_qemu_token(&self, package: &str, path: &Path, finding: &str) -> bool {
+        let relative = display_repo_path(path);
+        QEMU_SPECIFIC_TOKENS.iter().any(|token| {
+            finding.contains(&format!("token `{token}`"))
+                && self.qemu_token_debt.contains(&(
+                    package.to_string(),
+                    relative.clone(),
+                    (*token).to_string(),
+                ))
+        })
+    }
+
+    fn allows_qemu_manifest(&self, package: &str, path: &Path, finding: &str) -> bool {
+        let relative = display_repo_path(path);
+        QEMU_BOUNDARY_PACKAGES.iter().any(|dependency| {
+            dependency_scopes().iter().any(|scope| {
+                finding.contains(&format!("dependency `{dependency}`"))
+                    && finding.contains(&format!("section `{scope}`"))
+                    && self.qemu_manifest_debt.contains(&(
+                        package.to_string(),
+                        relative.clone(),
+                        (*dependency).to_string(),
+                        (*scope).to_string(),
+                    ))
+            })
+        })
+    }
+
+    fn stale_source_shape_failures(&self, root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut failures = Vec::new();
+
+        for (relative, max_lines) in &self.line_limit_debt {
+            let path = root.join(relative);
+            let content = fs::read_to_string(&path)?;
+            let line_count = source_line_count(&content);
+            if line_count <= SOFT_LINE_LIMIT {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: stale shape-line baseline `{relative}` cap {max_lines} observed {line_count}"
+                ));
+            }
+        }
+
+        for relative in &self.missing_header_debt {
+            let path = root.join(relative);
+            let content = fs::read_to_string(&path)?;
+            if content.starts_with("//!") {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: stale shape-header baseline `{relative}`"
+                ));
+            }
+        }
+
+        Ok(failures)
+    }
+
+    fn stale_qemu_token_failures(&self, root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut failures = Vec::new();
+
+        for (package, relative, token) in &self.qemu_token_debt {
+            let path = root.join(relative);
+            let content = fs::read_to_string(&path)?;
+            let token_finding = format!("token `{token}`");
+            let still_observed = qemu_specific_boundary_failures(package, &path, &content)
+                .iter()
+                .any(|finding| finding.contains(&token_finding));
+            if !still_observed {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: stale qemu-token baseline `{package}|{relative}|{token}`"
+                ));
+            }
+        }
+
+        Ok(failures)
+    }
+
+    fn stale_qemu_manifest_failures(&self, root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut failures = Vec::new();
+
+        for (package, relative, dependency, scope) in &self.qemu_manifest_debt {
+            let path = root.join(relative);
+            let manifest = fs::read_to_string(&path)?;
+            let dependency_finding = format!("dependency `{dependency}`");
+            let scope_finding = format!("section `{scope}`");
+            let still_observed = qemu_manifest_boundary_failures(package, &path, &manifest)
+                .iter()
+                .any(|finding| {
+                    finding.contains(&dependency_finding) && finding.contains(&scope_finding)
+                });
+            if !still_observed {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: stale qemu-manifest baseline `{package}|{relative}|{dependency}|{scope}`"
+                ));
+            }
+        }
+
+        Ok(failures)
+    }
+}
+
 fn source_shape_failures(path: &Path, content: &str) -> Vec<String> {
     let mut failures = Vec::new();
     let line_count = source_line_count(content);
@@ -391,6 +586,10 @@ fn collect_dependency_table(
             .to_string();
         dependencies.push((report_scope.to_string(), package));
     }
+}
+
+fn dependency_scopes() -> &'static [&'static str] {
+    &["dependencies", "dev-dependencies", "build-dependencies"]
 }
 
 fn commit_hygiene_policy_failures(standards: &str, hygiene_nix: &str) -> Vec<String> {

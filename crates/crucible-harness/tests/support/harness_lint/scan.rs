@@ -5,9 +5,14 @@ use super::*;
 pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
     let scrubbed = scrub_comments_and_strings(content);
     let tokens = tokenize(&scrubbed);
+    let cfg_test_ranges = cfg_test_line_ranges(content);
     let mut findings = Vec::new();
 
     for (index, token) in tokens.iter().enumerate() {
+        if line_in_ranges(token.line, &cfg_test_ranges) {
+            continue;
+        }
+
         let TokenKind::Ident(identifier) = &token.kind else {
             continue;
         };
@@ -132,7 +137,7 @@ pub(super) fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
     findings.extend(fault_apply_path_failures(path, content));
     findings.extend(allow_annotation_failures(path, content));
-    findings
+    filter_cfg_test_findings(content, findings)
 }
 
 const INJECT_ACTIVE_FAULTS_EFFECT: &[TokenNeedle] = &[
@@ -167,6 +172,25 @@ const HEAL_ACTIVE_FAULTS_EFFECT: &[TokenNeedle] = &[
 ];
 const INJECT_ACTIVE_FAULTS_CALL_OFFSETS: &[usize] = &[4, 8, 14];
 const HEAL_ACTIVE_FAULTS_CALL_OFFSETS: &[usize] = &[4];
+const INJECT_ACTIVE_FAULTS_HELPER_CALL: &[TokenNeedle] = &[
+    TokenNeedle::Ident("activate_fault_tag"),
+    TokenNeedle::Punct('('),
+    TokenNeedle::Ident("state"),
+    TokenNeedle::Punct(','),
+    TokenNeedle::Ident("tag"),
+    TokenNeedle::Punct(','),
+    TokenNeedle::Ident("fault"),
+    TokenNeedle::Punct(')'),
+];
+const HEAL_ACTIVE_FAULTS_HELPER_CALL: &[TokenNeedle] = &[
+    TokenNeedle::Ident("heal_fault_tag"),
+    TokenNeedle::Punct('('),
+    TokenNeedle::Ident("state"),
+    TokenNeedle::Punct(','),
+    TokenNeedle::Ident("tag"),
+    TokenNeedle::Punct(')'),
+];
+const FAULT_HELPER_CALL_OFFSETS: &[usize] = &[0];
 
 const FAULT_APPLY_REQUIRED_PATTERNS: &[FaultApplyRequiredPattern] = &[
     FaultApplyRequiredPattern {
@@ -174,12 +198,18 @@ const FAULT_APPLY_REQUIRED_PATTERNS: &[FaultApplyRequiredPattern] = &[
         label: "state.active_faults.insert(tag.clone(), fault.clone())",
         pattern: INJECT_ACTIVE_FAULTS_EFFECT,
         call_offsets: INJECT_ACTIVE_FAULTS_CALL_OFFSETS,
+        helper_name: "activate_fault_tag",
+        helper_pattern: INJECT_ACTIVE_FAULTS_HELPER_CALL,
+        helper_call_offsets: FAULT_HELPER_CALL_OFFSETS,
     },
     FaultApplyRequiredPattern {
         variant: "HealFault",
         label: "state.active_faults.remove(tag)",
         pattern: HEAL_ACTIVE_FAULTS_EFFECT,
         call_offsets: HEAL_ACTIVE_FAULTS_CALL_OFFSETS,
+        helper_name: "heal_fault_tag",
+        helper_pattern: HEAL_ACTIVE_FAULTS_HELPER_CALL,
+        helper_call_offsets: FAULT_HELPER_CALL_OFFSETS,
     },
 ];
 
@@ -217,6 +247,9 @@ struct FaultApplyRequiredPattern {
     label: &'static str,
     pattern: &'static [TokenNeedle],
     call_offsets: &'static [usize],
+    helper_name: &'static str,
+    helper_pattern: &'static [TokenNeedle],
+    helper_call_offsets: &'static [usize],
 }
 
 #[derive(Clone, Copy)]
@@ -233,7 +266,7 @@ pub(super) fn fault_apply_path_failures(path: &Path, content: &str) -> Vec<Strin
     let mut findings = Vec::new();
     let scrubbed = scrub_comments_and_strings(content);
     let tokens = tokenize(&scrubbed);
-    let Some(function_range) = apply_trigger_effect_token_range(&tokens) else {
+    let Some(function_range) = function_token_range(&tokens, "apply_trigger_effect") else {
         let line = content
             .find("fn apply_trigger_effect(")
             .map_or(1, |offset| line_for_offset(content, offset));
@@ -245,6 +278,7 @@ pub(super) fn fault_apply_path_failures(path: &Path, content: &str) -> Vec<Strin
         ));
         return findings;
     };
+    let mut helper_requirements = Vec::new();
 
     for required in FAULT_APPLY_REQUIRED_PATTERNS {
         let Some(arm_range) =
@@ -267,6 +301,16 @@ pub(super) fn fault_apply_path_failures(path: &Path, content: &str) -> Vec<Strin
                     .iter()
                     .map(|offset| start.saturating_add(*offset)),
             );
+        } else if let Some(start) =
+            find_token_sequence(&tokens, arm_range.clone(), required.helper_pattern)
+        {
+            allowed_call_indices.extend(
+                required
+                    .helper_call_offsets
+                    .iter()
+                    .map(|offset| start.saturating_add(*offset)),
+            );
+            helper_requirements.push(*required);
         } else {
             findings.push(finding(
                 path,
@@ -289,13 +333,16 @@ pub(super) fn fault_apply_path_failures(path: &Path, content: &str) -> Vec<Strin
         ));
     }
 
+    for required in helper_requirements {
+        findings.extend(fault_apply_helper_failures(path, &tokens, required));
+    }
+
     findings
 }
 
-fn apply_trigger_effect_token_range(tokens: &[Token]) -> Option<std::ops::Range<usize>> {
+fn function_token_range(tokens: &[Token], name: &str) -> Option<std::ops::Range<usize>> {
     let fn_index = tokens.windows(2).position(|window| {
-        window[0].kind.as_ident() == Some("fn")
-            && window[1].kind.as_ident() == Some("apply_trigger_effect")
+        window[0].kind.as_ident() == Some("fn") && window[1].kind.as_ident() == Some(name)
     })?;
     let open_brace = tokens[fn_index + 2..]
         .iter()
@@ -303,6 +350,38 @@ fn apply_trigger_effect_token_range(tokens: &[Token]) -> Option<std::ops::Range<
         .map(|relative| fn_index + 2 + relative)?;
     let close_brace = matching_brace(tokens, open_brace)?;
     Some(open_brace + 1..close_brace)
+}
+
+fn fault_apply_helper_failures(
+    path: &Path,
+    tokens: &[Token],
+    required: FaultApplyRequiredPattern,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let Some(helper_range) = function_token_range(tokens, required.helper_name) else {
+        findings.push(finding(
+            path,
+            1,
+            "missing modeled fault-state helper",
+            required.helper_name,
+        ));
+        return findings;
+    };
+
+    if find_token_sequence(tokens, helper_range.clone(), required.pattern).is_none() {
+        findings.push(finding(
+            path,
+            token_range_line(tokens, &helper_range),
+            "missing modeled fault-state effect",
+            required.label,
+        ));
+    }
+    findings.extend(fault_apply_forbidden_token_failures(
+        path,
+        tokens,
+        helper_range,
+    ));
+    findings
 }
 
 fn action_arm_body_range(
@@ -815,11 +894,12 @@ pub(super) fn bare_unsafe_block_failures(
     let mut findings = Vec::new();
 
     for (index, token) in tokens.iter().enumerate() {
-        if token.kind.as_ident() == Some("unsafe")
-            && unsafe_block_follows(tokens, index)
-            && !has_immediately_preceding_safety_comment(content, token.line)
-        {
-            findings.push(finding(path, token.line, "bare unsafe block", "unsafe"));
+        if token.kind.as_ident() == Some("unsafe") && unsafe_block_follows(tokens, index) {
+            let line =
+                source_line_for_identifier(content, token.line, "unsafe").unwrap_or(token.line);
+            if !has_adjacent_safety_comment(content, line) {
+                findings.push(finding(path, line, "bare unsafe block", "unsafe"));
+            }
         }
     }
 
@@ -836,13 +916,18 @@ pub(super) fn unsafe_block_follows(tokens: &[Token], index: usize) -> bool {
     )
 }
 
-pub(super) fn has_immediately_preceding_safety_comment(content: &str, line: usize) -> bool {
-    let Some(previous_line) = line.checked_sub(2) else {
-        return false;
-    };
-
-    content
-        .lines()
-        .nth(previous_line)
-        .is_some_and(|candidate| candidate.trim_start().starts_with("// SAFETY:"))
+fn source_line_for_identifier(content: &str, token_line: usize, identifier: &str) -> Option<usize> {
+    [
+        token_line,
+        token_line.saturating_add(1),
+        token_line.saturating_sub(1),
+    ]
+    .into_iter()
+    .filter(|line| *line > 0)
+    .find(|line| {
+        content
+            .lines()
+            .nth(line - 1)
+            .is_some_and(|source_line| source_line.contains(identifier))
+    })
 }

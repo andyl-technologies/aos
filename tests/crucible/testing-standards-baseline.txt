@@ -1,0 +1,21 @@
+# Existing flaky-wording findings exposed by the workspace-scoped T-PKG-8
+# package test path.
+#
+# Format:
+# package<TAB>test target<TAB>pattern<TAB>count
+crucible	src/model	rerun	1
+crucible-cli	tests/serve_process	thread::sleep	1
+crucible-device	src/backpressure	retry	1
+crucible-device	src/block/device	retry	1
+crucible-device	src/ninep/device	retry	1
+crucible-device	src/subnode	retry	1
+crucible-harness	src/phase_plan	rerun	1
+crucible-harness	tests/phase_plan	rerun	1
+crucible-qemu	src/async_driver	retry	1
+crucible-qemu	src/crash_detection	retry	1
+crucible-qemu	src/gdbstub_proxy	thread::sleep	1
+crucible-qemu	src/qmp	thread::sleep	1
+crucible-qemu	src/shutdown	thread::sleep	1
+crucible-qemu	src/spawn	thread::sleep	1
+crucible-qemu	src/spawn	std::thread::sleep	1
+crucible-qemu	tests/crash_detection	retry	1

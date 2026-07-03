@@ -301,7 +301,11 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     );
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    assert_contains(&default_checks, "patchMicrotestsCheck = import");
+    assert_contains(&default_checks, "patchMicrotests = greenBeforeAdvance {");
+    assert_contains(
+        &default_checks,
+        "gate = import ./phase2-patch-microtests.nix",
+    );
     assert_contains(
         &default_checks,
         "qemuBlockShmem = import ./phase1-qemu-block-shmem.nix",
@@ -362,7 +366,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &default_checks,
         "attrPath = \"checks.crucible.phase2.gates.qemuInert\";",
     );
-    assert_contains(&default_checks, "patchMicrotests = patchMicrotestsCheck;");
+    assert_contains(
+        &default_checks,
+        "patchMicrotests = patchMicrotests.rawGate;",
+    );
 
     let abi = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/abi.rs"))?;
     assert_contains(&abi, "pub type QemuIcountRawFn");

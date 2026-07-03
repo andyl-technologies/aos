@@ -41,6 +41,12 @@ struct MaterializedCheckpoint {
     observational_entries: Vec<String>,
 }
 
+enum ReproductionArtifactErrorCoverage {
+    BuildIdentityMismatch,
+    FingerprintMismatch,
+    OracleCaseMismatch,
+}
+
 impl SimDouble {
     fn materialize_fat_checkpoint(
         &self,
@@ -694,6 +700,10 @@ fn gate_replay_oracle_sampled_mismatch_requests_bisection() -> Result<(), Box<dy
 
 #[test]
 fn gate_replay_oracle_reproduction_artifact_round_trips() -> Result<(), Box<dyn Error>> {
+    assert_reproduction_artifact_roundtrip_coverage()
+}
+
+fn assert_reproduction_artifact_roundtrip_coverage() -> Result<(), Box<dyn Error>> {
     let artifact = representative_replay_oracle_reproduction_artifact()?;
     let report = check_replay_oracle_reproduction_artifact_round_trip(
         &artifact,
@@ -798,10 +808,10 @@ fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
         Err(error) => error,
     };
 
-    assert!(matches!(
+    assert_reproduction_artifact_error_variant_coverage(
         error,
-        ReplayOracleRoundTripError::BuildIdentityMismatch { .. }
-    ));
+        ReproductionArtifactErrorCoverage::BuildIdentityMismatch,
+    );
 
     Ok(())
 }
@@ -823,10 +833,10 @@ fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(
         Err(error) => error,
     };
 
-    assert!(matches!(
+    assert_reproduction_artifact_error_variant_coverage(
         error,
-        ReplayOracleRoundTripError::FingerprintMismatch { .. }
-    ));
+        ReproductionArtifactErrorCoverage::FingerprintMismatch,
+    );
 
     Ok(())
 }
@@ -845,10 +855,10 @@ fn gate_replay_oracle_reproduction_artifact_detects_seed_drift() -> Result<(), B
         Err(error) => error,
     };
 
-    assert!(matches!(
+    assert_reproduction_artifact_error_variant_coverage(
         error,
-        ReplayOracleRoundTripError::FingerprintMismatch { .. }
-    ));
+        ReproductionArtifactErrorCoverage::FingerprintMismatch,
+    );
 
     Ok(())
 }
@@ -870,10 +880,10 @@ fn gate_replay_oracle_reproduction_artifact_detects_scenario_drift() -> Result<(
         Err(error) => error,
     };
 
-    assert!(matches!(
+    assert_reproduction_artifact_error_variant_coverage(
         error,
-        ReplayOracleRoundTripError::FingerprintMismatch { .. }
-    ));
+        ReproductionArtifactErrorCoverage::FingerprintMismatch,
+    );
 
     Ok(())
 }
@@ -895,12 +905,38 @@ fn gate_replay_oracle_reproduction_artifact_detects_oracle_case_drift() -> Resul
         Err(error) => error,
     };
 
-    assert!(matches!(
+    assert_reproduction_artifact_error_variant_coverage(
         error,
-        ReplayOracleRoundTripError::OracleCaseMismatch { .. }
-    ));
+        ReproductionArtifactErrorCoverage::OracleCaseMismatch,
+    );
 
     Ok(())
+}
+
+fn assert_reproduction_artifact_error_variant_coverage(
+    error: ReplayOracleRoundTripError,
+    expected: ReproductionArtifactErrorCoverage,
+) {
+    match expected {
+        ReproductionArtifactErrorCoverage::BuildIdentityMismatch => {
+            assert!(matches!(
+                error,
+                ReplayOracleRoundTripError::BuildIdentityMismatch { .. }
+            ));
+        }
+        ReproductionArtifactErrorCoverage::FingerprintMismatch => {
+            assert!(matches!(
+                error,
+                ReplayOracleRoundTripError::FingerprintMismatch { .. }
+            ));
+        }
+        ReproductionArtifactErrorCoverage::OracleCaseMismatch => {
+            assert!(matches!(
+                error,
+                ReplayOracleRoundTripError::OracleCaseMismatch { .. }
+            ));
+        }
+    }
 }
 
 fn assert_replay_oracle_fixed_checkpoint_corpus()

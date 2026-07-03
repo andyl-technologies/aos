@@ -180,6 +180,9 @@ pub use node_fault::{
 };
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
+#[cfg(feature = "test-double")]
+/// Shared-memory ABI version used by the engine's in-process double.
+pub const SHMEM_ABI_VERSION: u32 = crucible_shmem::ABI_VERSION;
 pub use scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, BackendQuantumLoop, ComposedRunVerdict,
     ComposedRunVerdictFailure, ConcurrentQuantumLoop, ConservativeAdvanceAuthorization,

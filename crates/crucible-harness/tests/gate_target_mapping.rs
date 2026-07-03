@@ -69,7 +69,15 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
         // target is isolable. Crucible-side gate targets that run under default
         // features (the real-simulator determinism gates) are auto-discovered and
         // exempt.
-        if target.package == "crucible" && target.required_features == ["test-double"].as_slice() {
+        let requires_test_double = crucible_gate_target_requires_test_double(target);
+        if requires_test_double && target.required_features != ["test-double"].as_slice() {
+            failures.push(format!(
+                "{}:{} must run with --features test-double",
+                target.package, target.test_target
+            ));
+        }
+
+        if requires_test_double {
             if !manifest_test_target_requires_feature(
                 &fs::read_to_string(&manifest_path)?.parse()?,
                 target.test_target,
@@ -341,13 +349,14 @@ fn synthetic_mapping_failures(
                 target.package, target.test_target, target.gate
             ));
         }
-        if target.package == "crucible" && target.required_features != ["test-double"].as_slice() {
+        let requires_test_double = crucible_gate_target_requires_test_double(target);
+        if requires_test_double && target.required_features != ["test-double"].as_slice() {
             failures.push(format!(
                 "{}:{} must run with --features test-double",
                 target.package, target.test_target
             ));
         }
-        if target.package == "crucible" {
+        if requires_test_double {
             failures.push(format!(
                 "{}:{} Cargo manifest must set required-features = [\"test-double\"]",
                 target.package, target.test_target
@@ -380,6 +389,20 @@ fn synthetic_mapping_failures(
     }
 
     failures
+}
+
+fn crucible_gate_target_requires_test_double(target: &GateTargetSpec) -> bool {
+    target.package == "crucible"
+        && matches!(
+            target.gate,
+            "gate:layer0-determinism"
+                | "gate:single-vm-fingerprint"
+                | "gate:abi-conformance"
+                | "gate:replay-oracle"
+                | "gate:content-address"
+                | "gate:scheduler-liveness"
+                | "gate:e2e-determinism"
+        )
 }
 
 fn manifest_test_target_requires_feature(

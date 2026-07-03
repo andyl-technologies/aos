@@ -419,6 +419,7 @@ struct QmpOperationDeadline {
 }
 
 impl QmpOperationDeadline {
+    // crucible-lint: allow clippy-disallowed-method -- QMP host deadlines bound child I/O only.
     #[allow(clippy::disallowed_methods)]
     fn new(timeout: Duration) -> Self {
         // QMP lifecycle I/O uses host realtime only to bound child liveness; the
@@ -429,6 +430,7 @@ impl QmpOperationDeadline {
         }
     }
 
+    // crucible-lint: allow clippy-disallowed-method -- elapsed host time only gates QMP timeout reporting.
     #[allow(clippy::disallowed_methods)]
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
         // See `new`: this deadline gates a host control-plane wait, not guest

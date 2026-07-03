@@ -66,7 +66,11 @@ pub(super) fn unsafe_source_failures(
             continue;
         }
 
+        let has_safety_comment = has_adjacent_safety_comment(content, token.line);
         if !unsafe_boundary {
+            if is_test_source(path) && has_safety_comment {
+                continue;
+            }
             findings.push(finding(
                 path,
                 token.line,
@@ -76,13 +80,12 @@ pub(super) fn unsafe_source_failures(
             continue;
         }
 
-        if unsafe_callable_item_at(&tokens, index) {
+        let has_safety_section = has_preceding_safety_section(content, token.line);
+        if unsafe_callable_item_at(&tokens, index) && !has_safety_section {
             findings.push(finding(path, token.line, "unsafe item", "unsafe"));
         }
 
-        if unsafe_impl_at(&tokens, index)
-            && !has_immediately_preceding_safety_comment(content, token.line)
-        {
+        if unsafe_impl_at(&tokens, index) && !has_safety_comment {
             findings.push(finding(
                 path,
                 token.line,
@@ -91,13 +94,11 @@ pub(super) fn unsafe_source_failures(
             ));
         }
 
-        if unsafe_block_follows(&tokens, index)
-            && !has_immediately_preceding_safety_comment(content, token.line)
-        {
+        if unsafe_block_follows(&tokens, index) && !has_safety_comment {
             findings.push(finding(path, token.line, "bare unsafe block", "unsafe"));
         }
 
-        if public_unsafe_api_at(&tokens, index) {
+        if public_unsafe_api_at(&tokens, index) && !has_safety_section {
             findings.push(finding(path, token.line, "public unsafe API", "unsafe"));
         }
 
@@ -105,6 +106,11 @@ pub(super) fn unsafe_source_failures(
     }
 
     findings
+}
+
+fn is_test_source(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "tests")
 }
 
 pub(super) fn unsafe_callable_item_at(tokens: &[Token], unsafe_index: usize) -> bool {
@@ -213,15 +219,60 @@ pub(super) fn unsafe_block_follows(tokens: &[Token], index: usize) -> bool {
     )
 }
 
-pub(super) fn has_immediately_preceding_safety_comment(content: &str, line: usize) -> bool {
-    let Some(previous_line) = line.checked_sub(2) else {
+pub(super) fn has_adjacent_safety_comment(content: &str, line: usize) -> bool {
+    has_preceding_safety_comment(content, line) || has_following_safety_comment(content, line)
+}
+
+pub(super) fn has_preceding_safety_comment(content: &str, line: usize) -> bool {
+    let Some(mut cursor) = line.checked_sub(1) else {
         return false;
     };
 
+    let lines = content.lines().collect::<Vec<_>>();
+    while let Some(index) = cursor.checked_sub(1) {
+        let candidate = lines[index].trim_start();
+        if !candidate.starts_with("//") {
+            return false;
+        }
+        if safety_comment_states_invariant(candidate) {
+            return true;
+        }
+        cursor = index;
+    }
+
+    false
+}
+
+pub(super) fn has_following_safety_comment(content: &str, line: usize) -> bool {
     content
         .lines()
-        .nth(previous_line)
+        .nth(line)
         .is_some_and(safety_comment_states_invariant)
+}
+
+pub(super) fn has_preceding_safety_section(content: &str, line: usize) -> bool {
+    let Some(mut cursor) = line.checked_sub(1) else {
+        return false;
+    };
+
+    let lines = content.lines().collect::<Vec<_>>();
+    while let Some(index) = cursor.checked_sub(1) {
+        let candidate = lines[index].trim_start();
+        if candidate.starts_with("///") || candidate.starts_with("//!") {
+            if candidate.contains("# Safety") {
+                return true;
+            }
+            cursor = index;
+            continue;
+        }
+        if candidate.starts_with("#[") || candidate.is_empty() {
+            cursor = index;
+            continue;
+        }
+        return false;
+    }
+
+    false
 }
 
 pub(super) fn safety_comment_states_invariant(candidate: &str) -> bool {

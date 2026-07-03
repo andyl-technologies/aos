@@ -1,3 +1,4 @@
+// crucible-lint: allow rust-allow -- shared test builders intentionally expose more helpers than each test uses.
 #![allow(dead_code)]
 
 use crucible::{

@@ -17,7 +17,8 @@
 //! [`InstructionDoorbellTransport`]. Public callers pass typed [`GuestCommand`]
 //! values to a safe [`DoorbellTransport`] implementation; the transport receives
 //! a mutable frame buffer so reply-bearing app-random requests can be written
-//! back at the same guest-memory range the plugin reads.
+//! back at the same guest-memory range the plugin reads; public callers use safe doorbell and marker accessors while the private transport code owns the
+//! guest/register and shared-region invariants.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

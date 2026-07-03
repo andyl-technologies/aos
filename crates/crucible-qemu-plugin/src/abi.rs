@@ -808,6 +808,7 @@ pub fn install_required_vcpu_introspection_scaffold(
 ///
 /// Returns [`QemuPluginAbiError`] when any required deterministic plugin export
 /// or T-PATCH-11 runtime API export is unavailable.
+// crucible-lint: allow rust-allow -- ABI scaffold constructors mirror QEMU's runtime export list.
 #[allow(clippy::too_many_arguments)]
 pub fn install_required_runtime_api_scaffold(
     execution_model: QemuPluginExecutionModel,
@@ -954,6 +955,7 @@ pub fn install_required_vcpu_introspection_scaffold_from_qemu_info(
 ///
 /// Returns [`QemuPluginAbiError`] when the execution model is unsupported or any
 /// required deterministic plugin export is unavailable.
+// crucible-lint: allow rust-allow -- QEMU install metadata expands to the required runtime exports.
 #[allow(clippy::too_many_arguments)]
 pub fn install_required_runtime_api_scaffold_from_qemu_info(
     info: &QemuPluginInfo,

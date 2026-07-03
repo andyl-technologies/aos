@@ -10,6 +10,7 @@
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   assertionProperties = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
+  harnessLintBaseline = builtins.readFile ./harness-lint-baseline.txt;
   defaultChecks = builtins.readFile ./default.nix;
   crucibleModel = builtins.readFile ../../crates/crucible/src/model.rs;
   predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
@@ -979,7 +980,7 @@
         "--all-targets"
         "rust.dev"
         "-Dwarnings"
-        "packageFlags"
+        "workspaceCargoFlags"
       ];
   in
     workspaceDenyFailures ++ methodFailures ++ typeFailures ++ manifestFailures ++ buildHookFailures;
@@ -1061,7 +1062,7 @@
       )
       requiredRustTierText;
     packageHookFailures =
-      lib.optionals (!(hasInfix "doCheck=true" (normalize cruciblePackageNix) && hasInfix "cargoTestFlags=packageFlags" (normalize cruciblePackageNix))) [
+      lib.optionals (!(hasInfix "doCheck=true" (normalize cruciblePackageNix) && hasInfix "cargoTestFlags=workspaceCargoFlags" (normalize cruciblePackageNix))) [
         "pkgs/tools/crucible/crucible.nix: missing package test hook for Rust custom static-analysis tier"
       ];
   in
@@ -1378,6 +1379,9 @@
       "findings.extend(scan_content(&source, &content));"
       "fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn Error>>"
       "workspace_confinement_findings(&root, &workspace_dependencies)"
+      "HarnessLintBaseline::load(&repo)"
+      "filter_findings("
+      "stale {category} baseline"
       "fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>>"
       "clippy_tier_failures("
       "fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dyn Error>>"
@@ -1453,6 +1457,20 @@
       ++ lib.optionals (!(hasInfix "- [x] **T-HARN-2**" harnessTesting)) [
         "docs/rfcs/0010-crucible/24-determinism-harness-testing.md: T-HARN-2 checklist is not complete"
       ];
+    baselineFailures = failuresFor "tests/crucible/harness-lint-baseline.txt" harnessLintBaseline [
+      {
+        label = "confinement baseline category";
+        needle = "confinement\t";
+      }
+      {
+        label = "error/logging baseline category";
+        needle = "error-logging\t";
+      }
+      {
+        label = "baseline count field";
+        needle = "\tResult<_, String>\t\t23";
+      }
+    ];
     phaseWiringFailures =
       lib.concatMap (
         required:
@@ -1462,7 +1480,7 @@
       )
       requiredDefaultCheckBlocks;
   in
-    harnessFailures ++ denyCoverageFailures ++ docFailures ++ phaseWiringFailures;
+    harnessFailures ++ denyCoverageFailures ++ docFailures ++ baselineFailures ++ phaseWiringFailures;
 
   tAsrt17CompletionFailures =
     failuresFor "crates/crucible/tests/predicate_dsl.rs" predicateDsl [

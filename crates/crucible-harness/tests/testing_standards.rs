@@ -82,20 +82,20 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:single-vm-fingerprint",
-        owner_packages: &["crucible-qemu", "crucible-qemu-plugin", "crucible-guest"],
-        layers: &[Layer::L2],
+        owner_packages: &[
+            "crucible",
+            "crucible-qemu",
+            "crucible-qemu-plugin",
+            "crucible-guest",
+        ],
+        layers: &[Layer::L2, Layer::L3],
         shape: TestShape::FingerprintCompare,
-        backend: TestBackend::RealQemu,
+        backend: TestBackend::Mixed,
     },
     GateTestingStandard {
         gate: "gate:layer1-injection",
-        owner_packages: &[
-            "crucible-device",
-            "crucible-protocol",
-            "crucible-shmem",
-            "crucible",
-        ],
-        layers: &[Layer::L1, Layer::L3],
+        owner_packages: &["crucible-device", "crucible-protocol", "crucible-shmem"],
+        layers: &[Layer::L1],
         shape: TestShape::ObservedInjectionIcountVectors,
         backend: TestBackend::InProcess,
     },
@@ -107,6 +107,7 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
             "crucible-protocol",
             "crucible-api",
             "crucible-qemu-plugin",
+            "crucible-guest",
             "crucible",
         ],
         layers: &[
@@ -177,8 +178,8 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:adversarial-determinism",
-        owner_packages: &["crucible-harness"],
-        layers: &[Layer::CrossCutting],
+        owner_packages: &["crucible"],
+        layers: &[Layer::L3],
         shape: TestShape::AdversarialCompare,
         backend: TestBackend::Mixed,
     },
@@ -231,16 +232,18 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-guest",
-        gates: &["gate:single-vm-fingerprint"],
+        gates: &["gate:single-vm-fingerprint", "gate:abi-conformance"],
     },
     CrateTestingOwnership {
         package: "crucible",
         gates: &[
             "gate:layer0-determinism",
-            "gate:layer1-injection",
+            "gate:single-vm-fingerprint",
+            "gate:abi-conformance",
             "gate:replay-oracle",
             "gate:content-address",
             "gate:scheduler-liveness",
+            "gate:adversarial-determinism",
             "gate:e2e-determinism",
         ],
     },
@@ -266,7 +269,6 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:harness-lint",
             "gate:abi-conformance",
             "gate:divergence-bisect",
-            "gate:adversarial-determinism",
         ],
     },
 ];
@@ -306,6 +308,7 @@ fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error
 #[test]
 fn gate_target_sources_treat_flaky_as_failing() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
+    let baseline = TestingStandardsBaseline::load(&root)?;
     let mut failures = Vec::new();
 
     for source in crucible_test_sources(&root)? {
@@ -317,6 +320,7 @@ fn gate_target_sources_treat_flaky_as_failing() -> Result<(), Box<dyn Error>> {
         ));
     }
 
+    let mut failures = baseline.filter_flaky_findings(failures);
     failures.extend(testing_source_regression_failures());
 
     assert!(

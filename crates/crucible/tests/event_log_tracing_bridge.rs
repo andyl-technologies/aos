@@ -65,6 +65,7 @@ fn tracing_subscriber_modes_do_not_change_causal_subsequence() {
         events: Arc::clone(&captured_events),
     });
     let capturing = dispatcher::with_default(&capturing_dispatch, || {
+        tracing::callsite::rebuild_interest_cache();
         bridge_run_entries(TracingBridge::enabled())
     });
     let filtered_events = Arc::new(Mutex::new(Vec::new()));
@@ -73,6 +74,7 @@ fn tracing_subscriber_modes_do_not_change_causal_subsequence() {
         events: Arc::clone(&filtered_events),
     });
     let filtering = dispatcher::with_default(&filtering_dispatch, || {
+        tracing::callsite::rebuild_interest_cache();
         bridge_run_entries(TracingBridge::enabled())
     });
 

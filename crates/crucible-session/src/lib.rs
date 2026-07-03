@@ -14,6 +14,25 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+/// Engine vocabulary exposed through the session boundary for control-plane clients.
+pub mod engine {
+    pub use crucible::{
+        Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig, DagStore,
+        DagStoreError, DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
+        DebugFailureFooterCommand, DebugGdbEndpoint, DebugReverseStepGrain, EventAttributeValue,
+        EventDiagnosticPayload, EventLevel, EventLogOffset, ExampleCorpusError,
+        ExampleScenarioVerifyReport, FailureClusterFinding, FailureClusterReportFormat,
+        FailureClusterReportSet, FailureClusteringResult, FailureFindingsLedger,
+        FailureSignaturePreservingMinimizationResult, FailureTriageResult,
+        FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
+        FailureTriageStoredArtifact, FingerprintSample, Icount, LocalDagStore, NodeId, QuantumLoop,
+        QuantumOutcome, QuantumRequest, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm,
+        SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, SearchBudget, SearchStrategy,
+        Seed, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimulationBackend, VirtualTime,
+        built_in_example_corpus, happy_path_scenario, verify_example_scenario_runs,
+    };
+}
+
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};

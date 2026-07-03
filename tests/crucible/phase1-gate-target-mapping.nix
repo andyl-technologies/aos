@@ -119,6 +119,13 @@
     }
     {
       gate = "gate:abi-conformance";
+      package = "crucible-guest";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
+      gate = "gate:abi-conformance";
       package = "crucible";
       testTarget = "gate_abi_conformance";
       requiredFeatures = ["test-double"];
@@ -210,7 +217,7 @@
     }
     {
       gate = "gate:adversarial-determinism";
-      package = "crucible-harness";
+      package = "crucible";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
       placeholder = false;
@@ -249,6 +256,16 @@
     "gate:e2e-determinism"
   ];
 
+  crucibleTestDoubleGates = [
+    "gate:layer0-determinism"
+    "gate:single-vm-fingerprint"
+    "gate:abi-conformance"
+    "gate:replay-oracle"
+    "gate:content-address"
+    "gate:scheduler-liveness"
+    "gate:e2e-determinism"
+  ];
+
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
     haystackLen = builtins.stringLength haystack;
@@ -271,6 +288,9 @@
       if builtins.pathExists testPath
       then builtins.readFile testPath
       else "";
+    requiresTestDouble =
+      target.package == "crucible"
+      && builtins.elem target.gate crucibleTestDoubleGates;
     manifestTargetHasRequiredFeature =
       builtins.any (
         cargoTest:
@@ -313,13 +333,13 @@
     ++ lib.optionals ((!target.placeholder) && builtins.pathExists testPath && hasInfix "#[ignore" content) [
       "crates/${target.package}/tests/${target.testTarget}.rs: implemented gate target must not be ignored"
     ]
-    ++ lib.optionals (target.package == "crucible" && target.requiredFeatures != ["test-double"]) [
+    ++ lib.optionals (requiresTestDouble && target.requiredFeatures != ["test-double"]) [
       "${target.package}:${target.testTarget} must run with --features test-double"
     ]
-    ++ lib.optionals (target.package == "crucible" && !manifestTargetHasRequiredFeature) [
+    ++ lib.optionals (requiresTestDouble && !manifestTargetHasRequiredFeature) [
       "${target.package}:${target.testTarget} Cargo manifest must set required-features = [\"test-double\"]"
     ]
-    ++ lib.optionals (target.package == "crucible" && !manifestTargetHasPath) [
+    ++ lib.optionals (requiresTestDouble && !manifestTargetHasPath) [
       "${target.package}:${target.testTarget} Cargo manifest must set path = \"tests/${target.testTarget}.rs\""
     ];
 

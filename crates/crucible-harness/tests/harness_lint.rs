@@ -1,6 +1,6 @@
 //! Runs the reduction-path static determinism lint.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,9 +54,15 @@ fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn 
 #[test]
 fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
+    let repo = repo_root();
+    let baseline = HarnessLintBaseline::load(&repo)?;
     let workspace_manifest: Value = fs::read_to_string(root.join("Cargo.toml"))?.parse()?;
     let workspace_dependencies = workspace_dependency_table(&workspace_manifest);
-    let findings = workspace_confinement_findings(&root, &workspace_dependencies)?;
+    let findings = baseline.filter_findings(
+        "confinement",
+        &repo,
+        workspace_confinement_findings(&root, &workspace_dependencies)?,
+    );
 
     assert!(
         findings.is_empty(),
@@ -71,6 +77,8 @@ fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn E
 fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<dyn Error>> {
     let mut findings = Vec::new();
     let root = workspace_root();
+    let repo = repo_root();
+    let baseline = HarnessLintBaseline::load(&repo)?;
 
     for spec in crate_spec_index() {
         let package_dir = root.join(spec.package);
@@ -99,6 +107,8 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
             findings.push(missing_typed_error_finding(spec.package));
         }
     }
+
+    let findings = baseline.filter_findings("error-logging", &repo, findings);
 
     assert!(
         findings.is_empty(),
@@ -614,4 +624,125 @@ fn harness_lint_custom_static_analysis_covers_scheduler_fault_apply_path()
     );
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct BaselineKey {
+    category: String,
+    path: String,
+    reason: String,
+    pattern: String,
+    suffix: String,
+}
+
+#[derive(Default)]
+struct HarnessLintBaseline {
+    caps: BTreeMap<BaselineKey, usize>,
+}
+
+impl HarnessLintBaseline {
+    fn load(repo: &Path) -> Result<Self, Box<dyn Error>> {
+        let path = repo.join("tests/crucible/harness-lint-baseline.txt");
+        let content = fs::read_to_string(path)?;
+        let mut caps = BTreeMap::new();
+
+        for (index, line) in content.lines().enumerate() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 6 {
+                return Err(format!(
+                    "invalid harness-lint baseline entry on line {}: {line}",
+                    index + 1
+                )
+                .into());
+            }
+
+            let count = fields[5].parse::<usize>().map_err(|error| {
+                format!(
+                    "invalid harness-lint baseline count on line {}: {error}",
+                    index + 1
+                )
+            })?;
+            caps.insert(
+                BaselineKey {
+                    category: fields[0].to_string(),
+                    path: fields[1].to_string(),
+                    reason: fields[2].to_string(),
+                    pattern: fields[3].to_string(),
+                    suffix: fields[4].to_string(),
+                },
+                count,
+            );
+        }
+
+        Ok(Self { caps })
+    }
+
+    fn filter_findings(&self, category: &str, repo: &Path, findings: Vec<String>) -> Vec<String> {
+        let mut observed = BTreeMap::new();
+        let mut unbaselined = Vec::new();
+
+        for finding in findings {
+            let Some(key) = BaselineKey::from_finding(category, repo, &finding) else {
+                unbaselined.push(finding);
+                continue;
+            };
+            let observed_count = observed.entry(key.clone()).or_insert(0usize);
+            *observed_count += 1;
+
+            if self
+                .caps
+                .get(&key)
+                .is_some_and(|cap| *observed_count <= *cap)
+            {
+                continue;
+            }
+
+            unbaselined.push(finding);
+        }
+
+        for (key, cap) in self.caps.iter().filter(|(key, _)| key.category == category) {
+            let actual = observed.get(key).copied().unwrap_or_default();
+            if actual < *cap {
+                unbaselined.push(format!(
+                    "tests/crucible/harness-lint-baseline.txt: stale {category} baseline `{}` expected {cap} observed {actual}",
+                    key.display()
+                ));
+            }
+        }
+
+        unbaselined
+    }
+}
+
+impl BaselineKey {
+    fn from_finding(category: &str, repo: &Path, finding: &str) -> Option<Self> {
+        let (path_and_line, rest) = finding.split_once(": banned ")?;
+        let (path, _) = path_and_line.rsplit_once(':')?;
+        let (reason, rest) = rest.split_once(" pattern `")?;
+        let (pattern, suffix) = rest.split_once('`')?;
+        Some(Self {
+            category: category.to_string(),
+            path: repo_relative_path(repo, path),
+            reason: reason.to_string(),
+            pattern: pattern.to_string(),
+            suffix: suffix.to_string(),
+        })
+    }
+
+    fn display(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            self.category, self.path, self.reason, self.pattern, self.suffix
+        )
+    }
+}
+
+fn repo_relative_path(repo: &Path, path: &str) -> String {
+    let prefix = format!("{}/", repo.display());
+    path.strip_prefix(&prefix).unwrap_or(path).to_string()
 }

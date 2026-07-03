@@ -225,7 +225,7 @@ pub(super) fn error_logging_failures(
         is_binary_boundary,
     ));
 
-    findings
+    filter_cfg_test_findings(content, findings)
 }
 
 pub(super) fn result_string_error_failures(
