@@ -2581,8 +2581,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       after rejecting mixed plans with heap-field writebacks.
       `TreeWalk::collector_poll_minor_gc_reference_writeback_plan_for_safepoint`
       exposes the complete root+heap-field writeback partition with scan,
-      survivor, reference-slot, remembered-set refresh counts, and the rebuilt
-      next remembered set for the future full live-reference writer.
+      survivor and reference-slot counts, the source remembered-set/card-table
+      state, remembered-set refresh counts, and the rebuilt next remembered
+      set for the future full live-reference writer.
       `AllocationCollectorPollReferenceWritebackPlan::apply_to_value_and_heap_field_slots`
       and
       `TreeWalk::apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers`

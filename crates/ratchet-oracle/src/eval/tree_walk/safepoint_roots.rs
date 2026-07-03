@@ -195,6 +195,8 @@ pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
     scanned_objects: usize,
     survivors: usize,
     reference_slots: usize,
+    source_remembered_set: RememberedSet,
+    source_card_table: GcCardTable,
     remembered_set_refreshes: usize,
     next_remembered_set: RememberedSet,
     object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
@@ -208,6 +210,8 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
         scanned_objects: usize,
         survivors: usize,
         reference_slots: usize,
+        source_remembered_set: RememberedSet,
+        source_card_table: GcCardTable,
         remembered_set_refreshes: usize,
         next_remembered_set: RememberedSet,
         object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
@@ -219,6 +223,8 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
             scanned_objects,
             survivors,
             reference_slots,
+            source_remembered_set,
+            source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
             object_body_plan,
@@ -249,6 +255,26 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
     /// Returns the number of reference slots in the commit plan.
     pub const fn reference_slots(&self) -> usize {
         self.reference_slots
+    }
+
+    /// Returns the remembered set consumed by this plan.
+    pub const fn source_remembered_set(&self) -> &RememberedSet {
+        &self.source_remembered_set
+    }
+
+    /// Returns the number of remembered edges consumed by this plan.
+    pub fn source_remembered_set_edges(&self) -> usize {
+        self.source_remembered_set.len()
+    }
+
+    /// Returns the card table consumed by this plan.
+    pub const fn source_card_table(&self) -> &GcCardTable {
+        &self.source_card_table
+    }
+
+    /// Returns the number of dirty cards consumed by this plan.
+    pub fn source_dirty_cards(&self) -> usize {
+        self.source_card_table.len()
     }
 
     /// Returns the number of remembered-set refresh decisions in the commit plan.
@@ -985,13 +1011,19 @@ impl TreeWalk {
         let scan = self.safepoint_collector_poll_scan(poll, value_stack.iter().copied())?;
         let scanned_roots = scan.scan().roots().len();
         let scanned_objects = scan.scan().objects().len();
-        let remembered_set = self.thunk_resolve_remembered_set.snapshot();
-        let card_table = self.thunk_resolve_card_table.snapshot();
-        let collection_epoch = self.thunk_resolve_remembered_set.epoch();
+        let source_remembered_set = self
+            .thunk_resolve_remembered_set
+            .try_clone()
+            .map_err(EvalHeapError::from)?;
+        let source_card_table = self
+            .thunk_resolve_card_table
+            .try_clone()
+            .map_err(EvalHeapError::from)?;
+        let collection_epoch = source_remembered_set.epoch();
         let minor_gc = self.heap.plan_collector_poll_minor_gc_with_card_table(
             &scan,
-            remembered_set,
-            card_table,
+            source_remembered_set.snapshot(),
+            source_card_table.snapshot(),
             collection_epoch,
             promotion_policy,
         )?;
@@ -1021,6 +1053,8 @@ impl TreeWalk {
             scanned_objects,
             survivors,
             reference_slots,
+            source_remembered_set,
+            source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
             object_body_plan,

@@ -1387,6 +1387,18 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     assert_eq!(plan.scanned_objects(), 2);
     assert_eq!(plan.survivors(), 1);
     assert_eq!(plan.reference_slots(), 5);
+    assert_eq!(plan.source_remembered_set().epoch().value(), 0);
+    assert_eq!(plan.source_remembered_set_edges(), 1);
+    assert_eq!(
+        plan.source_remembered_set().edges(),
+        &[RememberedEdge::new(gc_address(parent), gc_address(child))]
+    );
+    assert_eq!(plan.source_dirty_cards(), 1);
+    assert!(
+        plan.source_card_table()
+            .snapshot()
+            .covers_source(gc_address(parent))
+    );
     assert_eq!(plan.remembered_set_refreshes(), 1);
     assert_eq!(plan.next_remembered_set().epoch().value(), 1);
     assert_eq!(plan.next_remembered_set_edges(), 1);
