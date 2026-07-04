@@ -349,6 +349,34 @@ fn builtins_global_evaluates_to_registry_backed_attrset() {
 }
 
 #[test]
+fn builtins_global_records_large_dynamic_repr_decision() {
+    let ir = lower("builtins");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+
+    let value = evaluator
+        .eval_builtins_attrset(ir.root, span)
+        .expect("builtins attrset evaluates");
+
+    let attrs = evaluator
+        .heap
+        .get_attrs(value)
+        .expect("builtins value is attrs");
+    assert!(attrs.len() > 64);
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 0);
+    assert_eq!(snapshot.hamt_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 0);
+    assert_eq!(snapshot.reasons.large_dynamic_construction, 1);
+}
+
+#[test]
 fn trace_primop_records_output_and_returns_second_argument() {
     let outcome = eval_owned(r#"builtins.trace "hello" 7"#);
 

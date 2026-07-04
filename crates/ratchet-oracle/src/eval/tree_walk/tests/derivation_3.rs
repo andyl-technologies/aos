@@ -55,6 +55,65 @@ fn floating_ca_input_hash_replacements_serialize_exact_aterm_order() {
     assert_eq!(aterm, expected);
 }
 
+#[test]
+fn derivation_strict_result_records_dynamic_repr_decision() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let drv_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+    )
+    .expect("drv store path parses");
+    let out_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x",
+    )
+    .expect("out store path parses");
+    let dev_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"cccccccccccccccccccccccccccccccc-x-dev",
+    )
+    .expect("dev store path parses");
+    let mut derivation = nix_compat::derivation::Derivation::default();
+    derivation.outputs.insert(
+        "out".to_owned(),
+        nix_compat::derivation::Output {
+            path: Some(out_path),
+            ca_hash: None,
+        },
+    );
+    derivation.outputs.insert(
+        "dev".to_owned(),
+        nix_compat::derivation::Output {
+            path: Some(dev_path),
+            ca_hash: None,
+        },
+    );
+
+    let value = evaluator
+        .alloc_derivation_strict_result(
+            ir.root,
+            span,
+            &derivation,
+            &drv_path,
+            DerivationOutputResolution::StaticPaths,
+        )
+        .expect("derivation result attrs allocate");
+
+    let attrs = evaluator
+        .heap
+        .get_attrs(value)
+        .expect("derivation result is attrs");
+    assert_eq!(attrs.len(), 3);
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
 fn input_hash_replacement_fixture() -> (
     nix_compat::derivation::Derivation,
     BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
