@@ -552,6 +552,30 @@ proptest! {
     }
 
     #[test]
+    fn immediate_scalar_all_any_semantics_short_circuit_lazy_tails(
+        value in -100_i64..=100,
+    ) {
+        let value_source = nix_int(value);
+        let next_source = nix_int(value + 1);
+        let cases: [(&[u8], String, ExpectedScalar); 2] = [
+            (
+                b"all",
+                format!("builtins.all (x: x < {value_source}) [ {value_source} (1 / 0) ]"),
+                ExpectedScalar::Bool(false),
+            ),
+            (
+                b"any",
+                format!("builtins.any (x: x < {next_source}) [ {value_source} (1 / 0) ]"),
+                ExpectedScalar::Bool(true),
+            ),
+        ];
+
+        for (name, source, expected) in cases {
+            assert_immediate_scalar_value(name, &source, expected)?;
+        }
+    }
+
+    #[test]
     fn immediate_scalar_numeric_escape_signatures_survive_random_int_inputs(
         left in -1000_i64..=1000,
         right in 1_i64..=1000,
