@@ -12,8 +12,11 @@ use std::num::NonZeroUsize;
 use thiserror::Error;
 
 use crate::compile::Ir;
+use crate::string::StringContext;
+use crate::value::{Value, ValueTag};
 
 use super::{
+    heap::EvalHeapError,
     parallel_failure::{
         ParallelFailurePolicy, ParallelFallibleTaskContext, ParallelFallibleTopLevelError,
         ParallelFallibleTopLevelReport, execute_parallel_top_level_fallible_chase_lev_with_worker,
@@ -626,12 +629,27 @@ fn eval_drv_outputs_for_root(
         }
         None => TreeWalk::with_options(&ir, options),
     };
-    evaluator.eval_root()?;
+    let value = evaluator.eval_root()?;
+    let string_context = root_string_context(&evaluator, value)?;
     let derivations = evaluator.derivation_snapshot()?;
     Ok(ParallelOutputTaskResult::new(
-        crate::string::StringContext::empty(),
+        string_context,
         drv_outputs_from_derivations(derivations)?,
     ))
+}
+
+fn root_string_context(
+    evaluator: &TreeWalk,
+    value: Value,
+) -> Result<StringContext, ParallelTreeWalkDrvEvaluationError> {
+    if value.tag() != ValueTag::String {
+        return Ok(StringContext::empty());
+    }
+    evaluator
+        .heap()
+        .get_string(value)
+        .map(|string| string.context().clone())
+        .map_err(|source| ParallelTreeWalkDrvEvaluationError::RootStringContext { source })
 }
 
 fn drv_outputs_from_derivations<I>(
@@ -1335,6 +1353,13 @@ pub enum ParallelTreeWalkDrvEvaluationError {
         /// The recorded derivation path.
         path: String,
     },
+    /// The evaluated root was a string but its heap record could not be inspected.
+    #[error("tree-walk .drv root string context lookup failed: {source}")]
+    RootStringContext {
+        /// The heap lookup failure.
+        #[source]
+        source: EvalHeapError,
+    },
     /// The deterministic output collector rejected the derivation surface.
     #[error(transparent)]
     Output(#[from] ParallelOutputDeterminismError),
@@ -1353,6 +1378,7 @@ mod tests {
         eval::tree_walk::{
             TreeWalkErrorKind, eval_raw_bytes_with_options, eval_raw_bytes_with_options_source,
         },
+        string::ContextElement,
         syntax::parse_str,
     };
 
@@ -1370,6 +1396,18 @@ mod tests {
     fn derivation_root(name: &str) -> ParallelTreeWalkRoot {
         ParallelTreeWalkRoot::expression(lower(&format!(
             r#"let d = derivation {{ name = "{name}"; system = ":"; builder = ":"; }}; in d.drvPath"#
+        )))
+    }
+
+    fn derivation_out_path_root(name: &str) -> ParallelTreeWalkRoot {
+        ParallelTreeWalkRoot::expression(lower(&format!(
+            r#"let d = derivation {{ name = "{name}"; system = ":"; builder = ":"; }}; in d.outPath"#
+        )))
+    }
+
+    fn derivation_attrset_root(name: &str) -> ParallelTreeWalkRoot {
+        ParallelTreeWalkRoot::expression(lower(&format!(
+            r#"let d = derivation {{ name = "{name}"; system = ":"; builder = ":"; }}; in builtins.seq d.drvPath (d // {{ nested = builtins.throw "non-string root context forced"; }})"#
         )))
     }
 
@@ -1684,7 +1722,7 @@ mod tests {
         assert_eq!(report.worker_counts(), &[1, 3]);
         assert_eq!(report.collation().fragment_count(), 3);
         assert_eq!(report.collation().drv_output_count(), 3);
-        assert!(report.collation().string_context().is_empty());
+        assert_eq!(report.collation().string_context().len(), 3);
         assert!(report.collation().drv_outputs().iter().all(|output| {
             output.path().ends_with(b".drv")
                 && output.bytes().starts_with(b"Derive(")
@@ -1700,6 +1738,55 @@ mod tests {
         let mut sorted_paths = paths.clone();
         sorted_paths.sort();
         assert_eq!(paths, sorted_paths);
+        assert!(report.collation().drv_outputs().iter().all(|output| {
+            report.collation().string_context().contains(
+                &ContextElement::deep_derivation(output.path().to_vec())
+                    .expect("deep .drv context builds"),
+            )
+        }));
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_collates_root_output_string_contexts() {
+        let roots = [
+            derivation_out_path_root("parallel-drv-output-context-alpha"),
+            derivation_out_path_root("parallel-drv-output-context-beta"),
+        ];
+
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            roots,
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential matches serial root output contexts");
+
+        assert_eq!(report.task_count(), 2);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 2);
+        assert_eq!(report.collation().drv_output_count(), 2);
+        assert_eq!(report.collation().string_context().len(), 2);
+        assert!(report.collation().drv_outputs().iter().all(|output| {
+            report.collation().string_context().contains(
+                &ContextElement::single_output(output.path().to_vec(), b"out".to_vec())
+                    .expect("single-output .drv context builds"),
+            )
+        }));
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_does_not_force_non_string_root_contexts() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [derivation_attrset_root("parallel-drv-attrset-root-context")],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential matches serial attrset roots");
+
+        assert_eq!(report.task_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 1);
+        assert_eq!(report.collation().drv_output_count(), 1);
+        assert!(report.collation().string_context().is_empty());
     }
 
     #[test]
