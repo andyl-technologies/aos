@@ -5,9 +5,12 @@
 //! crate. The addresses projected here are process-local Rust callable helper
 //! addresses. They are useful for JIT registration preflights and relocation
 //! plumbing tests, but they are not exported C ABI wrappers and must not be
-//! called from finalized native code. The separate literal conformance
-//! precursor uses `ratchet-jit`'s reviewed no-import thunk-call path only, so it
-//! does not dereference or call those helper addresses.
+//! called from finalized native code. The safe registered native-call gate in
+//! this module therefore refuses to cross the unsafe native-call boundary until
+//! the strict exported runtime-symbol registration plan is complete. The
+//! separate literal conformance precursor uses `ratchet-jit`'s reviewed
+//! no-import thunk-call path only, so it does not dereference or call those
+//! helper addresses.
 
 use ratchet_core::{IrArena, IrId};
 use ratchet_jit::{
@@ -159,6 +162,112 @@ impl NixJitRegisteredTier1InstallPlan {
 /// Result returned by registered tier-1 install-plan preflights.
 pub type NixJitRegisteredTier1InstallPlanResult =
     Result<NixJitRegisteredTier1InstallPlan, NixJitRegisteredTier1PromotionError>;
+
+/// A failure while preparing a safe Nix registered native-call handoff.
+#[derive(Debug, Error)]
+pub enum NixJitRegisteredTier1NativeCallPreflightError {
+    /// Complete exported runtime-symbol metadata is not available.
+    #[error("Nix JIT runtime-symbol registration plan is not ready for native calls")]
+    RuntimeSymbolRegistrationPlan {
+        /// The invocation-updated slot observed before native-call gating.
+        slot: JitTieredCodeSlot,
+        /// The policy decision that requested a native tier-1 call.
+        decision: TierUpDecision,
+        /// The underlying strict runtime-symbol registration plan failure.
+        source: NixJitRuntimeSymbolRegistrationPlanError,
+    },
+}
+
+impl NixJitRegisteredTier1NativeCallPreflightError {
+    /// Returns the invocation-updated slot from the failed native-call preflight.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        match self {
+            Self::RuntimeSymbolRegistrationPlan { slot, .. } => slot,
+        }
+    }
+
+    /// Returns the tier-up policy decision made by the failed preflight.
+    pub const fn decision(&self) -> TierUpDecision {
+        match self {
+            Self::RuntimeSymbolRegistrationPlan { decision, .. } => *decision,
+        }
+    }
+
+    /// Returns the strict runtime-symbol registration plan error.
+    pub const fn runtime_symbol_registration_plan_error(
+        &self,
+    ) -> &NixJitRuntimeSymbolRegistrationPlanError {
+        match self {
+            Self::RuntimeSymbolRegistrationPlan { source, .. } => source,
+        }
+    }
+}
+
+/// Safe readiness state for a Nix registered native tier-1 call.
+#[derive(Debug)]
+pub enum NixJitRegisteredTier1NativeCallPreflight {
+    /// Policy kept execution in the current tier before native-call planning.
+    StayedInTier {
+        /// The invocation-updated slot.
+        slot: JitTieredCodeSlot,
+        /// The policy decision that kept the slot cold.
+        decision: TierUpDecision,
+    },
+
+    /// Complete exported runtime-symbol metadata is ready for a future handoff.
+    RuntimeSymbolsReady {
+        /// The invocation-updated slot.
+        slot: JitTieredCodeSlot,
+        /// The policy decision that requested native tier-1 execution.
+        decision: TierUpDecision,
+        /// The strict runtime-symbol registration plan required before native calls.
+        registration_plan: NixJitRuntimeSymbolRegistrationPlan,
+    },
+}
+
+impl NixJitRegisteredTier1NativeCallPreflight {
+    /// Returns the tier-up policy decision made by this preflight.
+    pub const fn decision(&self) -> TierUpDecision {
+        match self {
+            Self::StayedInTier { decision, .. } | Self::RuntimeSymbolsReady { decision, .. } => {
+                *decision
+            }
+        }
+    }
+
+    /// Returns the invocation-updated tiered-code slot.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        match self {
+            Self::StayedInTier { slot, .. } | Self::RuntimeSymbolsReady { slot, .. } => slot,
+        }
+    }
+
+    /// Returns true when this preflight carries complete runtime-symbol metadata.
+    pub const fn has_runtime_symbol_registration_plan(&self) -> bool {
+        matches!(self, Self::RuntimeSymbolsReady { .. })
+    }
+
+    /// Returns false because `aos-nix` never calls native code from this safe gate.
+    pub const fn did_call_native_code(&self) -> bool {
+        false
+    }
+
+    /// Returns the strict runtime-symbol registration plan, when it is ready.
+    pub const fn runtime_symbol_registration_plan(
+        &self,
+    ) -> Option<&NixJitRuntimeSymbolRegistrationPlan> {
+        match self {
+            Self::StayedInTier { .. } => None,
+            Self::RuntimeSymbolsReady {
+                registration_plan, ..
+            } => Some(registration_plan),
+        }
+    }
+}
+
+/// Result returned by safe Nix registered native-call preflights.
+pub type NixJitRegisteredTier1NativeCallPreflightResult =
+    Result<NixJitRegisteredTier1NativeCallPreflight, NixJitRegisteredTier1NativeCallPreflightError>;
 
 /// Drives registered tier-1 promotion using oracle-derived helper addresses.
 ///
@@ -313,6 +422,40 @@ pub fn nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
     .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
 }
 
+/// Safely preflights a force-aware registered tier-1 native call for a Nix IR root.
+///
+/// This is the `aos-nix` gate in front of the unsafe registered native-call
+/// boundary owned by `ratchet-jit`. It records one tier-up invocation and
+/// preserves cold behavior without deriving runtime-symbol metadata, lowering
+/// IR, finalizing code, casting code pointers, or calling native code. Once
+/// policy requests promotion, it requires the strict
+/// [`NixJitRuntimeSymbolRegistrationPlan`] so current process-local Rust helper
+/// addresses cannot reach finalized native code before exported C ABI wrappers
+/// and address provenance are complete.
+///
+/// # Errors
+///
+/// Returns
+/// [`NixJitRegisteredTier1NativeCallPreflightError::RuntimeSymbolRegistrationPlan`]
+/// when policy requests native tier-1 execution but complete exported
+/// runtime-symbol registration metadata is not ready.
+pub fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitRegisteredTier1NativeCallPreflightResult {
+    nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root_with_registration_plan_source(
+        slot,
+        policy,
+        demand_hint,
+        arena,
+        root,
+        nix_jit_runtime_symbol_registration_plan,
+    )
+}
+
 fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,
@@ -388,6 +531,45 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_can
             root,
             candidates.address_candidates(),
         )?,
+    )
+}
+
+fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root_with_registration_plan_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    _arena: &IrArena,
+    _root: IrId,
+    registration_plan_source: impl FnOnce() -> NixJitRuntimeSymbolRegistrationPlanResult,
+) -> NixJitRegisteredTier1NativeCallPreflightResult {
+    let mut observed_slot = slot;
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(NixJitRegisteredTier1NativeCallPreflight::StayedInTier {
+            slot: observed_slot,
+            decision,
+        });
+    }
+
+    let registration_plan = match registration_plan_source() {
+        Ok(registration_plan) => registration_plan,
+        Err(source) => {
+            return Err(
+                NixJitRegisteredTier1NativeCallPreflightError::RuntimeSymbolRegistrationPlan {
+                    slot: observed_slot,
+                    decision,
+                    source,
+                },
+            );
+        }
+    };
+
+    Ok(
+        NixJitRegisteredTier1NativeCallPreflight::RuntimeSymbolsReady {
+            slot: observed_slot,
+            decision,
+            registration_plan,
+        },
     )
 }
 

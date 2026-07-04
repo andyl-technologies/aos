@@ -660,3 +660,148 @@ fn nix_jit_force_aware_registered_tier1_install_plan_carries_forced_env_slot_and
     );
     assert!(plan.owns_encapsulated_module());
 }
+
+#[test]
+fn nix_jit_registered_native_call_preflight_keeps_cold_path_before_plan() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Str,
+            Span::new(0, 5),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+
+    let preflight =
+        nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root_with_registration_plan_source(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+            || -> NixJitRuntimeSymbolRegistrationPlanResult {
+                panic!("registration plan source must not run for a cold native-call preflight");
+            },
+        )
+        .expect("cold native-call preflight returns before registration planning");
+
+    assert!(!preflight.decision().should_promote());
+    assert!(!preflight.did_call_native_code());
+    assert!(!preflight.has_runtime_symbol_registration_plan());
+    assert!(preflight.runtime_symbol_registration_plan().is_none());
+    assert_eq!(preflight.slot().invocation_counter().invocations(), 1);
+    assert_eq!(preflight.slot().current_tier(), JitTier::Tier0Oracle);
+}
+
+#[test]
+fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_gap() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::LocalVar,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Local { slot: 2 },
+        )],
+        Vec::new(),
+    );
+
+    let result = nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+    );
+
+    let Err(error) = result else {
+        panic!("current Rust-callable helper addresses must not reach native calls");
+    };
+    assert!(error.decision().should_promote());
+    assert_eq!(
+        error.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+
+    let NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
+        missing_count,
+        preflight,
+    } = error.runtime_symbol_registration_plan_error()
+    else {
+        panic!("current native-call gate should fail on incomplete registration metadata");
+    };
+    assert!(*missing_count > 0);
+    assert!(!preflight.is_complete());
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_candidate_for("aos_env_get")
+            .is_some()
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_candidate_for("aos_force")
+            .is_some()
+    );
+    assert!(
+        preflight
+            .address_provenance_gap_for_symbol("aos_env_get")
+            .is_some()
+    );
+    assert!(
+        preflight
+            .address_provenance_gap_for_symbol("aos_force")
+            .is_some()
+    );
+}
+
+#[test]
+fn nix_jit_registered_native_call_preflight_reports_plan_source_failure_after_promotion() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::LocalVar,
+            Span::new(0, 4),
+            EffectClass::pure(),
+            IrData::Local { slot: 2 },
+        )],
+        Vec::new(),
+    );
+
+    let result =
+        nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root_with_registration_plan_source(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+            || {
+                Err(NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
+                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                        symbol_name: "aos_force",
+                    },
+                ))
+            },
+        );
+
+    let Err(error) = result else {
+        panic!("hot native-call preflight should require registration planning");
+    };
+    assert!(error.decision().should_promote());
+    assert_eq!(
+        error.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+    assert!(matches!(
+        error.runtime_symbol_registration_plan_error(),
+        NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
+            NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                symbol_name: "aos_force"
+            }
+        )
+    ));
+}

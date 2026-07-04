@@ -9293,6 +9293,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       preserved. This still does not publish evaluator thunks, perform atomic
       thunk-state CAS, use real exported oracle wrappers, run trap transfer, or
       prove `.drv` parity.
+- [x] Current `aos-nix` native-call exported-symbol gate:
+      `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
+      records one tier-up invocation in safe code and preserves cold
+      no-plan/no-lowering behavior. When policy requests native execution, it
+      requires the strict `NixJitRuntimeSymbolRegistrationPlan` before any
+      unsafe native-call handoff, so current Rust-callable oracle helper
+      addresses are rejected with the invocation-updated slot and tier-up
+      decision preserved while exported-wrapper and address-provenance gaps
+      remain. Tests pin cold pre-plan behavior, the current incomplete
+      exported-symbol gate, and synthetic registration-plan source failure after
+      promotion. This still does not lower, finalize, or call native code from
+      `aos-nix`, publish evaluator thunks, perform atomic thunk-state CAS, run
+      trap transfer, provide exported C ABI wrappers, or prove `.drv` parity.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled
       tier 1 and tier 2 code must emit safepoints and user stack maps
