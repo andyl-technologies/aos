@@ -458,9 +458,10 @@ long-held locks.
   application, child reproduction artifacts, and real-QEMU coverage.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
-  byte-identical canonical-log comparison, exit 1 on mismatch, and continued
-  rejection of `--to`/`--bisect`; full closure waits for content-addressed
-  component resolution, replay-to-savepoint, on-mismatch bisection, and
+  byte-identical canonical-log comparison, exit 1 on mismatch with
+  deterministic first-difference byte localization, and continued rejection of
+  `--to`/`--bisect`; full closure waits for content-addressed component
+  resolution, replay-to-savepoint, artifact-to-artifact `--bisect`, and
   machine-independent backend replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,

@@ -53,7 +53,7 @@
       }
       {
         label = "replay check still bounded";
-        needle = "keeps `--to`/`--bisect` rejected";
+        needle = "`--to`/`--bisect` rejected";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -78,6 +78,18 @@
       {
         label = "byte mismatch diagnostic";
         needle = "replay --check mismatch";
+      }
+      {
+        label = "byte mismatch first difference";
+        needle = "first_diff_byte=";
+      }
+      {
+        label = "byte mismatch length diagnostics";
+        needle = "original_len=";
+      }
+      {
+        label = "byte mismatch replayed length diagnostics";
+        needle = "replayed_len=";
       }
       {
         label = "byte-identical replay check test";
