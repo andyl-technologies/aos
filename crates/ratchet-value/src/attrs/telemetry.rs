@@ -226,7 +226,10 @@ impl AttrTelemetry {
                     }
                 }
             }
-            ShapedSelectOutcome::Missing => counts.record_missing()?,
+            ShapedSelectOutcome::Missing => {
+                counts.record_missing()?;
+                counts.record_resolved_missing()?;
+            }
         }
         self.shaped_select_lookups = counts;
         Ok(())

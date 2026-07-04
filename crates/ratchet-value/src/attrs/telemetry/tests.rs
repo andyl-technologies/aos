@@ -101,6 +101,10 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
     let missing = shaped_cache
         .select(&attrs, ids[1])
         .expect_err("same cache rejects changed key");
+    let mut shaped_missing_cache = ShapedSelectCache::new();
+    let shaped_missing = shaped_missing_cache
+        .select(&attrs, ids[1])
+        .expect("missing shaped select resolves");
 
     let mut generic_cache = InlineCache::with_cap(1).expect("cap is valid");
     generic_cache
@@ -126,6 +130,9 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
     telemetry
         .record_shaped_select_lookup(shaped_cache.state(), &cached)
         .expect("cached shaped lookup records");
+    telemetry
+        .record_shaped_select_lookup(shaped_missing_cache.state(), &shaped_missing)
+        .expect("missing shaped lookup records");
     assert!(matches!(
         missing,
         super::super::pic::ShapedSelectError::KeyChanged { .. }
@@ -136,8 +143,11 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
     assert_eq!(snapshot.flat_select_sites.monomorphic, 1);
     assert_eq!(snapshot.shaped_select_sites.monomorphic, 1);
     assert_eq!(snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(snapshot.shaped_select_lookups.misses, 1);
     assert_eq!(snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(snapshot.shaped_select_lookups.resolved_misses, 1);
     assert_eq!(snapshot.shaped_select_lookups.cached_hits, 1);
+    assert_eq!(snapshot.shaped_select_lookups.cached_misses, 0);
     assert_eq!(snapshot.shaped_select_lookups.monomorphic_fast_hits, 1);
 }
 

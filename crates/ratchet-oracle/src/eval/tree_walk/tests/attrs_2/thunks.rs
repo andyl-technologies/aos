@@ -948,6 +948,11 @@ fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
     assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
     assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
@@ -1070,6 +1075,7 @@ fn repeated_static_has_attr_site_keeps_projected_shaped_misses_uncached() {
     assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
     assert_eq!(ic_snapshot.shaped_select_sites.uninitialized, 1);
     assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
     assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_misses, 0);
