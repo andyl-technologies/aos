@@ -635,17 +635,11 @@ impl TreeWalk {
         let env = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
         let scoped_globals = self.capture_scoped_global_env(id, span)?;
-        let value = self
-            .heap
-            .alloc_thunk(EvalThunk::with_captures(
-                self.current_module,
-                body,
-                env,
-                with_env,
-                scoped_globals,
-            ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.increment_thunks_allocated();
+        let value = self.alloc_tree_walk_thunk(
+            id,
+            span,
+            EvalThunk::with_captures(self.current_module, body, env, with_env, scoped_globals),
+        )?;
         Ok(value)
     }
 
@@ -660,9 +654,10 @@ impl TreeWalk {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        let value = self
-            .heap
-            .alloc_thunk(EvalThunk::apply(
+        let value = self.alloc_tree_walk_thunk(
+            id,
+            span,
+            EvalThunk::apply(
                 self.current_module,
                 function_id,
                 function_span,
@@ -670,9 +665,8 @@ impl TreeWalk {
                 self.current_module,
                 argument_id,
                 argument,
-            ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.increment_thunks_allocated();
+            ),
+        )?;
         Ok(value)
     }
 
@@ -691,9 +685,10 @@ impl TreeWalk {
         second_argument_span: Span,
         second_argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        let value = self
-            .heap
-            .alloc_thunk(EvalThunk::apply2(
+        let value = self.alloc_tree_walk_thunk(
+            id,
+            span,
+            EvalThunk::apply2(
                 self.current_module,
                 function_id,
                 function_span,
@@ -706,9 +701,8 @@ impl TreeWalk {
                 second_argument_id,
                 second_argument_span,
                 second_argument,
-            ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.increment_thunks_allocated();
+            ),
+        )?;
         Ok(value)
     }
 
@@ -720,16 +714,11 @@ impl TreeWalk {
         receiver: Value,
         path: IrAttrPathId,
     ) -> Result<Value, TreeWalkError> {
-        let value = self
-            .heap
-            .alloc_thunk(EvalThunk::select(
-                self.current_module,
-                select_id,
-                receiver,
-                path,
-            ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.increment_thunks_allocated();
+        let value = self.alloc_tree_walk_thunk(
+            id,
+            span,
+            EvalThunk::select(self.current_module, select_id, receiver, path),
+        )?;
         Ok(value)
     }
 
@@ -740,12 +729,39 @@ impl TreeWalk {
         symbol: Symbol,
         builtin: Builtin,
     ) -> Result<Value, TreeWalkError> {
+        let value =
+            self.alloc_tree_walk_thunk(id, span, EvalThunk::builtin_attr(symbol, builtin))?;
+        Ok(value)
+    }
+
+    fn alloc_tree_walk_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
         let value = self
             .heap
-            .alloc_thunk(EvalThunk::builtin_attr(symbol, builtin))
+            .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         self.increment_thunks_allocated();
         Ok(value)
+    }
+
+    fn admit_parallel_thunk_payload_cell(
+        &self,
+        id: IrId,
+        span: Span,
+        thunk: EvalThunk,
+    ) -> EvalThunk {
+        if self.options.parallel_thunk_payloads_enabled() {
+            thunk.with_parallel_payload_cell(TreeWalkError::new(
+                TreeWalkErrorKind::ParallelThunkClaimDropped { id },
+                span,
+            ))
+        } else {
+            thunk
+        }
     }
 
     pub(crate) fn force_value(

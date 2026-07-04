@@ -136,9 +136,8 @@ impl EvalThunk {
     /// The current serial [`ThunkCell`] remains present for the existing
     /// tree-walk force path. The parallel payload cell is a storage-admission
     /// boundary for future scheduler wiring and starts in the suspended state.
-    /// It is intentionally crate-internal until precise root scanning and
-    /// writeback cover terminal payloads stored in this slot.
-    #[allow(dead_code)]
+    /// It is intentionally crate-internal while serial `ThunkCell` forcing
+    /// remains authoritative and scheduler integration is incomplete.
     pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
         self.parallel_cell = Some(TreeWalkParallelThunkCell::new(dropped_claim_error));
         self
@@ -220,9 +219,8 @@ impl EvalThunk {
 
     /// Returns the evaluator-native parallel payload cell, if one is attached.
     ///
-    /// This accessor is crate-internal because the precise heap scanner does
-    /// not yet trace or rewrite terminal payloads stored in the parallel cell.
-    #[allow(dead_code)]
+    /// This accessor is crate-internal so heap scanning, relocation, and future
+    /// scheduler wiring can preserve the serial-cell authority boundary.
     pub(crate) const fn parallel_payload_cell(&self) -> Option<&TreeWalkParallelThunkCell> {
         self.parallel_cell.as_ref()
     }

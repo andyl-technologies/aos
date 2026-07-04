@@ -230,6 +230,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with parallel thunk payload storage configured.
+    pub fn with_parallel_thunk_payloads_enabled(enabled: bool) -> Self {
+        let mut options = Self::default();
+        options.set_parallel_thunk_payloads_enabled(enabled);
+        options
+    }
+
     /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
     pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
         let mut options = Self::default();
@@ -636,6 +643,15 @@ impl TreeWalkOptions {
         self.thunk_resolve_barrier_tier = tier;
     }
 
+    /// Enables or disables parallel payload cells on newly allocated thunks.
+    ///
+    /// This only admits storage for evaluator-native parallel forcing; the
+    /// serial tree-walk force path remains authoritative until the parallel
+    /// scheduler executes thunk bodies.
+    pub fn set_parallel_thunk_payloads_enabled(&mut self, enabled: bool) {
+        self.parallel_thunk_payloads_enabled = enabled;
+    }
+
     /// Enables post-evaluation cheap heap advice for owned evaluation outcomes.
     pub fn set_heap_cheap_memory_advice_min_idle_epochs(&mut self, min_idle_epochs: u64) {
         self.heap_cheap_memory_advice_min_idle_epochs = Some(min_idle_epochs);
@@ -818,6 +834,11 @@ impl TreeWalkOptions {
     /// Returns the configured thunk-resolution barrier tier.
     pub const fn thunk_resolve_barrier_tier(&self) -> GenerationalGcTier {
         self.thunk_resolve_barrier_tier
+    }
+
+    /// Returns whether newly allocated thunks receive parallel payload cells.
+    pub const fn parallel_thunk_payloads_enabled(&self) -> bool {
+        self.parallel_thunk_payloads_enabled
     }
 
     /// Returns the idle-epoch threshold for post-evaluation cheap heap advice.

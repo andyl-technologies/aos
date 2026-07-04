@@ -875,6 +875,12 @@ pub enum TreeWalkErrorKind {
         /// The underlying force failure.
         source: ForceError,
     },
+    /// A parallel thunk claim was dropped before publishing a terminal payload.
+    #[error("parallel thunk claim was dropped at node {id:?}")]
+    ParallelThunkClaimDropped {
+        /// The thunk allocation node whose parallel claim was abandoned.
+        id: IrId,
+    },
     /// A nested function call exceeded the configured evaluator call-depth limit.
     #[error("stack overflow; max-call-depth exceeded")]
     MaxCallDepthExceeded {

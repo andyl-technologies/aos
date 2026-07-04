@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: options.
 
 use super::*;
+use crate::eval::heap::EvalThunkForceStorageMode;
 use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
 use crate::heap::{HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
@@ -84,6 +85,113 @@ fn eval_cache_option_defaults_off_and_can_be_enabled() {
 
     let options = TreeWalkOptions::with_eval_cache_enabled(true);
     assert!(options.eval_cache_enabled());
+}
+
+#[test]
+fn parallel_thunk_payloads_option_controls_tree_walk_thunk_allocations() {
+    let mut options = TreeWalkOptions::new();
+
+    assert!(!options.parallel_thunk_payloads_enabled());
+    options.set_parallel_thunk_payloads_enabled(true);
+    assert!(options.parallel_thunk_payloads_enabled());
+
+    let options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+    assert!(options.parallel_thunk_payloads_enabled());
+
+    assert_eq!(
+        attr_thunk_storage_mode("{ x = 1 / 0; }", b"x", TreeWalkOptions::new()),
+        EvalThunkForceStorageMode::Serial
+    );
+
+    assert_eq!(
+        attr_thunk_storage_mode(
+            "{ x = 1 / 0; }",
+            b"x",
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        ),
+        EvalThunkForceStorageMode::SerialWithParallelPayload
+    );
+    assert_eq!(
+        list_thunk_storage_mode(
+            "builtins.map (x: x + 1) [ 1 ]",
+            0,
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        ),
+        EvalThunkForceStorageMode::SerialWithParallelPayload
+    );
+    assert_eq!(
+        attr_thunk_storage_mode(
+            "builtins.mapAttrs (_name: value: value + 1) { a = 1; }",
+            b"a",
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        ),
+        EvalThunkForceStorageMode::SerialWithParallelPayload
+    );
+    assert_eq!(
+        attr_thunk_storage_mode(
+            "let source = { y = 1; }; in { inherit (source) y; }",
+            b"y",
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        ),
+        EvalThunkForceStorageMode::SerialWithParallelPayload
+    );
+    assert_eq!(
+        attr_thunk_storage_mode(
+            "builtins",
+            b"nixPath",
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        ),
+        EvalThunkForceStorageMode::SerialWithParallelPayload
+    );
+}
+
+fn attr_thunk_storage_mode(
+    source: &str,
+    attr: &[u8],
+    options: TreeWalkOptions,
+) -> EvalThunkForceStorageMode {
+    let ir = lower(source);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("source evaluates to an attrset");
+    let attr = evaluator.symbols.intern(attr).expect("attr symbol interns");
+    let value = evaluator
+        .heap
+        .get_attrs(value)
+        .expect("root value is a heap attrset")
+        .get(attr)
+        .expect("attr exists");
+
+    storage_mode_for_thunk_value(&evaluator, value)
+}
+
+fn list_thunk_storage_mode(
+    source: &str,
+    index: usize,
+    options: TreeWalkOptions,
+) -> EvalThunkForceStorageMode {
+    let ir = lower(source);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("source evaluates to a list");
+    let value = *evaluator
+        .heap
+        .get_list(value)
+        .expect("root value is a heap list")
+        .as_slice()
+        .get(index)
+        .expect("list element exists");
+
+    storage_mode_for_thunk_value(&evaluator, value)
+}
+
+fn storage_mode_for_thunk_value(evaluator: &TreeWalk, value: Value) -> EvalThunkForceStorageMode {
+    assert_eq!(value.tag(), ValueTag::Thunk);
+    evaluator
+        .heap
+        .clone_thunk(value)
+        .expect("root value is a heap thunk")
+        .force_storage_mode()
 }
 
 #[test]

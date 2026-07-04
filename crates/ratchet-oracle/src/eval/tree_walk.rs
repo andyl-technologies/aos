@@ -419,6 +419,7 @@ pub struct TreeWalkOptions {
     heap_memory_budget: Option<HeapMemoryBudget>,
     gc_stress_policy: GcStressPolicy,
     thunk_resolve_barrier_tier: GenerationalGcTier,
+    parallel_thunk_payloads_enabled: bool,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
@@ -453,6 +454,7 @@ impl Default for TreeWalkOptions {
             heap_memory_budget: None,
             gc_stress_policy: GcStressPolicy::disabled(),
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
+            parallel_thunk_payloads_enabled: false,
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]

@@ -7574,9 +7574,10 @@ nurseries build on the bump arena.
       replay an inline `Value` while preserving the thunk's deferred-work
       metadata and leaving the serial cell untouched. This is only a
       storage/admission boundary: the slot is not public API, the tree-walk
-      allocator does not opt in by default, the serial `force_value` path still
-      uses `ThunkCell`, no scheduler executes thunk bodies through this slot,
-      and the final lock-free waiter-list and loom/Miri/TSan gates remain open.
+      allocator must still opt in explicitly, the serial `force_value` path
+      still uses `ThunkCell`, no scheduler executes thunk bodies through this
+      slot, and the final lock-free waiter-list and loom/Miri/TSan gates remain
+      open.
 - [x] Current parallel payload precise-scan/writeback precursor:
       `EvalHeap` precise scanning now treats a successful terminal
       `TreeWalkParallelThunkCell` payload as a typed `ThunkParallelPayloadValue`
@@ -7591,8 +7592,19 @@ nurseries build on the bump arena.
       preserves an existing parallel payload. This is still only the precise
       heap-slot precursor: failed `TreeWalkError` payloads do not currently own
       heap `Value`s, live claimed parallel cells are rejected by relocation, the
-      tree-walk allocator still does not opt thunks into this slot by default,
-      serial
+      tree-walk allocator must still opt in explicitly, serial `force_value`
+      still uses `ThunkCell`, no scheduler executes thunk bodies through this
+      slot, and the loom/Miri/TSan gates remain open.
+- [x] Current tree-walk parallel payload allocation-admission precursor:
+      `TreeWalkOptions::parallel_thunk_payloads_enabled` now provides an
+      explicit default-off switch that routes tree-walk thunk allocation through
+      a single storage-admission helper. When enabled, node thunks, synthetic
+      `apply`/`apply2` thunks, synthetic select thunks, and delayed builtin
+      attribute thunks receive a `TreeWalkParallelThunkCell` before heap
+      allocation; when disabled, newly allocated thunks remain serial-only.
+      Tests prove the option API and both the default-off and opt-in storage
+      modes across the tree-walk allocation surfaces. This still only admits
+      storage for future scheduler wiring: the default remains off, serial
       `force_value` still uses `ThunkCell`, no scheduler executes thunk bodies
       through this slot, and the loom/Miri/TSan gates remain open.
 - [x] Current semantic WHNF tag-test precursor:
