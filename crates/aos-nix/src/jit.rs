@@ -1,16 +1,15 @@
 //! Integration adapters between the safe oracle runtime and JIT metadata.
 //!
 //! This module lives in `aos-nix` because it composes the safe
-//! `ratchet-oracle` runtime metadata with the unsafe-capable `ratchet-jit`
-//! crate. The addresses projected here are process-local Rust callable helper
-//! addresses. They are useful for JIT registration preflights and relocation
-//! plumbing tests, but they are not exported C ABI wrappers and must not be
-//! called from finalized native code. The safe registered native-call gate in
-//! this module therefore refuses to cross the unsafe native-call boundary until
-//! the strict exported runtime-symbol registration plan is complete. The
-//! separate literal conformance precursor uses `ratchet-jit`'s reviewed
-//! no-import thunk-call path only, so it does not dereference or call those
-//! helper addresses.
+//! `ratchet-oracle` runtime metadata, the unsafe-capable `ratchet-jit` crate,
+//! and the narrow `ratchet-runtime-ffi` native-wrapper crate. Most projected
+//! addresses are still process-local Rust callable helper addresses; `aos_env_get`
+//! now comes from the success-path runtime-FFI native wrapper. The safe
+//! registered native-call gate in this module still refuses to cross the unsafe
+//! native-call boundary until the strict exported runtime-symbol registration
+//! plan is complete. The separate literal conformance precursor uses
+//! `ratchet-jit`'s reviewed no-import thunk-call path only, so it does not
+//! dereference or call registered helper addresses.
 
 use ratchet_core::{IrArena, IrId};
 use ratchet_jit::{
@@ -37,7 +36,8 @@ pub use conformance::{
 };
 pub use runtime_symbols::{
     NixJitPreflightResult, NixJitRuntimeSymbolAddressCandidateError,
-    NixJitRuntimeSymbolAddressCandidatePreflight, NixJitRuntimeSymbolRegistrationError,
+    NixJitRuntimeSymbolAddressCandidatePreflight, NixJitRuntimeSymbolAddressProvenance,
+    NixJitRuntimeSymbolAddressProvenanceGap, NixJitRuntimeSymbolRegistrationError,
     NixJitRuntimeSymbolRegistrationPlan, NixJitRuntimeSymbolRegistrationPlanError,
     NixJitRuntimeSymbolRegistrationPlanResult, NixJitRuntimeSymbolRegistrationPreflight,
     NixJitRuntimeSymbolRegistrationResult, nix_jit_runtime_symbol_address_candidate_preflight,
@@ -53,7 +53,7 @@ pub use thunk_install::{
 /// A failure while driving a Nix registered tier-1 promotion preflight.
 #[derive(Debug, Error)]
 pub enum NixJitRegisteredTier1PromotionError {
-    /// Oracle runtime helper addresses could not be projected into JIT metadata.
+    /// Runtime helper addresses could not be projected into JIT metadata.
     #[error(
         "JIT runtime-symbol address candidate projection failed after a tier-1 promotion decision"
     )]
@@ -269,7 +269,7 @@ impl NixJitRegisteredTier1NativeCallPreflight {
 pub type NixJitRegisteredTier1NativeCallPreflightResult =
     Result<NixJitRegisteredTier1NativeCallPreflight, NixJitRegisteredTier1NativeCallPreflightError>;
 
-/// Drives registered tier-1 promotion using oracle-derived helper addresses.
+/// Drives registered tier-1 promotion using runtime address candidates.
 ///
 /// This is the `aos-nix` integration handoff between the safe oracle runtime
 /// metadata and the JIT crate. It derives process-local helper address
@@ -284,7 +284,7 @@ pub type NixJitRegisteredTier1NativeCallPreflightResult =
 /// # Errors
 ///
 /// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
-/// oracle helper addresses cannot be projected into JIT registration metadata.
+/// runtime helper addresses cannot be projected into JIT registration metadata.
 /// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
 /// requests tier-1 promotion but lowering, registration, finalization, or slot
 /// installation fails.
@@ -311,15 +311,15 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
     )
 }
 
-/// Drives force-aware registered tier-1 promotion using oracle-derived addresses.
+/// Drives force-aware registered tier-1 promotion using runtime address candidates.
 ///
 /// This is the `aos-nix` bridge for the JIT crate's force-aware promotion
 /// preflight. It keeps the existing literal promotion behavior, but local
 /// environment-slot roots lower through a forced env-slot artifact that imports
-/// `aos_env_get` and `aos_force`. The current oracle address candidates include
+/// `aos_env_get` and `aos_force`. The current runtime address candidates include
 /// both imported helpers, so hot local-slot roots can finalize and install
-/// opaque tier-1 pointer metadata while the exported C ABI wrapper remains
-/// future work.
+/// opaque tier-1 pointer metadata while native calls remain gated by the strict
+/// aggregate readiness plan.
 ///
 /// Candidate projection runs only after the policy decision requests tier 1, so
 /// a cold attempt can record its invocation and stay in tier 0 without requiring
@@ -328,7 +328,7 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
 /// # Errors
 ///
 /// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
-/// oracle helper addresses cannot be projected into JIT registration metadata.
+/// runtime helper addresses cannot be projected into JIT registration metadata.
 /// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
 /// requests tier-1 promotion but lowering, registration, finalization, or slot
 /// installation fails.
@@ -429,9 +429,9 @@ pub fn nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
 /// preserves cold behavior without deriving runtime-symbol metadata, lowering
 /// IR, finalizing code, casting code pointers, or calling native code. Once
 /// policy requests promotion, it requires the strict
-/// [`NixJitRuntimeSymbolRegistrationPlan`] so current process-local Rust helper
-/// addresses cannot reach finalized native code before exported C ABI wrappers
-/// and address provenance are complete.
+/// [`NixJitRuntimeSymbolRegistrationPlan`] so the current mixed runtime helper
+/// address candidates cannot reach finalized native code before native exports
+/// and remaining non-final address provenance are complete.
 ///
 /// # Errors
 ///

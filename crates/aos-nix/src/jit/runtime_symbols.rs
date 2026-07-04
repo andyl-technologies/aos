@@ -1,6 +1,6 @@
-//! Runtime-symbol metadata bridged from oracle helpers into JIT preflights.
+//! Runtime-symbol metadata bridged from runtime helper sources into JIT preflights.
 
-use std::num::NonZeroUsize;
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError};
 use ratchet_jit::{
@@ -15,7 +15,12 @@ use ratchet_oracle::runtime::helpers::{
     RuntimeSymbolNativeExportMissingBinding, RuntimeSymbolNativeExportPreflight,
     runtime_symbol_native_export_preflight, runtime_symbol_rust_callable_preflight,
 };
+use ratchet_runtime_ffi::env::{
+    RuntimeEnvAccessNativeWrapperBinding, runtime_env_access_native_wrapper_bindings,
+};
 use thiserror::Error;
+
+const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 
 /// A failure while building Nix JIT runtime-symbol address candidates.
 #[derive(Debug, Error)]
@@ -30,6 +35,13 @@ pub enum NixJitRuntimeSymbolAddressCandidateError {
         /// The stable runtime symbol whose callable address was null.
         symbol_name: &'static str,
     },
+
+    /// A runtime-FFI native wrapper binding exposed a null process-local address.
+    #[error("runtime helper {symbol_name} has a null runtime-FFI native-wrapper address")]
+    NullRuntimeFfiNativeWrapperAddress {
+        /// The stable runtime symbol whose native-wrapper address was null.
+        symbol_name: &'static str,
+    },
 }
 
 /// Result returned by JIT runtime-symbol address-candidate preflights.
@@ -39,7 +51,7 @@ pub type NixJitPreflightResult =
 /// A failure while building Nix JIT runtime-symbol registration metadata.
 #[derive(Debug, Error)]
 pub enum NixJitRuntimeSymbolRegistrationError {
-    /// Oracle runtime helper addresses could not be projected into JIT metadata.
+    /// Runtime helper addresses could not be projected into JIT metadata.
     #[error("JIT runtime-symbol address candidate projection failed")]
     AddressCandidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
 
@@ -63,7 +75,7 @@ pub type NixJitRuntimeSymbolRegistrationResult =
 /// A failure while preparing complete Nix JIT runtime-symbol registration metadata.
 #[derive(Debug, Error)]
 pub enum NixJitRuntimeSymbolRegistrationPlanError {
-    /// Oracle runtime helper addresses could not be projected into JIT metadata.
+    /// Runtime helper addresses could not be projected into JIT metadata.
     #[error("JIT runtime-symbol address candidate projection failed")]
     AddressCandidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
 
@@ -86,7 +98,7 @@ pub enum NixJitRuntimeSymbolRegistrationPlanError {
     Incomplete {
         /// The number of incomplete registration, native-export, and address-provenance gates.
         missing_count: usize,
-        /// The preserved Nix preflight report, including oracle address candidates.
+        /// The preserved Nix preflight report, including runtime address candidates.
         preflight: NixJitRuntimeSymbolRegistrationPreflight,
     },
 }
@@ -111,6 +123,68 @@ impl From<NixJitRuntimeSymbolRegistrationError> for NixJitRuntimeSymbolRegistrat
 pub type NixJitRuntimeSymbolRegistrationPlanResult =
     Result<NixJitRuntimeSymbolRegistrationPlan, NixJitRuntimeSymbolRegistrationPlanError>;
 
+/// Source classification for one JIT runtime-symbol address candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NixJitRuntimeSymbolAddressProvenance {
+    /// The candidate points at a process-local Rust helper wrapper.
+    RustCallableHelper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The runtime symbol family served by the address candidate.
+        kind: RuntimeSymbolKind,
+    },
+    /// The candidate points at a runtime-FFI native wrapper body.
+    RuntimeFfiNativeWrapper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The runtime symbol family served by the address candidate.
+        kind: RuntimeSymbolKind,
+    },
+}
+
+impl NixJitRuntimeSymbolAddressProvenance {
+    fn rust_callable_helper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
+        Self::RustCallableHelper {
+            symbol_name: candidate.symbol_name().to_owned(),
+            kind: candidate.kind(),
+        }
+    }
+
+    fn runtime_ffi_native_wrapper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
+        Self::RuntimeFfiNativeWrapper {
+            symbol_name: candidate.symbol_name().to_owned(),
+            kind: candidate.kind(),
+        }
+    }
+
+    /// Returns the stable runtime symbol name for this address provenance.
+    pub fn symbol_name(&self) -> &str {
+        match self {
+            Self::RustCallableHelper { symbol_name, .. }
+            | Self::RuntimeFfiNativeWrapper { symbol_name, .. } => symbol_name,
+        }
+    }
+
+    /// Returns the runtime symbol family served by this address provenance.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        match self {
+            Self::RustCallableHelper { kind, .. } | Self::RuntimeFfiNativeWrapper { kind, .. } => {
+                *kind
+            }
+        }
+    }
+
+    /// Returns true when the candidate still uses Rust-callable helper provenance.
+    pub const fn is_rust_callable_helper(&self) -> bool {
+        matches!(self, Self::RustCallableHelper { .. })
+    }
+
+    /// Returns true when the candidate uses a runtime-FFI native wrapper address.
+    pub const fn is_runtime_ffi_native_wrapper(&self) -> bool {
+        matches!(self, Self::RuntimeFfiNativeWrapper { .. })
+    }
+}
+
 /// An address candidate that is not yet a final exported native ABI address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NixJitRuntimeSymbolAddressProvenanceGap {
@@ -124,10 +198,15 @@ pub enum NixJitRuntimeSymbolAddressProvenanceGap {
 }
 
 impl NixJitRuntimeSymbolAddressProvenanceGap {
-    fn rust_callable_helper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
-        Self::RustCallableHelper {
-            symbol_name: candidate.symbol_name().to_owned(),
-            kind: candidate.kind(),
+    fn from_provenance(provenance: &NixJitRuntimeSymbolAddressProvenance) -> Option<Self> {
+        match provenance {
+            NixJitRuntimeSymbolAddressProvenance::RustCallableHelper { symbol_name, kind } => {
+                Some(Self::RustCallableHelper {
+                    symbol_name: symbol_name.clone(),
+                    kind: *kind,
+                })
+            }
+            NixJitRuntimeSymbolAddressProvenance::RuntimeFfiNativeWrapper { .. } => None,
         }
     }
 
@@ -146,13 +225,13 @@ impl NixJitRuntimeSymbolAddressProvenanceGap {
     }
 }
 
-/// Nix runtime-symbol registration readiness assembled from oracle helper addresses.
+/// Nix runtime-symbol registration readiness assembled from runtime address metadata.
 ///
 /// This report owns the address-candidate preflight that fed the JIT
 /// registration preflight, plus the oracle native-export preflight and
 /// address-provenance gaps that keep those candidates from being final exported
-/// ABI targets. Callers can compare bound JIT addresses with the oracle-derived
-/// source metadata while still inspecting exported-wrapper blockers and
+/// ABI targets. Callers can compare bound JIT addresses with the runtime-derived
+/// source metadata while still inspecting native-export blockers and
 /// address-provenance gaps. It still does not call `JITBuilder::symbol`, export
 /// C ABI wrappers, dereference registered addresses, or call native code.
 #[derive(Clone, Debug, PartialEq)]
@@ -279,12 +358,12 @@ impl NixJitRuntimeSymbolRegistrationPreflight {
     }
 }
 
-/// Complete Nix runtime-symbol registration metadata assembled from oracle addresses.
+/// Complete Nix runtime-symbol registration metadata assembled from runtime addresses.
 ///
 /// This plan owns the address-candidate preflight that fed the JIT registration
 /// plan and the complete oracle native-export preflight required for a final
 /// ABI handoff. It can only be built after address candidates have no remaining
-/// Rust-callable provenance gaps. It is still metadata for a future
+/// non-final provenance gaps. It is still metadata for a future
 /// `JITBuilder::symbol` pass: it does not export C ABI wrappers, finalize code,
 /// dereference helper addresses, or call native code.
 #[derive(Clone, Debug, PartialEq)]
@@ -338,20 +417,24 @@ impl NixJitRuntimeSymbolRegistrationPlan {
     }
 }
 
-/// Process-local JIT address candidates derived from oracle helper callables.
+/// Process-local JIT address candidates derived from runtime wrapper metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NixJitRuntimeSymbolAddressCandidatePreflight {
     address_candidates: Vec<JitRuntimeSymbolAddressCandidate>,
+    address_provenance: Vec<NixJitRuntimeSymbolAddressProvenance>,
     missing_bindings: Vec<RuntimeSymbolMissingBinding>,
 }
 
 impl NixJitRuntimeSymbolAddressCandidatePreflight {
     fn new(
         address_candidates: Vec<JitRuntimeSymbolAddressCandidate>,
+        address_provenance: Vec<NixJitRuntimeSymbolAddressProvenance>,
         missing_bindings: Vec<RuntimeSymbolMissingBinding>,
     ) -> Self {
+        debug_assert_eq!(address_candidates.len(), address_provenance.len());
         Self {
             address_candidates,
+            address_provenance,
             missing_bindings,
         }
     }
@@ -359,6 +442,11 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
     /// Returns JIT address candidates in runtime symbol-manifest order.
     pub fn address_candidates(&self) -> &[JitRuntimeSymbolAddressCandidate] {
         &self.address_candidates
+    }
+
+    /// Returns address provenance records in runtime symbol-manifest order.
+    pub fn address_provenance(&self) -> &[NixJitRuntimeSymbolAddressProvenance] {
+        &self.address_provenance
     }
 
     /// Returns allocation-helper address candidates in runtime symbol-manifest order.
@@ -378,12 +466,12 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
             .filter(move |candidate| candidate.kind() == RuntimeSymbolKind::Helper(role))
     }
 
-    /// Returns runtime symbols that still lack Rust-callable address metadata.
+    /// Returns runtime symbols that still lack address metadata.
     pub fn missing_bindings(&self) -> &[RuntimeSymbolMissingBinding] {
         &self.missing_bindings
     }
 
-    /// Returns true when every runtime symbol has Rust-callable address metadata.
+    /// Returns true when every runtime symbol has address metadata.
     pub fn is_complete(&self) -> bool {
         self.missing_bindings.is_empty()
     }
@@ -398,6 +486,16 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
             .find(|candidate| candidate.symbol_name() == symbol_name)
     }
 
+    /// Returns address provenance for `symbol_name`, when present.
+    pub fn address_provenance_for_symbol(
+        &self,
+        symbol_name: &str,
+    ) -> Option<&NixJitRuntimeSymbolAddressProvenance> {
+        self.address_provenance
+            .iter()
+            .find(|provenance| provenance.symbol_name() == symbol_name)
+    }
+
     /// Returns the missing binding for `symbol_name`, when present.
     pub fn missing_binding_for(&self, symbol_name: &str) -> Option<&RuntimeSymbolMissingBinding> {
         self.missing_bindings
@@ -406,12 +504,15 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
     }
 }
 
-/// Builds process-local JIT address candidates from oracle Rust callables.
+/// Builds process-local JIT address candidates from runtime wrapper metadata.
 ///
-/// The returned candidates intentionally use current-process Rust helper
-/// callable addresses, not exported native ABI wrappers. They let integration
-/// code exercise JIT registration and relocation plumbing while keeping the
-/// actual native call boundary disabled.
+/// Most returned candidates intentionally use current-process Rust helper
+/// callable addresses, not exported native ABI wrappers. `aos_env_get` is
+/// sourced from the success-path `ratchet-runtime-ffi` native wrapper so the
+/// bridge can distinguish native-wrapper address provenance from the remaining
+/// native-export blockers. The candidates let integration code exercise JIT
+/// registration and relocation plumbing while keeping the actual native call
+/// boundary disabled.
 ///
 /// # Errors
 ///
@@ -419,35 +520,42 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// be projected into oracle Rust-callable metadata. Returns
 /// [`NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress`] if a helper
 /// binding violates the non-null address invariant before it reaches the JIT
-/// registration metadata.
+/// registration metadata. Returns
+/// [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
+/// if the `aos_env_get` runtime-FFI wrapper binding violates the non-null
+/// address invariant before it reaches the JIT registration metadata.
 pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightResult {
     let oracle_preflight = runtime_symbol_rust_callable_preflight()?;
-    let address_candidates = oracle_preflight
-        .helper_callables()
-        .iter()
-        .copied()
-        .map(jit_address_candidate_for_helper_callable)
-        .collect::<Result<Vec<_>, _>>()?;
+    let native_wrappers = runtime_env_native_wrappers_by_symbol();
+    let mut address_candidates = Vec::new();
+    let mut address_provenance = Vec::new();
+
+    for binding in oracle_preflight.helper_callables().iter().copied() {
+        let (candidate, provenance) =
+            jit_address_candidate_for_helper_binding(binding, &native_wrappers)?;
+        address_candidates.push(candidate);
+        address_provenance.push(provenance);
+    }
 
     Ok(NixJitRuntimeSymbolAddressCandidatePreflight::new(
         address_candidates,
+        address_provenance,
         oracle_preflight.missing_bindings().to_vec(),
     ))
 }
 
-/// Builds JIT runtime-symbol registration readiness from oracle helper addresses.
+/// Builds JIT runtime-symbol registration readiness from runtime address metadata.
 ///
-/// This top-level integration preflight derives process-local oracle helper
-/// address candidates and feeds them into the JIT runtime-symbol registration
-/// preflight. The returned report owns both sides of that handoff for tests and
-/// later install planning. It still does not call `JITBuilder::symbol`, export C
-/// ABI wrappers, finalize code, dereference helper addresses, or call native
-/// code.
+/// This top-level integration preflight derives process-local runtime address
+/// candidates and feeds them into the JIT runtime-symbol registration preflight.
+/// The returned report owns both sides of that handoff for tests and later
+/// install planning. It still does not call `JITBuilder::symbol`, export C ABI
+/// wrappers, finalize code, dereference helper addresses, or call native code.
 ///
 /// # Errors
 ///
 /// Returns [`NixJitRuntimeSymbolRegistrationError::AddressCandidates`] when
-/// oracle helper addresses cannot be projected into JIT candidate metadata.
+/// runtime helper addresses cannot be projected into JIT candidate metadata.
 /// Returns [`NixJitRuntimeSymbolRegistrationError::NativeExport`] when oracle
 /// native-export readiness metadata cannot be built.
 /// Returns [`NixJitRuntimeSymbolRegistrationError::Registration`] when JIT
@@ -457,7 +565,7 @@ pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolReg
     let native_export_preflight = runtime_symbol_native_export_preflight()
         .map_err(|source| NixJitRuntimeSymbolRegistrationError::NativeExport { source })?;
     let address_provenance_gaps =
-        address_provenance_gaps_for_candidates(address_candidate_preflight.address_candidates());
+        address_provenance_gaps(address_candidate_preflight.address_provenance());
     let registration_preflight = jit_runtime_symbol_registration_preflight_with_candidates(
         address_candidate_preflight.address_candidates(),
     )?;
@@ -469,15 +577,15 @@ pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolReg
     ))
 }
 
-/// Builds complete JIT runtime-symbol registration metadata from oracle helper addresses.
+/// Builds complete JIT runtime-symbol registration metadata from runtime address metadata.
 ///
-/// This strict gate derives process-local oracle helper address candidates,
+/// This strict gate derives process-local runtime address candidates,
 /// builds the JIT registration preflight, carries the oracle native-export
 /// readiness preflight, and succeeds only once every stable runtime symbol has
 /// declaration/address metadata, native-export metadata, and exported-address
-/// provenance. While helper, builtin, exported-wrapper, or Rust-callable
+/// provenance. While helper, builtin, native-export, or non-final address
 /// provenance gaps remain, the incomplete error carries the owned Nix preflight
-/// so callers can inspect the oracle address candidates, exported-wrapper
+/// so callers can inspect the runtime address candidates, native-export
 /// blockers, address-provenance gaps, and JIT registration gaps. It still does
 /// not call `JITBuilder::symbol`, export C ABI wrappers, finalize code,
 /// dereference helper addresses, or call native code.
@@ -485,7 +593,7 @@ pub fn nix_jit_runtime_symbol_registration_preflight() -> NixJitRuntimeSymbolReg
 /// # Errors
 ///
 /// Returns [`NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates`] when
-/// oracle helper addresses cannot be projected into JIT candidate metadata.
+/// runtime helper addresses cannot be projected into JIT candidate metadata.
 /// Returns [`NixJitRuntimeSymbolRegistrationPlanError::NativeExport`] when
 /// oracle native-export readiness metadata cannot be built.
 /// Returns [`NixJitRuntimeSymbolRegistrationPlanError::Registration`] when JIT
@@ -542,13 +650,38 @@ pub fn nix_jit_runtime_symbol_registration_plan() -> NixJitRuntimeSymbolRegistra
     ))
 }
 
-fn address_provenance_gaps_for_candidates(
-    candidates: &[JitRuntimeSymbolAddressCandidate],
+fn address_provenance_gaps(
+    provenance: &[NixJitRuntimeSymbolAddressProvenance],
 ) -> Vec<NixJitRuntimeSymbolAddressProvenanceGap> {
-    candidates
+    provenance
         .iter()
-        .map(NixJitRuntimeSymbolAddressProvenanceGap::rust_callable_helper)
+        .filter_map(NixJitRuntimeSymbolAddressProvenanceGap::from_provenance)
         .collect()
+}
+
+fn jit_address_candidate_for_helper_binding(
+    binding: RuntimeHelperRustCallableBinding,
+    native_wrappers: &BTreeMap<&'static str, RuntimeEnvAccessNativeWrapperBinding>,
+) -> Result<
+    (
+        JitRuntimeSymbolAddressCandidate,
+        NixJitRuntimeSymbolAddressProvenance,
+    ),
+    NixJitRuntimeSymbolAddressCandidateError,
+> {
+    if let RuntimeHelperRustCallableBinding::EnvironmentAccess(env_binding) = binding
+        && env_binding.symbol_name() == AOS_ENV_GET_SYMBOL
+        && let Some(native_wrapper) = native_wrappers.get(AOS_ENV_GET_SYMBOL)
+    {
+        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(*native_wrapper)?;
+        let provenance =
+            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
+        return Ok((candidate, provenance));
+    }
+
+    let candidate = jit_address_candidate_for_helper_callable(binding)?;
+    let provenance = NixJitRuntimeSymbolAddressProvenance::rust_callable_helper(&candidate);
+    Ok((candidate, provenance))
 }
 
 fn jit_address_candidate_for_helper_callable(
@@ -568,6 +701,23 @@ fn jit_address_candidate_for_helper_callable(
     ))
 }
 
+fn jit_address_candidate_for_runtime_ffi_native_wrapper(
+    binding: RuntimeEnvAccessNativeWrapperBinding,
+) -> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let raw = binding.address().as_ptr() as usize;
+    let address = JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name: binding.symbol_name(),
+        },
+    )?);
+
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        binding.symbol_name().to_owned(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+        address,
+    ))
+}
+
 fn helper_callable_address(binding: RuntimeHelperRustCallableBinding) -> *const () {
     match binding {
         RuntimeHelperRustCallableBinding::Allocation(binding) => binding.address().as_ptr(),
@@ -577,6 +727,14 @@ fn helper_callable_address(binding: RuntimeHelperRustCallableBinding) -> *const 
         RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr(),
         RuntimeHelperRustCallableBinding::WriteBarrier(binding) => binding.address().as_ptr(),
     }
+}
+
+fn runtime_env_native_wrappers_by_symbol()
+-> BTreeMap<&'static str, RuntimeEnvAccessNativeWrapperBinding> {
+    runtime_env_access_native_wrapper_bindings()
+        .into_iter()
+        .map(|binding| (binding.symbol_name(), binding))
+        .collect()
 }
 
 #[cfg(test)]

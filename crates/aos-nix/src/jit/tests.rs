@@ -29,7 +29,7 @@ fn jit_runtime_symbol_address_candidates_feed_registered_env_promotion() {
         IrId::new(0),
         candidate_preflight.address_candidates(),
     )
-    .expect("registered env promotion accepts oracle helper address candidates");
+    .expect("registered env promotion accepts runtime address candidates");
 
     assert!(promotion.did_compile());
     assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
@@ -158,7 +158,7 @@ fn nix_jit_registered_tier1_promotion_preflight_reports_candidate_failure_after_
 }
 
 #[test]
-fn nix_jit_registered_tier1_promotion_preflight_uses_oracle_candidates() {
+fn nix_jit_registered_tier1_promotion_preflight_uses_runtime_candidates() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
     let arena = IrArena::from_raw_parts(
@@ -178,7 +178,7 @@ fn nix_jit_registered_tier1_promotion_preflight_uses_oracle_candidates() {
         &arena,
         IrId::new(0),
     )
-    .expect("aos-nix wrapper promotes env slot with oracle candidates");
+    .expect("aos-nix wrapper promotes env slot with runtime candidates");
 
     assert!(promotion.did_compile());
     assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
@@ -350,7 +350,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_installs_forced_env_
         &arena,
         IrId::new(0),
     )
-    .expect("force-aware env-slot promotion finalizes with oracle helper candidates");
+    .expect("force-aware env-slot promotion finalizes with runtime address candidates");
 
     assert!(promotion.decision().should_promote());
     assert_eq!(
@@ -419,7 +419,7 @@ fn nix_jit_force_aware_promotion_installs_wrapped_forced_env_slot() {
         &arena,
         IrId::new(0),
     )
-    .expect("wrapped force-aware env-slot promotion finalizes with oracle helper candidates");
+    .expect("wrapped force-aware env-slot promotion finalizes with runtime address candidates");
 
     assert!(promotion.decision().should_promote());
     assert_eq!(
@@ -620,7 +620,7 @@ fn nix_jit_force_aware_registered_tier1_install_plan_carries_forced_env_slot_and
         &arena,
         IrId::new(0),
     )
-    .expect("force-aware env-slot install plan finalizes with oracle helper candidates");
+    .expect("force-aware env-slot install plan finalizes with runtime address candidates");
 
     assert!(plan.did_compile());
     assert!(plan.is_ready_for_install());
@@ -715,7 +715,7 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
     );
 
     let Err(error) = result else {
-        panic!("current Rust-callable helper addresses must not reach native calls");
+        panic!("incomplete runtime-symbol gates must not reach native calls");
     };
     assert!(error.decision().should_promote());
     assert_eq!(
@@ -748,7 +748,13 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
     assert!(
         preflight
             .address_provenance_gap_for_symbol("aos_env_get")
-            .is_some()
+            .is_none()
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_env_get")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(
         preflight

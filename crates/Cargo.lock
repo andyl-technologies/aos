@@ -263,6 +263,7 @@ dependencies = [
  "ratchet-core",
  "ratchet-jit",
  "ratchet-oracle",
+ "ratchet-runtime-ffi",
  "ratchet-value",
  "regex",
  "reqwest",

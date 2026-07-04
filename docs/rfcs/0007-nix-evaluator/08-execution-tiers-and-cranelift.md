@@ -1243,10 +1243,9 @@ harness, never cut for scope.
       records one tier-up invocation in safe code and preserves cold
       no-plan/no-lowering behavior. When policy requests native execution, it
       requires the strict `NixJitRuntimeSymbolRegistrationPlan` before any
-      unsafe native-call handoff, so current Rust-callable oracle helper
-      addresses are rejected with the invocation-updated slot and tier-up
-      decision preserved while exported-wrapper and address-provenance gaps
-      remain. Tests pin cold pre-plan behavior, the current incomplete
+      unsafe native-call handoff, so current mixed runtime helper addresses are
+      rejected with the invocation-updated slot and tier-up decision preserved
+      while native-export and remaining address-provenance gaps remain. Tests pin cold pre-plan behavior, the current incomplete
       exported-symbol gate, and synthetic registration-plan source failure after
       promotion. This still does not lower, finalize, or call native code from
       `aos-nix`, publish evaluator thunks, perform atomic thunk-state CAS, run
@@ -1452,73 +1451,77 @@ harness, never cut for scope.
       call targets.
 - [x] Current `aos-nix` JIT address-candidate bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
-      composes the oracle Rust-callable helper metadata with `ratchet-jit`
-      runtime-symbol address candidates. It projects process-local callable
-      helper addresses for the currently covered allocation, call-control,
-      attrset-access, environment-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
+      composes the oracle Rust-callable helper metadata, the `ratchet-runtime-ffi`
+      `aos_env_get` native-wrapper metadata, and `ratchet-jit` runtime-symbol
+      address candidates. It projects the runtime-FFI `aos_env_get` address plus
+      process-local callable helper addresses for the currently covered
+      allocation, call-control, attrset-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values
       while preserving oracle missing bindings for unbound helpers and builtins.
-      It also exposes helper-role filtered candidate views, including the
+      It also records per-candidate provenance and exposes helper-role filtered candidate views, including the
       allocation-helper subset in manifest order. Tests pin allocation,
       call-control, attrset-access, environment-access, forcing, and write-barrier role filtering,
+      `aos_env_get` runtime-FFI address/provenance,
       feed only the allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
       This is integration preflight plumbing only: the addresses are not
-      exported C ABI wrappers, not serialized or relinkable native targets, and
+      serialized or relinkable native targets, and
       no finalized code pointer or registered helper address is cast,
       dereferenced, or called.
 - [x] Current `aos-nix` runtime-symbol registration preflight bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_registration_preflight()`
-      owns the oracle-derived address-candidate preflight and the oracle
+      owns the runtime address-candidate preflight and the oracle
       native-export preflight beside the `ratchet-jit` registration preflight
-      built from those candidates, while separately reporting that the current
-      candidates still have Rust-callable rather than exported-wrapper address
-      provenance. Tests pin allocation-helper, `aos_apply`, `aos_env_get`,
-      `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier`
-      binding/address parity, preserve the current
+      built from those candidates, while separately reporting the current
+      non-final address-provenance gaps. `aos_env_get` now has runtime-FFI
+      native-wrapper provenance, while the other covered helpers still carry
+      Rust-callable provenance gaps. Tests pin allocation-helper, `aos_apply`,
+      `aos_env_get`, `aos_force`/`aos_force_deep`, and
+      `aos_gc_write_barrier` binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
-      prove registered helper addresses still carry missing exported-wrapper
-      blockers plus Rust-callable provenance gaps.
+      prove registered helper addresses still carry native-export blockers plus
+      the remaining Rust-callable provenance gaps.
       This is still readiness metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, or call native code.
 - [x] Current `aos-nix` runtime-symbol registration plan gate:
       `aos_nix::jit::nix_jit_runtime_symbol_registration_plan()` derives
-      oracle address candidates, carries oracle native-export readiness, and
+      runtime address candidates, carries oracle native-export readiness, and
       requires the JIT registration preflight, native-export preflight, and
       exported-address provenance gate to be complete before returning a plan.
       Today it returns a typed incomplete error carrying the owned Nix preflight
-      while unbound helper/builtin address gaps, exported-wrapper blockers, and
-      Rust-callable address-provenance gaps remain. `aos_apply`,
-      `aos_force`, and `aos_force_deep` now have Rust-callable address
-      candidates but still carry family-specific native-export and provenance
-      blockers. This is still strict
+      while unbound helper/builtin address gaps, native-export blockers, and
+      remaining Rust-callable address-provenance gaps remain. Separately,
+      `aos_env_get` now has a runtime-FFI address candidate but still carries
+      the oracle native-export blocker report, while `aos_apply`, `aos_force`,
+      and `aos_force_deep` still carry family-specific native-export and
+      Rust-callable provenance blockers. This is still strict
       metadata gating only: no `JITBuilder::symbol` registration, exported C ABI
       wrapper, code finalization, helper-address dereference, or native call is
       performed.
 - [x] Current `aos-nix` registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_registered_tier1_promotion_preflight_for_ir_root()`
-      derives oracle helper address candidates and delegates to the
+      derives runtime helper address candidates and delegates to the
       registered-symbol Cranelift tier-1 promotion preflight, so env-slot roots
       can promote through the real integration boundary without hand-wired test
       candidates. Candidate projection runs only after the policy decision
       requests tier 1. Tests pin cold no-lowering/no-candidate behavior,
       candidate failure after a promotion decision, and threshold promotion of
-      `aos_env_get` through oracle-derived candidates. This remains safe
+      `aos_env_get` through the runtime-FFI-derived candidate. This remains safe
       preflight assembly only: no evaluator heap thunk is mutated, no atomic
       thunk-state CAS runs, no finalized code pointer is cast or called, and no
       registered helper address is dereferenced or called.
 - [x] Current `aos-nix` force-aware registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root()`
-      derives the same oracle helper address candidates and delegates to the
+      derives the same runtime helper address candidates and delegates to the
       force-aware Cranelift promotion preflight. Candidate projection still runs
       only after the policy decision requests tier 1, so cold roots record their
       invocation and stay in tier 0 without requiring helper-address metadata.
       Literal roots still promote through the registered handoff with no
       runtime imports. Hot local environment-slot roots lower through the forced
-      env-slot artifact importing `aos_env_get` and `aos_force`; the oracle
-      candidates include both helpers, so the bridge can finalize the artifact
-      and install opaque tier-slot pointer metadata while still relying on
-      Rust-callable candidate addresses. This remains safe preflight assembly
+      env-slot artifact importing `aos_env_get` and `aos_force`; the mixed
+      runtime candidates include both helpers, so the bridge can finalize the
+      artifact and install opaque tier-slot pointer metadata while still relying
+      on gated address metadata. This remains safe preflight assembly
       only: no evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
       no finalized code pointer is cast or called, and no registered helper
       address is dereferenced or called.
@@ -1639,13 +1642,15 @@ harness, never cut for scope.
       returns the copied `Value` by value. Metadata exposes the wrapper's typed
       function pointer, process-local address, frozen ABI signature, and the
       remaining `TrapTransferUnimplemented` blocker. Tests call the wrapper and
-      metadata function pointer against live frames. The crate also records its
+      metadata function pointer against live frames, and the `aos-nix`
+      address-candidate bridge now uses this wrapper address for `aos_env_get`.
+      The crate also records its
       unsafe-boundary manifest and tests an allowlist/count for every current
       `unsafe`, `extern`, and `no_mangle` source token. This is only the
       success-path C ABI body: invalid pointers, borrow conflicts, or slot
-      errors abort until trap transfer exists, the strict native-export plan does
-      not consume the wrapper yet, and `JITBuilder::symbol` registration/native
-      calls remain gated.
+      errors abort until trap transfer exists, the strict native-export plan
+      still rejects through the aggregate readiness gates, and
+      `JITBuilder::symbol` registration/native calls remain gated.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT

@@ -36,7 +36,7 @@ pub enum NixJitTier1ConformanceGap {
         /// Number of native-export gaps.
         missing_count: usize,
     },
-    /// Runtime symbol addresses still come from non-final Rust-callable provenance.
+    /// Runtime symbol addresses still come from non-final provenance.
     RuntimeSymbolAddressProvenance {
         /// Number of address-provenance gaps.
         missing_count: usize,

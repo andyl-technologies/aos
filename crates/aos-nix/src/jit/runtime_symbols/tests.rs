@@ -2,6 +2,8 @@ use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind};
 use ratchet_jit::{
     JitRuntimeSymbolRegistrationGap, jit_runtime_symbol_registration_preflight_with_candidates,
 };
+use ratchet_oracle::runtime::helpers::runtime_symbol_rust_callable_preflight;
+use ratchet_runtime_ffi::env::runtime_env_access_native_wrapper_bindings;
 
 use super::*;
 
@@ -22,19 +24,35 @@ const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force", "a
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]
-fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_addresses() {
+fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
     let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
 
     let env_get = preflight
         .address_candidate_for("aos_env_get")
-        .expect("environment helper has a Rust-callable address candidate");
+        .expect("environment helper has a native-wrapper address candidate");
 
     assert_eq!(
         env_get.kind(),
         RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
     );
-    assert_ne!(env_get.address().as_nonzero_usize().get(), 0);
+    assert_eq!(
+        env_get.address().as_nonzero_usize().get(),
+        env_native_wrapper_address()
+    );
+    assert_ne!(
+        env_get.address().as_nonzero_usize().get(),
+        env_rust_callable_address()
+    );
+    assert!(
+        preflight
+            .address_provenance_for_symbol("aos_env_get")
+            .is_some_and(|provenance| {
+                provenance.is_runtime_ffi_native_wrapper()
+                    && provenance.kind()
+                        == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
+            })
+    );
     assert!(preflight.missing_binding_for("aos_env_get").is_none());
     let apply = preflight
         .address_candidate_for("aos_apply")
@@ -44,7 +62,19 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_oracle_helper_address
         RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
     );
     assert_ne!(apply.address().as_nonzero_usize().get(), 0);
+    assert!(
+        preflight
+            .address_provenance_for_symbol("aos_apply")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_rust_callable_helper)
+    );
     assert!(preflight.missing_binding_for("aos_apply").is_none());
+    let runtime_ffi_symbols = preflight
+        .address_provenance()
+        .iter()
+        .filter(|provenance| provenance.is_runtime_ffi_native_wrapper())
+        .map(NixJitRuntimeSymbolAddressProvenance::symbol_name)
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_ffi_symbols, ["aos_env_get"]);
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
         let attr_access = preflight
             .address_candidate_for(symbol_name)
@@ -163,7 +193,7 @@ fn jit_runtime_symbol_address_candidates_feed_jit_registration_preflight() {
     let registration = jit_runtime_symbol_registration_preflight_with_candidates(
         candidate_preflight.address_candidates(),
     )
-    .expect("JIT registration preflight accepts oracle helper address candidates");
+    .expect("JIT registration preflight accepts runtime address candidates");
 
     assert!(
         registration
@@ -241,7 +271,7 @@ fn jit_runtime_symbol_allocation_candidates_feed_jit_registration_preflight() {
 }
 
 #[test]
-fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
+fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
     let registration = nix_jit_runtime_symbol_registration_preflight()
         .expect("Nix JIT registration preflight builds");
     let candidates = registration.address_candidate_preflight();
@@ -346,14 +376,21 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_oracle_candidates() {
     assert!(!native_export.is_complete());
     assert_eq!(
         registration.address_provenance_gaps().len(),
-        candidates.address_candidates().len()
+        candidates
+            .address_provenance()
+            .iter()
+            .filter(|provenance| provenance.is_rust_callable_helper())
+            .count()
+    );
+    assert!(
+        candidates
+            .address_provenance_for_symbol("aos_env_get")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(
         registration
             .address_provenance_gap_for_symbol("aos_env_get")
-            .is_some_and(
-                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
-            )
+            .is_none()
     );
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
@@ -507,6 +544,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
                     .expect("env candidate exists")
                     .address())
     );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_env_get")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             preflight
@@ -590,8 +633,32 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     assert!(
         preflight
             .address_provenance_gap_for_symbol("aos_env_get")
-            .is_some_and(
-                |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
-            )
+            .is_none()
     );
+}
+
+fn env_native_wrapper_address() -> usize {
+    runtime_env_access_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == "aos_env_get")
+        .expect("runtime FFI env wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
+fn env_rust_callable_address() -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_env_get")
+        .expect("oracle env Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::EnvironmentAccess(binding) => {
+            binding.address().as_ptr() as usize
+        }
+        _ => panic!("aos_env_get is an environment-access helper"),
+    }
 }

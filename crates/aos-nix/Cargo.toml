@@ -15,6 +15,7 @@ aos-nix-dialect = { workspace = true }
 ratchet-jit = { workspace = true }
 ratchet-value = { workspace = true }
 ratchet-oracle = { workspace = true }
+ratchet-runtime-ffi = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bzip2 = { workspace = true }
