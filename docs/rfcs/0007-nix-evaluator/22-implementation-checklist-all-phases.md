@@ -7900,11 +7900,13 @@ nurseries build on the bump arena.
       order-sensitive update fallback with present and missing facts,
       escaping-thunk update fallback, absent omission, and absent-strict conflict
       rejection of elision, plus demand-position rejection for missing facts,
-      non-thunk nodes, malformed thunk payloads, and missing thunk bodies. This
-      is still a planning precursor only: it does not
-      install a single-entry runtime representation, change `ThunkCell`,
-      implement call-by-name lowering, remove absent bindings from frame layout,
-      improve analysis precision, or close the loom/Miri/TSan audit.
+      missing thunk nodes, non-thunk nodes, malformed thunk payloads, and
+      missing thunk bodies, while both planner contexts reject self-referential
+      thunk bodies before returning a plan. This is still a planning precursor
+      only: it does not install a single-entry runtime representation, change
+      `ThunkCell`, implement call-by-name lowering, remove absent bindings from
+      frame layout, improve analysis precision, or close the loom/Miri/TSan
+      audit.
 - [x] Current fallible L1 root execution precursor:
       `ratchet-oracle::eval::parallel_failure` adds a safe fallible top-level
       executor for independent roots. Root-local failures are stored as per-task

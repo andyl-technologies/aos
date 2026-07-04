@@ -100,6 +100,9 @@ fn thunk_alloc_body(ir: &Ir, id: IrId) -> Result<IrId, TreeWalkThunkAllocationEr
     ir.arena
         .node(body)
         .ok_or(FrameLocalThunkDowngradeError::MissingThunkBody { id, body })?;
+    if body == id {
+        return Err(FrameLocalThunkDowngradeError::SelfReferentialThunkBody { id }.into());
+    }
     Ok(body)
 }
 
@@ -412,6 +415,25 @@ mod tests {
     }
 
     #[test]
+    fn demand_position_rejects_missing_thunk_nodes() {
+        let ir = malformed_ir(THUNK, Vec::new());
+
+        let error = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect_err("missing thunk node rejects");
+
+        assert_eq!(
+            error,
+            TreeWalkThunkAllocationError::Downgrade(FrameLocalThunkDowngradeError::MissingNode {
+                id: THUNK,
+            })
+        );
+    }
+
+    #[test]
     fn demand_position_rejects_non_thunk_nodes() {
         let ir = malformed_ir(
             BODY,
@@ -498,6 +520,42 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn all_contexts_reject_self_referential_thunk_body() {
+        let ir = malformed_ir(
+            THUNK,
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Int(1),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(THUNK),
+                ),
+            ],
+        );
+
+        for context in [
+            TreeWalkThunkAllocationContext::DemandPosition,
+            TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly,
+        ] {
+            let error = tree_walk_thunk_allocation_plan(&ir, THUNK, context)
+                .expect_err("self-referential thunk body rejects");
+
+            assert_eq!(
+                error,
+                TreeWalkThunkAllocationError::Downgrade(
+                    FrameLocalThunkDowngradeError::SelfReferentialThunkBody { id: THUNK }
+                )
+            );
+        }
     }
 
     #[test]
