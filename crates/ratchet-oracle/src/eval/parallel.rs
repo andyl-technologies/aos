@@ -535,6 +535,42 @@ impl ParallelReadyWorkParkPreflight {
         self.ready_task_count == 0
     }
 
+    /// Validates that this preflight can precede parking for `worker_id`.
+    ///
+    /// The returned readiness is only a typed observation over the safe
+    /// mutex-backed queue adapter. It proves that the captured snapshot was for
+    /// the requested worker and that all queues were empty at that instant; it
+    /// is not a scheduler park token and does not reserve future idle state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelReadyWorkParkReadinessError::ObservingWorkerMismatch`]
+    /// if the snapshot was captured by a different worker. Returns
+    /// [`ParallelReadyWorkParkReadinessError::ReadyWorkRemaining`] if the
+    /// snapshot still observed queued ready work.
+    pub fn validate_idle_for_worker(
+        &self,
+        worker_id: usize,
+    ) -> Result<ParallelReadyWorkParkReadiness, ParallelReadyWorkParkReadinessError> {
+        if self.observing_worker != worker_id {
+            return Err(
+                ParallelReadyWorkParkReadinessError::ObservingWorkerMismatch {
+                    expected_worker: worker_id,
+                    observed_worker: self.observing_worker,
+                },
+            );
+        }
+        if !self.is_idle() {
+            return Err(ParallelReadyWorkParkReadinessError::ReadyWorkRemaining {
+                ready_task_count: self.ready_task_count,
+            });
+        }
+
+        Ok(ParallelReadyWorkParkReadiness {
+            preflight: self.clone(),
+        })
+    }
+
     /// Returns queue depths in worker-id order.
     pub fn queue_lengths(&self) -> &[usize] {
         &self.queue_lengths
@@ -544,6 +580,71 @@ impl ParallelReadyWorkParkPreflight {
     pub fn queue_length(&self, worker_id: usize) -> Option<usize> {
         self.queue_lengths.get(worker_id).copied()
     }
+}
+
+/// A validated idle snapshot before a worker may enter the thunk park path.
+///
+/// This is a pre-token readiness artifact for the safe ready-work queue
+/// adapter. It carries the exact preflight snapshot that was checked, but it
+/// does not reserve a scheduler park token or prevent future enqueues.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelReadyWorkParkReadiness {
+    preflight: ParallelReadyWorkParkPreflight,
+}
+
+impl ParallelReadyWorkParkReadiness {
+    /// Returns the checked preflight snapshot.
+    pub const fn preflight(&self) -> &ParallelReadyWorkParkPreflight {
+        &self.preflight
+    }
+
+    /// Returns the worker that requested the checked preflight snapshot.
+    pub const fn observing_worker(&self) -> usize {
+        self.preflight.observing_worker()
+    }
+
+    /// Returns the number of ready-work queues in the checked snapshot.
+    pub const fn worker_count(&self) -> usize {
+        self.preflight.worker_count()
+    }
+
+    /// Returns the number of tasks originally seeded into the queues.
+    pub const fn task_count(&self) -> usize {
+        self.preflight.task_count()
+    }
+
+    /// Returns the number of queued tasks observed across all workers.
+    ///
+    /// A constructed readiness always returns zero here.
+    pub const fn ready_task_count(&self) -> usize {
+        self.preflight.ready_task_count()
+    }
+
+    /// Returns queue depths in worker-id order.
+    pub fn queue_lengths(&self) -> &[usize] {
+        self.preflight.queue_lengths()
+    }
+}
+
+/// A failure while validating an idle ready-work park preflight.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ParallelReadyWorkParkReadinessError {
+    /// The snapshot was captured for a different observing worker.
+    #[error(
+        "ready-work park preflight observed worker {observed_worker}, expected {expected_worker}"
+    )]
+    ObservingWorkerMismatch {
+        /// Worker expected by the validator.
+        expected_worker: usize,
+        /// Worker recorded by the preflight snapshot.
+        observed_worker: usize,
+    },
+    /// The snapshot still observed ready work in the safe queues.
+    #[error("ready-work park preflight still has {ready_task_count} queued task(s)")]
+    ReadyWorkRemaining {
+        /// Total queued ready-work tasks observed by the snapshot.
+        ready_task_count: usize,
+    },
 }
 
 fn worker_loop<T, R, F>(
@@ -1037,6 +1138,64 @@ mod tests {
         assert_eq!(snapshot.ready_task_count(), 0);
         assert_eq!(snapshot.queue_lengths(), &[0, 0]);
         assert!(snapshot.is_idle());
+    }
+
+    #[test]
+    fn ready_work_park_readiness_accepts_idle_snapshot() {
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+
+        let snapshot = queues
+            .park_preflight_snapshot(1)
+            .expect("preflight snapshot succeeds");
+        let readiness = snapshot
+            .validate_idle_for_worker(1)
+            .expect("idle snapshot validates");
+
+        assert_eq!(readiness.preflight(), &snapshot);
+        assert_eq!(readiness.observing_worker(), 1);
+        assert_eq!(readiness.worker_count(), 2);
+        assert_eq!(readiness.task_count(), 0);
+        assert_eq!(readiness.ready_task_count(), 0);
+        assert_eq!(readiness.queue_lengths(), &[0, 0]);
+    }
+
+    #[test]
+    fn ready_work_park_readiness_rejects_non_idle_snapshot() {
+        let queues = parallel_ready_work_queues([10], workers(2));
+
+        let snapshot = queues
+            .park_preflight_snapshot(1)
+            .expect("preflight snapshot succeeds");
+        let error = snapshot
+            .validate_idle_for_worker(1)
+            .expect_err("non-idle snapshot is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkParkReadinessError::ReadyWorkRemaining {
+                ready_task_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn ready_work_park_readiness_rejects_observing_worker_mismatch() {
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+
+        let snapshot = queues
+            .park_preflight_snapshot(1)
+            .expect("preflight snapshot succeeds");
+        let error = snapshot
+            .validate_idle_for_worker(0)
+            .expect_err("worker mismatch is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkParkReadinessError::ObservingWorkerMismatch {
+                expected_worker: 0,
+                observed_worker: 1
+            }
+        );
     }
 
     #[test]

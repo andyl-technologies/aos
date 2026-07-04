@@ -7546,6 +7546,23 @@ nurseries build on the bump arena.
       install the final scheduler, validate scheduler exhaustion, attach a real
       park token to waiter registration, replace `EvalThunk` storage, install
       the final lock-free waiter list, or satisfy the loom/Miri/TSan audit.
+- [x] Current ready-work park-readiness validation precursor:
+      `ParallelReadyWorkParkPreflight::validate_idle_for_worker` turns an idle
+      safe-queue snapshot into a typed `ParallelReadyWorkParkReadiness` only
+      when the snapshot belongs to the worker about to park and observes zero
+      queued ready tasks. `TreeWalkParallelThunkCell` validates idle poll
+      preflights before returning `Idle` to the wait-cell hook, so invalid
+      preflights return before waiter registration; the poll outcome also
+      exposes a registered-wait helper for downstream consumers. Tests cover
+      idle readiness acceptance, non-idle and worker-mismatch rejection, no
+      readiness for terminal replay without waiter registration, invalid
+      tree-walk poll preflights returning before waiter registration, and
+      validated readiness for a blocking tree-walk waiter. This is still only
+      validation over the
+      mutex-backed safe queue snapshot: it is not a live scheduler park token,
+      cannot prevent future enqueueing, does not prove final Chase-Lev
+      exhaustion, does not replace `EvalThunk` storage, and does not satisfy the
+      loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
