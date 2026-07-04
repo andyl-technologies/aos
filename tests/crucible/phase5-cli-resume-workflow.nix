@@ -53,7 +53,7 @@
       }
       {
         label = "T-CLI-10 handle-backed resume progress";
-        needle = "local-double resume to quiescence or virtual-time";
+        needle = "local-double resume to quiescence, virtual-time, or a declared property";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -106,6 +106,18 @@
       {
         label = "resume local double runner";
         needle = "fn run_local_double_resume_workflow";
+      }
+      {
+        label = "resume property predicate";
+        needle = "fn resume_property_violation_predicate";
+      }
+      {
+        label = "resume property breakpoint validation";
+        needle = "fn validate_resume_property_firing";
+      }
+      {
+        label = "resume property final state";
+        needle = "property-failed";
       }
       {
         label = "resume evidence oracle gate";

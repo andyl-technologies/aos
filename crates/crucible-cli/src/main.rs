@@ -4865,12 +4865,51 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResumeRecordingLifecycleLoop {
     frontier: u64,
+    fixture: ResumeRecordingFixture,
+    fixture_emitted: bool,
+    event_log_events: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum ResumeRecordingFixture {
+    #[default]
+    None,
+    PropertyViolation {
+        assertion: crucible::AssertionId,
+    },
 }
 
 impl ResumeRecordingLifecycleLoop {
     fn new(frontier: VirtualTime) -> Self {
         Self {
             frontier: frontier.ticks,
+            fixture: ResumeRecordingFixture::None,
+            fixture_emitted: false,
+            event_log_events: 0,
+        }
+    }
+
+    fn with_property_violation(frontier: VirtualTime, assertion: crucible::AssertionId) -> Self {
+        Self {
+            fixture: ResumeRecordingFixture::PropertyViolation { assertion },
+            ..Self::new(frontier)
+        }
+    }
+
+    fn selector_fixture_entry(
+        &self,
+        frontier: crucible::VirtualTime,
+    ) -> Option<crucible::SchedulerEventLogEntry> {
+        match &self.fixture {
+            ResumeRecordingFixture::None => None,
+            ResumeRecordingFixture::PropertyViolation { assertion } => Some(
+                crucible::SchedulerEventLogEntry::assertion_state_observation(
+                    self.event_log_events,
+                    frontier,
+                    assertion.clone(),
+                    crucible::AssertionPhase::Violated,
+                ),
+            ),
         }
     }
 }
@@ -4884,6 +4923,14 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
         let frontier = VirtualTime {
             ticks: self.frontier,
         };
+        let mut event_log_entries = Vec::new();
+        if !self.fixture_emitted {
+            if let Some(entry) = self.selector_fixture_entry(frontier) {
+                event_log_entries.push(entry);
+                self.event_log_events = self.event_log_events.saturating_add(1);
+            }
+            self.fixture_emitted = true;
+        }
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: frontier,
             order: Vec::new(),
@@ -4902,11 +4949,15 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: vec![decision],
-            event_log_entries: Vec::new(),
+            event_log_entries,
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
             event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
+            event_log_offset: crucible::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.event_log_events,
+            ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
         })
     }
@@ -5011,11 +5062,6 @@ fn run_local_double_resume_workflow(
 ) -> Result<BackendCommandOutcome, CliError> {
     if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
         return Err(unsupported_resume_backend_error(resume_plan));
-    }
-    if resume_plan.terminal_condition == RunTerminalCondition::Property {
-        return Err(backend_error(
-            "resume --until property requires property-specific replay proof tracked by T-CLI-10",
-        ));
     }
     let evidence = resume_handle_evidence(resume_plan)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -5123,10 +5169,67 @@ fn checkpoint_for_resume_configuration(
     .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
 }
 
+fn resume_recording_loop_for_plan(
+    plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<ResumeRecordingLifecycleLoop, CliError> {
+    if plan.terminal_condition == RunTerminalCondition::Property {
+        let assertion = resume_property_fixture_assertion(&evidence.scenario_form)?;
+        return Ok(ResumeRecordingLifecycleLoop::with_property_violation(
+            evidence.checkpoint.virtual_time,
+            assertion,
+        ));
+    }
+    Ok(ResumeRecordingLifecycleLoop::new(
+        evidence.checkpoint.virtual_time,
+    ))
+}
+
+fn resume_property_fixture_assertion(
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<crucible::AssertionId, CliError> {
+    scenario
+        .properties()
+        .assertions()
+        .first()
+        .map(|assertion| assertion.id.clone())
+        .ok_or_else(|| {
+            invalid_scenario(format!(
+                "resume --until property requires scenario {} to declare at least one assertion",
+                scenario.id().to_hex()
+            ))
+        })
+}
+
+fn resume_property_violation_predicate(
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<crucible::Predicate, CliError> {
+    let mut predicates = scenario
+        .properties()
+        .assertions()
+        .iter()
+        .map(|assertion| {
+            crucible::Predicate::assertion_state(
+                assertion.id.clone(),
+                crucible::AssertionPhase::Violated,
+            )
+        })
+        .collect::<Vec<_>>();
+    match predicates.len() {
+        0 => Err(invalid_scenario(format!(
+            "resume --until property requires scenario {} to declare at least one assertion",
+            scenario.id().to_hex()
+        ))),
+        1 => Ok(predicates.remove(0)),
+        _ => Ok(crucible::Predicate::any_of(predicates)),
+    }
+}
+
 async fn run_resumed_savepoint_actor_async(
     plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
 ) -> Result<ResumeWorkflowReport, CliError> {
+    let resumed_loop = resume_recording_loop_for_plan(plan, &evidence)?;
     let mut graph = save_validation_graph(&evidence.scenario)?;
     if !evidence.configuration.is_genesis() {
         graph
@@ -5142,10 +5245,7 @@ async fn run_resumed_savepoint_actor_async(
         ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
     );
     let resumed = parent
-        .resume_session_from_checkpoint(
-            evidence.checkpoint.id,
-            ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
-        )
+        .resume_session_from_checkpoint(evidence.checkpoint.id, resumed_loop)
         .map_err(|error| {
             backend_error(format!("resume checkpoint instantiation failed: {error}"))
         })?;
@@ -5157,6 +5257,7 @@ async fn run_resumed_savepoint_actor_async(
     let mut acknowledged_commands = Vec::new();
     let mut state_updates = vec![format!("{:?}", live.read().state_kind).to_ascii_lowercase()];
     let mut watch_statuses = Vec::new();
+    let mut property_violation_reached = false;
 
     match plan.terminal_condition {
         RunTerminalCondition::Quiescence => {
@@ -5213,9 +5314,36 @@ async fn run_resumed_savepoint_actor_async(
         }
         RunTerminalCondition::Stopped => {}
         RunTerminalCondition::Property => {
-            return Err(backend_error(
-                "resume --until property requires property-specific replay proof tracked by T-CLI-10",
-            ));
+            let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
+            let breakpoint_id = set_resumed_actor_breakpoint(
+                &sender,
+                BreakpointSpec::suspend_once(predicate.clone()),
+                &mut acknowledged_commands,
+            )
+            .await?;
+            let before = live.read();
+            send_resumed_actor_command(
+                &sender,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+            )
+            .await?;
+            let boundary =
+                wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                    view.state_kind == LiveStateKind::Paused
+                        && view.quanta_stepped > before.quanta_stepped
+                })
+                .await?;
+            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+            if plan.watch_streams_live_status {
+                watch_statuses.push(resume_watch_status(boundary));
+            }
+            let firings =
+                query_resumed_actor_breakpoint_firings(&sender, &mut acknowledged_commands).await?;
+            validate_resume_property_firing(breakpoint_id, &predicate, boundary, &firings)?;
+            property_violation_reached = true;
         }
     }
 
@@ -5230,7 +5358,7 @@ async fn run_resumed_savepoint_actor_async(
         RunTerminalCondition::Quiescence => String::from("quiescent"),
         RunTerminalCondition::VirtualTime => String::from("virtual-time"),
         RunTerminalCondition::Stopped => String::from("stopped"),
-        RunTerminalCondition::Property => String::from("property"),
+        RunTerminalCondition::Property => String::from("property-failed"),
     };
     if plan.watch_streams_live_status {
         watch_statuses.push(resume_watch_status(final_view));
@@ -5238,10 +5366,18 @@ async fn run_resumed_savepoint_actor_async(
 
     Ok(ResumeWorkflowReport {
         run: RunWorkflowReport {
-            status: BackendCommandStatus::Passed,
+            status: if property_violation_reached {
+                BackendCommandStatus::Failed
+            } else {
+                BackendCommandStatus::Passed
+            },
             created_state: String::from("paused"),
             final_state,
-            outcome: Some(OutcomeKind::Passed),
+            outcome: Some(if property_violation_reached {
+                OutcomeKind::Failed
+            } else {
+                OutcomeKind::Passed
+            }),
             terminal_savepoint: actor_report
                 .final_snapshot
                 .terminal_savepoint
@@ -5274,6 +5410,94 @@ async fn send_resumed_actor_command(
         .await
         .map_err(|error| backend_error(format!("resume actor command channel closed: {error}")))?;
     acknowledged_commands.push(command_kind);
+    Ok(())
+}
+
+async fn set_resumed_actor_breakpoint(
+    sender: &mpsc::Sender<SessionCommand>,
+    spec: BreakpointSpec,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<BreakpointId, CliError> {
+    let (reply, receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::SetBreakpoint { spec, reply })
+        .await
+        .map_err(|error| backend_error(format!("resume actor command channel closed: {error}")))?;
+    let id = receive_resumed_actor_reply(receiver, "set breakpoint").await?;
+    acknowledged_commands.push(SessionCommandKind::SetBreakpoint);
+    Ok(id)
+}
+
+async fn query_resumed_actor_breakpoint_firings(
+    sender: &mpsc::Sender<SessionCommand>,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<Vec<crucible_session::BreakpointFiring>, CliError> {
+    let (reply, receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::Query {
+            kind: QueryKind::BreakpointFirings,
+            reply,
+        })
+        .await
+        .map_err(|error| backend_error(format!("resume actor command channel closed: {error}")))?;
+    let result = receive_resumed_actor_reply(receiver, "query breakpoint firings").await?;
+    acknowledged_commands.push(SessionCommandKind::Query);
+    match result {
+        QueryResult::BreakpointFirings(firings) => Ok(firings),
+        other => Err(backend_error(format!(
+            "resume property proof query returned unexpected payload: {other:?}"
+        ))),
+    }
+}
+
+async fn receive_resumed_actor_reply<T>(
+    receiver: tokio::sync::oneshot::Receiver<Result<T, crucible_session::SessionError>>,
+    context: &str,
+) -> Result<T, CliError> {
+    receiver
+        .await
+        .map_err(|error| backend_error(format!("resume actor {context} reply dropped: {error}")))?
+        .map_err(|error| backend_error(format!("resume actor {context} failed: {error}")))
+}
+
+fn validate_resume_property_firing(
+    breakpoint_id: BreakpointId,
+    expected: &crucible::Predicate,
+    boundary: LiveSnapshotView,
+    firings: &[crucible_session::BreakpointFiring],
+) -> Result<(), CliError> {
+    let firing = firings
+        .iter()
+        .find(|firing| firing.id == breakpoint_id)
+        .ok_or_else(|| {
+            backend_error(format!(
+                "resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+            ))
+        })?;
+    if &firing.predicate != expected {
+        return Err(CliError::Identity(format!(
+            "resume property breakpoint predicate {:?} did not match expected {:?}",
+            firing.predicate, expected
+        )));
+    }
+    if firing.disposition != BreakpointDisposition::Suspend {
+        return Err(CliError::Identity(format!(
+            "resume property breakpoint used {:?} disposition instead of suspend",
+            firing.disposition
+        )));
+    }
+    if firing.frontier != boundary.virtual_time {
+        return Err(CliError::Identity(format!(
+            "resume property breakpoint fired at {}, but boundary is {}",
+            firing.frontier.ticks, boundary.virtual_time.ticks
+        )));
+    }
+    if firing.quanta != boundary.quanta_stepped {
+        return Err(CliError::Identity(format!(
+            "resume property breakpoint fired at quantum {}, but boundary is {}",
+            firing.quanta, boundary.quanta_stepped
+        )));
+    }
     Ok(())
 }
 
@@ -11110,6 +11334,13 @@ mod tests {
     }
 
     fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let form = property_selector_scenario_form()?;
+        let path = temp.path().join("property-selector-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn property_selector_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
         let fixture = ::crucible::happy_path_scenario()?;
         let properties = ::crucible::Properties::from_assertions_for_world(
             fixture.scenario.world(),
@@ -11118,15 +11349,12 @@ mod tests {
                 property_selector_assertion("split-active"),
             ],
         )?;
-        let form = ::crucible::ScenarioDefForm::from_components(
+        Ok(::crucible::ScenarioDefForm::from_components(
             fixture.scenario.world(),
             fixture.scenario.plan(),
             &properties,
             fixture.scenario.seed(),
-        )?;
-        let path = temp.path().join("property-selector-scenario.toml");
-        fs::write(&path, form.to_canonical_toml()?)?;
-        Ok(path)
+        )?)
     }
 
     fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
@@ -13362,6 +13590,65 @@ mod tests {
                 .canonical_log
                 .iter()
                 .any(|entry| entry.kind == "resume_checkpoint")
+        );
+
+        let property_form = property_selector_scenario_form()?;
+        let property_scenario = property_form.scenario_def();
+        let property_schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let property_configuration = crucible::Configuration {
+            def: property_scenario,
+            schedule: property_schedule.clone(),
+        };
+        let property_handle = write_savepoint_handle_fixture(
+            temp.path(),
+            "property-resume-source",
+            &property_form,
+            &property_schedule,
+            property_configuration.id(),
+            1,
+            &content_address_bytes(b"property-resume-log"),
+        )?;
+        let property_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("resume"),
+            property_handle.display().to_string(),
+            String::from("--until"),
+            String::from("property"),
+        ]);
+        let Commands::Resume(args) = &property_cli.command else {
+            panic!("expected resume command");
+        };
+        let property_plan = plan_resume_invocation(args)?;
+        let backend_plan =
+            plan_backend_selection(&property_cli)?.expect("resume should route to backend");
+        let property_outcome = run_local_double_resume_workflow(
+            &plan_cli_invocation(&property_cli),
+            &backend_plan,
+            None,
+            &property_plan,
+        )?;
+        assert_eq!(property_outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(property_outcome.exit_code, 1);
+        assert!(property_outcome.terminal_savepoint.is_some());
+        assert!(property_outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains("final=property-failed")
+                && line.contains("outcome=failed")
+        }));
+        assert!(
+            property_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_checkpoint"
+                    && entry.summary.contains("until=property"))
         );
 
         Ok(())
