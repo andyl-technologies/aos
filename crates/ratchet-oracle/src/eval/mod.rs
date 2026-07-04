@@ -59,10 +59,12 @@ pub use parallel_output::{
     compare_parallel_output_across_worker_counts, parallel_drv_output_content_sha256,
 };
 pub use parallel_tree_walk::{
+    ParallelTreeWalkCanonicalError, ParallelTreeWalkCanonicalOutcome,
+    ParallelTreeWalkDifferentialError, ParallelTreeWalkDifferentialReport,
     ParallelTreeWalkEvaluationError, ParallelTreeWalkRawEvaluation,
     ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot, ParallelTreeWalkRootSource,
-    ParallelTreeWalkTopLevelError, eval_raw_bytes_parallel_top_level,
-    eval_raw_bytes_parallel_top_level_roots,
+    ParallelTreeWalkTopLevelError, compare_parallel_tree_walk_raw_across_worker_counts,
+    eval_raw_bytes_parallel_top_level, eval_raw_bytes_parallel_top_level_roots,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,

@@ -7841,6 +7841,25 @@ nurseries build on the bump arena.
       against the sequential tree-walk oracle, run the full closure, audit live
       attrset iteration under nondeterminism, or satisfy the loom/Miri/TSan
       gate.
+- [x] Current scheduler-backed tree-walk raw differential precursor:
+      `ratchet-oracle::eval::compare_parallel_tree_walk_raw_across_worker_counts`
+      evaluates independent lowered roots with the serial tree-walk raw renderer
+      and then re-evaluates those roots through the scheduler-backed tree-walk
+      bridge under every requested worker count. It preflights worker-count
+      encodability and rejects persistent parse/eval cache roots before serial
+      evaluation, uses collect-all root execution, normalizes away scheduler
+      worker metadata from successful raw evaluations, and compares raw bytes
+      or exact tree-walk errors in stable task order. Source-backed roots
+      preserve their source names and bytes during both serial and
+      scheduler-backed runs. Tests cover serial
+      parity across 1/3 worker counts, empty roots, comparable root-local and
+      source-backed errors, empty worker-count rejection, worker-count preflight,
+      persistent-cache option rejection, incomplete collect-all report rejection,
+      and normalized-outcome divergence reporting. This is an independent-root
+      raw-rendering differential only: it does not run a full derivation
+      closure, compare live `.drv` materialization, prove shared-thunk graph
+      scheduling, audit all nondeterministic attrset iteration, or satisfy the
+      full parallel-evaluator parity gate above.
 - [ ] **`loom`/Miri memory-ordering audit (R-4) is green** before the parallel
       tier is trusted. *No data races, ever.*
 - [x] Current CAS memory-ordering audit precursor:

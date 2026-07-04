@@ -29,6 +29,123 @@ use super::{
 pub type ParallelTreeWalkRawEvaluationReport =
     ParallelFallibleTopLevelReport<ParallelTreeWalkRawEvaluation, ParallelTreeWalkEvaluationError>;
 
+/// Compares scheduler-backed raw tree-walk evaluation against serial tree-walk.
+///
+/// The supplied roots are first evaluated serially with the tree-walk raw
+/// renderer, producing the oracle outcomes. Every worker count and cache-bearing
+/// option is preflighted before those serial roots run. The same roots are then
+/// evaluated through the scheduler-backed bridge for every supplied worker count
+/// using [`ParallelFailurePolicy::CollectAll`], and each parallel run is
+/// normalized to raw bytes or exact tree-walk errors before comparison.
+/// Scheduler completion metadata is deliberately ignored for successful raw
+/// evaluations.
+///
+/// # Errors
+///
+/// Returns [`ParallelTreeWalkDifferentialError::NoWorkerCounts`] if no worker
+/// counts are supplied,
+/// [`ParallelTreeWalkDifferentialError::WorkerCountOutOfRange`] if a worker
+/// count cannot be encoded by the parallel thunk state-word format, or
+/// [`ParallelTreeWalkDifferentialError::StatefulCacheOptionsUnsupported`] if
+/// options configure persistent parse/eval cache roots that could make later
+/// runs observe state warmed by earlier runs. Returns
+/// [`ParallelTreeWalkDifferentialError::Scheduler`] if one scheduler-backed run
+/// fails before all root outcomes are reported,
+/// [`ParallelTreeWalkDifferentialError::IncompleteRun`] if a scheduler-backed
+/// run does not report every root under collect-all policy, or
+/// [`ParallelTreeWalkDifferentialError::Divergence`] if any normalized parallel
+/// outcome differs from the serial tree-walk oracle.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped scheduler
+/// worker threads. Task panics are caught and returned as
+/// [`ParallelTreeWalkDifferentialError::Scheduler`].
+pub fn compare_parallel_tree_walk_raw_across_worker_counts<I, W>(
+    roots: I,
+    worker_counts: W,
+    options: TreeWalkOptions,
+) -> Result<ParallelTreeWalkDifferentialReport, ParallelTreeWalkDifferentialError>
+where
+    I: IntoIterator<Item = ParallelTreeWalkRoot>,
+    W: IntoIterator<Item = NonZeroUsize>,
+{
+    let roots = roots.into_iter().collect::<Vec<_>>();
+    let worker_counts = worker_counts.into_iter().collect::<Vec<_>>();
+    if worker_counts.is_empty() {
+        return Err(ParallelTreeWalkDifferentialError::NoWorkerCounts);
+    }
+    preflight_parallel_tree_walk_differential_worker_counts(&worker_counts)?;
+    preflight_parallel_tree_walk_differential_options(&options)?;
+
+    let serial_outcomes = roots
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(task_index, root)| {
+            ParallelTreeWalkCanonicalOutcome::new(
+                task_index,
+                eval_raw_bytes_for_root(root, options.clone())
+                    .map_err(ParallelTreeWalkCanonicalError::from_tree_walk_error),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for &worker_count in &worker_counts {
+        let report = eval_raw_bytes_parallel_top_level_roots(
+            roots.iter().cloned(),
+            worker_count,
+            ParallelFailurePolicy::CollectAll,
+            options.clone(),
+        )
+        .map_err(|source| ParallelTreeWalkDifferentialError::Scheduler {
+            worker_count: worker_count.get(),
+            source,
+        })?;
+        let parallel_outcomes =
+            canonical_outcomes_from_parallel_report(worker_count, roots.len(), &report)?;
+        compare_parallel_tree_walk_outcomes(
+            worker_count.get(),
+            &serial_outcomes,
+            &parallel_outcomes,
+        )?;
+    }
+
+    Ok(ParallelTreeWalkDifferentialReport {
+        task_count: roots.len(),
+        worker_counts: worker_counts.iter().map(|count| count.get()).collect(),
+        serial_outcomes,
+    })
+}
+
+fn preflight_parallel_tree_walk_differential_worker_counts(
+    worker_counts: &[NonZeroUsize],
+) -> Result<(), ParallelTreeWalkDifferentialError> {
+    for &worker_count in worker_counts {
+        if let Err(worker_id) = parallel_thunk_worker_id_for_scheduler_worker_count(worker_count) {
+            return Err(ParallelTreeWalkDifferentialError::WorkerCountOutOfRange {
+                worker_count: worker_count.get(),
+                worker_id,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn preflight_parallel_tree_walk_differential_options(
+    options: &TreeWalkOptions,
+) -> Result<(), ParallelTreeWalkDifferentialError> {
+    if options.parse_cache_root().is_some() || options.persist_cache_root().is_some() {
+        return Err(
+            ParallelTreeWalkDifferentialError::StatefulCacheOptionsUnsupported {
+                parse_cache_root: options.parse_cache_root().is_some(),
+                persist_cache_root: options.persist_cache_root().is_some(),
+            },
+        );
+    }
+    Ok(())
+}
+
 /// Evaluates independent expression-style lowered roots through the safe L1 scheduler.
 ///
 /// This convenience entry point treats every root as source-less expression
@@ -124,21 +241,107 @@ fn eval_raw_bytes_for_parallel_worker(
     let parallel_thunk_worker_id = worker_ids[context.worker_id()];
     let mut options = base_options.clone();
     options.set_parallel_thunk_worker_id(parallel_thunk_worker_id);
-    let ParallelTreeWalkRoot { ir, source } = root;
-    let raw_bytes = match source {
-        Some(source) => eval_raw_bytes_with_options_source(
-            &ir,
-            options,
-            source.source_name,
-            source.source_bytes,
-        )?,
-        None => eval_raw_bytes_with_options(&ir, options)?,
-    };
+    let raw_bytes = eval_raw_bytes_for_root(root, options)?;
 
     Ok(ParallelTreeWalkRawEvaluation {
         raw_bytes,
         parallel_thunk_worker_id,
     })
+}
+
+fn eval_raw_bytes_for_root(
+    root: ParallelTreeWalkRoot,
+    options: TreeWalkOptions,
+) -> Result<Vec<u8>, TreeWalkError> {
+    let ParallelTreeWalkRoot { ir, source } = root;
+    match source {
+        Some(source) => eval_raw_bytes_with_options_source(
+            &ir,
+            options,
+            source.source_name,
+            source.source_bytes,
+        ),
+        None => eval_raw_bytes_with_options(&ir, options),
+    }
+}
+
+fn canonical_outcomes_from_parallel_report(
+    worker_count: NonZeroUsize,
+    task_count: usize,
+    report: &ParallelTreeWalkRawEvaluationReport,
+) -> Result<Vec<ParallelTreeWalkCanonicalOutcome>, ParallelTreeWalkDifferentialError> {
+    if report.worker_count() != worker_count.get()
+        || report.task_count() != task_count
+        || report.completed_task_count() != task_count
+        || report.cancelled_before_start_count() != 0
+        || report.cancelled()
+        || report.outcomes().len() != task_count
+    {
+        return Err(ParallelTreeWalkDifferentialError::IncompleteRun {
+            worker_count: worker_count.get(),
+            reported_worker_count: report.worker_count(),
+            task_count,
+            reported_task_count: report.task_count(),
+            completed_task_count: report.completed_task_count(),
+            cancelled_before_start_count: report.cancelled_before_start_count(),
+            cancelled: report.cancelled(),
+            outcome_count: report.outcomes().len(),
+        });
+    }
+
+    report
+        .outcomes()
+        .iter()
+        .enumerate()
+        .map(|(expected_task_index, outcome)| {
+            if outcome.task_index() != expected_task_index {
+                return Err(ParallelTreeWalkDifferentialError::UnexpectedTaskOrder {
+                    worker_count: worker_count.get(),
+                    expected_task_index,
+                    actual_task_index: outcome.task_index(),
+                });
+            }
+            Ok(ParallelTreeWalkCanonicalOutcome::new(
+                outcome.task_index(),
+                outcome
+                    .outcome()
+                    .as_ref()
+                    .map(|evaluation| evaluation.raw_bytes().to_vec())
+                    .map_err(ParallelTreeWalkCanonicalError::from_evaluation_error),
+            ))
+        })
+        .collect()
+}
+
+fn compare_parallel_tree_walk_outcomes(
+    worker_count: usize,
+    serial_outcomes: &[ParallelTreeWalkCanonicalOutcome],
+    parallel_outcomes: &[ParallelTreeWalkCanonicalOutcome],
+) -> Result<(), ParallelTreeWalkDifferentialError> {
+    for (task_index, serial) in serial_outcomes.iter().enumerate() {
+        let Some(parallel) = parallel_outcomes.get(task_index) else {
+            return Err(ParallelTreeWalkDifferentialError::IncompleteRun {
+                worker_count,
+                reported_worker_count: worker_count,
+                task_count: serial_outcomes.len(),
+                reported_task_count: serial_outcomes.len(),
+                completed_task_count: parallel_outcomes.len(),
+                cancelled_before_start_count: 0,
+                cancelled: false,
+                outcome_count: parallel_outcomes.len(),
+            });
+        };
+        if serial != parallel {
+            return Err(ParallelTreeWalkDifferentialError::Divergence {
+                worker_count,
+                task_index,
+                serial: serial.clone(),
+                parallel: parallel.clone(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_parallel_tree_walk_worker_count(
@@ -277,6 +480,86 @@ impl ParallelTreeWalkRawEvaluation {
     }
 }
 
+/// A raw tree-walk task outcome after scheduler metadata has been removed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParallelTreeWalkCanonicalOutcome {
+    task_index: usize,
+    outcome: Result<Vec<u8>, ParallelTreeWalkCanonicalError>,
+}
+
+impl ParallelTreeWalkCanonicalOutcome {
+    /// Builds a canonical raw tree-walk task outcome for comparison.
+    pub fn new(
+        task_index: usize,
+        outcome: Result<Vec<u8>, ParallelTreeWalkCanonicalError>,
+    ) -> Self {
+        Self {
+            task_index,
+            outcome,
+        }
+    }
+
+    /// Returns the stable top-level task index.
+    pub const fn task_index(&self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the normalized raw result or exact tree-walk error.
+    pub const fn outcome(&self) -> &Result<Vec<u8>, ParallelTreeWalkCanonicalError> {
+        &self.outcome
+    }
+}
+
+/// An exact tree-walk error used for serial-vs-parallel comparison.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ParallelTreeWalkCanonicalError {
+    /// A tree-walk evaluation or rendering error with no scheduler-owned metadata stripped.
+    #[error("tree-walk raw evaluation failed: {source}")]
+    TreeWalk {
+        /// The tree-walk evaluation or rendering error.
+        source: TreeWalkError,
+    },
+}
+
+impl ParallelTreeWalkCanonicalError {
+    fn from_tree_walk_error(source: TreeWalkError) -> Self {
+        Self::TreeWalk { source }
+    }
+
+    fn from_evaluation_error(source: &ParallelTreeWalkEvaluationError) -> Self {
+        match source {
+            ParallelTreeWalkEvaluationError::TreeWalk { source } => {
+                Self::from_tree_walk_error(source.clone())
+            }
+        }
+    }
+}
+
+/// Successful serial-vs-parallel raw tree-walk differential comparison.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParallelTreeWalkDifferentialReport {
+    task_count: usize,
+    worker_counts: Vec<usize>,
+    serial_outcomes: Vec<ParallelTreeWalkCanonicalOutcome>,
+}
+
+impl ParallelTreeWalkDifferentialReport {
+    /// Returns the number of top-level roots compared in every run.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns all scheduler worker counts compared against the serial oracle.
+    pub fn worker_counts(&self) -> &[usize] {
+        &self.worker_counts
+    }
+
+    /// Returns the serial tree-walk oracle outcomes in stable task order.
+    pub fn serial_outcomes(&self) -> &[ParallelTreeWalkCanonicalOutcome] {
+        &self.serial_outcomes
+    }
+}
+
 /// A top-level failure from scheduler-backed tree-walk evaluation.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParallelTreeWalkTopLevelError {
@@ -299,8 +582,95 @@ pub enum ParallelTreeWalkTopLevelError {
     },
 }
 
-/// A root-local failure from scheduler-backed tree-walk evaluation.
+/// A failure while comparing scheduler-backed tree-walk raw output.
 #[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParallelTreeWalkDifferentialError {
+    /// No worker counts were supplied for comparison.
+    #[error("parallel tree-walk differential requires at least one worker count")]
+    NoWorkerCounts,
+    /// A requested worker count cannot fit in the parallel thunk state-word format.
+    #[error(
+        "parallel tree-walk differential worker {worker_id} of {worker_count} cannot be encoded as a thunk worker id"
+    )]
+    WorkerCountOutOfRange {
+        /// The configured scheduler worker count.
+        worker_count: usize,
+        /// The largest zero-based scheduler worker id that would be assigned.
+        worker_id: usize,
+    },
+    /// Cache-bearing options could make later runs observe state from earlier runs.
+    #[error(
+        "parallel tree-walk differential does not support persistent cache roots (parse_cache_root={parse_cache_root}, persist_cache_root={persist_cache_root})"
+    )]
+    StatefulCacheOptionsUnsupported {
+        /// Whether a parse-cache root was configured.
+        parse_cache_root: bool,
+        /// Whether a persistent eval-cache root was configured.
+        persist_cache_root: bool,
+    },
+    /// A scheduler-backed run failed before normalized outcomes could be compared.
+    #[error(
+        "parallel tree-walk differential failed while executing {worker_count} worker(s): {source}"
+    )]
+    Scheduler {
+        /// The worker count used by the failed run.
+        worker_count: usize,
+        /// The scheduler-backed tree-walk top-level failure.
+        #[source]
+        source: ParallelTreeWalkTopLevelError,
+    },
+    /// A collect-all scheduler-backed run did not report every submitted root.
+    #[error(
+        "parallel tree-walk differential expected {worker_count} worker(s) and {task_count} submitted root(s), but the run reported {reported_worker_count} worker(s), {reported_task_count} submitted root(s), {completed_task_count} completed task(s), {cancelled_before_start_count} cancelled task(s), cancelled={cancelled}, and {outcome_count} outcome(s)"
+    )]
+    IncompleteRun {
+        /// The expected worker count.
+        worker_count: usize,
+        /// The worker count reported by the run.
+        reported_worker_count: usize,
+        /// The expected number of roots submitted.
+        task_count: usize,
+        /// The submitted root count reported by the run.
+        reported_task_count: usize,
+        /// The run's completed task count.
+        completed_task_count: usize,
+        /// The run's cancelled-before-start task count.
+        cancelled_before_start_count: usize,
+        /// Whether the run reported cooperative cancellation.
+        cancelled: bool,
+        /// The number of reported outcomes.
+        outcome_count: usize,
+    },
+    /// A collect-all scheduler-backed run returned outcomes out of task order.
+    #[error(
+        "parallel tree-walk differential with {worker_count} worker(s) reported task {actual_task_index} where task {expected_task_index} was expected"
+    )]
+    UnexpectedTaskOrder {
+        /// The worker count used by the malformed run.
+        worker_count: usize,
+        /// The expected stable task index at this output position.
+        expected_task_index: usize,
+        /// The actual stable task index at this output position.
+        actual_task_index: usize,
+    },
+    /// A scheduler-backed run produced a normalized outcome different from serial tree-walk.
+    #[error(
+        "parallel tree-walk differential diverged from serial tree-walk for task {task_index} with {worker_count} worker(s)"
+    )]
+    Divergence {
+        /// The worker count used by the divergent run.
+        worker_count: usize,
+        /// The stable task index that diverged.
+        task_index: usize,
+        /// The serial tree-walk oracle outcome.
+        serial: ParallelTreeWalkCanonicalOutcome,
+        /// The scheduler-backed tree-walk outcome.
+        parallel: ParallelTreeWalkCanonicalOutcome,
+    },
+}
+
+/// A root-local tree-walk failure from raw evaluation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ParallelTreeWalkEvaluationError {
     /// The tree-walk evaluator failed while evaluating or rendering the root.
     #[error("tree-walk raw evaluation failed: {source}")]
@@ -425,6 +795,192 @@ mod tests {
                 .expect("root succeeded")
                 .raw_bytes(),
             expected.as_slice()
+        );
+    }
+
+    #[test]
+    fn parallel_raw_differential_matches_serial_across_worker_counts() {
+        let source_name = b"/tmp/aos-parallel-tree-walk-diff-source.nix";
+        let source = b"# comment\nbuiltins.toJSON __curPos";
+        let source_ir = lower(std::str::from_utf8(source).expect("test source is UTF-8"));
+        let source_error = b"# comment\nbuiltins.throw \"source error\"";
+        let source_error_ir =
+            lower(std::str::from_utf8(source_error).expect("test source is UTF-8"));
+        let roots = [
+            ParallelTreeWalkRoot::expression(lower("1 + 2")),
+            ParallelTreeWalkRoot::source(source_ir, source_name.to_vec(), source.to_vec()),
+            ParallelTreeWalkRoot::expression(lower("builtins.throw \"same error\"")),
+            ParallelTreeWalkRoot::source(
+                source_error_ir,
+                source_name.to_vec(),
+                source_error.to_vec(),
+            ),
+        ];
+
+        let report = compare_parallel_tree_walk_raw_across_worker_counts(
+            roots,
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("parallel tree-walk differential matches serial");
+
+        assert_eq!(report.task_count(), 4);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(
+            report.serial_outcomes()[0]
+                .outcome()
+                .as_ref()
+                .expect("first root succeeds"),
+            b"3"
+        );
+        assert!(
+            matches!(
+                report.serial_outcomes()[2].outcome(),
+                Err(ParallelTreeWalkCanonicalError::TreeWalk { source })
+                    if matches!(source.kind(), TreeWalkErrorKind::Thrown { .. })
+            ),
+            "root-local serial errors are comparable outcomes"
+        );
+        assert!(
+            matches!(
+                report.serial_outcomes()[3].outcome(),
+                Err(ParallelTreeWalkCanonicalError::TreeWalk { source })
+                    if matches!(source.kind(), TreeWalkErrorKind::Thrown { .. })
+            ),
+            "source-backed root-local serial errors are comparable outcomes"
+        );
+    }
+
+    #[test]
+    fn parallel_raw_differential_accepts_empty_roots_with_worker_counts() {
+        let report = compare_parallel_tree_walk_raw_across_worker_counts(
+            std::iter::empty::<ParallelTreeWalkRoot>(),
+            [workers(1), workers(2)],
+            TreeWalkOptions::default(),
+        )
+        .expect("empty root sets compare successfully");
+
+        assert_eq!(report.task_count(), 0);
+        assert_eq!(report.worker_counts(), &[1, 2]);
+        assert!(report.serial_outcomes().is_empty());
+    }
+
+    #[test]
+    fn parallel_raw_differential_rejects_empty_worker_counts() {
+        let error = compare_parallel_tree_walk_raw_across_worker_counts(
+            [ParallelTreeWalkRoot::expression(lower("1"))],
+            [],
+            TreeWalkOptions::default(),
+        )
+        .expect_err("empty worker-count list is rejected");
+
+        assert_eq!(error, ParallelTreeWalkDifferentialError::NoWorkerCounts);
+    }
+
+    #[test]
+    fn parallel_raw_differential_preflights_worker_counts_before_serial_eval() {
+        let worker_count = usize::try_from(crate::eval::PARALLEL_THUNK_MAX_WORKER_ID)
+            .ok()
+            .and_then(|max_worker_id| max_worker_id.checked_add(1));
+        let Some(worker_count) = worker_count else {
+            return;
+        };
+        let worker_count = NonZeroUsize::new(worker_count).expect("test worker count is nonzero");
+
+        let error = compare_parallel_tree_walk_raw_across_worker_counts(
+            [ParallelTreeWalkRoot::expression(lower(
+                "builtins.throw \"not reached\"",
+            ))],
+            [worker_count],
+            TreeWalkOptions::default(),
+        )
+        .expect_err("oversized worker count is rejected before serial evaluation");
+
+        assert!(matches!(
+            error,
+            ParallelTreeWalkDifferentialError::WorkerCountOutOfRange {
+                worker_count: rejected_count,
+                worker_id,
+            } if rejected_count == worker_count.get() && worker_id == worker_count.get() - 1
+        ));
+    }
+
+    #[test]
+    fn parallel_raw_differential_rejects_persistent_cache_roots() {
+        let options = TreeWalkOptions::with_parse_cache_root("/tmp/aos-parallel-diff-parse-cache");
+
+        let error = compare_parallel_tree_walk_raw_across_worker_counts(
+            [ParallelTreeWalkRoot::expression(lower("1"))],
+            [workers(1)],
+            options,
+        )
+        .expect_err("persistent cache roots are rejected");
+
+        assert_eq!(
+            error,
+            ParallelTreeWalkDifferentialError::StatefulCacheOptionsUnsupported {
+                parse_cache_root: true,
+                persist_cache_root: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parallel_raw_differential_rejects_incomplete_collect_all_reports() {
+        let roots = [
+            lower("0"),
+            lower("1"),
+            lower("2"),
+            lower("builtins.throw \"stop\""),
+        ];
+        let report = eval_raw_bytes_parallel_top_level(
+            roots,
+            workers(1),
+            ParallelFailurePolicy::CancelQueuedAfterFirstError,
+            TreeWalkOptions::default(),
+        )
+        .expect("fail-fast run completes with cancellation");
+
+        let error = canonical_outcomes_from_parallel_report(workers(1), 4, &report)
+            .expect_err("cancelled fail-fast reports are incomplete for differential use");
+
+        assert_eq!(
+            error,
+            ParallelTreeWalkDifferentialError::IncompleteRun {
+                worker_count: 1,
+                reported_worker_count: 1,
+                task_count: 4,
+                reported_task_count: 4,
+                completed_task_count: 1,
+                cancelled_before_start_count: 3,
+                cancelled: true,
+                outcome_count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn parallel_raw_differential_reports_normalized_outcome_divergence() {
+        let serial = [ParallelTreeWalkCanonicalOutcome::new(
+            0,
+            Ok(b"serial".to_vec()),
+        )];
+        let parallel = [ParallelTreeWalkCanonicalOutcome::new(
+            0,
+            Ok(b"parallel".to_vec()),
+        )];
+
+        let error = compare_parallel_tree_walk_outcomes(2, &serial, &parallel)
+            .expect_err("different normalized outcomes diverge");
+
+        assert_eq!(
+            error,
+            ParallelTreeWalkDifferentialError::Divergence {
+                worker_count: 2,
+                task_index: 0,
+                serial: serial[0].clone(),
+                parallel: parallel[0].clone(),
+            }
         );
     }
 
