@@ -1480,6 +1480,15 @@ struct SearchDriverPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalDoubleSearchReport {
+    root: crucible::ContentHash,
+    expansions: usize,
+    explored: usize,
+    failures: usize,
+    exhausted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FuzzDriverPlan {
     family: FuzzFamilyRef,
     runs: u64,
@@ -11572,23 +11581,44 @@ fn run_local_double_search_workflow(
             plan.max_depth,
         )
         .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
+    let report = LocalDoubleSearchReport {
+        root: run.root,
+        expansions: run.expansions.len(),
+        explored: run.explored_graph.len(),
+        failures: run.discovered_failures.len(),
+        exhausted: run.exhausted,
+    };
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
-    outcome.status = BackendCommandStatus::Passed;
-    outcome.exit_code = 0;
+    apply_local_double_search_report(&mut outcome, plan, &report);
+    Ok(outcome)
+}
+
+fn apply_local_double_search_report(
+    outcome: &mut BackendCommandOutcome,
+    plan: &SearchDriverPlan,
+    report: &LocalDoubleSearchReport,
+) {
+    let budget_exhausted = !report.exhausted;
+    let status =
+        local_double_search_status(report.failures > 0, report.exhausted, plan.on_violation);
+    outcome.status = status;
+    outcome.exit_code = status.exit_code();
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
-        format_content_hash_ref(run.root),
+        format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
         plan.max_states,
         plan.max_depth
             .map(|depth| depth.to_string())
             .unwrap_or_else(|| String::from("none")),
         plan.on_violation.label(),
-        run.expansions.len(),
-        run.explored_graph.len(),
-        run.discovered_failures.len(),
-        run.exhausted
+        report.expansions,
+        report.explored,
+        report.failures,
+        report.exhausted,
+        budget_exhausted,
+        status.label()
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -11596,22 +11626,37 @@ fn run_local_double_search_workflow(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={}",
-            format_content_hash_ref(run.root),
+            "root={} strategy={} max_states={} max_depth={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={} budget_exhausted={} status={}",
+            format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
             plan.max_depth
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| String::from("none")),
             plan.on_violation.label(),
-            run.expansions.len(),
-            run.explored_graph.len(),
-            run.discovered_failures.len(),
-            run.exhausted
+            report.expansions,
+            report.explored,
+            report.failures,
+            report.exhausted,
+            budget_exhausted,
+            status.label()
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    Ok(outcome)
+}
+
+fn local_double_search_status(
+    discovered_failures: bool,
+    exhausted: bool,
+    on_violation: SearchOnViolationArg,
+) -> BackendCommandStatus {
+    if discovered_failures {
+        return BackendCommandStatus::Failed;
+    }
+    if !exhausted && on_violation == SearchOnViolationArg::Stop {
+        return BackendCommandStatus::Timeout;
+    }
+    BackendCommandStatus::Passed
 }
 
 fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
@@ -18611,6 +18656,19 @@ mod tests {
 
     #[test]
     fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            local_double_search_status(false, false, SearchOnViolationArg::Stop),
+            BackendCommandStatus::Timeout
+        );
+        assert_eq!(
+            local_double_search_status(false, false, SearchOnViolationArg::Collect),
+            BackendCommandStatus::Passed
+        );
+        assert_eq!(
+            local_double_search_status(true, false, SearchOnViolationArg::Collect),
+            BackendCommandStatus::Failed
+        );
+
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
         let search_cli = Cli::parse_from([
@@ -18622,6 +18680,8 @@ mod tests {
             scenario.display().to_string(),
             String::from("--strategy"),
             String::from("dfs"),
+            String::from("--max-states"),
+            String::from("1"),
         ]);
         let Commands::Search(args) = &search_cli.command else {
             panic!("expected search command");
@@ -18629,6 +18689,32 @@ mod tests {
         let search_plan = plan_search_invocation(args, temp.path())?;
         let backend_plan =
             plan_backend_selection(&search_cli)?.expect("search should route to backend");
+        let mut timeout_outcome =
+            backend_command_outcome(&plan_cli_invocation(&search_cli), &backend_plan, None);
+        apply_local_double_search_report(
+            &mut timeout_outcome,
+            &search_plan,
+            &LocalDoubleSearchReport {
+                root: search_plan.scenario.scenario_def().id(),
+                expansions: 1,
+                explored: 2,
+                failures: 0,
+                exhausted: false,
+            },
+        );
+        assert_eq!(timeout_outcome.status, BackendCommandStatus::Timeout);
+        assert_eq!(timeout_outcome.exit_code, 2);
+        assert!(
+            timeout_outcome
+                .stdout
+                .iter()
+                .any(|line| line.contains("budget_exhausted=true")
+                    && line.contains("status=timeout"))
+        );
+        assert!(timeout_outcome.canonical_log.iter().any(|entry| {
+            entry.kind == "search_strategy_run" && entry.summary.contains("status=timeout")
+        }));
+
         let outcome = run_local_double_search_workflow(
             &plan_cli_invocation(&search_cli),
             &backend_plan,
@@ -18646,13 +18732,51 @@ mod tests {
         assert!(search_line.contains("max_states=1"));
         assert!(search_line.contains("failure_oracle=none"));
         assert!(search_line.contains("failures=0"));
+        assert!(search_line.contains("budget_exhausted=false"));
+        assert!(search_line.contains("status=passed"));
         assert!(
             outcome
                 .canonical_log
                 .iter()
-                .any(|entry| entry.kind == "search_strategy_run")
+                .any(|entry| entry.kind == "search_strategy_run"
+                    && entry.summary.contains("status=passed"))
         );
         dispatch(&search_cli)?;
+
+        let collect_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+            String::from("--on-violation"),
+            String::from("collect"),
+        ]);
+        let Commands::Search(args) = &collect_cli.command else {
+            panic!("expected search command");
+        };
+        let collect_plan = plan_search_invocation(args, temp.path())?;
+        let collect_backend =
+            plan_backend_selection(&collect_cli)?.expect("search should route to backend");
+        let collect_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&collect_cli),
+            &collect_backend,
+            None,
+            &collect_plan,
+        )?;
+        assert_eq!(collect_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(collect_outcome.exit_code, 0);
+        let collect_line = collect_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("collect search workflow must emit a search-run line");
+        assert!(collect_line.contains("budget_exhausted=false"));
+        assert!(collect_line.contains("status=passed"));
+        dispatch(&collect_cli)?;
 
         let depth_cli = Cli::parse_from([
             String::from("crucible"),
@@ -18663,6 +18787,8 @@ mod tests {
             scenario.display().to_string(),
             String::from("--max-depth"),
             String::from("1"),
+            String::from("--on-violation"),
+            String::from("collect"),
         ]);
         let Commands::Search(args) = &depth_cli.command else {
             panic!("expected search command");
@@ -18699,6 +18825,8 @@ mod tests {
             scenario.display().to_string(),
             String::from("--on-violation"),
             String::from("stop"),
+            String::from("--max-states"),
+            String::from("16"),
         ]);
         let Commands::Search(args) = &violation_cli.command else {
             panic!("expected search command");

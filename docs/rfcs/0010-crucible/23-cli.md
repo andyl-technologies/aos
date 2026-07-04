@@ -1136,16 +1136,17 @@ branch on the verdict without parsing output:
   `TemporalGraph::search_with_strategy_and_failure_oracle_bounded_depth` with the
   current empty search failure oracle, honors `--max-depth` as a bounded
   decision-depth search run, accepts explicit `--on-violation`, and reports
-  deterministic `search-run` output with `failure_oracle=none`. It also parses
-  `fuzz <FAMILY>` / `fuzz --family <path|hash>` with `--runs`, `--coverage
+  deterministic `search-run` output with `failure_oracle=none`, exhaustion
+  metadata, and the RFC §13 status mapping for discovered failures, stop-mode
+  budget exhaustion, and collect-mode budgeted campaigns. It also parses `fuzz
+  <FAMILY>` / `fuzz --family <path|hash>` with `--runs`, `--coverage
   basic-block`, and `--corpus`, maps the campaign seed into
   `CoverageGuidedFuzzConfig`, and fails unsupported search/fuzz execution paths
   explicitly until the remaining policy runners are wired. Full closure remains
   blocked on property/assertion lowering into the search failure oracle,
   counterexample artifact emission with repro commands, non-built-in
-  `ScenarioFamily::fuzz_coverage_guided` runners, in-search
-  replay-oracle sampling, budget-exhaustion exit handling, corpus persistence,
-  and real-QEMU coverage.
+  `ScenarioFamily::fuzz_coverage_guided` runners, in-search replay-oracle
+  sampling, corpus persistence, and real-QEMU coverage.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
