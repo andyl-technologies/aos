@@ -429,11 +429,12 @@ long-held locks.
   `fat==thin` before exporting a `.crucible-savepoint` handle, supports default
   `--artifact-dir` and explicit `--out` destinations, exercises the
   local-double property selector path against a fixed `no-split-brain`
-  assertion-state event through a suspending breakpoint plus breakpoint-firing
-  proof, and fails non-matching property selectors, marker selector execution,
+  assertion-state event and the marker selector path against a fixed
+  `compaction-started` guest-marker event through suspending breakpoints plus
+  breakpoint-firing proof, and fails non-matching property and marker selectors
   and local QEMU saves clearly until their proof paths land; full closure waits
-  for production assertion-event sources across property selectors,
-  guest-marker selector proof, and real-QEMU savepoint coverage.
+  for production assertion-event/guest-marker sources across selector saves and
+  real-QEMU savepoint coverage.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`

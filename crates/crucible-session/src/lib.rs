@@ -28,14 +28,14 @@ pub mod engine {
         FailureSignaturePreservingMinimizationResult, FailureTriageResult,
         FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
         FailureTriageStoredArtifact, FingerprintSample, GenesisCheckpoint,
-        HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore, MemoryDagStore, NodeId,
+        HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore, MarkerId, MemoryDagStore, NodeId,
         PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome, QuantumRequest,
         SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError,
         SchedulerEventLogEntry, SchedulerQuiescence, SearchBudget, SearchStrategy, Seed,
         SignaturePolicy, SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend,
-        TemporalGraph, TemporalGraphStoreError, VirtualTime, built_in_example_corpus,
-        crash_restart_scenario, fault_campaign_family, happy_path_scenario,
-        partition_recovery_scenario, run_fault_campaign_example, try_step,
+        TemporalGraph, TemporalGraphStoreError, VirtualTime, WhiteBoxPolicy, World,
+        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
+        happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
         verify_example_scenario_runs,
     };
 }
@@ -57,6 +57,7 @@ use crucible::{
     QuantumRequest, RuntimeState, Schedule, ScheduledEventPayload, SchedulerError,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerQuiescence, SimDuration, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, World,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -2732,6 +2733,7 @@ pub struct Engine<L> {
     scheduler_quiescence: Option<SchedulerQuiescence>,
     breakpoint_firings: Vec<BreakpointFiring>,
     next_breakpoint_firing_sequence: u64,
+    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
 }
 
 impl<L> Engine<L> {
@@ -2762,7 +2764,29 @@ impl<L> Engine<L> {
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
+            white_box_policies: BTreeMap::new(),
         }
+    }
+
+    /// Adds authoritative white-box opt-in policies for guest-marker breakpoints.
+    #[must_use]
+    pub fn with_white_box_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
+    ) -> Self {
+        self.white_box_policies = policies.into_iter().collect();
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies from a world definition.
+    #[must_use]
+    pub fn with_world_white_box_policies(self, world: &World) -> Self {
+        self.with_white_box_policies(
+            world
+                .nodes()
+                .iter()
+                .map(|node| (node.id.clone(), node.white_box)),
+        )
     }
 
     fn from_realized_checkpoint(
@@ -2798,6 +2822,7 @@ impl<L> Engine<L> {
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
+            white_box_policies: BTreeMap::new(),
         }
     }
 
@@ -2934,7 +2959,8 @@ impl<L> Engine<L> {
             branch_configuration.clone(),
             child_graph,
             child_quantum_loop,
-        );
+        )
+        .with_white_box_policies(self.white_box_policies.clone());
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let child_actor = SessionActor::new(child_engine, receiver);
 
@@ -2988,7 +3014,8 @@ impl<L> Engine<L> {
             session_quantum_loop,
             runtime.clone(),
             &checkpoint_record,
-        );
+        )
+        .with_white_box_policies(self.white_box_policies.clone());
         let (session_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let session_actor = SessionActor::new(session_engine, receiver);
 
@@ -3064,7 +3091,8 @@ impl<L> Engine<L> {
             child_quantum_loop,
             runtime,
             &branch_checkpoint,
-        );
+        )
+        .with_white_box_policies(self.white_box_policies.clone());
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let child_actor = SessionActor::new(child_engine, receiver);
 
@@ -3378,7 +3406,8 @@ impl<L> Engine<L> {
             .map(|(id, spec, was_true)| {
                 let mut pass =
                     ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoBreakpointLeaves)
-                        .with_once_latches(self.breakpoints.once_latches(id));
+                        .with_once_latches(self.breakpoints.once_latches(id))
+                        .with_white_box_policies(self.white_box_policies.clone());
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
@@ -7317,6 +7346,113 @@ mod tests {
         );
         assert!(actor.engine().breakpoints().is_empty());
         assert!(matches!(actor.engine().state(), EngineState::Running));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_conditions_cover_guest_marker_white_box_leaves() {
+        let world = single_node_debug_world("guest-marker-breakpoint")
+            .unwrap_or_else(|error| panic!("guest marker world should build: {error}"));
+        let scenario = world.scenario_def();
+        let node = world
+            .nodes()
+            .first()
+            .map(|node| node.id.clone())
+            .unwrap_or_else(|| panic!("guest marker world should contain a node"));
+        let marker = crucible::MarkerId::from_name("session-marker");
+
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut denied_engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![SchedulerEventLogPayload::Observable(
+                    ObservableEventPayload::GuestMarker {
+                        retired_icount: crucible::Icount { retired: 1 },
+                        node: node.clone(),
+                        marker: marker.clone(),
+                    },
+                )],
+            ),
+        );
+        if let Err(error) = denied_engine.apply_command(SessionCommand::Start) {
+            panic!("guest-marker denied start should instantiate runtime: {error}");
+        }
+        let (denied_reply, denied_receiver) = CommandReply::channel();
+        if let Err(error) = denied_engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker.clone())),
+            reply: denied_reply,
+        }) {
+            panic!("guest-marker denied breakpoint should register: {error}");
+        }
+        let denied_breakpoint_id = receive_reply(denied_receiver).await;
+        if let Err(error) = denied_engine.apply_command(SessionCommand::Continue) {
+            panic!("guest-marker denied continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut denied_actor = SessionActor::new(denied_engine, receiver);
+        if let Err(error) = denied_actor.run_once().await {
+            panic!("guest-marker denied quantum should run: {error}");
+        }
+        assert!(denied_actor.engine().breakpoint_firings().is_empty());
+        assert!(
+            denied_actor
+                .engine()
+                .breakpoints()
+                .get(denied_breakpoint_id)
+                .is_some()
+        );
+
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![SchedulerEventLogPayload::Observable(
+                    ObservableEventPayload::GuestMarker {
+                        retired_icount: crucible::Icount { retired: 1 },
+                        node,
+                        marker: marker.clone(),
+                    },
+                )],
+            ),
+        )
+        .with_world_white_box_policies(&world);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("guest-marker breakpoint start should instantiate runtime: {error}");
+        }
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker)),
+            reply,
+        }) {
+            panic!("guest-marker breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("guest-marker breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("guest-marker breakpoint quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(actor.engine().state(), EngineState::Paused { .. }));
     }
 
     #[tokio::test]

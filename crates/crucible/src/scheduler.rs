@@ -628,6 +628,34 @@ impl SchedulerEventLogEntry {
         )
     }
 
+    /// Builds a scheduler-owned guest-marker observation for deterministic
+    /// test-double loops.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// the segment they are constructing. This constructor is for trusted
+    /// scheduler loop implementations that already own event-log offset
+    /// accounting; it must not be used to rewrite replayed logs or bypass
+    /// replay-oracle validation.
+    #[must_use]
+    pub fn guest_marker_observation(
+        sequence: u64,
+        retired_icount: Icount,
+        node: NodeId,
+        marker: MarkerId,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
+                retired_icount,
+                node,
+                marker,
+            }),
+        )
+    }
+
     /// Builds an observable condition entry as if appended by scheduler EMIT.
     #[must_use]
     pub(crate) fn observable(
