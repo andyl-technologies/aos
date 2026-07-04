@@ -67,6 +67,10 @@
         needle = "hidden retained-evidence fixture input";
       }
       {
+        label = "T-CLI-13 terminal retained evidence CLI progress";
+        needle = "`terminal-quiescence` evidence on the root or an explicit configuration hash";
+      }
+      {
         label = "T-CLI-13 local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -131,6 +135,10 @@
       {
         label = "phase5 CLI retained evidence fixture progress";
         needle = "hidden local-double\n  `crucible.search-retained-evidence.v1` retained-evidence fixture loading";
+      }
+      {
+        label = "phase5 CLI terminal retained evidence fixture progress";
+        needle = "terminal-quiescence entries on root or explicitly\n  hashed configurations";
       }
       {
         label = "phase5 CLI retained evidence white-box validation progress";
@@ -225,6 +233,26 @@
       {
         label = "search retained evidence loader";
         needle = "fn load_search_retained_evidence_file";
+      }
+      {
+        label = "search retained evidence terminal quiescence kind";
+        needle = "\"terminal-quiescence\"";
+      }
+      {
+        label = "search retained evidence quiescent field";
+        needle = "quiescent: Option<bool>";
+      }
+      {
+        label = "search retained evidence terminal parser";
+        needle = "fn parse_search_retained_terminal_quiescence_entry";
+      }
+      {
+        label = "search retained evidence terminal binding";
+        needle = "with_terminal_scheduler_quiescence";
+      }
+      {
+        label = "search retained evidence terminal workflow regression";
+        needle = "terminal quiescence search workflow must emit a search-run line";
       }
       {
         label = "search schedule-named truths schema";

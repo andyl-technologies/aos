@@ -1648,6 +1648,8 @@ struct CliSearchRetainedEvidenceEntryToml {
     marker: Option<String>,
     #[serde(default)]
     retired_icount: Option<u64>,
+    #[serde(default)]
+    quiescent: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -2653,6 +2655,7 @@ fn load_search_retained_evidence_toml(
         .collect::<BTreeMap<_, _>>();
     let root = crucible::Configuration::genesis(scenario.scenario_def());
     let mut entries_by_configuration = BTreeMap::new();
+    let mut terminal_quiescence_by_configuration = BTreeMap::new();
     for (index, entry) in authored.evidence.into_iter().enumerate() {
         let configuration = parse_search_retained_evidence_configuration(
             label,
@@ -2660,67 +2663,137 @@ fn load_search_retained_evidence_toml(
             &entry.configuration,
             root.id(),
         )?;
-        if entry.kind != "guest-marker" {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} uses unsupported kind `{}`; expected `guest-marker`",
-                entry.kind
-            )));
+        match entry.kind.as_str() {
+            "guest-marker" => push_search_retained_guest_marker_entry(
+                label,
+                index,
+                entry,
+                &scenario_nodes,
+                &mut entries_by_configuration,
+                configuration,
+            )?,
+            "terminal-quiescence" => {
+                let quiescence =
+                    parse_search_retained_terminal_quiescence_entry(label, index, entry)?;
+                if terminal_quiescence_by_configuration
+                    .insert(configuration, quiescence)
+                    .is_some()
+                {
+                    return Err(backend_error(format!(
+                        "search retained evidence {label} entry {index} duplicates terminal quiescence for configuration {}",
+                        format_content_hash_ref(configuration)
+                    )));
+                }
+            }
+            _ => {
+                return Err(backend_error(format!(
+                    "search retained evidence {label} entry {index} uses unsupported kind `{}`; expected `guest-marker` or `terminal-quiescence`",
+                    entry.kind
+                )));
+            }
         }
-        let Some(node) = entry.node else {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} kind `guest-marker` is missing node"
-            )));
-        };
-        let Some(white_box_enabled) = scenario_nodes.get(node.as_str()) else {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} references unknown node `{node}`"
-            )));
-        };
-        if !*white_box_enabled {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} guest-marker node `{node}` is not white-box enabled"
-            )));
-        }
-        let Some(marker) = entry.marker else {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} kind `guest-marker` is missing marker"
-            )));
-        };
-        if marker.is_empty() {
-            return Err(backend_error(format!(
-                "search retained evidence {label} entry {index} kind `guest-marker` has an empty marker"
-            )));
-        }
-        let retained_icount = entry.retired_icount.unwrap_or(1);
-        let entries = entries_by_configuration
-            .entry(configuration)
-            .or_insert_with(Vec::new);
-        let sequence = u64::try_from(entries.len()).map_err(|_| {
-            backend_error(format!(
-                "search retained evidence {label} entry {index} sequence index overflowed"
-            ))
-        })?;
-        entries.push(crucible::SchedulerEventLogEntry::guest_marker_observation(
-            sequence,
-            crucible::Icount {
-                retired: retained_icount,
-            },
-            crucible::NodeId { name: node },
-            crucible::MarkerId::from_name(marker),
-        ));
     }
 
-    Ok(entries_by_configuration
+    let configurations = entries_by_configuration
+        .keys()
+        .chain(terminal_quiescence_by_configuration.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    Ok(configurations
         .into_iter()
-        .map(|(configuration, entries)| {
-            (
-                configuration,
+        .map(|configuration| {
+            let mut evidence =
                 SearchRetainedLogAssertionEvidence::new(RecordedAssertionLog::from_entries(
-                    entries,
-                )),
-            )
+                    entries_by_configuration
+                        .remove(&configuration)
+                        .unwrap_or_default(),
+                ));
+            if let Some(quiescence) = terminal_quiescence_by_configuration.remove(&configuration) {
+                evidence = evidence.with_terminal_scheduler_quiescence(quiescence);
+            }
+            (configuration, evidence)
         })
         .collect())
+}
+
+fn push_search_retained_guest_marker_entry(
+    label: &str,
+    index: usize,
+    entry: CliSearchRetainedEvidenceEntryToml,
+    scenario_nodes: &BTreeMap<&str, bool>,
+    entries_by_configuration: &mut BTreeMap<
+        crucible::ContentHash,
+        Vec<crucible::SchedulerEventLogEntry>,
+    >,
+    configuration: crucible::ContentHash,
+) -> Result<(), CliError> {
+    if entry.quiescent.is_some() {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `guest-marker` cannot set quiescent"
+        )));
+    }
+    let Some(node) = entry.node else {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `guest-marker` is missing node"
+        )));
+    };
+    let Some(white_box_enabled) = scenario_nodes.get(node.as_str()) else {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} references unknown node `{node}`"
+        )));
+    };
+    if !*white_box_enabled {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} guest-marker node `{node}` is not white-box enabled"
+        )));
+    }
+    let Some(marker) = entry.marker else {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `guest-marker` is missing marker"
+        )));
+    };
+    if marker.is_empty() {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `guest-marker` has an empty marker"
+        )));
+    }
+    let retained_icount = entry.retired_icount.unwrap_or(1);
+    let entries = entries_by_configuration.entry(configuration).or_default();
+    let sequence = u64::try_from(entries.len()).map_err(|_| {
+        backend_error(format!(
+            "search retained evidence {label} entry {index} sequence index overflowed"
+        ))
+    })?;
+    entries.push(crucible::SchedulerEventLogEntry::guest_marker_observation(
+        sequence,
+        crucible::Icount {
+            retired: retained_icount,
+        },
+        crucible::NodeId { name: node },
+        crucible::MarkerId::from_name(marker),
+    ));
+    Ok(())
+}
+
+fn parse_search_retained_terminal_quiescence_entry(
+    label: &str,
+    index: usize,
+    entry: CliSearchRetainedEvidenceEntryToml,
+) -> Result<crucible::SchedulerQuiescence, CliError> {
+    if entry.node.is_some() || entry.marker.is_some() || entry.retired_icount.is_some() {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `terminal-quiescence` cannot set node, marker, or retired_icount"
+        )));
+    }
+    match entry.quiescent {
+        Some(true) => Ok(crucible::SchedulerQuiescence::default()),
+        Some(false) => Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `terminal-quiescence` only supports quiescent = true"
+        ))),
+        None => Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `terminal-quiescence` is missing quiescent"
+        ))),
+    }
 }
 
 fn parse_search_retained_evidence_configuration(
@@ -16364,6 +16437,15 @@ mod tests {
         Ok(path)
     }
 
+    fn write_search_terminal_quiescence_scenario(
+        temp: &TempDir,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let form = search_terminal_quiescence_scenario_form()?;
+        let path = temp.path().join("search-terminal-quiescence-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
     fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
         let world = search_frontier_world()?;
         let properties = ::crucible::Properties::from_assertions_for_world(
@@ -16407,6 +16489,27 @@ mod tests {
         )?)
     }
 
+    fn search_terminal_quiescence_scenario_form()
+    -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+        let world = search_retained_evidence_world()?;
+        let properties = ::crucible::Properties::from_assertions_for_world(
+            &world,
+            vec![::crucible::AssertionDef {
+                id: ::crucible::AssertionId::from_name("cli-search-retained-terminal-quiescence"),
+                message: String::from("CLI search terminal quiescence must not be retained"),
+                property: ::crucible::Property::AfterQuiescence {
+                    predicate: ::crucible::Predicate::not(::crucible::Predicate::quiescent()),
+                },
+            }],
+        )?;
+        Ok(::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &properties,
+            ::crucible::Seed::from_u64(0x5353),
+        )?)
+    }
+
     fn write_search_schedule_named_truths(
         temp: &TempDir,
         value: bool,
@@ -16437,6 +16540,19 @@ value = {value}
         Ok(path)
     }
 
+    fn write_search_terminal_quiescence_retained_evidence(
+        temp: &TempDir,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp
+            .path()
+            .join("search-terminal-quiescence-retained-evidence.toml");
+        fs::write(
+            &path,
+            valid_search_terminal_quiescence_retained_evidence_toml("root"),
+        )?;
+        Ok(path)
+    }
+
     fn valid_search_retained_evidence_toml(configuration: &str) -> String {
         format!(
             r#"schema = "crucible.search-retained-evidence.v1"
@@ -16447,6 +16563,18 @@ kind = "guest-marker"
 node = "cli-search-retained-node"
 marker = "forbidden-search-marker"
 retired_icount = 7
+"#
+        )
+    }
+
+    fn valid_search_terminal_quiescence_retained_evidence_toml(configuration: &str) -> String {
+        format!(
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "{configuration}"
+kind = "terminal-quiescence"
+quiescent = true
 "#
         )
     }
@@ -21155,6 +21283,44 @@ finding.0.detail=synthetic signed finding evidence
             ::crucible::Configuration::genesis(retained_plan.scenario.scenario_def().clone());
         assert!(retained_source.evidence.contains_key(&retained_root.id()));
 
+        let terminal_quiescence_scenario = write_search_terminal_quiescence_scenario(&temp)?;
+        let terminal_quiescence_evidence =
+            write_search_terminal_quiescence_retained_evidence(&temp)?;
+        let terminal_quiescence_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("search"),
+            terminal_quiescence_scenario.display().to_string(),
+            String::from("--retained-evidence"),
+            terminal_quiescence_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &terminal_quiescence_cli.command else {
+            panic!("expected search command");
+        };
+        let terminal_quiescence_plan = plan_search_invocation(args, temp.path())?;
+        let terminal_quiescence_source = terminal_quiescence_plan
+            .retained_evidence
+            .as_ref()
+            .expect("search plan should load terminal quiescence retained evidence");
+        assert_eq!(
+            terminal_quiescence_source.path,
+            terminal_quiescence_evidence
+        );
+        assert_eq!(
+            terminal_quiescence_source.digest,
+            content_address_bytes(
+                valid_search_terminal_quiescence_retained_evidence_toml("root").as_bytes()
+            )
+        );
+        let terminal_quiescence_root = ::crucible::Configuration::genesis(
+            terminal_quiescence_plan.scenario.scenario_def().clone(),
+        );
+        let terminal_quiescence = terminal_quiescence_source
+            .evidence
+            .get(&terminal_quiescence_root.id())
+            .and_then(|evidence| evidence.terminal_quiescence())
+            .expect("terminal quiescence retained evidence should bind to the root");
+        assert!(terminal_quiescence.is_quiescent());
+
         for args in [
             SearchArgs {
                 scenario: Some(scenario.display().to_string()),
@@ -21317,6 +21483,38 @@ marker = "forbidden-search-marker"
         };
         assert!(
             matches!(error, CliError::Backend(ref message) if message.contains("not white-box enabled"))
+        );
+        assert_eq!(error.exit_code(), 4);
+
+        let blocked_terminal_quiescence_evidence = temp
+            .path()
+            .join("blocked-terminal-quiescence-evidence.toml");
+        fs::write(
+            &blocked_terminal_quiescence_evidence,
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "root"
+kind = "terminal-quiescence"
+quiescent = false
+"#,
+        )?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(terminal_quiescence_scenario.display().to_string()),
+                max_states: 1,
+                retained_evidence: Some(blocked_terminal_quiescence_evidence),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => {
+                panic!("blocked terminal quiescence evidence must fail until blockers are modeled")
+            }
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("only supports quiescent = true"))
         );
         assert_eq!(error.exit_code(), 4);
 
@@ -21876,6 +22074,94 @@ marker = "forbidden-search-marker"
                     .iter()
                     .any(|payload| payload.digest == decision.payload_digest)
         }));
+
+        let terminal_quiescence_scenario = write_search_terminal_quiescence_scenario(&temp)?;
+        let terminal_quiescence_evidence =
+            write_search_terminal_quiescence_retained_evidence(&temp)?;
+        let terminal_quiescence_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            terminal_quiescence_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+            String::from("--retained-evidence"),
+            terminal_quiescence_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &terminal_quiescence_cli.command else {
+            panic!("expected search command");
+        };
+        let terminal_quiescence_plan = plan_search_invocation(args, temp.path())?;
+        let terminal_quiescence_backend = plan_backend_selection(&terminal_quiescence_cli)?
+            .expect("terminal quiescence search should route");
+        let terminal_quiescence_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&terminal_quiescence_cli),
+            &terminal_quiescence_backend,
+            None,
+            &terminal_quiescence_plan,
+        )?;
+        assert_eq!(
+            terminal_quiescence_outcome.status,
+            BackendCommandStatus::Failed
+        );
+        assert_eq!(terminal_quiescence_outcome.exit_code, 1);
+        let terminal_quiescence_line = terminal_quiescence_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("terminal quiescence search workflow must emit a search-run line");
+        assert!(
+            terminal_quiescence_line
+                .contains("failure_oracle=scenario-assertions+retained-evidence")
+        );
+        assert!(terminal_quiescence_line.contains(&format!(
+            "retained_evidence={}",
+            terminal_quiescence_evidence.display()
+        )));
+        let terminal_quiescence_material =
+            valid_search_terminal_quiescence_retained_evidence_toml("root");
+        let terminal_quiescence_digest =
+            content_address_bytes(terminal_quiescence_material.as_bytes());
+        assert!(terminal_quiescence_line.contains(&format!(
+            "retained_evidence_digest={terminal_quiescence_digest}"
+        )));
+        assert!(terminal_quiescence_line.contains("failures=1"));
+        assert!(terminal_quiescence_line.contains("status=failed"));
+        let terminal_quiescence_artifact = decode_reproduction_artifact(
+            terminal_quiescence_outcome
+                .reproduction_artifact
+                .as_deref()
+                .expect("terminal quiescence failure should emit a reproduction artifact"),
+        )?;
+        assert!(
+            terminal_quiescence_artifact
+                .components
+                .iter()
+                .any(|component| {
+                    component.kind == "search_retained_evidence"
+                        && component.name == "retained-evidence.toml"
+                        && component.digest == terminal_quiescence_digest
+                        && component.media_type == SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE
+                })
+        );
+        assert!(terminal_quiescence_artifact.payloads.iter().any(|payload| {
+            payload.digest == terminal_quiescence_digest
+                && payload.bytes.as_slice() == terminal_quiescence_material.as_bytes()
+        }));
+        assert!(
+            terminal_quiescence_artifact
+                .decisions
+                .iter()
+                .any(|decision| {
+                    decision.kind == "search-retained-evidence"
+                        && terminal_quiescence_artifact
+                            .payloads
+                            .iter()
+                            .any(|payload| payload.digest == decision.payload_digest)
+                })
+        );
 
         let schedule_only_configuration =
             ::crucible::ContentHash::from_bytes(b"schedule-only-configuration");
