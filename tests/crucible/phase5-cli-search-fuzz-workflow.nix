@@ -59,6 +59,10 @@
         label = "T-CLI-13 local-double depth progress";
         needle = "honors `--max-depth` as a bounded\n  decision-depth search run";
       }
+      {
+        label = "T-CLI-13 local-double budget status progress";
+        needle = "RFC §13 status mapping for discovered failures, stop-mode\n  budget exhaustion";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -72,6 +76,10 @@
       {
         label = "phase5 CLI local-double depth progress";
         needle = "bounded decision-depth execution for\n  `--max-depth`";
+      }
+      {
+        label = "phase5 CLI local-double budget status progress";
+        needle = "RFC §13 status mapping\n  for discovered failures, stop-mode budget exhaustion";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -134,6 +142,30 @@
       {
         label = "local-double max-depth execution";
         needle = "max_depth=1";
+      }
+      {
+        label = "local-double search status mapper";
+        needle = "fn local_double_search_status";
+      }
+      {
+        label = "local-double search report application";
+        needle = "fn apply_local_double_search_report";
+      }
+      {
+        label = "local-double status assignment";
+        needle = "outcome.status = status";
+      }
+      {
+        label = "local-double budget exhaustion output";
+        needle = "budget_exhausted={}";
+      }
+      {
+        label = "local-double budget timeout test";
+        needle = "local_double_search_status(false, false, SearchOnViolationArg::Stop)";
+      }
+      {
+        label = "local-double non-exhausted outcome regression";
+        needle = "apply_local_double_search_report(\n            &mut timeout_outcome";
       }
       {
         label = "fuzz runner blocker";
