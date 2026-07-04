@@ -314,12 +314,12 @@ impl TreeWalk {
             );
         }
         Self {
-            modules: vec![TreeWalkModule {
-                ir: ir.clone(),
+            modules: vec![TreeWalkModule::new(
+                ir.clone(),
                 path_literal_base,
-                force_cache_options: ForceCacheOptionsIdentity::new(&options),
-                source: None,
-            }],
+                ForceCacheOptionsIdentity::new(&options),
+                None,
+            )],
             current_module: EvalModuleId::ROOT,
             symbols: ir.symbols.clone(),
             heap,

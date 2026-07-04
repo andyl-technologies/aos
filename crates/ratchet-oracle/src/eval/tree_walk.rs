@@ -87,9 +87,10 @@ use crate::cache::{
     lowered_ir_fingerprint,
 };
 use crate::compile::{
-    BindingLowering, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment,
-    IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions,
-    IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness, resolve,
+    BindingLowering, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
+    IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness,
+    dead_binding_elimination_plan, resolve,
 };
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
@@ -579,6 +580,25 @@ struct TreeWalkModule {
     path_literal_base: Option<Vec<u8>>,
     force_cache_options: ForceCacheOptionsIdentity,
     source: Option<ModuleSource>,
+    dead_binding_eliminations: TreeWalkDeadBindingEliminations,
+}
+
+impl TreeWalkModule {
+    fn new(
+        ir: Ir,
+        path_literal_base: Option<Vec<u8>>,
+        force_cache_options: ForceCacheOptionsIdentity,
+        source: Option<ModuleSource>,
+    ) -> Self {
+        let dead_binding_eliminations = TreeWalkDeadBindingEliminations::from_ir(&ir);
+        Self {
+            ir,
+            path_literal_base,
+            force_cache_options,
+            source,
+            dead_binding_eliminations,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -648,6 +668,54 @@ impl ActiveMemoReadNode {
 struct ModuleSource {
     name: Vec<u8>,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TreeWalkDeadBindingKey {
+    let_node: u32,
+    binding_index: usize,
+}
+
+impl TreeWalkDeadBindingKey {
+    const fn new(let_node: IrId, binding_index: usize) -> Self {
+        Self {
+            let_node: let_node.as_u32(),
+            binding_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct TreeWalkDeadBindingEliminations {
+    bindings: BTreeSet<TreeWalkDeadBindingKey>,
+}
+
+impl TreeWalkDeadBindingEliminations {
+    fn from_ir(ir: &Ir) -> Self {
+        let Ok(plan) = dead_binding_elimination_plan(ir) else {
+            return Self::default();
+        };
+        let bindings = plan
+            .eliminations()
+            .iter()
+            .filter(|elimination| {
+                elimination.replacement() == DeadBindingReplacement::DummyFrameSlot
+                    && ir
+                        .arena
+                        .node(elimination.value())
+                        .is_some_and(|node| node.kind == IrKind::ThunkAlloc)
+            })
+            .map(|elimination| {
+                TreeWalkDeadBindingKey::new(elimination.let_node(), elimination.binding_index())
+            })
+            .collect();
+        Self { bindings }
+    }
+
+    fn contains(&self, let_node: IrId, binding_index: usize) -> bool {
+        self.bindings
+            .contains(&TreeWalkDeadBindingKey::new(let_node, binding_index))
+    }
 }
 
 /// In-process import cache state.

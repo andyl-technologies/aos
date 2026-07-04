@@ -8195,9 +8195,8 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       retention, dynamic-key retention, missing value-fact rejection, and
       malformed `let` payload rejection. This is a planning precursor only: it
       does not rewrite IR, compact frame layouts, emit worker dummy arguments,
-      remove code in the tree-walk oracle, handle attrset or formal-argument
-      absence, improve cardinality precision, or run the whole-program demand
-      fixpoint.
+      handle attrset or formal-argument absence, improve cardinality precision,
+      or run the whole-program demand fixpoint.
 - [x] Current dead-binding planner validation hardening:
       `dead_binding_elimination_plan` now validates each `let` body reference
       before cardinality facts can license binding elimination, so malformed
@@ -8205,6 +8204,24 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       It also rejects unresolved static binding-key symbols before absent facts
       can license key-preserving omission. This is still a planner-boundary
       check; it does not rewrite IR or improve usage precision.
+- [x] Current tree-walk dead-binding consumer:
+      `ratchet-oracle` builds a module-local omitted-binding index from
+      `dead_binding_elimination_plan` for each loaded IR module when planning
+      succeeds. During `let` frame assembly, the tree-walk oracle leaves
+      admitted absent thunk bindings at their existing dummy `Value::null()`
+      frame slots instead of allocating the binding thunk, while retaining the
+      frame shape, preserving dynamic-key rejection before omission, and falling
+      back to normal lazy allocation if planning fails. Non-thunk value nodes
+      are not indexed for omission. The analysis soundness harness now proves
+      annotated IR preserves the conservative result/trace output and removes
+      the dead binding's thunk allocation, while raw-IR tests cover malformed
+      omitted thunk preflight and planner-error fallback. Source imports that
+      are lowered without annotation keep conservative facts, so this consumes
+      imported facts only when a loaded module already carries them. This is
+      still a tree-walk `let` consumer only; it does not rewrite IR, compact
+      frame layouts, emit worker dummy arguments, handle attrset/formal-argument
+      absence, improve cardinality precision, or run the whole-program demand
+      fixpoint.
 - [x] Current single-entry-thunk preflight hardening:
       `ratchet-core::analysis::thunk_sharing` rejects self-referential
       `ThunkAlloc` payloads before facts can license a frame-local single-entry

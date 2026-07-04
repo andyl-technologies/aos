@@ -45,6 +45,12 @@ impl TreeWalk {
                         node.span,
                     ));
                 }
+                if self.omits_dead_binding(id, slot)
+                    && self.preflight_omitted_attr_binding_value(binding.value)?
+                {
+                    self.increment_thunks_elided();
+                    continue;
+                }
                 let value = self.eval_attr_binding_value(
                     id,
                     node.span,

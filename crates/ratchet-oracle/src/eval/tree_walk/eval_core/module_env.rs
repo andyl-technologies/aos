@@ -185,16 +185,26 @@ impl TreeWalk {
                 span,
             )
         })?;
-        self.modules.push(TreeWalkModule {
+        self.modules.push(TreeWalkModule::new(
             ir,
-            path_literal_base: Some(path_literal_base),
-            force_cache_options: ForceCacheOptionsIdentity::new(&self.options),
-            source: Some(ModuleSource {
+            Some(path_literal_base),
+            ForceCacheOptionsIdentity::new(&self.options),
+            Some(ModuleSource {
                 name: source_name,
                 bytes: source,
             }),
-        });
+        ));
         Ok(EvalModuleId::new(raw))
+    }
+
+    pub(in crate::eval::tree_walk) fn omits_dead_binding(
+        &self,
+        let_node: IrId,
+        binding_index: usize,
+    ) -> bool {
+        self.modules[self.current_module.index()]
+            .dead_binding_eliminations
+            .contains(let_node, binding_index)
     }
 
     pub(in crate::eval::tree_walk) fn binding_range(

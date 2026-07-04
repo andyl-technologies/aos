@@ -29,6 +29,30 @@ impl TreeWalk {
         self.alloc_select_thunk(id, span, select_id, receiver_value, path)
     }
 
+    pub(in crate::eval::tree_walk) fn preflight_omitted_attr_binding_value(
+        &self,
+        value: IrId,
+    ) -> Result<bool, TreeWalkError> {
+        let value_node = self.node(value)?;
+        if value_node.kind != IrKind::ThunkAlloc {
+            return Ok(false);
+        }
+        self.preflight_omitted_thunk_alloc(value, value_node)?;
+        if let Some((_, receiver, _)) = self.inherit_source_select(value)? {
+            let receiver_node = self.node(receiver)?;
+            self.preflight_omitted_thunk_alloc(receiver, receiver_node)?;
+        }
+        Ok(true)
+    }
+
+    fn preflight_omitted_thunk_alloc(&self, id: IrId, node: &IrNode) -> Result<(), TreeWalkError> {
+        let IrData::Node(body) = node.data else {
+            return Err(self.invalid_payload(id, node, "thunk body"));
+        };
+        self.node(body)?;
+        Ok(())
+    }
+
     pub(in crate::eval::tree_walk) fn inherit_source_select(
         &self,
         value: IrId,

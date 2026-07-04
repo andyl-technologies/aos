@@ -887,6 +887,17 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       call-by-name lowering, dead-binding elimination, and stronger
       cardinality/escape analyses remain open.
 - [ ] Absence → dead-binding elimination via the dual of the demand fixpoint (worker takes a dummy, code never emitted) (§5.2) — **P4**, `S-9`; reduction in [26](26-optimization-pass-catalog.md).
+- [x] Current tree-walk dead-binding consumer:
+      `ratchet-oracle` now consumes successful `dead_binding_elimination_plan`
+      results for loaded IR modules that already carry analyzed facts. The
+      tree-walk oracle leaves admitted absent thunk-valued `let` bindings in
+      their dummy frame slots and skips the binding thunk allocation while
+      preserving conservative result/trace observables and falling back to
+      normal lazy allocation on planner failure. Source imports lowered without
+      annotation keep conservative facts. This is a tree-walk `let` consumer
+      only; IR rewriting, frame compaction, worker dummy arguments,
+      attrset/formal-argument absence, stronger cardinality, and the
+      whole-program demand fixpoint remain open.
 - [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).
 
 ### Full laziness / let-floating (§6)

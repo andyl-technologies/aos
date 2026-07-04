@@ -151,6 +151,126 @@ fn invalid_let_frame_metadata_is_reported() {
 }
 
 #[test]
+fn dead_binding_elision_preflights_malformed_thunk_payload() {
+    let mut symbols = SymbolTable::new();
+    let dead_key = symbols.intern(b"dead").expect("symbol interns");
+    let dead = IrId::new(0);
+    let body = IrId::new(1);
+    let root = IrId::new(2);
+    let frame = FrameId::new(0);
+    let dead_span = Span::new(4, 8);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            pure_node(IrKind::ThunkAlloc, dead_span, IrData::None),
+            pure_node(IrKind::Int, Span::new(13, 14), IrData::Int(7)),
+            pure_node(
+                IrKind::Let,
+                Span::new(0, 14),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: Some(frame),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut facts = IrFacts::conservative(arena.nodes().len());
+    facts
+        .get_mut(dead)
+        .expect("dead binding fact exists")
+        .cardinality = crate::compile::Cardinality::Absent;
+    let ir = Ir {
+        root,
+        arena,
+        facts,
+        symbols,
+        frames: vec![FrameInfo {
+            slot_count: 1,
+            captures: Vec::new().into_boxed_slice(),
+            rec: false,
+            has_with: false,
+        }]
+        .into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: Vec::new().into_boxed_slice(),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(dead_key),
+            position: None,
+            value: dead,
+        }]
+        .into_boxed_slice(),
+        shapes: Vec::new().into_boxed_slice(),
+    };
+    let error = eval_whnf(&ir).expect_err("omitted thunk payload is preflighted");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::InvalidPayload {
+            id: dead,
+            kind: IrKind::ThunkAlloc,
+            expected: "thunk body",
+        }
+    );
+    assert_eq!(error.span(), dead_span);
+}
+
+#[test]
+fn dead_binding_plan_failure_falls_back_to_lazy_binding_allocation() {
+    let mut symbols = SymbolTable::new();
+    let dead_key = symbols.intern(b"dead").expect("symbol interns");
+    let dead_body = IrId::new(0);
+    let dead = IrId::new(1);
+    let body = IrId::new(2);
+    let root = IrId::new(3);
+    let frame = FrameId::new(0);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            pure_node(IrKind::Int, Span::new(7, 8), IrData::Int(1)),
+            pure_node(IrKind::ThunkAlloc, Span::new(7, 8), IrData::Node(dead_body)),
+            pure_node(IrKind::Int, Span::new(13, 14), IrData::Int(7)),
+            pure_node(
+                IrKind::Let,
+                Span::new(0, 14),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: Some(frame),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let ir = Ir {
+        root,
+        arena,
+        facts: IrFacts::conservative(0),
+        symbols,
+        frames: vec![FrameInfo {
+            slot_count: 1,
+            captures: Vec::new().into_boxed_slice(),
+            rec: false,
+            has_with: false,
+        }]
+        .into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: Vec::new().into_boxed_slice(),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(dead_key),
+            position: None,
+            value: dead,
+        }]
+        .into_boxed_slice(),
+        shapes: Vec::new().into_boxed_slice(),
+    };
+    let outcome = eval_whnf_owned(&ir).expect("planner failure remains conservative");
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+}
+
+#[test]
 fn invalid_string_symbols_are_reported() {
     let root = IrId::new(0);
     let symbol = Symbol::new(99);
