@@ -3,7 +3,8 @@
 //! This crate is the landing zone for the Cranelift baseline JIT and later
 //! optimized native tiers. It intentionally starts with safe, non-callable
 //! scaffolding: [`abi`] mirrors the frozen runtime-call signatures from
-//! `ratchet-core`, [`artifact`] records address-free CLIF artifact metadata,
+//! `ratchet-core` and names inert thunk/lambda native-entry aliases,
+//! [`artifact`] records address-free CLIF artifact metadata,
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
 //! `JITModule` declaration, artifact-definition/finalization,
 //! registered-symbol artifact-definition/finalization, unregistered/registered
@@ -23,9 +24,9 @@
 //! semantic candidate classification below both crates without making the JIT
 //! crate depend on the safe oracle stack.
 //!
-//! Actual `unsafe extern "C"` wrappers, raw function-pointer calls, full
-//! runtime symbol tables, and executable native calls are future work inside
-//! this crate. The current `JITBuilder::symbol` precursor registers only
+//! Actual exported `unsafe extern "C"` wrappers, raw function-pointer casts and
+//! calls, full runtime symbol tables, and executable native calls are future
+//! work inside this crate. The current `JITBuilder::symbol` precursor registers only
 //! explicit opaque address metadata with an encapsulated builder, and the
 //! current finalization precursors expose only opaque code-pointer metadata for
 //! verified artifacts. Unsafe blocks are allowed only behind the
@@ -46,8 +47,8 @@ pub mod tier;
 pub mod warmup;
 
 pub use abi::{
-    JitClifSignatureError, JitRuntimeAbiInventory, clif_signature_for_runtime_call,
-    jit_runtime_abi_inventory,
+    JitClifSignatureError, JitEnvFramePtr, JitLambdaFn, JitRuntimeAbiInventory,
+    JitRuntimeContextPtr, JitThunkFn, clif_signature_for_runtime_call, jit_runtime_abi_inventory,
 };
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 pub use cranelift::{

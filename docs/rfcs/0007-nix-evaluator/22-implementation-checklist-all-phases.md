@@ -8913,12 +8913,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       pointer/scalar parameters including symbol and inline-cache site ids,
       deopt-record pointers, error pointers, pointer, `Value`, unit, or
       divergent helper returns, and
-      the 16-byte/two-register `Value` layout. Tests cover
+      the 16-byte/two-register `Value` layout. `ratchet-jit::abi` mirrors the
+      contract with inert `JitThunkFn` and `JitLambdaFn` aliases over opaque
+      runtime/environment pointers and by-value `Value` arguments/results. Tests cover
       thunk/lambda shapes, primop arity descriptors, unsupported-arity rejection,
       parity with the builtin declaration inventory, and representative helper
-      signatures. This is metadata only: no `unsafe extern "C"` type aliases,
-      exported wrappers, raw-pointer call boundaries, Cranelift lowering, or
-      `JITBuilder::symbol` registration are implemented here.
+      signatures, and keep the inert native-entry aliases pointer-sized beside
+      the core thunk/lambda metadata. This is metadata only: no exported
+      `ThunkFn`/`LambdaFn` wrappers, raw-pointer casts or calls, Cranelift
+      lowering, or `JITBuilder::symbol` registration are implemented here.
 - [x] Current builtin runtime-call preflight precursor:
       `ratchet-core::runtime_abi::runtime_builtin_call_manifest()` keeps the
       `nix.builtin.*` call-shape inventory in stable runtime-symbol order and
@@ -9264,10 +9267,11 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `// SAFETY:` invariant comments, second-reviewer requirement, sanitizer-CI
       requirement, and the innately unsafe code-pointer-transmute call boundary.
       Tests assert the manifest, prove the crate root declares the lint, and scan
-      current JIT sources for real `unsafe`/`extern`/`transmute` code tokens
-      outside line comments and ordinary strings. This is a precursor only: no
-      unsafe JIT blocks, exported wrappers, executable code calls, CI jobs, or
-      review automation are implemented here.
+      current JIT sources for executable unsafe-boundary tokens, allowing only
+      the inert thunk/lambda native-entry type aliases before any executable
+      unsafe code lands. This is a precursor only: no unsafe JIT blocks,
+      exported wrappers, executable code calls, CI jobs, or review automation are
+      implemented here.
 - [ ] Copy-and-patch hedge kept measurable if Cranelift warmup proves too high
       (`M-8`).
 - [x] Current copy-and-patch measurement hedge precursor:

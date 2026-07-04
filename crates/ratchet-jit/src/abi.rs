@@ -1,14 +1,15 @@
-//! Address-free runtime ABI inventory and CLIF signature adapters.
+//! Address-free runtime ABI inventory, native entry aliases, and CLIF adapters.
 //!
 //! The inventory in this module mirrors the safe runtime ABI metadata owned by
 //! `ratchet-core`. It gives JIT-side code a local, documented entry point for the
-//! thunk, lambda, builtin primop, and core-owned helper call signatures without
-//! creating raw function-pointer type aliases or executable wrappers. The CLIF
+//! thunk, lambda, builtin primop, and core-owned helper call signatures. The
+//! native entry aliases name the future unsafe call boundary for compiled thunk
+//! and lambda bodies without constructing any function pointer values. The CLIF
 //! adapter lowers those frozen call signatures to Cranelift [`Signature`] values
 //! only; it does not construct a Cranelift module, register symbols, emit code,
-//! or call native addresses.
+//! cast code pointers, or call native addresses.
 
-use std::{error::Error, fmt};
+use std::{error::Error, ffi::c_void, fmt};
 
 use cranelift_codegen::{
     ir::{AbiParam, Signature, Type, types},
@@ -20,11 +21,47 @@ use ratchet_core::{
     runtime_helper_call_signatures, runtime_lambda_call_signature, runtime_primop_call_signatures,
     runtime_thunk_call_signature,
 };
+use ratchet_value::value::Value;
 use target_lexicon::{CallingConvention, Triple};
 
 const RUNTIME_VALUE_CLIF_SIZE_BYTES: usize = 16;
 const RUNTIME_VALUE_CLIF_WORDS: usize = 2;
 const RUNTIME_VALUE_CLIF_WORD_BYTES: usize = 8;
+
+/// Opaque pointer to evaluator runtime context state passed to compiled code.
+///
+/// This is a raw ABI pointer placeholder only. The pointed-to layout and
+/// lifetime model remain owned by future runtime-wrapper work; safe preflights
+/// must not dereference it.
+pub type JitRuntimeContextPtr = *mut c_void;
+
+/// Opaque pointer to a captured environment frame passed to compiled code.
+///
+/// This is a raw ABI pointer placeholder only. The frame layout, borrow
+/// discipline, and root tracking remain future runtime-wrapper work; safe
+/// preflights must not dereference it.
+pub type JitEnvFramePtr = *mut c_void;
+
+/// Native entry type for a compiled thunk body.
+///
+/// The signature is the concrete Rust type-level counterpart of
+/// [`runtime_thunk_call_signature`]: `extern "C"` calling convention, runtime
+/// context pointer, environment pointer, and one by-value runtime [`Value`]
+/// result. Calling a value of this type is unsafe because it crosses into
+/// compiled code with raw pointers and evaluator-owned state. This alias does
+/// not create, cast, register, or call any function pointer.
+pub type JitThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> Value;
+
+/// Native entry type for a compiled lambda body.
+///
+/// The signature is the concrete Rust type-level counterpart of
+/// [`runtime_lambda_call_signature`]: `extern "C"` calling convention, runtime
+/// context pointer, environment pointer, one already-applied by-value runtime
+/// [`Value`] argument, and one by-value runtime [`Value`] result. Calling a
+/// value of this type is unsafe because it crosses into compiled code with raw
+/// pointers and evaluator-owned state. This alias does not create, cast,
+/// register, or call any function pointer.
+pub type JitLambdaFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, Value) -> Value;
 
 /// Address-free runtime-call signatures required by JIT lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,6 +331,8 @@ fn validate_observed_value_layout(
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use cranelift_codegen::ir::{Type, types};
     use ratchet_core::{
         RuntimeCallableKind, RuntimeHelperRole, runtime_abi_value_layout,
@@ -363,6 +402,57 @@ mod tests {
                             && symbol.role() == RuntimeHelperRole::Allocation
                 ))
         );
+    }
+
+    #[test]
+    fn native_entry_aliases_remain_pointer_sized_beside_core_metadata() {
+        let thunk_signature = runtime_thunk_call_signature();
+        let lambda_signature = runtime_lambda_call_signature();
+
+        assert_eq!(
+            mem::size_of::<Value>(),
+            runtime_abi_value_layout().size_bytes()
+        );
+        assert_eq!(
+            mem::size_of::<JitRuntimeContextPtr>(),
+            mem::size_of::<usize>()
+        );
+        assert_eq!(mem::size_of::<JitEnvFramePtr>(), mem::size_of::<usize>());
+        assert_eq!(mem::size_of::<JitThunkFn>(), mem::size_of::<usize>());
+        assert_eq!(mem::size_of::<JitLambdaFn>(), mem::size_of::<usize>());
+        assert_eq!(
+            thunk_signature.convention(),
+            RuntimeAbiCallingConvention::ExternC
+        );
+        assert_eq!(
+            thunk_signature
+                .parameters()
+                .iter()
+                .map(|parameter| parameter.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                RuntimeAbiParameterKind::RuntimeContext,
+                RuntimeAbiParameterKind::EnvPointer
+            ]
+        );
+        assert_eq!(thunk_signature.return_kind(), RuntimeAbiReturnKind::Value);
+        assert_eq!(
+            lambda_signature.convention(),
+            RuntimeAbiCallingConvention::ExternC
+        );
+        assert_eq!(
+            lambda_signature
+                .parameters()
+                .iter()
+                .map(|parameter| parameter.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                RuntimeAbiParameterKind::RuntimeContext,
+                RuntimeAbiParameterKind::EnvPointer,
+                RuntimeAbiParameterKind::Value
+            ]
+        );
+        assert_eq!(lambda_signature.return_kind(), RuntimeAbiReturnKind::Value);
     }
 
     #[test]

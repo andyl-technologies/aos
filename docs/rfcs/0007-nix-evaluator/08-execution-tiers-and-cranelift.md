@@ -912,12 +912,15 @@ harness, never cut for scope.
       `Value` arguments, helper pointer/scalar parameters, symbol and
       inline-cache site ids, deopt-record pointers, error pointers, pointer,
       `Value`, unit, or divergent helper returns, and the 16-byte/two-register
-      value layout. Tests
+      value layout. `ratchet-jit::abi` mirrors the contract with inert
+      `JitThunkFn` and `JitLambdaFn` aliases over opaque runtime/environment
+      pointers and by-value `Value` arguments/results. Tests
       cross-check covered primop arities against the builtin declaration
-      inventory and pin representative helper signatures. This is ABI contract
-      metadata only; it is not an
-      exported `ThunkFn`/`LambdaFn` wrapper, raw-pointer call boundary, Cranelift
-      lowering, or `JITBuilder::symbol` registration.
+      inventory, pin representative helper signatures, and keep the inert
+      native-entry aliases pointer-sized beside the core thunk/lambda metadata.
+      This is ABI contract metadata only; it is not an exported
+      `ThunkFn`/`LambdaFn` wrapper, raw-pointer cast or call boundary,
+      Cranelift lowering, or `JITBuilder::symbol` registration.
 - [x] Current builtin runtime-call preflight precursor:
       `runtime_builtin_call_manifest()` keeps `nix.builtin.*` symbols in stable
       runtime-manifest order and classifies each builtin as callable
@@ -1363,10 +1366,11 @@ harness, never cut for scope.
       `// SAFETY:` invariant comments, second-reviewer requirement, sanitizer-CI
       requirement, and the innately unsafe code-pointer-transmute call boundary.
       Tests assert the manifest, prove the crate root declares the lint, and scan
-      current JIT sources for real `unsafe`/`extern`/`transmute` code tokens
-      outside line comments and ordinary strings. This is a precursor only: no
-      unsafe JIT blocks, exported wrappers, executable code calls, CI jobs, or
-      review automation are implemented here.
+      current JIT sources for executable unsafe-boundary tokens, allowing only
+      the inert thunk/lambda native-entry type aliases before any executable
+      unsafe code lands. This is a precursor only: no unsafe JIT blocks,
+      exported wrappers, executable code calls, CI jobs, or review automation are
+      implemented here.
 - [x] Current copy-and-patch measurement hedge precursor:
       `ratchet-jit::warmup::CopyAndPatchHedgeGate` keeps the deferred
       copy-and-patch alternative measurable without adding a stencil backend. It
