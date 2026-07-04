@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -284,6 +285,36 @@
         needle = "cli_replay_bisect_accepts_identical_artifacts";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
+      {
+        label = "machine-independent replay profile test";
+        needle = "gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile";
+      }
+      {
+        label = "machine-independent quiet profile";
+        needle = "HostAdversaryProfile::quiet_single_core()";
+      }
+      {
+        label = "machine-independent loaded profile";
+        needle = "HostAdversaryProfile::loaded_many_core()";
+      }
+      {
+        label = "machine-independent profile distinction";
+        needle = "assert_ne!(reproduced.profile, baseline.profile);";
+      }
+      {
+        label = "machine-independent canonical-log identity";
+        needle = "assert_eq!(reproduced.canonical_log, baseline.canonical_log);";
+      }
+      {
+        label = "machine-independent fingerprint identity";
+        needle = "assert_eq!(reproduced.final_fingerprint, baseline.final_fingerprint);";
+      }
+      {
+        label = "machine-independent artifact identity";
+        needle = "assert_eq!(reproduced.artifact_digest, baseline.artifact_digest);";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI replay check";
@@ -356,6 +387,14 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
+              --test gate_e2e_determinism \
+              gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
               cli_help_surface_rejects_unimplemented_future_flags \
               -- --test-threads=1
           '';
@@ -373,6 +412,7 @@ in
             replay_check=byte-identical-canonical-log
             replay_to_schedule_prefix=typed-payload-backed
             replay_to_materialization=model-temporal-graph
+            replay_machine_independent=mock-host-profile
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
