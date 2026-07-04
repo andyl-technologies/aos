@@ -354,6 +354,12 @@ struct SaveArgs {
     /// Stop past this virtual time.
     #[arg(long, value_name = "dur")]
     max_virtual_time: Option<String>,
+    /// Stop when this assertion is violated.
+    #[arg(long, value_name = "assertion")]
+    property: Option<String>,
+    /// Stop when this guest marker is emitted.
+    #[arg(long, value_name = "name")]
+    marker: Option<String>,
     /// Write the exported savepoint handle here.
     #[arg(long, value_name = "path")]
     out: Option<PathBuf>,
@@ -1364,7 +1370,14 @@ struct SaveInvocationPlan {
     at: SaveAtArg,
     label: String,
     output: SaveOutputTarget,
+    selector: Option<SaveAtSelector>,
     run_plan: RunInvocationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SaveAtSelector {
+    PropertyViolation { assertion: String },
+    Marker { name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1925,9 +1938,32 @@ fn plan_save_invocation(
     let at = args.at.ok_or_else(|| {
         usage_error("save requires --at <virtual-time|quiescence|property|marker>")
     })?;
+    let property_selector = args
+        .property
+        .as_deref()
+        .map(|value| plan_save_selector(value, "--property"))
+        .transpose()?;
+    let marker_selector = args
+        .marker
+        .as_deref()
+        .map(|value| plan_save_selector(value, "--marker"))
+        .transpose()?;
+    let mut selector = None;
     let until = match at {
-        SaveAtArg::Quiescence => RunUntilArg::Quiescence,
+        SaveAtArg::Quiescence => {
+            if property_selector.is_some() || marker_selector.is_some() {
+                return Err(usage_error(
+                    "save --at quiescence does not accept --property or --marker selectors",
+                ));
+            }
+            RunUntilArg::Quiescence
+        }
         SaveAtArg::VirtualTime => {
+            if property_selector.is_some() || marker_selector.is_some() {
+                return Err(usage_error(
+                    "save --at virtual-time does not accept --property or --marker selectors",
+                ));
+            }
             if args.max_virtual_time.is_none() {
                 return Err(usage_error(
                     "save --at virtual-time requires --max-virtual-time <dur>",
@@ -1936,12 +1972,36 @@ fn plan_save_invocation(
             RunUntilArg::VirtualTime
         }
         SaveAtArg::Property => {
-            return Err(usage_error(
-                "save --at property requires a property breakpoint selector",
-            ));
+            let Some(assertion) = property_selector else {
+                return Err(usage_error(
+                    "save --at property requires --property <assertion>",
+                ));
+            };
+            if marker_selector.is_some() {
+                return Err(usage_error("save --at property does not accept --marker"));
+            }
+            if args.max_virtual_time.is_some() {
+                return Err(usage_error(
+                    "save --at property does not accept --max-virtual-time",
+                ));
+            }
+            selector = Some(SaveAtSelector::PropertyViolation { assertion });
+            RunUntilArg::Property
         }
         SaveAtArg::Marker => {
-            return Err(usage_error("save --at marker requires a marker coordinate"));
+            let Some(name) = marker_selector else {
+                return Err(usage_error("save --at marker requires --marker <name>"));
+            };
+            if property_selector.is_some() {
+                return Err(usage_error("save --at marker does not accept --property"));
+            }
+            if args.max_virtual_time.is_some() {
+                return Err(usage_error(
+                    "save --at marker does not accept --max-virtual-time",
+                ));
+            }
+            selector = Some(SaveAtSelector::Marker { name });
+            RunUntilArg::Quiescence
         }
     };
     let label = plan_save_label(args.label.as_deref())?;
@@ -1966,12 +2026,27 @@ fn plan_save_invocation(
         at,
         label,
         output,
+        selector,
         run_plan,
     })
 }
 
 fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
     plan_nonempty_label(label, "savepoint")
+}
+
+fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliError> {
+    let selector = value.trim();
+    if selector.is_empty()
+        || selector
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
+    {
+        return Err(usage_error(format!(
+            "{flag} must not be empty or contain control whitespace"
+        )));
+    }
+    Ok(selector.to_string())
 }
 
 fn plan_fork_label(label: Option<&str>) -> Result<String, CliError> {
@@ -5985,8 +6060,8 @@ where
             boundary
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            return Err(usage_error(format!(
-                "save --at {} requires a concrete selector",
+            return Err(backend_error(format!(
+                "save --at {} selector execution requires selector-specific breakpoint proof tracked by T-CLI-9",
                 save_plan.at.label()
             )));
         }
@@ -10607,6 +10682,8 @@ mod tests {
                     "--at <virtual-time|quiescence|property|marker>",
                     "--label <name>",
                     "--max-virtual-time <dur>",
+                    "--property <assertion>",
+                    "--marker <name>",
                     "--out <path>",
                 ],
             ),
@@ -11470,6 +11547,52 @@ mod tests {
         );
         assert_eq!(plan.run_plan.max_virtual_time_ticks, Some(2));
 
+        let property = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("property"),
+            String::from("--property"),
+            String::from("no-split-brain"),
+        ]);
+        let Commands::Save(args) = &property.command else {
+            panic!("expected save command");
+        };
+        let plan = plan_save_invocation(args, temp.path(), temp.path())?;
+        assert_eq!(plan.at, SaveAtArg::Property);
+        assert_eq!(
+            plan.selector,
+            Some(SaveAtSelector::PropertyViolation {
+                assertion: String::from("no-split-brain")
+            })
+        );
+        assert_eq!(
+            plan.run_plan.terminal_condition,
+            RunTerminalCondition::Property
+        );
+
+        let marker = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("marker"),
+            String::from("--marker"),
+            String::from("compaction-started"),
+        ]);
+        let Commands::Save(args) = &marker.command else {
+            panic!("expected save command");
+        };
+        let plan = plan_save_invocation(args, temp.path(), temp.path())?;
+        assert_eq!(plan.at, SaveAtArg::Marker);
+        assert_eq!(
+            plan.selector,
+            Some(SaveAtSelector::Marker {
+                name: String::from("compaction-started")
+            })
+        );
+
         let missing_at = Cli::parse_from([
             String::from("crucible"),
             String::from("save"),
@@ -11671,6 +11794,58 @@ mod tests {
         assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
         assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
         assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let property_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("13"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("property"),
+            String::from("--property"),
+            String::from("no-split-brain"),
+            String::from("--label"),
+            String::from("property-stop"),
+        ]);
+        let error = dispatch(&property_cli)
+            .expect_err("property save execution should remain blocked until selector proof lands");
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(
+            error
+                .to_string()
+                .contains("selector-specific breakpoint proof")
+        );
+
+        let marker_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("14"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("marker"),
+            String::from("--marker"),
+            String::from("compaction-started"),
+            String::from("--label"),
+            String::from("marker-stop"),
+        ]);
+        let error = dispatch(&marker_cli)
+            .expect_err("marker save execution should remain blocked until selector proof lands");
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(
+            error
+                .to_string()
+                .contains("selector-specific breakpoint proof")
+        );
 
         let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
         let qemu_cli = Cli::parse_from([

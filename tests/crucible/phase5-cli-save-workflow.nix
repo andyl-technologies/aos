@@ -89,6 +89,14 @@
         needle = "max_virtual_time";
       }
       {
+        label = "property selector coordinate";
+        needle = "--property <assertion>";
+      }
+      {
+        label = "marker selector coordinate";
+        needle = "--marker <name>";
+      }
+      {
         label = "save handle schema";
         needle = "crucible.savepoint-handle.v1";
       }
@@ -133,12 +141,16 @@
         needle = "SessionCommand::CreateSavepoint";
       }
       {
-        label = "property selector blocker";
-        needle = "save --at property requires a property breakpoint selector";
+        label = "property breakpoint selector";
+        needle = "SaveAtSelector::PropertyViolation";
       }
       {
-        label = "marker selector blocker";
-        needle = "save --at marker requires a marker coordinate";
+        label = "marker breakpoint selector";
+        needle = "SaveAtSelector::Marker";
+      }
+      {
+        label = "selector execution blocker";
+        needle = "selector-specific breakpoint proof tracked by T-CLI-9";
       }
       {
         label = "save planning test";
