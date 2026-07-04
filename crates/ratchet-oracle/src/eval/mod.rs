@@ -76,7 +76,8 @@ pub use thunk_lowering::{
 pub use thunk_payload::{
     ParallelThunkPayloadCell, ParallelThunkPayloadError, ParallelThunkPayloadGuard,
     ParallelThunkPayloadWait, ParallelThunkPayloadWorkWait, ParallelThunkTerminalPayload,
-    ParallelThunkTerminalStatus,
+    ParallelThunkTerminalStatus, TreeWalkParallelThunkCell, TreeWalkParallelThunkGuard,
+    TreeWalkParallelThunkWait, TreeWalkParallelThunkWorkWait,
 };
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,

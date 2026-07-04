@@ -13,11 +13,14 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use thiserror::Error;
 
+use crate::value::Value;
+
 use super::thunk_cas::{ParallelThunkPublish, ParallelThunkTerminalState, ParallelThunkWorkerId};
 use super::thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,
     ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard, ParallelThunkWaitStats,
 };
+use super::tree_walk::TreeWalkError;
 
 /// A terminal payload published by a parallel thunk owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -399,6 +402,225 @@ pub enum ParallelThunkPayloadError {
     ClaimGuardMissing,
 }
 
+/// A payload-backed parallel thunk cell using tree-walk evaluator payloads.
+///
+/// This is the narrow evaluator-native bridge over [`ParallelThunkPayloadCell`]:
+/// terminal success stores a [`Value`], terminal failure stores a
+/// [`TreeWalkError`], and waiters receive a standard
+/// `Result<Value, TreeWalkError>` that can be replayed or re-raised by future
+/// tree-walk scheduler wiring.
+#[derive(Debug)]
+pub struct TreeWalkParallelThunkCell {
+    payload_cell: ParallelThunkPayloadCell<Value, TreeWalkError>,
+}
+
+impl TreeWalkParallelThunkCell {
+    /// Creates a suspended tree-walk payload cell.
+    ///
+    /// `dropped_claim_error` is stored as the captured evaluator failure when a
+    /// claimed thunk guard is dropped without publishing a value or error.
+    pub fn new(dropped_claim_error: TreeWalkError) -> Self {
+        Self {
+            payload_cell: ParallelThunkPayloadCell::new(dropped_claim_error),
+        }
+    }
+
+    /// Loads the current terminal status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the underlying wait cell reports
+    /// an invalid state word.
+    pub fn state(&self) -> Result<ParallelThunkTerminalStatus, ParallelThunkPayloadError> {
+        self.payload_cell.state()
+    }
+
+    /// Returns waiter/wakeup counters for diagnostics and tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the underlying waiter mutex was
+    /// poisoned while being read.
+    pub fn stats(&self) -> Result<ParallelThunkWaitStats, ParallelThunkPayloadError> {
+        self.payload_cell.stats()
+    }
+
+    /// Returns the stored tree-walk terminal result, if any.
+    pub fn terminal_result(&self) -> Option<Result<Value, TreeWalkError>> {
+        self.payload_cell
+            .terminal_payload()
+            .map(ParallelThunkTerminalPayload::into_result)
+    }
+
+    /// Claims the thunk, returns its terminal result, or waits for the owner.
+    ///
+    /// A successful owner receives a [`TreeWalkParallelThunkGuard`] and must
+    /// publish either a forced [`Value`] or captured [`TreeWalkError`]. A waiter
+    /// receives `Ready(Ok(value))` for forced thunks or `Ready(Err(error))` for
+    /// failed thunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if wait-cell synchronization fails
+    /// or a terminal state is observed without a matching payload.
+    pub fn claim_or_wait_for_result(
+        &self,
+        worker: ParallelThunkWorkerId,
+    ) -> Result<TreeWalkParallelThunkWait<'_>, ParallelThunkPayloadError> {
+        Ok(TreeWalkParallelThunkWait::from_payload_wait(
+            self.payload_cell.claim_or_wait_for_payload(worker)?,
+        ))
+    }
+
+    /// Claims the thunk, runs advisory ready work, then waits for the result.
+    ///
+    /// This preserves the generic wait-or-steal contention counters while
+    /// exposing evaluator-native `Value`/`TreeWalkError` terminal replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if wait-cell synchronization fails
+    /// or a terminal state is observed without a matching payload.
+    pub fn claim_or_run_ready_then_wait_for_result(
+        &self,
+        worker: ParallelThunkWorkerId,
+        run_ready_work: impl FnMut() -> ParallelThunkReadyWork,
+    ) -> Result<TreeWalkParallelThunkWorkWait<'_>, ParallelThunkPayloadError> {
+        let wait = self
+            .payload_cell
+            .claim_or_run_ready_then_wait_for_payload(worker, run_ready_work)?;
+        let (result, report) = wait.into_parts();
+        Ok(TreeWalkParallelThunkWorkWait {
+            result: TreeWalkParallelThunkWait::from_payload_wait(result),
+            report,
+        })
+    }
+}
+
+/// Result of claiming or waiting on a tree-walk parallel thunk.
+#[must_use = "a claimed parallel thunk must be published as a value or error"]
+#[derive(Debug)]
+pub enum TreeWalkParallelThunkWait<'a> {
+    /// The caller owns thunk evaluation and must publish a terminal result.
+    Claimed(TreeWalkParallelThunkGuard<'a>),
+    /// The thunk has reached a terminal state and the evaluator result is ready.
+    Ready(Result<Value, TreeWalkError>),
+    /// The same worker re-entered a thunk it already owns.
+    SelfCycle {
+        /// The worker that owns the recursive force.
+        owner: ParallelThunkWorkerId,
+    },
+}
+
+impl<'a> TreeWalkParallelThunkWait<'a> {
+    fn from_payload_wait(wait: ParallelThunkPayloadWait<'a, Value, TreeWalkError>) -> Self {
+        match wait {
+            ParallelThunkPayloadWait::Claimed(guard) => {
+                Self::Claimed(TreeWalkParallelThunkGuard { guard })
+            }
+            ParallelThunkPayloadWait::Terminal(payload) => Self::Ready(payload.into_result()),
+            ParallelThunkPayloadWait::SelfCycle { owner } => Self::SelfCycle { owner },
+        }
+    }
+}
+
+/// Result and contention report from a tree-walk wait-or-steal precursor call.
+///
+/// This wrapper may carry a worker-affine claim guard and is intentionally not
+/// [`Send`]:
+///
+/// ```compile_fail
+/// use ratchet_oracle::eval::TreeWalkParallelThunkWorkWait;
+///
+/// fn assert_send<T: Send>() {}
+///
+/// assert_send::<TreeWalkParallelThunkWorkWait<'static>>();
+/// ```
+#[must_use = "a claimed parallel thunk must be published as a value or error"]
+#[derive(Debug)]
+pub struct TreeWalkParallelThunkWorkWait<'a> {
+    result: TreeWalkParallelThunkWait<'a>,
+    report: ParallelThunkContentionReport,
+}
+
+impl<'a> TreeWalkParallelThunkWorkWait<'a> {
+    /// Returns the claim, terminal result, or self-cycle classification.
+    pub const fn result(&self) -> &TreeWalkParallelThunkWait<'a> {
+        &self.result
+    }
+
+    /// Returns the contention-avoidance report.
+    pub const fn report(&self) -> ParallelThunkContentionReport {
+        self.report
+    }
+
+    /// Consumes the outcome into its result and report.
+    pub fn into_parts(self) -> (TreeWalkParallelThunkWait<'a>, ParallelThunkContentionReport) {
+        (self.result, self.report)
+    }
+}
+
+/// A live tree-walk parallel thunk claim.
+///
+/// The guard is worker-affine and intentionally not [`Send`]:
+///
+/// ```compile_fail
+/// use ratchet_oracle::eval::TreeWalkParallelThunkGuard;
+///
+/// fn assert_send<T: Send>() {}
+///
+/// assert_send::<TreeWalkParallelThunkGuard<'static>>();
+/// ```
+#[must_use = "publish the claimed parallel thunk as a value or error"]
+#[derive(Debug)]
+pub struct TreeWalkParallelThunkGuard<'a> {
+    guard: ParallelThunkPayloadGuard<'a, Value, TreeWalkError>,
+}
+
+impl TreeWalkParallelThunkGuard<'_> {
+    /// Publishes a tree-walk thunk result and wakes waiters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if a payload was already stored,
+    /// if the guard has already been consumed, or if terminal publication fails.
+    pub fn publish_result(
+        self,
+        result: Result<Value, TreeWalkError>,
+    ) -> Result<ParallelThunkPublish, ParallelThunkPayloadError> {
+        match result {
+            Ok(value) => self.publish_value(value),
+            Err(error) => self.publish_error(error),
+        }
+    }
+
+    /// Publishes a successful tree-walk thunk value and wakes waiters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if a payload was already stored,
+    /// if the guard has already been consumed, or if terminal publication fails.
+    pub fn publish_value(
+        self,
+        value: Value,
+    ) -> Result<ParallelThunkPublish, ParallelThunkPayloadError> {
+        self.guard.publish_forced(value)
+    }
+
+    /// Publishes a failed tree-walk thunk error and wakes waiters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if a payload was already stored,
+    /// if the guard has already been consumed, or if terminal publication fails.
+    pub fn publish_error(
+        self,
+        error: TreeWalkError,
+    ) -> Result<ParallelThunkPublish, ParallelThunkPayloadError> {
+        self.guard.publish_failed(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -410,6 +632,9 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use crate::{compile::ir::IrId, syntax::Span, value::Value};
+
+    use super::super::tree_walk::{TreeWalkError, TreeWalkErrorKind};
     use super::*;
 
     fn worker(raw: u64) -> ParallelThunkWorkerId {
@@ -445,6 +670,49 @@ mod tests {
             }
             ParallelThunkPayloadWait::SelfCycle { owner } => {
                 panic!("expected terminal payload, found self-cycle owned by {owner:?}");
+            }
+        }
+    }
+
+    fn tree_walk_error(raw: u32) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::DivisionByZero { id: IrId::new(raw) },
+            Span::new(raw, raw.saturating_add(1)),
+        )
+    }
+
+    fn ready_result(wait: TreeWalkParallelThunkWait<'_>) -> Result<Value, TreeWalkError> {
+        match wait {
+            TreeWalkParallelThunkWait::Ready(result) => result,
+            TreeWalkParallelThunkWait::Claimed(_) => {
+                panic!("expected ready tree-walk result, found claim guard");
+            }
+            TreeWalkParallelThunkWait::SelfCycle { owner } => {
+                panic!("expected ready tree-walk result, found self-cycle owned by {owner:?}");
+            }
+        }
+    }
+
+    fn self_cycle_owner(wait: TreeWalkParallelThunkWait<'_>) -> ParallelThunkWorkerId {
+        match wait {
+            TreeWalkParallelThunkWait::SelfCycle { owner } => owner,
+            TreeWalkParallelThunkWait::Ready(_) => {
+                panic!("expected tree-walk self-cycle, found ready result");
+            }
+            TreeWalkParallelThunkWait::Claimed(_) => {
+                panic!("expected tree-walk self-cycle, found claim guard");
+            }
+        }
+    }
+
+    fn claimed_guard(wait: TreeWalkParallelThunkWait<'_>) -> TreeWalkParallelThunkGuard<'_> {
+        match wait {
+            TreeWalkParallelThunkWait::Claimed(guard) => guard,
+            TreeWalkParallelThunkWait::Ready(_) => {
+                panic!("expected claimed tree-walk thunk, found ready result");
+            }
+            TreeWalkParallelThunkWait::SelfCycle { owner } => {
+                panic!("expected claimed tree-walk thunk, found self-cycle owned by {owner:?}");
             }
         }
     }
@@ -701,5 +969,258 @@ mod tests {
         let stats = cell.stats().expect("stats are readable");
         assert_eq!(stats.wait_registrations(), 0);
         assert_eq!(stats.notifications(), 0);
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_replays_forced_values_as_ok_results() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+
+        guard
+            .publish_value(Value::int(42))
+            .expect("owner publishes value");
+
+        let later = ready_result(
+            cell.claim_or_wait_for_result(worker(2))
+                .expect("later worker reads terminal value"),
+        )
+        .expect("forced value replays as Ok");
+
+        assert_eq!(later.as_int(), Ok(42));
+        assert_eq!(
+            cell.terminal_result()
+                .expect("terminal result is stored")
+                .expect("stored result is Ok")
+                .as_int(),
+            Ok(42)
+        );
+        assert_eq!(cell.state(), Ok(ParallelThunkTerminalStatus::Forced));
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_forced_value_wakes_blocked_waiter() {
+        let cell = Arc::new(TreeWalkParallelThunkCell::new(tree_walk_error(99)));
+        let owner_ready = Arc::new(Barrier::new(3));
+        let publish_ready = Arc::new(Barrier::new(2));
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let owner_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            let publish_ready = Arc::clone(&publish_ready);
+            thread::spawn(move || {
+                let guard = claimed_guard(
+                    cell.claim_or_wait_for_result(worker(1))
+                        .expect("owner claims tree-walk thunk"),
+                );
+                owner_ready.wait();
+                publish_ready.wait();
+                guard
+                    .publish_value(Value::int(123))
+                    .expect("owner publishes tree-walk value");
+            })
+        };
+
+        let waiter_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            thread::spawn(move || {
+                owner_ready.wait();
+                let result = ready_result(
+                    cell.claim_or_wait_for_result(worker(2))
+                        .expect("waiter observes tree-walk value"),
+                );
+                result_tx.send(result).expect("result send succeeds");
+            })
+        };
+
+        owner_ready.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if cell
+                .stats()
+                .expect("stats are readable")
+                .wait_registrations()
+                >= 1
+            {
+                break;
+            }
+            thread::yield_now();
+        }
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            1
+        );
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        publish_ready.wait();
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter wakes")
+            .expect("forced value replays as Ok");
+
+        assert_eq!(result.as_int(), Ok(123));
+        owner_thread.join().expect("owner joins");
+        waiter_thread.join().expect("waiter joins");
+        let stats = cell.stats().expect("stats are readable");
+        assert_eq!(stats.wait_registrations(), 1);
+        assert_eq!(stats.notifications(), 1);
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_replays_failures_as_err_results() {
+        let expected = tree_walk_error(7);
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+
+        guard
+            .publish_error(expected.clone())
+            .expect("owner publishes error");
+
+        let later = ready_result(
+            cell.claim_or_wait_for_result(worker(2))
+                .expect("later worker reads terminal error"),
+        )
+        .expect_err("failed thunk replays as Err");
+
+        assert_eq!(later, expected);
+        assert_eq!(
+            cell.terminal_result()
+                .expect("terminal result is stored")
+                .expect_err("stored result is Err"),
+            expected
+        );
+        assert_eq!(cell.state(), Ok(ParallelThunkTerminalStatus::Failed));
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_publish_result_routes_ok_and_err() {
+        let ok_cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        claimed_guard(
+            ok_cell
+                .claim_or_wait_for_result(worker(1))
+                .expect("owner claims ok tree-walk thunk"),
+        )
+        .publish_result(Ok(Value::int(64)))
+        .expect("owner publishes ok result");
+        assert_eq!(
+            ready_result(
+                ok_cell
+                    .claim_or_wait_for_result(worker(2))
+                    .expect("later worker reads ok result")
+            )
+            .expect("stored result is ok")
+            .as_int(),
+            Ok(64)
+        );
+
+        let err_cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let expected = tree_walk_error(21);
+        claimed_guard(
+            err_cell
+                .claim_or_wait_for_result(worker(1))
+                .expect("owner claims err tree-walk thunk"),
+        )
+        .publish_result(Err(expected.clone()))
+        .expect("owner publishes err result");
+        assert_eq!(
+            ready_result(
+                err_cell
+                    .claim_or_wait_for_result(worker(2))
+                    .expect("later worker reads err result")
+            )
+            .expect_err("stored result is err"),
+            expected
+        );
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_preserves_self_cycle_classification() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let _guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+
+        assert_eq!(
+            self_cycle_owner(
+                cell.claim_or_wait_for_result(worker(1))
+                    .expect("same worker sees self-cycle")
+            ),
+            worker(1)
+        );
+        assert!(cell.terminal_result().is_none());
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_drop_publishes_configured_error() {
+        let dropped = tree_walk_error(13);
+        let cell = TreeWalkParallelThunkCell::new(dropped.clone());
+
+        {
+            let _guard = claimed_guard(
+                cell.claim_or_wait_for_result(worker(1))
+                    .expect("owner claims tree-walk thunk"),
+            );
+        }
+
+        assert_eq!(cell.state(), Ok(ParallelThunkTerminalStatus::Failed));
+        assert_eq!(
+            cell.terminal_result()
+                .expect("terminal result is stored")
+                .expect_err("drop failure replays as Err"),
+            dropped
+        );
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_ready_work_preserves_contention_report() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let owner_guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+        let mut owner_guard = Some(owner_guard);
+        let mut step = 0usize;
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait_for_result(worker(2), || {
+                step = step.saturating_add(1);
+                match step {
+                    1 => ParallelThunkReadyWork::RanLocal,
+                    2 => {
+                        owner_guard
+                            .take()
+                            .expect("owner guard remains available")
+                            .publish_value(Value::int(77))
+                            .expect("owner publishes during ready work");
+                        ParallelThunkReadyWork::StolePeer
+                    }
+                    _ => ParallelThunkReadyWork::Idle,
+                }
+            })
+            .expect("wait-or-steal tree-walk path completes");
+
+        let (result, report) = outcome.into_parts();
+        assert_eq!(
+            ready_result(result)
+                .expect("forced value replays as Ok")
+                .as_int(),
+            Ok(77)
+        );
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
     }
 }

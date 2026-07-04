@@ -7410,9 +7410,23 @@ nurseries build on the bump arena.
       wake/replay, drop-to-failed payload publication, wait-or-steal payload
       return with contention counters, and replay for later claim attempts. This
       is still a safe payload precursor only: it does not replace the serial
-      tree-walk thunk cell, store evaluator-native `Value`/`TreeWalkError`
-      payloads, install the final lock-free waiter list, wire scheduler parking,
-      or satisfy the loom/Miri/TSan audit.
+      tree-walk thunk cell, install the final lock-free waiter list, wire
+      scheduler parking, or satisfy the loom/Miri/TSan audit.
+- [x] Current tree-walk parallel thunk payload bridge:
+      `TreeWalkParallelThunkCell` wraps the generic payload cell with
+      evaluator-native `Value` success payloads and `TreeWalkError` failure
+      payloads. Owners can publish `Ok(Value)`/`Err(TreeWalkError)` through a
+      single result method or explicit value/error methods, waiters receive a
+      replayable `Result<Value, TreeWalkError>`, and dropped claims publish the
+      configured tree-walk error rather than a synthetic test payload. Tests
+      cover forced-value replay, blocking forced-value wakeup, failure replay,
+      `publish_result` routing, dropped-claim error replay, self-cycle
+      classification, and wait-or-steal contention counters; compile-fail docs
+      keep tree-walk claim wrappers worker-affine. This is still an
+      evaluator-native payload bridge
+      only: it does not replace the serial tree-walk thunk cell, execute thunk
+      bodies through the parallel scheduler, install the final lock-free waiter
+      list, wire scheduler parking, or satisfy the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
