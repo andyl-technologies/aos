@@ -40,7 +40,8 @@ use crucible_session::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, GenesisCheckpoint, MaterializationPolicy,
         MaterializationTrigger, MemoryDagStore, OverrideDecision, Schedule, SchedulingPoint,
-        SearchFailureOracle, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
+        SearchDiscoveredFailure, SearchFailureOracle, SimDuration, TemporalGraph,
+        TemporalGraphStoreError, VirtualTime,
     },
 };
 use serde::Deserialize;
@@ -1487,9 +1488,18 @@ struct LocalDoubleSearchReport {
     explored: usize,
     failures: usize,
     exhausted: bool,
+    failure_oracle: String,
+    counterexample: Option<LocalDoubleSearchCounterexample>,
     replay_oracle_considered: usize,
     replay_oracle_sampled: usize,
     replay_oracle_skipped: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalDoubleSearchCounterexample {
+    configuration: crucible::ContentHash,
+    fingerprint: crucible::ContentHash,
+    artifact_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -12151,6 +12161,28 @@ fn run_local_double_search_workflow_with_graph(
     graph: &mut TemporalGraph,
 ) -> Result<BackendCommandOutcome, CliError> {
     let failure_oracle = SearchFailureOracle::none();
+    run_local_double_search_workflow_with_graph_and_failure_oracle(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        plan,
+        root,
+        graph,
+        &failure_oracle,
+        "none",
+    )
+}
+
+fn run_local_double_search_workflow_with_graph_and_failure_oracle(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    root: &crucible::Configuration,
+    graph: &mut TemporalGraph,
+    failure_oracle: &SearchFailureOracle,
+    failure_oracle_label: &str,
+) -> Result<BackendCommandOutcome, CliError> {
     let sampling_config =
         crucible::SearchReplayOracleSamplingConfig::new(1, 1, "cli-local-double-search")
             .map_err(|error| backend_error(format!("local-double search setup failed: {error}")))?;
@@ -12162,23 +12194,43 @@ fn run_local_double_search_workflow_with_graph(
             plan.budget,
             MaterializationPolicy::with_budget(search_materialization_budget(plan.max_states)),
             MaterializationTrigger::RepeatedForkSource,
-            &failure_oracle,
+            failure_oracle,
             plan.max_depth,
             &sampling_config,
         )
         .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
     let run = sampled.run;
+    let counterexample_artifact = run
+        .discovered_failures
+        .first()
+        .map(|failure| search_failure_reproduction_artifact_bytes(backend_plan, plan, failure))
+        .transpose()?;
+    let counterexample = run
+        .discovered_failures
+        .first()
+        .zip(counterexample_artifact.as_ref())
+        .map(|(failure, artifact)| LocalDoubleSearchCounterexample {
+            configuration: failure.configuration,
+            fingerprint: failure.fingerprint,
+            artifact_digest: content_address_bytes(artifact),
+        });
     let report = LocalDoubleSearchReport {
         root: run.root,
         expansions: run.expansions.len(),
         explored: run.explored_graph.len(),
         failures: run.discovered_failures.len(),
         exhausted: run.exhausted,
+        failure_oracle: failure_oracle_label.to_string(),
+        counterexample,
         replay_oracle_considered: sampled.replay_oracle_sampling.considered,
         replay_oracle_sampled: sampled.replay_oracle_sampling.sampled,
         replay_oracle_skipped: sampled.replay_oracle_sampling.skipped,
     };
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    if let Some(artifact) = counterexample_artifact {
+        outcome.artifact_digest = content_address_bytes(&artifact);
+        outcome.reproduction_artifact = Some(artifact);
+    }
     apply_local_double_search_report(&mut outcome, plan, &report);
     Ok(outcome)
 }
@@ -12188,6 +12240,84 @@ fn search_materialization_budget(max_states: u64) -> usize {
         Ok(max_states) => max_states,
         Err(_) => usize::MAX,
     }
+}
+
+fn search_failure_reproduction_artifact_bytes(
+    backend_plan: &BackendSelectionPlan,
+    plan: &SearchDriverPlan,
+    failure: &SearchDiscoveredFailure,
+) -> Result<Vec<u8>, CliError> {
+    let canonical_log = canonical_log_entries_from_search_failure(failure);
+    let fingerprint_digest = cli_digest_from_engine_hash(failure.fingerprint);
+    let fingerprint_samples = vec![VerifyFingerprintSample {
+        index: 0,
+        instruction: 0,
+        node: String::from("search"),
+        digest: fingerprint_digest,
+    }];
+    verify_reproduction_artifact_bytes(
+        seed_to_u64(plan.scenario.scenario_def().seed()),
+        backend_plan.resolved_backend.as_ref(),
+        plan.scenario.scenario_def(),
+        &canonical_log,
+        &fingerprint_samples,
+    )
+}
+
+fn canonical_log_entries_from_search_failure(
+    failure: &SearchDiscoveredFailure,
+) -> Vec<CanonicalLogEntry> {
+    let entries = canonical_log_entries_from_engine_schedule(
+        failure.reproduction_artifact.artifact.schedule(),
+    );
+    if !entries.is_empty() {
+        return entries;
+    }
+
+    vec![CanonicalLogEntry {
+        sequence: 0,
+        virtual_time_ticks: 0,
+        node: String::from("search"),
+        kind: String::from("root-failure"),
+        summary: format!(
+            "configuration={} fingerprint={} discovery=state-space-search",
+            format_content_hash_ref(failure.configuration),
+            format_content_hash_ref(failure.fingerprint)
+        ),
+    }]
+}
+
+fn canonical_log_entries_from_engine_schedule(
+    schedule: &crucible::Schedule,
+) -> Vec<CanonicalLogEntry> {
+    schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| CanonicalLogEntry {
+            sequence: index as u64,
+            virtual_time_ticks: index as u64 + 1,
+            node: String::from("search"),
+            kind: engine_decision_kind(decision).to_string(),
+            summary: format!("{decision:?}"),
+        })
+        .collect()
+}
+
+fn engine_decision_kind(decision: &crucible::Decision) -> &'static str {
+    match decision {
+        crucible::Decision::DeliveryOrder(_) => "delivery-order",
+        crucible::Decision::FaultFires(_) => "fault-fires",
+        crucible::Decision::RngDraw(_) => "rng-draw",
+        crucible::Decision::Override(_) => "override",
+        crucible::Decision::Preemption(_) => "preemption",
+        crucible::Decision::AppRandom(_) => "app-random",
+        crucible::Decision::ControlFault(_) => "control-fault",
+    }
+}
+
+fn cli_digest_from_engine_hash(hash: crucible::ContentHash) -> String {
+    format!("{CONTENT_ADDRESS_PREFIX}{}", hash.to_hex())
 }
 
 fn apply_local_double_search_report(
@@ -12200,8 +12330,10 @@ fn apply_local_double_search_report(
         local_double_search_status(report.failures > 0, report.exhausted, plan.on_violation);
     outcome.status = status;
     outcome.exit_code = status.exit_code();
+    let (counterexample_stdout, counterexample_summary) =
+        local_double_search_counterexample_fields(report.counterexample.as_ref());
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}\tbudget_exhausted={}\tstatus={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
         format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
@@ -12209,6 +12341,7 @@ fn apply_local_double_search_report(
         plan.max_depth
             .map(|depth| depth.to_string())
             .unwrap_or_else(|| String::from("none")),
+        report.failure_oracle,
         report.replay_oracle_considered,
         report.replay_oracle_sampled,
         report.replay_oracle_skipped,
@@ -12216,6 +12349,7 @@ fn apply_local_double_search_report(
         report.expansions,
         report.explored,
         report.failures,
+        counterexample_stdout,
         report.exhausted,
         budget_exhausted,
         status.label()
@@ -12226,13 +12360,14 @@ fn apply_local_double_search_report(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle=none replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={} exhausted={} budget_exhausted={} status={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
             format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
             plan.max_depth
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| String::from("none")),
+            report.failure_oracle,
             report.replay_oracle_considered,
             report.replay_oracle_sampled,
             report.replay_oracle_skipped,
@@ -12240,12 +12375,34 @@ fn apply_local_double_search_report(
             report.expansions,
             report.explored,
             report.failures,
+            counterexample_summary,
             report.exhausted,
             budget_exhausted,
             status.label()
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+}
+
+fn local_double_search_counterexample_fields(
+    counterexample: Option<&LocalDoubleSearchCounterexample>,
+) -> (String, String) {
+    let Some(counterexample) = counterexample else {
+        return (String::new(), String::new());
+    };
+    let counterexample_configuration = format_content_hash_ref(counterexample.configuration);
+    let counterexample_fingerprint = format_content_hash_ref(counterexample.fingerprint);
+    let counterexample_artifact = &counterexample.artifact_digest;
+    (
+        format!(
+            "\tcounterexample={}\tcounterexample_fingerprint={}\tcounterexample_artifact={}",
+            counterexample_configuration, counterexample_fingerprint, counterexample_artifact
+        ),
+        format!(
+            " counterexample={} counterexample_fingerprint={} counterexample_artifact={}",
+            counterexample_configuration, counterexample_fingerprint, counterexample_artifact
+        ),
+    )
 }
 
 fn local_double_search_status(
@@ -19478,6 +19635,156 @@ cmdline = "cli-fuzz-family"
             entry.kind == "search_strategy_run" && entry.summary.contains("status=timeout")
         }));
 
+        let artifact_dir = temp.path().join("search-counterexamples");
+        let failure_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("search"),
+            frontier_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("2"),
+        ]);
+        let Commands::Search(args) = &failure_cli.command else {
+            panic!("expected search command");
+        };
+        let failure_plan = plan_search_invocation(args, temp.path())?;
+        let failure_backend =
+            plan_backend_selection(&failure_cli)?.expect("search should route to backend");
+        let mut candidate_graph = search_frontier_graph(failure_plan.scenario.scenario_form())?;
+        let candidate_run = candidate_graph.search_with_strategy_and_failure_oracle_bounded_depth(
+            failure_plan.scenario.scenario_form(),
+            &frontier_root,
+            failure_plan.engine_strategy,
+            crucible::SearchBudget::new(1),
+            MaterializationPolicy::with_budget(search_materialization_budget(
+                failure_plan.max_states,
+            )),
+            MaterializationTrigger::RepeatedForkSource,
+            &SearchFailureOracle::none(),
+            failure_plan.max_depth,
+        )?;
+        let failed_configuration = candidate_run
+            .expansions
+            .first()
+            .and_then(|expansion| expansion.search.frontier_report.explored.first())
+            .map(|child| child.configuration.id())
+            .expect("frontier fixture must expose a child failure candidate");
+        let failure_fingerprint = crucible::ContentHash::from_canonical_material(
+            "crucible.cli.search.counterexample.test.v1",
+            &format!(
+                "assertion=cli-search-counterexample\nconfiguration={}",
+                format_content_hash_ref(failed_configuration)
+            ),
+        );
+        let failure_oracle =
+            SearchFailureOracle::none().with_failure(failed_configuration, failure_fingerprint);
+        let mut failure_graph = search_frontier_graph(failure_plan.scenario.scenario_form())?;
+        let failure_outcome = run_local_double_search_workflow_with_graph_and_failure_oracle(
+            &plan_cli_invocation(&failure_cli),
+            &failure_backend,
+            None,
+            &failure_plan,
+            &frontier_root,
+            &mut failure_graph,
+            &failure_oracle,
+            "scenario-assertions",
+        )?;
+        assert_eq!(failure_outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(failure_outcome.exit_code, 1);
+        let failure_line = failure_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("failed search workflow must emit a search-run line");
+        assert!(failure_line.contains("failure_oracle=scenario-assertions"));
+        assert!(failure_line.contains("failures=1"));
+        assert!(failure_line.contains(&format!(
+            "counterexample={}",
+            format_content_hash_ref(failed_configuration)
+        )));
+        assert!(failure_line.contains(&format!(
+            "counterexample_fingerprint={}",
+            format_content_hash_ref(failure_fingerprint)
+        )));
+        assert!(failure_line.contains("counterexample_artifact=crucible-hash:"));
+        assert!(failure_line.contains("status=failed"));
+        let artifact = failure_outcome
+            .reproduction_artifact
+            .as_ref()
+            .expect("failed search must attach a counterexample artifact");
+        let decoded_artifact = validate_replayable_reproduction_artifact(&failure_cli, artifact)?;
+        assert_eq!(
+            decoded_artifact
+                .fingerprints
+                .first()
+                .map(|fingerprint| fingerprint.digest.as_str()),
+            Some(cli_digest_from_engine_hash(failure_fingerprint).as_str())
+        );
+        emit_backend_command_output(&failure_cli, &failure_outcome)?;
+        let emitted_artifacts = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(emitted_artifacts.len(), 1);
+        assert!(
+            emitted_artifacts[0]
+                .file_name()
+                .to_string_lossy()
+                .starts_with("repro-failed-")
+        );
+
+        let root_failure_fingerprint = crucible::ContentHash::from_canonical_material(
+            "crucible.cli.search.root-counterexample.test.v1",
+            &format!(
+                "assertion=cli-search-root-counterexample\nconfiguration={}",
+                format_content_hash_ref(frontier_root.id())
+            ),
+        );
+        let root_failure_oracle =
+            SearchFailureOracle::none().with_failure(frontier_root.id(), root_failure_fingerprint);
+        let mut root_failure_graph = search_frontier_graph(failure_plan.scenario.scenario_form())?;
+        let root_failure_outcome = run_local_double_search_workflow_with_graph_and_failure_oracle(
+            &plan_cli_invocation(&failure_cli),
+            &failure_backend,
+            None,
+            &failure_plan,
+            &frontier_root,
+            &mut root_failure_graph,
+            &root_failure_oracle,
+            "scenario-assertions",
+        )?;
+        assert_eq!(root_failure_outcome.status, BackendCommandStatus::Failed);
+        let root_failure_line = root_failure_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("root-failure search workflow must emit a search-run line");
+        assert!(root_failure_line.contains(&format!(
+            "counterexample={}",
+            format_content_hash_ref(frontier_root.id())
+        )));
+        let root_artifact = root_failure_outcome
+            .reproduction_artifact
+            .as_ref()
+            .expect("root search failure must attach a counterexample artifact");
+        let root_decoded = validate_replayable_reproduction_artifact(&failure_cli, root_artifact)?;
+        assert_eq!(root_decoded.decisions.len(), 1);
+        assert_eq!(
+            root_decoded
+                .decisions
+                .first()
+                .map(|decision| decision.kind.as_str()),
+            Some("root-failure")
+        );
+        assert_eq!(
+            root_decoded
+                .fingerprints
+                .first()
+                .map(|fingerprint| fingerprint.digest.as_str()),
+            Some(cli_digest_from_engine_hash(root_failure_fingerprint).as_str())
+        );
+
         let outcome = run_local_double_search_workflow(
             &plan_cli_invocation(&search_cli),
             &backend_plan,
@@ -19498,6 +19805,8 @@ cmdline = "cli-fuzz-family"
         assert!(search_line.contains("replay_oracle_considered=0"));
         assert!(search_line.contains("replay_oracle_sampled=0"));
         assert!(search_line.contains("failures=0"));
+        assert!(!search_line.contains("counterexample="));
+        assert!(!search_line.contains("counterexample_artifact="));
         assert!(search_line.contains("budget_exhausted=false"));
         assert!(search_line.contains("status=passed"));
         assert!(
