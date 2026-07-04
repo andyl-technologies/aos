@@ -17,6 +17,7 @@
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
   engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   searchStrategiesTest = builtins.readFile ../../crates/crucible/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -69,6 +70,10 @@
       {
         label = "T-CLI-13 terminal retained evidence CLI progress";
         needle = "`terminal-quiescence` evidence on the root or an explicit configuration hash";
+      }
+      {
+        label = "T-CLI-13 terminal retained sometimes CLI progress";
+        needle = "terminal `sometimes` failures through local-double\n  `search`";
       }
       {
         label = "T-CLI-13 local-double sampled API progress";
@@ -138,7 +143,11 @@
       }
       {
         label = "phase5 CLI terminal retained evidence fixture progress";
-        needle = "terminal-quiescence entries on root or explicitly\n  hashed configurations";
+        needle = "terminal quantum evaluation-boundary entries, and\n  terminal-quiescence entries";
+      }
+      {
+        label = "phase5 CLI terminal retained sometimes fixture progress";
+        needle = "local-double CLI coverage for retained\n  after-quiescence and terminal `sometimes` failures";
       }
       {
         label = "phase5 CLI retained evidence white-box validation progress";
@@ -239,8 +248,24 @@
         needle = "\"terminal-quiescence\"";
       }
       {
+        label = "search retained evidence evaluation boundary kind";
+        needle = "\"evaluation-boundary\"";
+      }
+      {
         label = "search retained evidence quiescent field";
         needle = "quiescent: Option<bool>";
+      }
+      {
+        label = "search retained evidence virtual time field";
+        needle = "virtual_time_ticks: Option<u64>";
+      }
+      {
+        label = "search retained evidence evaluation boundary parser";
+        needle = "fn parse_search_retained_evaluation_boundary_entry";
+      }
+      {
+        label = "search retained evidence evaluation boundary binding";
+        needle = "from_entries_with_quantum_evaluation_boundary";
       }
       {
         label = "search retained evidence terminal parser";
@@ -253,6 +278,10 @@
       {
         label = "search retained evidence terminal workflow regression";
         needle = "terminal quiescence search workflow must emit a search-run line";
+      }
+      {
+        label = "search retained evidence terminal sometimes workflow regression";
+        needle = "terminal sometimes search workflow must emit a search-run line";
       }
       {
         label = "search schedule-named truths schema";
@@ -721,6 +750,12 @@
       {
         label = "sampled search sequence offset bisection test";
         needle = "sampled_search_offset_localizes_bisection_sequence";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/trigger.rs" engineTrigger [
+      {
+        label = "recorded assertion log terminal quantum boundary constructor";
+        needle = "pub fn from_entries_with_quantum_evaluation_boundary";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_search_strategies.rs" searchStrategiesTest [

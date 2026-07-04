@@ -1186,13 +1186,15 @@ branch on the verdict without parsing output:
   limited to `always` false and `unreachable` true records. The local-double CLI
   path now has a hidden retained-evidence fixture input that validates
   `crucible.search-retained-evidence.v1` TOML, currently accepts
-  `guest-marker` retained events for white-box-enabled nodes and
-  `terminal-quiescence` evidence on the root or an explicit configuration hash,
-  rejects blocked terminal quiescence until blocker evidence is modeled, feeds
-  the resulting configuration-bound `SearchRetainedLogAssertionEvidence` into
-  the trusted retained-log provider, and records the retained evidence source
-  digest and payload in `search-run` provenance and replayable reproduction
-  artifacts.
+  `guest-marker` retained events for white-box-enabled nodes, terminal quantum
+  `evaluation-boundary` entries, and `terminal-quiescence` evidence on the root
+  or an explicit configuration hash. It rejects blocked terminal quiescence
+  until blocker evidence is modeled, uses this fixture to exercise retained
+  `after-quiescence` and terminal `sometimes` failures through local-double
+  `search`, feeds the resulting configuration-bound
+  `SearchRetainedLogAssertionEvidence` into the trusted retained-log provider,
+  and records the retained evidence source digest and payload in `search-run`
+  provenance and replayable reproduction artifacts.
   The default CLI path intentionally excludes absence-based existential/liveness
   failures, time/timer predicates, quiescence predicates outside explicit
   local-double terminal retained evidence, observable-event predicates, and

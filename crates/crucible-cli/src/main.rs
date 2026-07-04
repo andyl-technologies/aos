@@ -1650,6 +1650,8 @@ struct CliSearchRetainedEvidenceEntryToml {
     retired_icount: Option<u64>,
     #[serde(default)]
     quiescent: Option<bool>,
+    #[serde(default)]
+    virtual_time_ticks: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -2655,6 +2657,7 @@ fn load_search_retained_evidence_toml(
         .collect::<BTreeMap<_, _>>();
     let root = crucible::Configuration::genesis(scenario.scenario_def());
     let mut entries_by_configuration = BTreeMap::new();
+    let mut terminal_boundary_by_configuration = BTreeMap::new();
     let mut terminal_quiescence_by_configuration = BTreeMap::new();
     for (index, entry) in authored.evidence.into_iter().enumerate() {
         let configuration = parse_search_retained_evidence_configuration(
@@ -2685,9 +2688,21 @@ fn load_search_retained_evidence_toml(
                     )));
                 }
             }
+            "evaluation-boundary" => {
+                let ticks = parse_search_retained_evaluation_boundary_entry(label, index, entry)?;
+                if terminal_boundary_by_configuration
+                    .insert(configuration, ticks)
+                    .is_some()
+                {
+                    return Err(backend_error(format!(
+                        "search retained evidence {label} entry {index} duplicates terminal evaluation boundary for configuration {}",
+                        format_content_hash_ref(configuration)
+                    )));
+                }
+            }
             _ => {
                 return Err(backend_error(format!(
-                    "search retained evidence {label} entry {index} uses unsupported kind `{}`; expected `guest-marker` or `terminal-quiescence`",
+                    "search retained evidence {label} entry {index} uses unsupported kind `{}`; expected `guest-marker`, `evaluation-boundary`, or `terminal-quiescence`",
                     entry.kind
                 )));
             }
@@ -2696,24 +2711,39 @@ fn load_search_retained_evidence_toml(
 
     let configurations = entries_by_configuration
         .keys()
+        .chain(terminal_boundary_by_configuration.keys())
         .chain(terminal_quiescence_by_configuration.keys())
         .copied()
         .collect::<BTreeSet<_>>();
     Ok(configurations
         .into_iter()
         .map(|configuration| {
-            let mut evidence =
-                SearchRetainedLogAssertionEvidence::new(RecordedAssertionLog::from_entries(
-                    entries_by_configuration
-                        .remove(&configuration)
-                        .unwrap_or_default(),
-                ));
+            let entries = entries_by_configuration
+                .remove(&configuration)
+                .unwrap_or_default();
+            let recorded_log =
+                if let Some(ticks) = terminal_boundary_by_configuration.remove(&configuration) {
+                    let sequence = u64::try_from(entries.len()).map_err(|_| {
+                        backend_error(format!(
+                            "search retained evidence {label} configuration {} sequence index overflowed",
+                            format_content_hash_ref(configuration)
+                        ))
+                    })?;
+                    RecordedAssertionLog::from_entries_with_quantum_evaluation_boundary(
+                        entries,
+                        sequence,
+                        crucible::VirtualTime { ticks },
+                    )
+                } else {
+                    RecordedAssertionLog::from_entries(entries)
+                };
+            let mut evidence = SearchRetainedLogAssertionEvidence::new(recorded_log);
             if let Some(quiescence) = terminal_quiescence_by_configuration.remove(&configuration) {
                 evidence = evidence.with_terminal_scheduler_quiescence(quiescence);
             }
-            (configuration, evidence)
+            Ok((configuration, evidence))
         })
-        .collect())
+        .collect::<Result<_, CliError>>()?)
 }
 
 fn push_search_retained_guest_marker_entry(
@@ -2727,9 +2757,9 @@ fn push_search_retained_guest_marker_entry(
     >,
     configuration: crucible::ContentHash,
 ) -> Result<(), CliError> {
-    if entry.quiescent.is_some() {
+    if entry.quiescent.is_some() || entry.virtual_time_ticks.is_some() {
         return Err(backend_error(format!(
-            "search retained evidence {label} entry {index} kind `guest-marker` cannot set quiescent"
+            "search retained evidence {label} entry {index} kind `guest-marker` cannot set quiescent or virtual_time_ticks"
         )));
     }
     let Some(node) = entry.node else {
@@ -2775,14 +2805,40 @@ fn push_search_retained_guest_marker_entry(
     Ok(())
 }
 
+fn parse_search_retained_evaluation_boundary_entry(
+    label: &str,
+    index: usize,
+    entry: CliSearchRetainedEvidenceEntryToml,
+) -> Result<u64, CliError> {
+    if entry.node.is_some()
+        || entry.marker.is_some()
+        || entry.retired_icount.is_some()
+        || entry.quiescent.is_some()
+    {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `evaluation-boundary` cannot set node, marker, retired_icount, or quiescent"
+        )));
+    }
+    let Some(ticks) = entry.virtual_time_ticks else {
+        return Err(backend_error(format!(
+            "search retained evidence {label} entry {index} kind `evaluation-boundary` is missing virtual_time_ticks"
+        )));
+    };
+    Ok(ticks)
+}
+
 fn parse_search_retained_terminal_quiescence_entry(
     label: &str,
     index: usize,
     entry: CliSearchRetainedEvidenceEntryToml,
 ) -> Result<crucible::SchedulerQuiescence, CliError> {
-    if entry.node.is_some() || entry.marker.is_some() || entry.retired_icount.is_some() {
+    if entry.node.is_some()
+        || entry.marker.is_some()
+        || entry.retired_icount.is_some()
+        || entry.virtual_time_ticks.is_some()
+    {
         return Err(backend_error(format!(
-            "search retained evidence {label} entry {index} kind `terminal-quiescence` cannot set node, marker, or retired_icount"
+            "search retained evidence {label} entry {index} kind `terminal-quiescence` cannot set node, marker, retired_icount, or virtual_time_ticks"
         )));
     }
     match entry.quiescent {
@@ -16446,6 +16502,13 @@ mod tests {
         Ok(path)
     }
 
+    fn write_search_terminal_sometimes_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let form = search_terminal_sometimes_scenario_form()?;
+        let path = temp.path().join("search-terminal-sometimes-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
     fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
         let world = search_frontier_world()?;
         let properties = ::crucible::Properties::from_assertions_for_world(
@@ -16510,6 +16573,29 @@ mod tests {
         )?)
     }
 
+    fn search_terminal_sometimes_scenario_form()
+    -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+        let world = search_retained_evidence_world()?;
+        let properties = ::crucible::Properties::from_assertions_for_world(
+            &world,
+            vec![::crucible::AssertionDef {
+                id: ::crucible::AssertionId::from_name("cli-search-retained-terminal-sometimes"),
+                message: String::from("CLI search terminal retained marker must eventually appear"),
+                property: ::crucible::Property::Sometimes {
+                    predicate: ::crucible::Predicate::guest_marker(
+                        ::crucible::MarkerId::from_name("never-terminal-sometimes-marker"),
+                    ),
+                },
+            }],
+        )?;
+        Ok(::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &properties,
+            ::crucible::Seed::from_u64(0x5454),
+        )?)
+    }
+
     fn write_search_schedule_named_truths(
         temp: &TempDir,
         value: bool,
@@ -16553,6 +16639,19 @@ value = {value}
         Ok(path)
     }
 
+    fn write_search_terminal_sometimes_retained_evidence(
+        temp: &TempDir,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp
+            .path()
+            .join("search-terminal-sometimes-retained-evidence.toml");
+        fs::write(
+            &path,
+            valid_search_terminal_sometimes_retained_evidence_toml("root"),
+        )?;
+        Ok(path)
+    }
+
     fn valid_search_retained_evidence_toml(configuration: &str) -> String {
         format!(
             r#"schema = "crucible.search-retained-evidence.v1"
@@ -16570,6 +16669,23 @@ retired_icount = 7
     fn valid_search_terminal_quiescence_retained_evidence_toml(configuration: &str) -> String {
         format!(
             r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "{configuration}"
+kind = "terminal-quiescence"
+quiescent = true
+"#
+        )
+    }
+
+    fn valid_search_terminal_sometimes_retained_evidence_toml(configuration: &str) -> String {
+        format!(
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "{configuration}"
+kind = "evaluation-boundary"
+virtual_time_ticks = 50
 
 [[evidence]]
 configuration = "{configuration}"
@@ -21321,6 +21437,52 @@ finding.0.detail=synthetic signed finding evidence
             .expect("terminal quiescence retained evidence should bind to the root");
         assert!(terminal_quiescence.is_quiescent());
 
+        let terminal_sometimes_scenario = write_search_terminal_sometimes_scenario(&temp)?;
+        let terminal_sometimes_evidence = write_search_terminal_sometimes_retained_evidence(&temp)?;
+        let terminal_sometimes_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("search"),
+            terminal_sometimes_scenario.display().to_string(),
+            String::from("--retained-evidence"),
+            terminal_sometimes_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &terminal_sometimes_cli.command else {
+            panic!("expected search command");
+        };
+        let terminal_sometimes_plan = plan_search_invocation(args, temp.path())?;
+        let terminal_sometimes_source = terminal_sometimes_plan
+            .retained_evidence
+            .as_ref()
+            .expect("search plan should load terminal sometimes retained evidence");
+        assert_eq!(terminal_sometimes_source.path, terminal_sometimes_evidence);
+        assert_eq!(
+            terminal_sometimes_source.digest,
+            content_address_bytes(
+                valid_search_terminal_sometimes_retained_evidence_toml("root").as_bytes()
+            )
+        );
+        let terminal_sometimes_root = ::crucible::Configuration::genesis(
+            terminal_sometimes_plan.scenario.scenario_def().clone(),
+        );
+        let terminal_sometimes = terminal_sometimes_source
+            .evidence
+            .get(&terminal_sometimes_root.id())
+            .expect("terminal sometimes retained evidence should bind to the root");
+        assert_eq!(terminal_sometimes.recorded_log().entries().len(), 1);
+        let terminal_sometimes_boundary = &terminal_sometimes.recorded_log().entries()[0];
+        assert_eq!(terminal_sometimes_boundary.at().ticks, 50);
+        assert!(matches!(
+            terminal_sometimes_boundary.payload(),
+            ::crucible::SchedulerEventLogPayload::EvaluationBoundary(
+                ::crucible::SchedulerEvaluationBoundaryKind::Quantum
+            )
+        ));
+        assert!(
+            terminal_sometimes
+                .terminal_quiescence()
+                .is_some_and(::crucible::SchedulerQuiescence::is_quiescent)
+        );
+
         for args in [
             SearchArgs {
                 scenario: Some(scenario.display().to_string()),
@@ -21483,6 +21645,33 @@ marker = "forbidden-search-marker"
         };
         assert!(
             matches!(error, CliError::Backend(ref message) if message.contains("not white-box enabled"))
+        );
+        assert_eq!(error.exit_code(), 4);
+
+        let malformed_boundary_evidence = temp.path().join("bad-boundary-retained-evidence.toml");
+        fs::write(
+            &malformed_boundary_evidence,
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "root"
+kind = "evaluation-boundary"
+"#,
+        )?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(terminal_sometimes_scenario.display().to_string()),
+                max_states: 1,
+                retained_evidence: Some(malformed_boundary_evidence),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("evaluation-boundary retained evidence must require virtual time"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("missing virtual_time_ticks"))
         );
         assert_eq!(error.exit_code(), 4);
 
@@ -22162,6 +22351,81 @@ quiescent = false
                             .any(|payload| payload.digest == decision.payload_digest)
                 })
         );
+
+        let terminal_sometimes_scenario = write_search_terminal_sometimes_scenario(&temp)?;
+        let terminal_sometimes_evidence = write_search_terminal_sometimes_retained_evidence(&temp)?;
+        let terminal_sometimes_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            terminal_sometimes_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+            String::from("--retained-evidence"),
+            terminal_sometimes_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &terminal_sometimes_cli.command else {
+            panic!("expected search command");
+        };
+        let terminal_sometimes_plan = plan_search_invocation(args, temp.path())?;
+        let terminal_sometimes_backend = plan_backend_selection(&terminal_sometimes_cli)?
+            .expect("terminal sometimes search should route");
+        let terminal_sometimes_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&terminal_sometimes_cli),
+            &terminal_sometimes_backend,
+            None,
+            &terminal_sometimes_plan,
+        )?;
+        assert_eq!(
+            terminal_sometimes_outcome.status,
+            BackendCommandStatus::Failed
+        );
+        assert_eq!(terminal_sometimes_outcome.exit_code, 1);
+        let terminal_sometimes_line = terminal_sometimes_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("terminal sometimes search workflow must emit a search-run line");
+        assert!(
+            terminal_sometimes_line
+                .contains("failure_oracle=scenario-assertions+retained-evidence")
+        );
+        assert!(terminal_sometimes_line.contains(&format!(
+            "retained_evidence={}",
+            terminal_sometimes_evidence.display()
+        )));
+        let terminal_sometimes_material =
+            valid_search_terminal_sometimes_retained_evidence_toml("root");
+        let terminal_sometimes_digest =
+            content_address_bytes(terminal_sometimes_material.as_bytes());
+        assert!(terminal_sometimes_line.contains(&format!(
+            "retained_evidence_digest={terminal_sometimes_digest}"
+        )));
+        assert!(terminal_sometimes_line.contains("failures=1"));
+        assert!(terminal_sometimes_line.contains("status=failed"));
+        let terminal_sometimes_artifact = decode_reproduction_artifact(
+            terminal_sometimes_outcome
+                .reproduction_artifact
+                .as_deref()
+                .expect("terminal sometimes failure should emit a reproduction artifact"),
+        )?;
+        assert!(
+            terminal_sometimes_artifact
+                .components
+                .iter()
+                .any(|component| {
+                    component.kind == "search_retained_evidence"
+                        && component.name == "retained-evidence.toml"
+                        && component.digest == terminal_sometimes_digest
+                        && component.media_type == SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE
+                })
+        );
+        assert!(terminal_sometimes_artifact.payloads.iter().any(|payload| {
+            payload.digest == terminal_sometimes_digest
+                && payload.bytes.as_slice() == terminal_sometimes_material.as_bytes()
+        }));
 
         let schedule_only_configuration =
             ::crucible::ContentHash::from_bytes(b"schedule-only-configuration");
