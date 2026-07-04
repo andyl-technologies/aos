@@ -77,7 +77,8 @@ pub use thunk_payload::{
     ParallelThunkPayloadCell, ParallelThunkPayloadError, ParallelThunkPayloadGuard,
     ParallelThunkPayloadWait, ParallelThunkPayloadWorkWait, ParallelThunkTerminalPayload,
     ParallelThunkTerminalStatus, TreeWalkParallelThunkCell, TreeWalkParallelThunkForceOutcome,
-    TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait, TreeWalkParallelThunkWorkWait,
+    TreeWalkParallelThunkForceWorkOutcome, TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait,
+    TreeWalkParallelThunkWorkWait,
 };
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,

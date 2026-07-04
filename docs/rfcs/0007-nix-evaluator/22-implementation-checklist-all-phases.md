@@ -7439,6 +7439,20 @@ nurseries build on the bump arena.
       serial `TreeWalk::force_value` path, replace `EvalThunk` storage, drain
       scheduler work before parking, install the final lock-free waiter list, or
       satisfy the loom/Miri/TSan audit.
+- [x] Current tree-walk force-body wait-or-steal bridge:
+      `TreeWalkParallelThunkCell::force_or_run_ready_then_wait_with` combines the
+      evaluator-native force-body adapter with the safe wait-or-steal ordering
+      path. A claim winner runs the tree-walk body without invoking ready-work;
+      a contending worker can run caller-supplied local/stolen ready-work before
+      replaying the owner-published `Value` or `TreeWalkError`; and the returned
+      report preserves contention counters and waiter registration status. Tests
+      cover claim-owner execution without ready-work, contending ready-work
+      before terminal replay, blocking waiter-registration reporting, body-error
+      replay, and self-cycle no-body/no-ready behavior. This is still an adapter
+      over the blocking wait-cell precursor: it does not prove a real scheduler
+      exhausted deques, hold a park token, call the serial `TreeWalk::force_value`
+      path, replace `EvalThunk` storage, install the final lock-free waiter
+      list, or satisfy the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
