@@ -8100,7 +8100,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       RFC policy choices for HAMT-valued selections: cache a distinguished HAMT
       entry that keeps using keyed HAMT lookup, or fold the site into the
       megamorphic path. The HAMT attrset and select key must share one symbol
-      universe. `select_slow`, `ShapedSelectCache`, native PIC lowering, and
+      universe, and lookups now resolve through the representation-dispatching
+      `select_slow` HAMT branch. `ShapedSelectCache`, native PIC lowering, and
       active evaluator selection remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).

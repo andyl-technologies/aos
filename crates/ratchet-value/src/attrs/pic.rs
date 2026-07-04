@@ -7,7 +7,9 @@
 //! ids; [`ShapedSelectCache`] is a safe shaped-attrset precursor that proves the
 //! shape-guard + constant-offset load contract without updating tree-walk
 //! behavior, calling the final runtime `select_slow`, or installing
-//! deoptimization edges.
+//! deoptimization edges. [`HamtSelectCache`] models the HAMT select-site policy
+//! and resolves HAMT values through the representation-dispatching
+//! [`crate::attrs::select::select_slow`] HAMT branch.
 //!
 //! Cached shape ids are opaque handles supplied by a future shape table. They
 //! are not fingerprints, not symbol ids, and not pointer provenance.
@@ -15,6 +17,7 @@
 use thiserror::Error;
 
 use super::hamt::HamtAttrs;
+use super::select::{AttrSelectError, AttrSelectOutcome, AttrSelectTarget, select_slow};
 use super::shape::{ShapeHandle, ShapedAttrs};
 use crate::syntax::Symbol;
 use crate::value::Value;
@@ -710,15 +713,16 @@ impl HamtSelectCache {
 
     /// Selects `key` from a HAMT attrset using this site's HAMT policy.
     ///
-    /// The lookup itself is always the HAMT keyed lookup. The cache records
-    /// whether future HAMT values should stay on that distinguished path or
-    /// use the megamorphic path. `attrs` and `key` must come from the same
-    /// symbol universe.
+    /// The lookup itself resolves through the representation-dispatching
+    /// `select_slow` HAMT branch. The cache records whether future HAMT values
+    /// should stay on that distinguished path or use the megamorphic path.
+    /// `attrs` and `key` must come from the same symbol universe.
     ///
     /// # Errors
     ///
     /// Returns [`HamtSelectError::KeyChanged`] if the cache is reused for a
-    /// different static select key.
+    /// different static select key, or [`HamtSelectError::Select`] if the
+    /// representation-dispatching resolver fails.
     pub fn select(
         &mut self,
         attrs: &HamtAttrs,
@@ -726,9 +730,9 @@ impl HamtSelectCache {
     ) -> Result<HamtSelectOutcome, HamtSelectError> {
         self.bind_key(key)?;
         let source = self.observe_hamt();
-        Ok(match attrs.get(key) {
-            Some(value) => HamtSelectOutcome::Hit { value, source },
-            None => HamtSelectOutcome::Missing { source },
+        Ok(match select_slow(AttrSelectTarget::Hamt(attrs), key)? {
+            AttrSelectOutcome::Hit { value, .. } => HamtSelectOutcome::Hit { value, source },
+            AttrSelectOutcome::Missing { .. } => HamtSelectOutcome::Missing { source },
         })
     }
 
@@ -822,6 +826,9 @@ pub enum HamtSelectError {
         /// The attempted replacement key.
         attempted: Symbol,
     },
+    /// The representation-dispatching slow resolver failed.
+    #[error("HAMT select-cache slow resolver failed: {0}")]
+    Select(#[from] AttrSelectError),
 }
 
 #[cfg(test)]

@@ -880,7 +880,8 @@ harness, never cut for scope.
       the two RFC policy choices for HAMT-valued selections: cache a
       distinguished HAMT entry that keeps using keyed HAMT lookup, or fold the
       site into the megamorphic path. The HAMT attrset and select key must
-      share one symbol universe. It is not wired into `select_slow`,
+      share one symbol universe, and lookups now resolve through the
+      representation-dispatching `select_slow` HAMT branch. It is not wired into
       `ShapedSelectCache`, native PIC lowering, or active evaluator selection.
 
 ### Iteration-order compatibility (acceptance-critical)
