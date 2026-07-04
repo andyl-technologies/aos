@@ -1138,7 +1138,7 @@ mod loom_model_tests {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum LoomForceError {
-        Failed,
+        Failed(u64),
         SelfCycle,
     }
 
@@ -1151,15 +1151,16 @@ mod loom_model_tests {
     /// A minimal loom-only model of the RFC-0007 L2 thunk protocol.
     ///
     /// The model deliberately mirrors the production state-word encoding and
-    /// ordering constants while keeping the payload as a relaxed side slot. Any
-    /// reader that observes `Forced` must rely on the state acquire load to see
-    /// the relaxed payload write that happened before the owner's release
-    /// publish.
+    /// ordering constants while keeping the terminal payloads as relaxed side
+    /// slots. Any reader that observes `Forced` or `Failed` must rely on the
+    /// state acquire load to see the relaxed payload write that happened before
+    /// the owner's release publish.
     struct LoomThunk {
         state: AtomicU64,
         waiters: Mutex<LoomWaiters>,
         terminal_ready: Condvar,
         forced_payload: AtomicU64,
+        failed_payload: AtomicU64,
         body_runs: AtomicUsize,
     }
 
@@ -1170,6 +1171,7 @@ mod loom_model_tests {
                 waiters: Mutex::new(LoomWaiters::default()),
                 terminal_ready: Condvar::new(),
                 forced_payload: AtomicU64::new(0),
+                failed_payload: AtomicU64::new(0),
                 body_runs: AtomicUsize::new(0),
             }
         }
@@ -1260,21 +1262,26 @@ mod loom_model_tests {
                     Ok(value)
                 }
                 LoomClaim::AlreadyForced => Ok(self.read_forced_payload()),
-                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed(self.read_failed_payload())),
                 LoomClaim::SelfCycle => Err(LoomForceError::SelfCycle),
                 LoomClaim::Foreign => self.wait_for_terminal(worker),
             }
         }
 
-        fn force_failure(&self, worker: ParallelThunkWorkerId) -> Result<u64, LoomForceError> {
+        fn force_failure(
+            &self,
+            worker: ParallelThunkWorkerId,
+            error: u64,
+        ) -> Result<u64, LoomForceError> {
             match self.try_claim(worker) {
                 LoomClaim::Claimed => {
                     self.run_body_once();
+                    self.write_failed_payload(error);
                     self.publish_terminal(worker, ParallelThunkTerminalState::Failed);
-                    Err(LoomForceError::Failed)
+                    Err(LoomForceError::Failed(error))
                 }
                 LoomClaim::AlreadyForced => Ok(self.read_forced_payload()),
-                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed(self.read_failed_payload())),
                 LoomClaim::SelfCycle => Err(LoomForceError::SelfCycle),
                 LoomClaim::Foreign => self.wait_for_terminal(worker),
             }
@@ -1284,14 +1291,16 @@ mod loom_model_tests {
             let mut waiters = self.waiters.lock().expect("waiter mutex is not poisoned");
             match self.mark_awaited(worker) {
                 LoomAwait::AlreadyForced => Ok(self.read_forced_payload()),
-                LoomAwait::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomAwait::AlreadyFailed => Err(LoomForceError::Failed(self.read_failed_payload())),
                 LoomAwait::SelfCycle => Err(LoomForceError::SelfCycle),
                 LoomAwait::Awaited => {
                     waiters.wait_registrations = waiters.wait_registrations.saturating_add(1);
                     loop {
                         match self.state() {
                             ParallelThunkState::Forced => return Ok(self.read_forced_payload()),
-                            ParallelThunkState::Failed => return Err(LoomForceError::Failed),
+                            ParallelThunkState::Failed => {
+                                return Err(LoomForceError::Failed(self.read_failed_payload()));
+                            }
                             ParallelThunkState::Pending { owner }
                             | ParallelThunkState::Awaited { owner }
                                 if owner == worker =>
@@ -1380,6 +1389,17 @@ mod loom_model_tests {
             let value = self.forced_payload.load(LoomOrdering::Relaxed);
             assert_ne!(value, 0, "forced state exposed an uninitialized payload");
             value
+        }
+
+        fn write_failed_payload(&self, error: u64) {
+            assert_ne!(error, 0, "zero is the uninitialized error sentinel");
+            self.failed_payload.store(error, LoomOrdering::Relaxed);
+        }
+
+        fn read_failed_payload(&self) -> u64 {
+            let error = self.failed_payload.load(LoomOrdering::Relaxed);
+            assert_ne!(error, 0, "failed state exposed an uninitialized payload");
+            error
         }
     }
 
@@ -1483,21 +1503,43 @@ mod loom_model_tests {
             let thunk = Arc::new(LoomThunk::new());
             let first = {
                 let thunk = Arc::clone(&thunk);
-                thread::spawn(move || thunk.force_failure(worker(1)))
+                thread::spawn(move || thunk.force_failure(worker(1), 101))
             };
             let second = {
                 let thunk = Arc::clone(&thunk);
-                thread::spawn(move || thunk.force_failure(worker(2)))
+                thread::spawn(move || thunk.force_failure(worker(2), 202))
             };
 
             let first = first.join().expect("first worker joins");
             let second = second.join().expect("second worker joins");
 
-            assert_eq!(first, Err(LoomForceError::Failed));
-            assert_eq!(second, Err(LoomForceError::Failed));
+            assert!(matches!(first, Err(LoomForceError::Failed(101 | 202))));
+            assert_eq!(first, second);
             assert_eq!(thunk.body_runs(), 1);
             assert_eq!(thunk.state(), ParallelThunkState::Failed);
             assert_waiters_were_not_stranded(&thunk);
+        });
+    }
+
+    #[test]
+    fn loom_already_failed_replays_same_captured_payload() {
+        loom::model(|| {
+            let thunk = LoomThunk::new();
+
+            assert_eq!(
+                thunk.force_failure(worker(1), 303),
+                Err(LoomForceError::Failed(303))
+            );
+            assert_eq!(
+                thunk.force_failure(worker(2), 404),
+                Err(LoomForceError::Failed(303))
+            );
+            assert_eq!(
+                thunk.force_success(worker(3), 505),
+                Err(LoomForceError::Failed(303))
+            );
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Failed);
         });
     }
 }

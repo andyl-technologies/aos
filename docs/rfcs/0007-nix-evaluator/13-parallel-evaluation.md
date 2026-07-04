@@ -1019,16 +1019,18 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       `ratchet-oracle::eval::thunk_cas::loom_model_tests` now carries a
       loom-backed model of the owner-tagged `Suspended -> Pending -> Awaited ->
       Forced/Failed` state word using the same raw encoding and acquire/release
-      ordering constants as the safe CAS precursor. The model uses a relaxed
-      payload side slot, a mutex/condvar waiter-registration path matching the
-      safe wait-cell ordering, and explicit body-run counters. Tests exhaustively
-      cover two racing workers forcing and replaying one published value,
-      failed-terminal replay to a waiter, and same-worker self-reentry without a
-      body run; a bounded three-worker claimant model covers the single-owner
-      CAS race without the expensive waiter state space. Assertions pin no
-      stranded waiter registration, no double body execution, no invalid/torn
-      state-word decode, self-cycle progress, and acquire/release visibility of
-      the pre-publish payload. This is still a model precursor: the full
+      ordering constants as the safe CAS precursor. The model uses relaxed
+      success and failure payload side slots, a mutex/condvar waiter-registration
+      path matching the safe wait-cell ordering, and explicit body-run counters.
+      Tests exhaustively cover two racing workers forcing and replaying one
+      published value, failed-terminal replay of the same captured error payload
+      to a waiter, later already-failed replay, and same-worker self-reentry
+      without a body run; a bounded three-worker claimant model covers the
+      single-owner CAS race without the expensive waiter state space. Assertions
+      pin no stranded waiter
+      registration, no double body execution, no invalid/torn state-word decode,
+      self-cycle progress, and acquire/release visibility of the pre-publish
+      success or failure payload. This is still a model precursor: the full
       three-worker waiter/replay state space is not exhaustive, the production
       wait-cell is not rewritten to loom shims directly, scheduler park tokens
       and the final lock-free waiter list are not modeled, and the Miri/TSan

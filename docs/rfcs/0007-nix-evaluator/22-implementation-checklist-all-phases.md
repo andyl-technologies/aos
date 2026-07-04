@@ -8012,19 +8012,21 @@ nurseries build on the bump arena.
       `ratchet-oracle::eval::thunk_cas::loom_model_tests` now models the
       owner-tagged `Suspended -> Pending -> Awaited -> Forced/Failed` state word
       with loom atomics, the same raw encoding and acquire/release ordering
-      constants as the safe CAS precursor, a relaxed payload side slot, and a
-      mutex/condvar waiter-registration path matching the safe wait-cell
-      ordering. Tests exhaustively cover two racing workers forcing and
-      replaying one published value, failed-terminal replay to a waiter, and
+      constants as the safe CAS precursor, relaxed success and failure payload
+      side slots, and a mutex/condvar waiter-registration path matching the safe
+      wait-cell ordering. Tests exhaustively cover two racing workers forcing
+      and replaying one published value, failed-terminal replay of the same
+      captured error payload to a waiter, later already-failed replay, and
       same-worker self-reentry without a body run; a bounded three-worker
       claimant model covers the single-owner CAS race without the expensive
-      waiter state space. Assertions pin no stranded waiter registration, no
-      double body execution, no invalid/torn state-word decode, self-cycle
-      progress, and acquire/release visibility of the pre-publish payload. This
-      remains only a model precursor: the full three-worker waiter/replay state
-      space is not exhaustive, the production wait-cell is not rewritten to loom
-      shims directly, scheduler park tokens and the final lock-free waiter list
-      are not modeled, and the Miri/TSan portions of `R-4` remain open.
+      waiter state space. Assertions pin no
+      stranded waiter registration, no double body execution, no invalid/torn
+      state-word decode, self-cycle progress, and acquire/release visibility of
+      the pre-publish success or failure payload. This remains only a model
+      precursor: the full three-worker waiter/replay state space is not
+      exhaustive, the production wait-cell is not rewritten to loom shims
+      directly, scheduler park tokens and the final lock-free waiter list are
+      not modeled, and the Miri/TSan portions of `R-4` remain open.
 
 **Decisions closed/measured.**
 
