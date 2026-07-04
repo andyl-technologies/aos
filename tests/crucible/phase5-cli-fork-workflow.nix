@@ -52,8 +52,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliForkWorkflow`";
       }
       {
-        label = "T-CLI-11 child runner blocker";
-        needle = "independent child checkpoint-instantiation runner";
+        label = "T-CLI-11 local child runner progress";
+        needle = "no-divergence local-double forks through an independent child session";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -88,8 +88,28 @@
         needle = "fn resolve_savepoint_ref";
       }
       {
-        label = "fork runner blocker";
-        needle = "requires the independent child checkpoint-instantiation runner tracked by T-CLI-11";
+        label = "fork local-double runner";
+        needle = "fn run_local_double_fork_workflow";
+      }
+      {
+        label = "fork child actor runner";
+        needle = "fn run_forked_savepoint_actor_with_driver_async";
+      }
+      {
+        label = "fork oracle output";
+        needle = "fork-oracle";
+      }
+      {
+        label = "fork oracle canonical log";
+        needle = "fork_oracle_validation";
+      }
+      {
+        label = "fork seed blocker";
+        needle = "fork --seed execution remains tracked by T-CLI-11";
+      }
+      {
+        label = "fork override blocker";
+        needle = "fork --override execution remains tracked by T-CLI-11";
       }
       {
         label = "fork help test";
@@ -100,8 +120,16 @@
         needle = "cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs";
       }
       {
-        label = "fork execution blocker test";
-        needle = "cli_fork_workflow_rejects_execution_until_child_runner_exists";
+        label = "fork bare-hash blocker test";
+        needle = "cli_fork_workflow_rejects_bare_hash_until_closure_loader_exists";
+      }
+      {
+        label = "fork execution test";
+        needle = "cli_fork_workflow_executes_local_double_handle";
+      }
+      {
+        label = "fork tampered frontier test";
+        needle = "cli_fork_workflow_rejects_tampered_handle_frontier";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
