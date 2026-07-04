@@ -7427,6 +7427,21 @@ nurseries build on the bump arena.
       publish a scheduler park token, does not prevent future ready-work
       enqueueing, cannot prove exhaustion of real evaluator work, and does not
       satisfy the loom/Miri/TSan gate.
+- [x] Current ready-work poll/preflight hook bridge:
+      `ParallelReadyWorkQueues::run_next_or_park_preflight` returns exactly one
+      scheduler-backed ready-work poll for a wait-or-steal hook: local work,
+      stolen peer work, or an idle `ParallelReadyWorkParkPreflight` snapshot.
+      Local/stolen polls preserve the existing one-task-per-loop boundary so
+      the contended thunk can be rechecked after every ready task, while idle
+      polls carry the all-queue depth snapshot that was previously captured
+      manually at the hook call site. Tests cover local/stolen/idle polling,
+      idle preflight without invoking the runner, unknown-worker and
+      poisoned-queue rejection, and direct use as the ready-work hook for
+      `ParallelThunkWaitCell::claim_or_run_ready_then_wait`. This is still a
+      hook-shape bridge over the safe queue adapter: it is not the final
+      Chase-Lev deque, does not attach a real scheduler park token to the wait
+      cell, cannot prevent future ready-work enqueueing, and does not satisfy
+      the loom/Miri/TSan gate.
 - [x] Current parallel thunk terminal-payload precursor:
       `ParallelThunkPayloadCell` layers typed terminal payload storage over the
       safe CAS/wait-cell protocol. The claim owner stores either a forced payload

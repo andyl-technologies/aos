@@ -227,6 +227,41 @@ impl<T> ParallelReadyWorkQueues<T> {
         self.task_count
     }
 
+    /// Runs one ready-work item or returns an idle park-preflight snapshot.
+    ///
+    /// This is the hook-friendly form of [`Self::run_next`]. Local and stolen
+    /// work are returned as single-task polls so a thunk wait path can recheck
+    /// the contended thunk after every executed task. When no task is available,
+    /// this captures [`Self::park_preflight_snapshot`] and returns it with the
+    /// idle poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelReadyWorkError`] if `worker_id` is outside the worker
+    /// set or if a ready queue mutex was poisoned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `run` panics. The task has already been removed from its queue
+    /// before `run` is called.
+    pub fn run_next_or_park_preflight<R>(
+        &self,
+        worker_id: usize,
+        run: impl FnOnce(T) -> R,
+    ) -> Result<ParallelReadyWorkPoll<R>, ParallelReadyWorkError> {
+        match self.run_next(worker_id, run)? {
+            ParallelReadyWorkStep::RanLocal(execution) => {
+                Ok(ParallelReadyWorkPoll::RanLocal(execution))
+            }
+            ParallelReadyWorkStep::StolePeer(execution) => {
+                Ok(ParallelReadyWorkPoll::StolePeer(execution))
+            }
+            ParallelReadyWorkStep::Idle => Ok(ParallelReadyWorkPoll::Idle(
+                self.park_preflight_snapshot(worker_id)?,
+            )),
+        }
+    }
+
     /// Captures queue depths before a worker enters the wait-cell park path.
     ///
     /// The snapshot is taken while holding every ready-work queue mutex in
@@ -387,6 +422,44 @@ impl<R> ParallelReadyWorkStep<R> {
         match self {
             Self::RanLocal(execution) | Self::StolePeer(execution) => Some(execution),
             Self::Idle => None,
+        }
+    }
+}
+
+/// One ready-work execution or an idle park-preflight snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParallelReadyWorkPoll<R> {
+    /// A task from the worker's own queue was executed.
+    RanLocal(ParallelReadyWorkExecution<R>),
+    /// A task from a peer queue was stolen and executed.
+    StolePeer(ParallelReadyWorkExecution<R>),
+    /// No local or peer ready work was available at the preflight snapshot.
+    Idle(ParallelReadyWorkParkPreflight),
+}
+
+impl<R> ParallelReadyWorkPoll<R> {
+    /// Returns the wait-or-steal hook signal represented by this poll.
+    pub const fn ready_work(&self) -> ParallelThunkReadyWork {
+        match self {
+            Self::RanLocal(_) => ParallelThunkReadyWork::RanLocal,
+            Self::StolePeer(_) => ParallelThunkReadyWork::StolePeer,
+            Self::Idle(_) => ParallelThunkReadyWork::Idle,
+        }
+    }
+
+    /// Returns the task execution metadata, if a task ran.
+    pub const fn execution(&self) -> Option<&ParallelReadyWorkExecution<R>> {
+        match self {
+            Self::RanLocal(execution) | Self::StolePeer(execution) => Some(execution),
+            Self::Idle(_) => None,
+        }
+    }
+
+    /// Returns the park-preflight snapshot, if the poll was idle.
+    pub const fn park_preflight(&self) -> Option<&ParallelReadyWorkParkPreflight> {
+        match self {
+            Self::RanLocal(_) | Self::StolePeer(_) => None,
+            Self::Idle(preflight) => Some(preflight),
         }
     }
 }
@@ -998,6 +1071,161 @@ mod tests {
                         .expect("owner publishes after idle preflight");
                 }
                 step.ready_work()
+            })
+            .expect("wait-or-steal hook completes");
+
+        let (result, report) = outcome.into_parts();
+        let snapshot = preflight.expect("idle preflight snapshot is captured");
+        assert!(matches!(
+            result,
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert_eq!(ran, vec![20, 10]);
+        assert_eq!(snapshot.observing_worker(), 1);
+        assert_eq!(snapshot.ready_task_count(), 0);
+        assert!(snapshot.is_idle());
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
+    }
+
+    #[test]
+    fn ready_work_poll_runs_one_task_or_returns_idle_preflight() {
+        let queues = parallel_ready_work_queues([10, 20, 30], workers(2));
+
+        let first = queues
+            .run_next_or_park_preflight(1, |value| value + 1)
+            .expect("first ready work runs");
+        assert_eq!(first.ready_work(), ParallelThunkReadyWork::RanLocal);
+        assert!(first.park_preflight().is_none());
+        let ParallelReadyWorkPoll::RanLocal(execution) = first else {
+            panic!("first poll should run local work");
+        };
+        assert_eq!(execution.task_index(), 1);
+        assert_eq!(execution.initial_worker(), 1);
+        assert_eq!(execution.worker_id(), 1);
+        assert_eq!(*execution.result(), 21);
+
+        let second = queues
+            .run_next_or_park_preflight(1, |value| value + 1)
+            .expect("second ready work runs");
+        assert_eq!(second.ready_work(), ParallelThunkReadyWork::StolePeer);
+        let ParallelReadyWorkPoll::StolePeer(execution) = second else {
+            panic!("second poll should steal peer work");
+        };
+        assert_eq!(execution.task_index(), 0);
+        assert_eq!(execution.initial_worker(), 0);
+        assert_eq!(execution.worker_id(), 1);
+        assert_eq!(*execution.result(), 11);
+
+        let third = queues
+            .run_next_or_park_preflight(1, |value| value + 1)
+            .expect("third ready work runs");
+        assert_eq!(third.ready_work(), ParallelThunkReadyWork::StolePeer);
+        let ParallelReadyWorkPoll::StolePeer(execution) = third else {
+            panic!("third poll should steal peer work");
+        };
+        assert_eq!(execution.task_index(), 2);
+        assert_eq!(execution.initial_worker(), 0);
+        assert_eq!(execution.worker_id(), 1);
+        assert_eq!(*execution.result(), 31);
+
+        let fourth = queues
+            .run_next_or_park_preflight(1, |value| value + 1)
+            .expect("idle preflight succeeds");
+        assert_eq!(fourth.ready_work(), ParallelThunkReadyWork::Idle);
+        assert!(fourth.execution().is_none());
+        let ParallelReadyWorkPoll::Idle(preflight) = fourth else {
+            panic!("fourth poll should report idle preflight");
+        };
+        assert_eq!(preflight.observing_worker(), 1);
+        assert_eq!(preflight.ready_task_count(), 0);
+        assert_eq!(preflight.queue_lengths(), &[0, 0]);
+        assert!(preflight.is_idle());
+    }
+
+    #[test]
+    fn ready_work_poll_idle_preflight_does_not_call_runner() {
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+        let runner_called = std::cell::Cell::new(false);
+
+        let poll = queues
+            .run_next_or_park_preflight(0, |value| {
+                runner_called.set(true);
+                value
+            })
+            .expect("idle preflight succeeds");
+
+        assert!(!runner_called.get());
+        let preflight = poll
+            .park_preflight()
+            .expect("idle poll carries preflight snapshot");
+        assert_eq!(poll.ready_work(), ParallelThunkReadyWork::Idle);
+        assert_eq!(preflight.observing_worker(), 0);
+        assert!(preflight.is_idle());
+    }
+
+    #[test]
+    fn ready_work_poll_rejects_unknown_worker() {
+        let queues = parallel_ready_work_queues([1, 2], workers(2));
+
+        let error = queues
+            .run_next_or_park_preflight(2, |value| value)
+            .expect_err("unknown worker is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueueMissing { worker_id: 2 }
+        );
+    }
+
+    #[test]
+    fn ready_work_poll_reports_poisoned_queue() {
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(1));
+        let poison = std::panic::catch_unwind(|| {
+            let _guard = queues.queues[0].lock().expect("queue lock succeeds");
+            panic!("poison ready-work queue");
+        });
+        assert!(poison.is_err());
+
+        let error = queues
+            .run_next_or_park_preflight(0, |value| value)
+            .expect_err("poisoned queue is reported");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueuePoisoned { worker_id: 0 }
+        );
+    }
+
+    #[test]
+    fn ready_work_poll_feeds_wait_or_steal_hook_with_preflight() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let mut owner_guard = Some(owner_guard);
+        let queues = parallel_ready_work_queues([10, 20], workers(2));
+        let mut ran = Vec::new();
+        let mut preflight = None;
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait(worker(2), || {
+                let poll = queues
+                    .run_next_or_park_preflight(1, |value| ran.push(value))
+                    .expect("ready queue poll succeeds");
+                if let Some(snapshot) = poll.park_preflight() {
+                    preflight = Some(snapshot.clone());
+                    owner_guard
+                        .take()
+                        .expect("owner guard remains available")
+                        .publish_forced()
+                        .expect("owner publishes after idle preflight");
+                }
+                poll.ready_work()
             })
             .expect("wait-or-steal hook completes");
 
