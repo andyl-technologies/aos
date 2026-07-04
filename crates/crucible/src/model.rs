@@ -37,7 +37,8 @@ use crate::trigger::{
     ConditionLeaf, ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy,
     HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionViolation,
     LogLevel, ObservableEventPayload, OfflineAssertionChecker, RecordedAssertionLog,
-    SearchScheduleNamedPredicateHostOracle, SearchScheduleNamedPredicateTruths,
+    ResolvedCodePoint, ResolvedMemPlace, SearchScheduleNamedPredicateHostOracle,
+    SearchScheduleNamedPredicateTruths,
 };
 
 mod canonical;
@@ -18766,6 +18767,54 @@ impl FleetEquivalenceReport {
     }
 }
 
+/// Host-resolution facts used by retained-log search assertion lowering.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchRetainedLogPredicateResolutions {
+    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+}
+
+impl SearchRetainedLogPredicateResolutions {
+    /// Builds an empty retained-log predicate resolution table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a host-resolved coverage code point for one node and predicate leaf.
+    #[must_use]
+    pub fn with_code_point(
+        mut self,
+        node: NodeId,
+        point: CodePoint,
+        resolved: ResolvedCodePoint,
+    ) -> Self {
+        self.code_points.insert((node, point), resolved);
+        self
+    }
+
+    /// Adds a host-resolved memory place for one node and predicate leaf.
+    #[must_use]
+    pub fn with_mem_place(
+        mut self,
+        node: NodeId,
+        place: MemPlace,
+        resolved: ResolvedMemPlace,
+    ) -> Self {
+        self.mem_places.insert((node, place), resolved);
+        self
+    }
+
+    fn resolves_code_point(&self, node: &NodeId, point: &CodePoint) -> bool {
+        self.code_points
+            .contains_key(&(node.clone(), point.clone()))
+    }
+
+    fn resolves_mem_place(&self, node: &NodeId, place: &MemPlace) -> bool {
+        self.mem_places.contains_key(&(node.clone(), place.clone()))
+    }
+}
+
 /// Read-only failure input for strategy-driven graph search.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SearchFailureOracle {
@@ -18882,9 +18931,10 @@ impl SearchFailureOracle {
     /// whose evidence is carried by scheduler event-log entries: time/timer
     /// facts, observable network/console/I/O/node/assertion-state facts, raw
     /// guest-address coverage, physical-address/register memory samples, guest
-    /// markers, and schedule fault-active facts. Named host predicates and
-    /// host-resolution-dependent coverage or memory predicates still require a
-    /// separate explicit oracle path.
+    /// markers, and schedule fault-active facts. Named host predicates still
+    /// require a separate explicit oracle path; host-resolution-dependent
+    /// coverage or memory predicates require
+    /// [`Self::from_search_assertion_violations_with_retained_logs_and_resolutions`].
     ///
     /// # Errors
     ///
@@ -18896,6 +18946,58 @@ impl SearchFailureOracle {
         scenario: &ScenarioDefForm,
         root: &Configuration,
         run: &TemporalGraphSearchRun,
+        retained_log_for: F,
+    ) -> Result<Self, EngineError>
+    where
+        F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
+    {
+        let resolutions = SearchRetainedLogPredicateResolutions::new();
+        Self::from_search_assertion_violations_with_retained_logs_internal(
+            scenario,
+            root,
+            run,
+            &resolutions,
+            retained_log_for,
+        )
+    }
+
+    /// Builds a retained-log assertion oracle using explicit host resolutions.
+    ///
+    /// This extends [`Self::from_search_assertion_violations_with_retained_logs`]
+    /// by admitting symbolic coverage and virtual/symbolic memory predicates
+    /// only when `resolutions` contains an exact leaf resolution for the
+    /// predicate's node and host-side reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not match `root` or a reached configuration. Returns
+    /// [`EngineError::ScenarioSerialization`] when a supplied retained assertion
+    /// log cannot be checked.
+    pub fn from_search_assertion_violations_with_retained_logs_and_resolutions<F>(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        resolutions: &SearchRetainedLogPredicateResolutions,
+        retained_log_for: F,
+    ) -> Result<Self, EngineError>
+    where
+        F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
+    {
+        Self::from_search_assertion_violations_with_retained_logs_internal(
+            scenario,
+            root,
+            run,
+            resolutions,
+            retained_log_for,
+        )
+    }
+
+    fn from_search_assertion_violations_with_retained_logs_internal<F>(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        resolutions: &SearchRetainedLogPredicateResolutions,
         mut retained_log_for: F,
     ) -> Result<Self, EngineError>
     where
@@ -18924,6 +19026,7 @@ impl SearchFailureOracle {
                 scenario,
                 &configuration,
                 &recorded,
+                resolutions,
             )? {
                 failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
             }
@@ -23999,7 +24102,12 @@ where
         .outcomes()
         .iter()
         .find(|outcome| {
-            prefix_safe_search_assertion_failure(scenario.properties(), outcome, predicate_scope)
+            prefix_safe_search_assertion_failure(
+                scenario.properties(),
+                outcome,
+                predicate_scope,
+                None,
+            )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
 }
@@ -24008,9 +24116,22 @@ fn search_assertion_failure_fingerprint_from_retained_log(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     recorded: &RecordedAssertionLog,
+    resolutions: &SearchRetainedLogPredicateResolutions,
 ) -> Result<Option<ContentHash>, EngineError> {
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
+        .with_resolved_code_points(
+            resolutions
+                .code_points
+                .iter()
+                .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
+        )
+        .with_resolved_mem_places(
+            resolutions
+                .mem_places
+                .iter()
+                .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
+        )
         .check_run(scenario.properties(), recorded.entries())
         .map_err(|source| {
             scenario_serialization_error(format!(
@@ -24025,6 +24146,7 @@ fn search_assertion_failure_fingerprint_from_retained_log(
                 scenario.properties(),
                 outcome,
                 SearchAssertionPredicateScope::RetainedLog,
+                Some(resolutions),
             )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
@@ -24059,6 +24181,7 @@ fn prefix_safe_search_assertion_failure(
     properties: &Properties,
     outcome: &HostAssertionOutcome,
     predicate_scope: SearchAssertionPredicateScope,
+    resolutions: Option<&SearchRetainedLogPredicateResolutions>,
 ) -> bool {
     outcome.kind == HostAssertionOutcomeKind::Violated
         && matches!(
@@ -24069,6 +24192,7 @@ fn prefix_safe_search_assertion_failure(
             properties,
             &outcome.assertion,
             predicate_scope,
+            resolutions,
         )
 }
 
@@ -24076,26 +24200,32 @@ fn assertion_uses_only_search_schedule_predicates(
     properties: &Properties,
     assertion: &AssertionId,
     predicate_scope: SearchAssertionPredicateScope,
+    resolutions: Option<&SearchRetainedLogPredicateResolutions>,
 ) -> bool {
     properties
         .assertions()
         .iter()
         .find(|candidate| &candidate.id == assertion)
         .is_some_and(|candidate| {
-            property_uses_only_search_schedule_predicates(&candidate.property, predicate_scope)
+            property_uses_only_search_schedule_predicates(
+                &candidate.property,
+                predicate_scope,
+                resolutions,
+            )
         })
 }
 
 fn property_uses_only_search_schedule_predicates(
     property: &Property,
     predicate_scope: SearchAssertionPredicateScope,
+    resolutions: Option<&SearchRetainedLogPredicateResolutions>,
 ) -> bool {
     match property {
         Property::Always { predicate }
         | Property::Sometimes { predicate }
         | Property::AfterQuiescence { predicate }
         | Property::Reachable { predicate, .. } => {
-            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
+            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope, resolutions)
         }
         Property::Eventually { .. } => false,
     }
@@ -24104,6 +24234,7 @@ fn property_uses_only_search_schedule_predicates(
 fn predicate_uses_only_search_schedule_predicates(
     predicate: &Predicate,
     predicate_scope: SearchAssertionPredicateScope,
+    resolutions: Option<&SearchRetainedLogPredicateResolutions>,
 ) -> bool {
     match predicate {
         Predicate::FaultActive { .. } => true,
@@ -24112,11 +24243,15 @@ fn predicate_uses_only_search_schedule_predicates(
         }
         Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => {
             predicates.iter().all(|predicate| {
-                predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
+                predicate_uses_only_search_schedule_predicates(
+                    predicate,
+                    predicate_scope,
+                    resolutions,
+                )
             })
         }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
+            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope, resolutions)
         }
         Predicate::At { .. }
         | Predicate::After { .. }
@@ -24133,12 +24268,21 @@ fn predicate_uses_only_search_schedule_predicates(
             point: CodePoint::GuestAddress { .. },
             ..
         } => predicate_scope == SearchAssertionPredicateScope::RetainedLog,
-        Predicate::CoveragePoint { .. } => false,
+        Predicate::CoveragePoint { node, point } => {
+            predicate_scope == SearchAssertionPredicateScope::RetainedLog
+                && resolutions
+                    .is_some_and(|resolutions| resolutions.resolves_code_point(node, point))
+        }
         Predicate::MemoryPredicate {
             place: MemPlace::PhysicalAddress { .. } | MemPlace::Register { .. },
             ..
         } => predicate_scope == SearchAssertionPredicateScope::RetainedLog,
-        Predicate::MemoryPredicate { .. } | Predicate::Quiescent => false,
+        Predicate::MemoryPredicate { node, place, .. } => {
+            predicate_scope == SearchAssertionPredicateScope::RetainedLog
+                && resolutions
+                    .is_some_and(|resolutions| resolutions.resolves_mem_place(node, place))
+        }
+        Predicate::Quiescent => false,
     }
 }
 
