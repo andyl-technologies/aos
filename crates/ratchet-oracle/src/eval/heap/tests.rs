@@ -2,7 +2,7 @@
 
 use super::super::ThunkState;
 use super::*;
-use crate::attrs::{AttrEntry, AttrPosition, repr::AttrSetReprKind};
+use crate::attrs::{AttrEntry, AttrPosition, repr::AttrSetReprKind, shape::ShapeId};
 use crate::eval::thunk_cas::ParallelThunkWorkerId;
 use crate::eval::tree_walk::{TreeWalkError, TreeWalkErrorKind};
 use crate::eval::{EvalFrame, EvalWithScope, TreeWalkParallelThunkWait};
@@ -2637,6 +2637,7 @@ fn allocates_attr_values_and_recovers_entries() {
         .get_attrs_metadata(value)
         .expect("attr metadata exists");
     assert_eq!(metadata.shape(), 42);
+    assert_eq!(metadata.projected_shape(), None);
     assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
     assert_eq!(heap.arena_stats(), ArenaStats::default());
     assert_eq!(heap.permanent_arena_stats().chunks, 1);
@@ -2657,7 +2658,28 @@ fn allocates_attr_values_with_explicit_repr_metadata() {
         .get_attrs_metadata(value)
         .expect("attr metadata exists");
     assert_eq!(metadata.shape(), 42);
+    assert_eq!(metadata.projected_shape(), None);
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+}
+
+#[test]
+fn allocates_attr_values_with_projected_shape_metadata() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let value = heap
+        .alloc_attrs_with_projected_shape_metadata(
+            42,
+            AttrSetReprKind::Flat,
+            Some(ShapeId::new(7)),
+            attrs_with_one_entry(),
+        )
+        .expect("attrs allocate");
+
+    let metadata = heap
+        .get_attrs_metadata(value)
+        .expect("attr metadata exists");
+    assert_eq!(metadata.shape(), 42);
+    assert_eq!(metadata.projected_shape(), Some(ShapeId::new(7)));
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
 }
 
 #[test]
@@ -2700,6 +2722,30 @@ fn attr_values_with_different_repr_metadata_do_not_collapse() {
             .repr(),
         AttrSetReprKind::Hamt
     );
+}
+
+#[test]
+fn attr_values_with_different_projected_shape_metadata_do_not_collapse() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_attrs_with_projected_shape_metadata(
+            42,
+            AttrSetReprKind::Flat,
+            Some(ShapeId::new(1)),
+            attrs_with_one_entry(),
+        )
+        .expect("first attrs allocate");
+    let second = heap
+        .alloc_attrs_with_projected_shape_metadata(
+            42,
+            AttrSetReprKind::Flat,
+            Some(ShapeId::new(2)),
+            attrs_with_one_entry(),
+        )
+        .expect("second attrs allocate");
+
+    assert!(!first.raw_eq(second));
+    assert_eq!(heap.len(), 2);
 }
 
 #[test]

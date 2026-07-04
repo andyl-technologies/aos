@@ -373,11 +373,12 @@ impl TreeWalk {
         construction: AttrSetConstruction,
     ) -> Result<Value, TreeWalkError> {
         let shape_telemetry = self.project_flat_attr_shape_telemetry(id, span, &attrs);
+        let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
         let decision = self.classify_attr_repr_decision(id, span, construction);
         let repr = decision.map_or(AttrSetReprKind::Flat, AttrSetReprDecision::kind);
         let value = self
             .heap
-            .alloc_attrs_with_repr_metadata(shape, repr, attrs)
+            .alloc_attrs_with_projected_shape_metadata(shape, repr, projected_shape, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some((census_shape, transitions)) = shape_telemetry {
             self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);

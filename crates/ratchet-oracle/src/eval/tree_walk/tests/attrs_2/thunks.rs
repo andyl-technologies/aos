@@ -1083,8 +1083,31 @@ fn attr_update_heap_metadata_records_projected_hamt_repr() {
         .expect("result attrs remain flat-readable");
 
     assert_eq!(metadata.shape(), 0);
+    assert!(metadata.projected_shape().is_some());
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
     assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
+}
+
+#[test]
+fn static_attrset_heap_metadata_records_projected_shape() {
+    let ir = lower("{ b = 2; a = 1; }");
+
+    let outcome = eval_whnf_owned(&ir).expect("static attrset evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("result metadata exists");
+
+    assert_eq!(metadata.shape(), 0);
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let census = outcome
+        .attr_telemetry()
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 1);
+    assert_eq!(census.shapes.len(), 1);
+    assert_eq!(census.shapes[0].key_count, 2);
 }
 
 #[test]
@@ -1115,6 +1138,7 @@ fn force_cache_payload_replay_preserves_attr_repr_metadata() {
         .expect("replayed attrs remain flat-readable");
 
     assert_eq!(metadata.shape(), 0);
+    assert!(metadata.projected_shape().is_some());
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
     assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
     assert_eq!(replay.stats.shape_transitions(), 6);

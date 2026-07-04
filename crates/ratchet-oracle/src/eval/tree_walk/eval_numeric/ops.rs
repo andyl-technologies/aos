@@ -242,9 +242,10 @@ impl TreeWalk {
             projection.decision.kind()
         });
         let shape_telemetry = self.project_flat_attr_shape_telemetry(id, span, &attrs);
+        let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
         let result = self
             .heap
-            .alloc_attrs_with_repr_metadata(0, repr, attrs)
+            .alloc_attrs_with_projected_shape_metadata(0, repr, projected_shape, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some((census_shape, transitions)) = shape_telemetry {
             self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);

@@ -1367,7 +1367,30 @@ impl EvalHeap {
         repr: AttrSetReprKind,
         attrs: FlatAttrs,
     ) -> Result<Value, EvalHeapError> {
-        let metadata = EvalHeapAttrsMetadata::new(shape, repr);
+        self.alloc_attrs_with_projected_shape_metadata(shape, repr, None, attrs)
+    }
+
+    /// Allocates an attribute-set value with representation and shape metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the attrset length cannot fit the runtime slot count, if
+    /// the runtime allocator cannot reserve an attrset handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
+    pub fn alloc_attrs_with_projected_shape_metadata(
+        &mut self,
+        shape: u32,
+        repr: AttrSetReprKind,
+        projected_shape: Option<ShapeId>,
+        attrs: FlatAttrs,
+    ) -> Result<Value, EvalHeapError> {
+        let metadata = match projected_shape {
+            Some(projected_shape) => {
+                EvalHeapAttrsMetadata::with_projected_shape(shape, repr, projected_shape)
+            }
+            None => EvalHeapAttrsMetadata::new(shape, repr),
+        };
         let hash = attrs_structural_hash(metadata, &attrs);
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;

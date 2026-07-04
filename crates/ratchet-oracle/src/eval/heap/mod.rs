@@ -4,8 +4,8 @@
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
 //! maps those handles back to checked [`NixString`], path [`NixString`],
-//! [`NixList`], [`FlatAttrs`] plus representation metadata, [`EvalLambda`],
-//! [`EvalPrimOp`], and [`EvalThunk`] values.
+//! [`NixList`], [`FlatAttrs`] plus representation/shape metadata,
+//! [`EvalLambda`], [`EvalPrimOp`], and [`EvalThunk`] values.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -18,7 +18,7 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
 use super::tree_walk::TreeWalkError;
-use crate::attrs::{AttrError, FlatAttrs, repr::AttrSetReprKind};
+use crate::attrs::{AttrError, FlatAttrs, repr::AttrSetReprKind, shape::ShapeId};
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
@@ -431,24 +431,48 @@ impl EvalHeapColdHashConsedValue {
 /// Metadata attached to a heap-owned attribute set.
 ///
 /// The active tree-walk heap still stores [`FlatAttrs`] as the value payload.
-/// This metadata records the lowered shape id and the representation selected
-/// by the current policy so later shape/PIC/HAMT bridges can query runtime
-/// attrset state without changing the flat consumer API.
+/// This metadata records the lowered IR shape id, the projected hidden-class
+/// shape id when active shape projection succeeded, and the representation
+/// selected by the current policy so later shape/PIC/HAMT bridges can query
+/// runtime attrset state without changing the flat consumer API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EvalHeapAttrsMetadata {
     shape: u32,
+    projected_shape: Option<ShapeId>,
     repr: AttrSetReprKind,
 }
 
 impl EvalHeapAttrsMetadata {
     /// Creates metadata for a heap-owned attrset.
     pub const fn new(shape: u32, repr: AttrSetReprKind) -> Self {
-        Self { shape, repr }
+        Self {
+            shape,
+            projected_shape: None,
+            repr,
+        }
+    }
+
+    /// Creates metadata with a process-local projected hidden-class shape id.
+    pub const fn with_projected_shape(
+        shape: u32,
+        repr: AttrSetReprKind,
+        projected_shape: ShapeId,
+    ) -> Self {
+        Self {
+            shape,
+            projected_shape: Some(projected_shape),
+            repr,
+        }
     }
 
     /// Returns the lowered shape id stored with the attrset.
     pub const fn shape(self) -> u32 {
         self.shape
+    }
+
+    /// Returns the process-local hidden-class shape id projected for the attrset.
+    pub const fn projected_shape(self) -> Option<ShapeId> {
+        self.projected_shape
     }
 
     /// Returns the projected backing representation for the attrset.

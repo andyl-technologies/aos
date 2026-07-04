@@ -90,9 +90,10 @@ impl TreeWalk {
     ) -> Option<Value> {
         let span = Span::new(0, 0);
         let shape_telemetry = self.project_flat_attr_shape_telemetry(IrId::new(0), span, &attrs);
+        let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
         let value = self
             .heap
-            .alloc_attrs_with_repr_metadata(0, repr, attrs)
+            .alloc_attrs_with_projected_shape_metadata(0, repr, projected_shape, attrs)
             .ok()?;
         if let Some((census_shape, transitions)) = shape_telemetry {
             self.record_projected_attr_shape_telemetry(
