@@ -144,6 +144,43 @@ mod tests {
         "uns",
         "afe { aos_apply(rt, function, argument) };"
     );
+    const ATTR_ACCESS_KEYED_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value, u32, u32) -> Value;"
+    );
+    const ATTR_UPDATE_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeAttrUpdateNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value, Value) -> Value;"
+    );
+    const ATTR_ACCESS_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const ATTR_HAS_ATTR_FN_LINE: &str =
+        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_has_attr(");
+    const ATTR_SELECT_IC_FN_LINE: &str =
+        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_select_ic(");
+    const ATTR_UPDATE_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_update(_rt: *mut c_void, _left: Value, _right: Value) -> Value {"
+    );
+    const ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_has_attr(rt, attrs, symbol, site) };"
+    );
+    const ATTR_SELECT_IC_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_select_ic(rt, attrs, symbol, site) };"
+    );
+    const ATTR_UPDATE_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_update(rt, left, right) };");
     const WRITE_BARRIER_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeWriteBarrierNativeFn = ",
         "uns",
@@ -305,6 +342,7 @@ mod tests {
                 for token in code_tokens(code) {
                     if is_allowed_env_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_apply_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_attr_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_write_barrier_wrapper_token(
                             &source_root,
                             &source_path,
@@ -446,6 +484,44 @@ mod tests {
                 || trimmed == FORCE_DEEP_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_attr_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("attr.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == ATTR_ACCESS_KEYED_FN_TYPE_LINE
+                || trimmed == ATTR_UPDATE_FN_TYPE_LINE
+                || trimmed == ATTR_ACCESS_EXPORT_ATTR_LINE
+                || trimmed == ATTR_HAS_ATTR_FN_LINE
+                || trimmed == ATTR_SELECT_IC_FN_LINE
+                || trimmed == ATTR_UPDATE_FN_LINE
+                || trimmed == ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE
+                || trimmed == ATTR_SELECT_IC_ABORT_TEST_CALL_LINE
+                || trimmed == ATTR_UPDATE_ABORT_TEST_CALL_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == ATTR_ACCESS_KEYED_FN_TYPE_LINE
+                || trimmed == ATTR_UPDATE_FN_TYPE_LINE
+                || trimmed == ATTR_HAS_ATTR_FN_LINE
+                || trimmed == ATTR_SELECT_IC_FN_LINE
+                || trimmed == ATTR_UPDATE_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == ATTR_ACCESS_EXPORT_ATTR_LINE
         } else {
             false
         }
@@ -727,6 +803,8 @@ mod unchecked_cfg;
     fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
+        let attr = fs::read_to_string(source_root.join("attr.rs"))
+            .expect("attrset-access FFI source file is readable");
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
         let barrier = fs::read_to_string(source_root.join("barrier.rs"))
@@ -793,6 +871,51 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&apply, APPLY_ABORT_TEST_CALL_LINE),
             1,
             "apply abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_ACCESS_KEYED_FN_TYPE_LINE),
+            1,
+            "keyed attrset-access native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_FN_TYPE_LINE),
+            1,
+            "attrset-update native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_ACCESS_EXPORT_ATTR_LINE),
+            3,
+            "attrset-access native wrapper export attributes must stay reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_FN_LINE),
+            1,
+            "aos_has_attr native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_SELECT_IC_FN_LINE),
+            1,
+            "aos_select_ic native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_FN_LINE),
+            1,
+            "aos_update native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE),
+            1,
+            "has-attr abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_SELECT_IC_ABORT_TEST_CALL_LINE),
+            1,
+            "select-IC abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_ABORT_TEST_CALL_LINE),
+            1,
+            "attrset-update abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&barrier, WRITE_BARRIER_FN_TYPE_LINE),
@@ -929,6 +1052,8 @@ mod unchecked_cfg;
     fn assert_reviewed_safety_comments(source_root: &Path) {
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
+        let attr = fs::read_to_string(source_root.join("attr.rs"))
+            .expect("attrset-access FFI source file is readable");
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
         let barrier = fs::read_to_string(source_root.join("barrier.rs"))
@@ -936,6 +1061,7 @@ mod unchecked_cfg;
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let apply_lines = apply.lines().collect::<Vec<_>>();
+        let attr_lines = attr.lines().collect::<Vec<_>>();
         let lines = env.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
@@ -964,6 +1090,21 @@ mod unchecked_cfg;
             &apply_lines,
             APPLY_ABORT_TEST_CALL_LINE,
             "apply abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
+            ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE,
+            "has-attr abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
+            ATTR_SELECT_IC_ABORT_TEST_CALL_LINE,
+            "select-IC abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
+            ATTR_UPDATE_ABORT_TEST_CALL_LINE,
+            "attrset-update abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &barrier_lines,
@@ -1055,6 +1196,8 @@ mod unchecked_cfg;
     fn assert_public_unsafe_docs(source_root: &Path) {
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
+        let attr = fs::read_to_string(source_root.join("attr.rs"))
+            .expect("attrset-access FFI source file is readable");
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
         let barrier = fs::read_to_string(source_root.join("barrier.rs"))
@@ -1062,6 +1205,7 @@ mod unchecked_cfg;
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let apply_lines = apply.lines().collect::<Vec<_>>();
+        let attr_lines = attr.lines().collect::<Vec<_>>();
         let lines = env.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
@@ -1085,6 +1229,31 @@ mod unchecked_cfg;
             &apply_lines,
             APPLY_FN_LINE,
             "public apply native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &attr_lines,
+            ATTR_ACCESS_KEYED_FN_TYPE_LINE,
+            "public keyed attrset native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &attr_lines,
+            ATTR_UPDATE_FN_TYPE_LINE,
+            "public attrset-update native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &attr_lines,
+            ATTR_HAS_ATTR_FN_LINE,
+            "public has-attr native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &attr_lines,
+            ATTR_SELECT_IC_FN_LINE,
+            "public select-IC native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &attr_lines,
+            ATTR_UPDATE_FN_LINE,
+            "public attrset-update native wrapper must document # Safety",
         );
         assert_has_safety_doc_before(
             &barrier_lines,
@@ -1136,7 +1305,7 @@ mod unchecked_cfg;
 
     fn assert_has_safety_doc_before(lines: &[&str], expected: &str, message: &str) {
         let index = unique_line_index(lines, expected);
-        let start = index.saturating_sub(10);
+        let start = index.saturating_sub(18);
         assert!(
             lines[start..index]
                 .iter()

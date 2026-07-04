@@ -1453,19 +1453,22 @@ harness, never cut for scope.
       `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
       composes the oracle Rust-callable helper metadata, the `ratchet-runtime-ffi`
       `aos_env_get`/`aos_apply`/`aos_blackhole_check`/`aos_force`/
-      `aos_force_deep`/`aos_gc_write_barrier` native-wrapper metadata, and
+      `aos_force_deep`/`aos_gc_write_barrier` plus
+      `aos_has_attr`/`aos_select_ic`/`aos_update` native-wrapper metadata, and
       `ratchet-jit` runtime-symbol address candidates. It projects the
       runtime-FFI `aos_env_get`, `aos_apply`, `aos_blackhole_check`,
-      `aos_force`, `aos_force_deep`, and `aos_gc_write_barrier` addresses plus
+      `aos_force`, `aos_force_deep`, `aos_gc_write_barrier`,
+      `aos_has_attr`, `aos_select_ic`, and `aos_update` addresses plus
       process-local callable helper addresses for the currently covered
-      allocation and attrset-access helpers into
+      allocation helpers into
       `JitRuntimeSymbolAddressCandidate` values
       while preserving oracle missing bindings for unbound helpers and builtins.
       It also records per-candidate provenance and exposes helper-role filtered candidate views, including the
       allocation-helper subset in manifest order. Tests pin allocation,
       call-control, attrset-access, environment-access, forcing, and write-barrier role filtering,
       `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
-      `aos_force_deep`, and `aos_gc_write_barrier` runtime-FFI address/provenance,
+      `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`,
+      `aos_select_ic`, and `aos_update` runtime-FFI address/provenance,
       feed only the allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
       This is integration preflight plumbing only: the addresses are not
@@ -1478,12 +1481,13 @@ harness, never cut for scope.
       native-export preflight beside the `ratchet-jit` registration preflight
       built from those candidates, while separately reporting the current
       non-final address-provenance gaps. `aos_env_get`,
-      `aos_apply`, `aos_blackhole_check`, `aos_force`, `aos_force_deep`, and
-      `aos_gc_write_barrier` now have
-      runtime-FFI native-wrapper provenance, while the other covered helpers still carry
+      `aos_apply`, `aos_blackhole_check`, `aos_force`, `aos_force_deep`,
+      `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`, and
+      `aos_update` now have
+      runtime-FFI native-wrapper provenance, while the allocation helpers still carry
       Rust-callable provenance gaps. Tests pin allocation-helper, `aos_apply`,
       `aos_env_get`, `aos_blackhole_check`/`aos_force`/`aos_force_deep`, and
-      `aos_gc_write_barrier` binding/address parity, preserve the current
+      `aos_gc_write_barrier` plus attrset-access binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
       prove registered helper addresses still carry native-export blockers plus
       the remaining Rust-callable provenance gaps.
@@ -1499,10 +1503,10 @@ harness, never cut for scope.
       while unbound helper/builtin address gaps, native-export blockers, and
       remaining Rust-callable address-provenance gaps remain. Separately,
       `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
-      `aos_force_deep`, and `aos_gc_write_barrier`
+      `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`,
+      `aos_select_ic`, and `aos_update`
       now have runtime-FFI address candidates but still carry the oracle
-      native-export blocker report, while the other
-      non-runtime-FFI helper families still carry family-specific native-export
+      native-export blocker report, while the allocation helper family still carries family-specific native-export
       and Rust-callable provenance blockers. This
       is still strict metadata gating only: no `JITBuilder::symbol` registration, exported C ABI
       wrapper, code finalization, helper-address dereference, or native call is
@@ -1643,7 +1647,7 @@ harness, never cut for scope.
       `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
-- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep` success-path wrappers plus `aos_apply`/`aos_gc_write_barrier` trap wrappers:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep` success-path wrappers plus `aos_apply`/`aos_gc_write_barrier`/attrset-access trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
@@ -1671,10 +1675,21 @@ harness, never cut for scope.
       source-thunk/value decoding, trap transfer, and safe write-barrier
       dispatch exist. Returning today would be unsound because skipping the
       daemon-generational barrier can lose remembered edges. The apply, forcing,
-      and barrier wrappers' safety contracts still require a Rust-valid
+      barrier, and attrset-access wrappers' safety contracts still require a Rust-valid
       `Value` tag, and `aos_force`/`aos_force_deep` additionally require live
       evaluator-owned heap payloads for returned WHNF heap values; invalid tag
       discriminants are undefined before the wrappers can inspect them.
+      Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
+      unmangled frozen `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`
+      symbols, while `attr::aos_update` defines an unmangled frozen
+      `(rt, Value left, Value right) -> Value` symbol. All three abort for every
+      call until runtime-context decoding, active attrset-root binding,
+      symbol-table and inline-cache site binding, inline-cache dispatch or
+      update merge, trap transfer, and native value-return materialization
+      exist. Returning today would be unsound because the wrappers cannot
+      preserve checked select/presence errors, inline-cache state, shallow
+      right-biased update semantics, or evaluator trap behavior without runtime
+      context.
       Metadata exposes each wrapper's typed
       function pointer, process-local address, frozen ABI signature, and
       remaining export blockers. Tests call the env/forcing wrappers and
@@ -1682,7 +1697,8 @@ harness, never cut for scope.
       subprocess abort paths including the trap-only apply and barrier wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
       addresses for `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
-      `aos_force_deep`, and `aos_gc_write_barrier`.
+      `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`,
+      and `aos_update`.
       The crate also records its
       unsafe-boundary manifest and tests an allowlist/count for every current
       `unsafe`, `extern`, and `no_mangle` source token. This is not the final
@@ -1693,7 +1709,10 @@ harness, never cut for scope.
       integration exists; `aos_apply` remains a trap-only body until safe
       evaluator apply dispatch can be reached from native runtime context; and
       `aos_gc_write_barrier` remains a trap-only body until safe barrier
-      dispatch can be reached from native runtime context. The strict
+      dispatch can be reached from native runtime context; `aos_has_attr`,
+      `aos_select_ic`, and `aos_update` remain trap-only bodies until safe
+      attrset select/presence/update dispatch can be reached from native runtime
+      context. The strict
       native-export plan still rejects through the aggregate readiness gates, and
       `JITBuilder::symbol` registration/native calls remain gated.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.

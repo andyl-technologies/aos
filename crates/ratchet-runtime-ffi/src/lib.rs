@@ -15,6 +15,9 @@
 //!   for frozen `(rt, Value)` forcing ABIs
 //! ratchet_runtime_ffi::apply
 //!   aos_apply trap-only wrapper for the frozen `(rt, Value, Value)` call ABI
+//! ratchet_runtime_ffi::attr
+//!   aos_has_attr, aos_select_ic, and aos_update trap-only wrappers for frozen
+//!   attrset-access ABIs
 //! ratchet_runtime_ffi::barrier
 //!   aos_gc_write_barrier trap-only wrapper for the frozen
 //!   `(rt, thunk, Value)` write-barrier ABI
@@ -30,6 +33,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod apply;
+pub mod attr;
 pub mod barrier;
 pub mod env;
 pub mod force;
