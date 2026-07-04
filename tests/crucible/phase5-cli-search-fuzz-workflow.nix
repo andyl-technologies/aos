@@ -579,6 +579,10 @@
         needle = "AssertionQuantifierKind::AfterQuiescence";
       }
       {
+        label = "search assertion retained-log eventually allowlist";
+        needle = "AssertionQuantifierKind::Sometimes\n                | AssertionQuantifierKind::Eventually";
+      }
+      {
         label = "search assertion named truth-table type";
         needle = "SearchScheduleNamedPredicateTruths";
       }
@@ -743,6 +747,26 @@
       {
         label = "search assertion retained-log blocked terminal sometimes guard";
         needle = "retained_sometimes_with_blocked_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal eventually regression";
+        needle = "retained_eventually_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal eventually regression";
+        needle = "retained_eventually_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log blocked terminal eventually guard";
+        needle = "retained_eventually_with_blocked_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence eventually guard";
+        needle = "eventually_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal eventually trigger guard";
+        needle = "eventually_quiescence_trigger_with_terminal_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
