@@ -1164,7 +1164,9 @@ branch on the verdict without parsing output:
   terminal quiescence evidence on those bundles admits retained
   after-quiescence violations over quiescent predicates and terminal
   `sometimes`/`eventually` violations plus expected-reachable failures over
-  retained-log predicates.
+  retained-log predicates, plus terminal `sometimes` and required `reachable`
+  guest assertion marker failures, while event-backed guest marker failures are
+  limited to `always` false and `unreachable` true records.
   The default CLI path intentionally excludes absence-based existential/liveness
   failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,

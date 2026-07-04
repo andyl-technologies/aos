@@ -572,7 +572,19 @@
       }
       {
         label = "search assertion retained-log terminal reachability failure allowlist";
-        needle = "terminal_complete_retained_reachability_failure = predicate_scope\n        == SearchAssertionPredicateScope::RetainedLog\n        && terminal_quiescent\n        && outcome.quantifier == AssertionQuantifierKind::Reachable\n        && outcome.kind == HostAssertionOutcomeKind::NeverReachedFail";
+        needle = "AssertionQuantifierKind::Reachable | AssertionQuantifierKind::GuestReachable";
+      }
+      {
+        label = "search assertion retained-log guest marker allowlist";
+        needle = "retained_guest_marker_failure";
+      }
+      {
+        label = "search assertion retained-log terminal guest marker allowlist";
+        needle = "terminal_retained_guest_marker_failure";
+      }
+      {
+        label = "search assertion retained-log terminal guest marker quantifier";
+        needle = "AssertionQuantifierKind::GuestSometimes";
       }
       {
         label = "search assertion retained-log terminal quiescent guard";
@@ -791,6 +803,46 @@
       {
         label = "search assertion retained-log terminal quiescence reachable guard";
         needle = "reachable_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log guest always marker regression";
+        needle = "guest_always_false_oracle";
+      }
+      {
+        label = "search assertion retained-log guest unreachable marker regression";
+        needle = "guest_unreachable_true_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal guest sometimes regression";
+        needle = "guest_sometimes_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal guest sometimes regression";
+        needle = "guest_sometimes_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log blocked terminal guest sometimes guard";
+        needle = "guest_sometimes_with_blocked_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal guest reachable regression";
+        needle = "guest_reachable_required_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal guest reachable regression";
+        needle = "guest_reachable_required_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log guest reachable kind mismatch guard";
+        needle = "guest_reachable_kind_mismatch_oracle";
+      }
+      {
+        label = "search assertion retained-log blocked terminal guest reachable guard";
+        needle = "guest_reachable_required_with_blocked_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal guest reachable warn guard";
+        needle = "guest_reachable_warn_with_terminal_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
