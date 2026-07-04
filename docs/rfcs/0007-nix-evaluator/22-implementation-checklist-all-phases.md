@@ -7343,6 +7343,19 @@ nurseries build on the bump arena.
       lock-free Chase-Lev deque, does not evaluate Nix derivations, does not
       allocate per-worker nurseries, does not integrate with shared thunk CAS,
       and does not satisfy the full L1 deliverable above.
+- [x] Current Chase-Lev deque admission primitive:
+      `ratchet-oracle::eval::parallel_chase_lev` wraps the checked-in
+      `crossbeam-deque` Chase-Lev worker/stealer pair behind the existing
+      scheduler metadata contract: round-robin initial ownership, owner-local
+      LIFO pops, peer FIFO steals, and explicit `Retry` reporting distinct from
+      true empty observations. Tests cover local LIFO and peer FIFO order,
+      worker/task count preservation, empty pools, the public empty/non-retry
+      surface, and concurrent drains that complete every seeded task exactly
+      once. This is a deque admission/audit primitive only: the public
+      top-level and fallible executors still use their existing safe scheduler
+      precursors, derivations are not evaluated through the Chase-Lev adapter,
+      no per-worker nursery ownership is allocated from live heaps, no CAS
+      wait/park token is attached, and the loom/Miri/TSan gate remains open.
 - [ ] `eval/thunk_cas.rs` — the L2 **lock-free CAS thunk protocol**
       (`Suspended → Pending → Awaited → Forced/Failed`); claim-by-CAS, with
       work-stealing or parking on a claimed thunk ([13](13-parallel-evaluation.md) §3).

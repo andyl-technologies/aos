@@ -3935,6 +3935,7 @@ dependencies = [
  "base64",
  "blake3",
  "bzip2",
+ "crossbeam-deque",
  "flate2",
  "git2",
  "md-5",

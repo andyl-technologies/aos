@@ -11,6 +11,7 @@ pub mod heap;
 pub mod internal_diff;
 pub mod module;
 pub mod parallel;
+pub mod parallel_chase_lev;
 pub mod parallel_failure;
 pub mod parallel_heap;
 pub mod parallel_output;
@@ -36,6 +37,11 @@ pub use parallel::{
     ParallelTopLevelError, ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan,
     ParallelWorkerExecutionReport, execute_parallel_top_level, parallel_ready_work_queues,
     parallel_top_level_seed_plan,
+};
+pub use parallel_chase_lev::{
+    ParallelChaseLevTake, ParallelChaseLevTask, ParallelChaseLevTaskSource,
+    ParallelChaseLevTaskTake, ParallelChaseLevWorkerQueue, ParallelChaseLevWorkerQueues,
+    parallel_chase_lev_worker_queues,
 };
 pub use parallel_failure::{
     ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTaskContext,
