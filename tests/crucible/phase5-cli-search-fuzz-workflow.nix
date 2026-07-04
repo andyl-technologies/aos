@@ -53,7 +53,7 @@
       }
       {
         label = "T-CLI-13 local-double search progress";
-        needle = "executes local `--backend double search` without";
+        needle = "accepts explicit `--on-violation`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -63,7 +63,7 @@
       }
       {
         label = "phase5 CLI local-double search progress";
-        needle = "deterministic `search-run` output and `failure_oracle=none`";
+        needle = "`search-run` output with `failure_oracle=none`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -112,16 +112,16 @@
         needle = "failure_oracle=none";
       }
       {
+        label = "local-double search oracle API";
+        needle = "search_with_strategy_and_failure_oracle";
+      }
+      {
         label = "local-double search canonical log";
         needle = "search_strategy_run";
       }
       {
         label = "local-double max-depth blocker";
         needle = "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13";
-      }
-      {
-        label = "local-double failure oracle blocker";
-        needle = "local-double search currently runs with failure_oracle=none";
       }
       {
         label = "fuzz runner blocker";

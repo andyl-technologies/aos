@@ -38,8 +38,8 @@ use crucible_session::{
     SessionCommand, SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint,
-        MaterializationPolicy, MaterializationTrigger, MemoryDagStore, Schedule, SimDuration,
-        TemporalGraph, TemporalGraphStoreError, VirtualTime,
+        MaterializationPolicy, MaterializationTrigger, MemoryDagStore, Schedule,
+        SearchFailureOracle, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
     },
 };
 use tokio::sync::mpsc;
@@ -9927,28 +9927,26 @@ fn run_local_double_search_workflow(
             "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13",
         ));
     }
-    if plan.explicit_on_violation {
-        return Err(backend_error(
-            "local-double search currently runs with failure_oracle=none; --on-violation requires the failure-oracle search runner tracked by T-CLI-13",
-        ));
-    }
     let scenario = plan.scenario.scenario_def().clone();
     let root = crucible::Configuration::genesis(scenario.clone());
     let mut graph = save_validation_graph(&scenario)?;
+    let failure_oracle = SearchFailureOracle::none();
     let run = graph
-        .search_with_strategy(
+        .search_with_strategy_and_failure_oracle(
+            plan.scenario.scenario_form(),
             &root,
             plan.engine_strategy,
             plan.budget,
             MaterializationPolicy::thin_only(),
             MaterializationTrigger::Cold,
+            &failure_oracle,
         )
         .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     outcome.status = BackendCommandStatus::Passed;
     outcome.exit_code = 0;
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\texpansions={}\texplored={}\tfailures={}\texhausted={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}",
         plan.scenario.label(),
         format_content_hash_ref(run.root),
         plan.strategy_arg.label(),
@@ -9956,6 +9954,7 @@ fn run_local_double_search_workflow(
         plan.max_depth
             .map(|depth| depth.to_string())
             .unwrap_or_else(|| String::from("none")),
+        plan.on_violation.label(),
         run.expansions.len(),
         run.explored_graph.len(),
         run.discovered_failures.len(),
@@ -9967,10 +9966,11 @@ fn run_local_double_search_workflow(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} failure_oracle=none expansions={} explored={} failures={} exhausted={}",
+            "root={} strategy={} max_states={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={}",
             format_content_hash_ref(run.root),
             plan.strategy_arg.label(),
             plan.max_states,
+            plan.on_violation.label(),
             run.expansions.len(),
             run.explored_graph.len(),
             run.discovered_failures.len(),
@@ -15861,15 +15861,29 @@ mod tests {
             String::from("--on-violation"),
             String::from("stop"),
         ]);
-        let error = match dispatch(&violation_cli) {
-            Ok(_) => panic!("local-double search must reject explicit violation handling"),
-            Err(error) => error,
+        let Commands::Search(args) = &violation_cli.command else {
+            panic!("expected search command");
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("failure_oracle=none"));
-        assert!(error.to_string().contains("--on-violation"));
-        assert!(error.to_string().contains("T-CLI-13"));
+        let violation_plan = plan_search_invocation(args, temp.path())?;
+        let violation_backend =
+            plan_backend_selection(&violation_cli)?.expect("search should route to backend");
+        let no_failure_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&violation_cli),
+            &violation_backend,
+            None,
+            &violation_plan,
+        )?;
+        assert_eq!(no_failure_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(no_failure_outcome.exit_code, 0);
+        let search_line = no_failure_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("explicit violation search must emit a search-run line");
+        assert!(search_line.contains("failure_oracle=none"));
+        assert!(search_line.contains("on_violation=stop"));
+        assert!(search_line.contains("failures=0"));
+        dispatch(&violation_cli)?;
 
         Ok(())
     }
