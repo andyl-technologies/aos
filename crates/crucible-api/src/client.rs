@@ -12,13 +12,15 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible::{
-    Checkpoint, Configuration, ContentHash, EventLevel, ExecutionFingerprint, FingerprintSample,
-    NodeId, Schedule, Seed, SimDuration, VirtualTime,
+    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, EventLevel,
+    ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed, SimDuration,
+    VirtualTime,
 };
 use crucible_session::{
-    EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot, LiveStateKind, Outcome,
-    OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo, SessionCommand,
-    SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, EngineSnapshot,
+    EngineState, LifecycleStateKind, LiveSnapshot, LiveStateKind, Outcome, OutcomeKind,
+    PauseReason, QueryKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
+    StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -1302,6 +1304,22 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     push_line(&mut output, "command", &command_kind);
     if let SessionCommand::Query { kind, .. } = &request.command {
         push_line(&mut output, "query", &query_kind_request_wire(kind));
+    } else if let SessionCommand::SetBreakpoint { spec, .. } = &request.command {
+        push_line(
+            &mut output,
+            "breakpoint-predicate",
+            &hex_encode(&spec.predicate.to_compact_binary()),
+        );
+        push_line(
+            &mut output,
+            "breakpoint-disposition",
+            &breakpoint_disposition_request_wire(&spec.disposition),
+        );
+        push_line(
+            &mut output,
+            "breakpoint-policy",
+            breakpoint_policy_request_wire(spec.policy),
+        );
     } else if let SessionCommand::CreateSavepoint { label, .. } = &request.command {
         push_line(
             &mut output,
@@ -1321,23 +1339,7 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     output.into_bytes()
 }
 
-fn validate_rpc_send_request(request: &SendRequest) -> Result<(), ControlClientError> {
-    if let SessionCommand::Query { kind, .. } = &request.command {
-        let message = match kind {
-            QueryKind::BreakpointFirings => {
-                Some("breakpoint-firing query is not supported by the RPC wire format")
-            }
-            QueryKind::State
-            | QueryKind::Snapshot
-            | QueryKind::EventLogLength
-            | QueryKind::ExecutionFingerprint { .. } => None,
-        };
-        if let Some(message) = message {
-            return Err(ControlClientError::UnsupportedRpcCommand {
-                message: String::from(message),
-            });
-        }
-    }
+fn validate_rpc_send_request(_request: &SendRequest) -> Result<(), ControlClientError> {
     Ok(())
 }
 
@@ -1350,6 +1352,23 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }
+    }
+}
+
+fn breakpoint_disposition_request_wire(disposition: &BreakpointDisposition) -> String {
+    match disposition {
+        BreakpointDisposition::Suspend => String::from("suspend"),
+        BreakpointDisposition::Trace => String::from("trace"),
+        BreakpointDisposition::Action(action) => {
+            format!("action:{}", hex_encode(&action.to_compact_binary()))
+        }
+    }
+}
+
+fn breakpoint_policy_request_wire(policy: BreakpointPolicy) -> &'static str {
+    match policy {
+        BreakpointPolicy::OneShot => "one-shot",
+        BreakpointPolicy::Repeatable => "repeatable",
     }
 }
 
@@ -1647,7 +1666,16 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
     let status = parse_command_status_line(lines.next())?;
     let state_update = parse_state_update_line(lines.next())?;
     let query_result = parse_query_result_line(lines.next())?;
-    let savepoint_info = match lines.next() {
+    let next = lines.next();
+    let (breakpoint_id, savepoint_line) = match next {
+        Some(line) if line.starts_with("breakpoint-id=") => {
+            (parse_breakpoint_id_line(Some(line))?, lines.next())
+        }
+        Some(line) if line.starts_with("savepoint-info=") => (None, Some(line)),
+        Some(_) => return Err(rpc_decode("unexpected trailing fields in RPC response")),
+        None => (None, None),
+    };
+    let savepoint_info = match savepoint_line {
         Some(line) if line.starts_with("savepoint-info=") => parse_savepoint_info_line(Some(line))?,
         Some(_) => return Err(rpc_decode("unexpected trailing fields in RPC response")),
         None => None,
@@ -1661,7 +1689,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
         },
         state_update,
         query_result,
-        breakpoint_id: None,
+        breakpoint_id,
         savepoint_info,
     })
 }
@@ -2254,6 +2282,11 @@ fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, Co
             reject_extra_query_result_fields(fields.next())?;
             Ok(Some(QueryResult::EventLogLength(len)))
         }
+        "breakpoint-firings" => {
+            let firings = parse_breakpoint_firings_fields(&mut fields)?;
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::BreakpointFirings(firings)))
+        }
         "execution-fingerprint" => {
             let node = NodeId {
                 name: parse_hex_string_field(fields.next(), "query result fingerprint node")?,
@@ -2319,6 +2352,100 @@ fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, Co
     }
 }
 
+fn parse_breakpoint_firings_fields<'a, I>(
+    fields: &mut I,
+) -> Result<Vec<BreakpointFiring>, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let count = parse_usize_field(fields.next(), "query result breakpoint firing count")?;
+    let mut firings = Vec::new();
+    firings
+        .try_reserve(count)
+        .map_err(|error| rpc_decode(format!("breakpoint firing count is too large: {error}")))?;
+    for _ in 0..count {
+        let sequence = parse_u64_field(fields.next(), "query result breakpoint firing sequence")?;
+        let id = parse_u64_field(fields.next(), "query result breakpoint firing id")?;
+        let frontier = VirtualTime {
+            ticks: parse_u64_field(fields.next(), "query result breakpoint firing frontier")?,
+        };
+        let quanta = parse_u64_field(fields.next(), "query result breakpoint firing quanta")?;
+        let predicate =
+            parse_predicate_field(fields.next(), "query result breakpoint firing predicate")?;
+        let disposition = parse_breakpoint_disposition_field(fields.next())?;
+        let control_count = parse_usize_field(
+            fields.next(),
+            "query result breakpoint firing scheduler control count",
+        )?;
+        let mut scheduler_controls = Vec::new();
+        scheduler_controls
+            .try_reserve(control_count)
+            .map_err(|error| {
+                rpc_decode(format!(
+                    "breakpoint firing scheduler control count is too large: {error}"
+                ))
+            })?;
+        for _ in 0..control_count {
+            scheduler_controls.push(parse_control_operation_kind_field(
+                fields.next(),
+                "query result breakpoint firing scheduler control",
+            )?);
+        }
+        firings.push(BreakpointFiring {
+            sequence,
+            id,
+            predicate,
+            disposition,
+            frontier,
+            quanta,
+            scheduler_controls,
+        });
+    }
+    Ok(firings)
+}
+
+fn parse_predicate_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<Predicate, ControlClientError> {
+    let bytes = parse_hex_bytes_field(value, label)?;
+    Predicate::from_compact_binary(&bytes)
+        .map_err(|error| rpc_decode(format!("invalid {label}: {error}")))
+}
+
+fn parse_breakpoint_disposition_field(
+    value: Option<&str>,
+) -> Result<BreakpointDisposition, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode("missing query result breakpoint disposition"))?;
+    if value == "suspend" {
+        return Ok(BreakpointDisposition::Suspend);
+    }
+    if value == "trace" {
+        return Ok(BreakpointDisposition::Trace);
+    }
+    let Some(action) = value.strip_prefix("action:") else {
+        return Err(rpc_decode(format!(
+            "unknown query result breakpoint disposition `{value}`"
+        )));
+    };
+    let bytes = parse_hex_bytes(action)?;
+    let action = Action::from_compact_binary(&bytes).map_err(|error| {
+        rpc_decode(format!(
+            "invalid query result breakpoint action disposition: {error}"
+        ))
+    })?;
+    Ok(BreakpointDisposition::Action(action))
+}
+
+fn parse_control_operation_kind_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<ControlOperationKind, ControlClientError> {
+    let bytes = parse_hex_bytes_field(value, label)?;
+    ControlOperationKind::from_compact_binary(&bytes)
+        .map_err(|error| rpc_decode(format!("invalid {label}: {error}")))
+}
+
 fn parse_hex_bytes_field(
     value: Option<&str>,
     label: &'static str,
@@ -2332,6 +2459,18 @@ fn reject_extra_query_result_fields(field: Option<&str>) -> Result<(), ControlCl
         return Err(rpc_decode("unexpected extra query result fields"));
     }
     Ok(())
+}
+
+fn parse_breakpoint_id_line(
+    line: Option<&str>,
+) -> Result<Option<BreakpointId>, ControlClientError> {
+    match parse_prefixed_line(line, "breakpoint-id=")? {
+        "none" => Ok(None),
+        value => value
+            .parse::<BreakpointId>()
+            .map(Some)
+            .map_err(|error| rpc_decode(format!("invalid breakpoint id `{value}`: {error}"))),
+    }
 }
 
 fn parse_savepoint_info_line(

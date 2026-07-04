@@ -1055,11 +1055,11 @@ branch on the verdict without parsing output:
   breakpoint-firing proof, routes explicitly selected local-QEMU saves through
   the same create-savepoint/export/oracle workflow with resolved QEMU/plugin
   identity metadata, routes remote-daemon quiescence and virtual-time saves over
-  the RPC control API with replay-oracle validation, and fails undeclared
+  the RPC control API with replay-oracle validation, routes remote selector
+  proof queries over RPC breakpoint-firing payloads, and fails undeclared
   property selectors and marker selectors without a white-box source. Full
   closure remains blocked on production assertion-event/guest-marker sources
-  across selector saves, remote selector-save breakpoint-firing query RPC, and
-  process-backed real-QEMU savepoint coverage.
+  across selector saves and process-backed real-QEMU savepoint coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.

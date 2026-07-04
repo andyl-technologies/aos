@@ -193,7 +193,7 @@
       }
       {
         label = "RPC minor bumped";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 2;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "rejected command golden vector";

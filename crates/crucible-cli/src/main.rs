@@ -7840,11 +7840,6 @@ async fn run_remote_control_client_save_workflow_async<C>(
 where
     C: ControlClient + Sync,
 {
-    if matches!(save_plan.at, SaveAtArg::Property | SaveAtArg::Marker) {
-        return Err(backend_error(
-            "save selector workflows over a remote daemon require breakpoint-firing query RPC support tracked by T-CLI-9",
-        ));
-    }
     let run_plan = &save_plan.run_plan;
     let seed = run_plan
         .request_seed
@@ -7929,7 +7924,17 @@ where
             }
             boundary
         }
-        SaveAtArg::Property | SaveAtArg::Marker => unreachable!("selector saves rejected above"),
+        SaveAtArg::Property | SaveAtArg::Marker => {
+            run_save_selector_to_boundary(
+                client,
+                created.session,
+                save_plan,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?
+        }
     };
 
     let snapshot_response = send_save_workflow_command(
@@ -8043,7 +8048,8 @@ where
     let final_state = match save_plan.at {
         SaveAtArg::Quiescence => String::from("quiescent"),
         SaveAtArg::VirtualTime => String::from("virtual-time"),
-        SaveAtArg::Property | SaveAtArg::Marker => unreachable!("selector rejected above"),
+        SaveAtArg::Property => String::from("property"),
+        SaveAtArg::Marker => String::from("marker"),
     };
     if state_updates.last() != Some(&final_state) {
         state_updates.push(final_state.clone());
@@ -12869,6 +12875,38 @@ mod tests {
         Ok(address.to_string())
     }
 
+    fn spawn_save_recording_lifecycle_server(
+        fixture: SaveRecordingFixture,
+    ) -> Result<String, Box<dyn Error>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => return,
+            };
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(_) => return,
+                };
+                let control_plane = LifecycleControlPlane::new(
+                    "crucible-cli-save-selector-test-daemon",
+                    Vec::new(),
+                    move |_scenario: &crucible::ScenarioDef, _seed| {
+                        SaveRecordingLifecycleLoop::new(fixture.clone(), None)
+                    },
+                );
+                let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
+            });
+        });
+        Ok(address.to_string())
+    }
+
     #[derive(Default)]
     struct FakeSeedEnvironment {
         seed: Option<String>,
@@ -14771,6 +14809,41 @@ mod tests {
         assert!(virtual_time_handle.contains("label\tremote-virtual-time-save\n"));
         assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
         assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_save_workflow_executes_remote_daemon_selector_savepoint() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_property_selector_scenario(&temp)?;
+        let daemon =
+            spawn_save_recording_lifecycle_server(SaveRecordingFixture::PropertyViolation {
+                assertion: crucible::AssertionId::from_name("split-active"),
+            })?;
+        let out = temp.path().join("remote-selector.crucible-savepoint");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon,
+            String::from("--seed"),
+            String::from("21"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("property"),
+            String::from("--property"),
+            String::from("split-active"),
+            String::from("--label"),
+            String::from("remote-selector-save"),
+            String::from("--out"),
+            out.display().to_string(),
+        ]);
+        dispatch(&cli)?;
+        let handle = fs::read_to_string(out)?;
+        assert!(handle.contains("label\tremote-selector-save\n"));
+        assert!(handle.contains("at\tproperty\n"));
+        assert!(handle.contains("oracle\tfat==thin-passed\n"));
 
         Ok(())
     }

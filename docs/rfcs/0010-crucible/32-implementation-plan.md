@@ -431,11 +431,13 @@ long-held locks.
   local-double property and marker saves by emitting the requested assertion/
   marker identities through suspending breakpoints plus breakpoint-firing proof,
   routes explicitly selected local-QEMU saves through the same create-savepoint/
-  export/oracle workflow with resolved QEMU/plugin identity metadata, routes remote-daemon quiescence and virtual-time saves over the RPC control API with
-  replay-oracle validation, and fails undeclared property selectors and marker
-  selectors without a white-box source; full closure waits for production
-  assertion-event/guest-marker sources across selector saves, remote selector-save
-  breakpoint-firing query RPC, and process-backed real-QEMU savepoint coverage.
+  export/oracle workflow with resolved QEMU/plugin identity metadata,
+  routes remote-daemon quiescence and virtual-time saves over the RPC control API
+  and validates them with replay-oracle evidence, routes remote selector proof queries over RPC breakpoint-firing payloads,
+  and fails undeclared property selectors and marker selectors without a white-box
+  source; full closure waits for production
+  assertion-event/guest-marker sources across selector saves and process-backed
+  real-QEMU savepoint coverage.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`

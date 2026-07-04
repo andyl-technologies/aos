@@ -24,10 +24,10 @@ fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
 }
 
 fn assert_abi_version_field() {
-    assert_eq!(RPC_PROTOCOL_MAJOR, 2);
-    assert_eq!(RPC_PROTOCOL_MINOR, 2);
+    assert_eq!(RPC_PROTOCOL_MAJOR, 3);
+    assert_eq!(RPC_PROTOCOL_MINOR, 0);
     assert_eq!(RPC_PROTOCOL_PATCH, 0);
-    assert_eq!(RPC_PROTOCOL_BUILD, "crucible-rpc-abi-v2");
+    assert_eq!(RPC_PROTOCOL_BUILD, "crucible-rpc-abi-v3");
     assert_eq!(RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION);
     assert!(GOLDEN_VECTOR_RPC_REGENERATION_RULE.contains("RPC_PROTOCOL_VERSION"));
 
@@ -73,7 +73,10 @@ fn assert_frozen_golden_vectors() {
             "get-reproduction-request",
             "get-reproduction-response",
             "send-request",
+            "send-request-set-breakpoint",
             "send-response",
+            "send-response-set-breakpoint",
+            "send-response-breakpoint-firings",
             "send-response-rejected-not-found",
             "rpc-error-invalid-state",
             "event-fault-activated",
@@ -96,7 +99,9 @@ fn assert_frozen_golden_vectors() {
     let mut saw_get_reproduction_request = false;
     let mut saw_get_reproduction_response = false;
     let mut saw_command_request = false;
+    let mut saw_command_request_with_payload = false;
     let mut saw_command_response = false;
+    let mut saw_command_response_with_payload = false;
     let mut saw_rpc_error = false;
     let mut saw_event = false;
 
@@ -119,7 +124,20 @@ fn assert_frozen_golden_vectors() {
                 saw_get_reproduction_response = true;
             }
             RpcGoldenVectorMessage::CommandRequest { .. } => saw_command_request = true,
+            RpcGoldenVectorMessage::CommandRequestWithPayload { payload_lines, .. } => {
+                saw_command_request_with_payload = true;
+                assert!(!payload_lines.is_empty());
+            }
             RpcGoldenVectorMessage::CommandResponse { .. } => saw_command_response = true,
+            RpcGoldenVectorMessage::CommandResponseWithPayload {
+                query_result,
+                breakpoint_id,
+                ..
+            } => {
+                saw_command_response_with_payload = true;
+                assert!(!query_result.is_empty());
+                assert!(!breakpoint_id.is_empty());
+            }
             RpcGoldenVectorMessage::RpcError { .. } => saw_rpc_error = true,
             RpcGoldenVectorMessage::Event { .. } => saw_event = true,
             RpcGoldenVectorMessage::AttachedWithReproduction {
@@ -141,7 +159,9 @@ fn assert_frozen_golden_vectors() {
     assert!(saw_get_reproduction_request);
     assert!(saw_get_reproduction_response);
     assert!(saw_command_request);
+    assert!(saw_command_request_with_payload);
     assert!(saw_command_response);
+    assert!(saw_command_response_with_payload);
     assert!(saw_rpc_error);
     assert!(saw_event);
 }
@@ -165,19 +185,19 @@ fn rpc_golden_vectors_freeze_literal_wire_bytes() {
 fn assert_structure_aware_fuzz_corpus() {
     assert_vector_bytes(
         "hello-request",
-        b"crucible.rpc/hello-request\nversion=2.2.0+crucible-rpc-abi-v2\nclient=crucible-api-golden-client\n",
+        b"crucible.rpc/hello-request\nversion=3.0.0+crucible-rpc-abi-v3\nclient=crucible-api-golden-client\n",
     );
     assert_vector_bytes(
         "hello-response",
-        b"crucible.rpc/hello-response\nversion=2.2.0+crucible-rpc-abi-v2\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        b"crucible.rpc/hello-response\nversion=3.0.0+crucible-rpc-abi-v3\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_vector_bytes(
         "attached",
-        b"crucible.rpc/attached\nversion=2.2.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        b"crucible.rpc/attached\nversion=3.0.0+crucible-rpc-abi-v3\nsession-id=42\nsession-epoch=7\nmode=control\n",
     );
     assert_vector_bytes(
         "attached-with-reproduction",
-        b"crucible.rpc/attached-with-reproduction\nversion=2.2.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        b"crucible.rpc/attached-with-reproduction\nversion=3.0.0+crucible-rpc-abi-v3\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     );
     assert_vector_bytes(
         "get-reproduction-request",
@@ -192,12 +212,24 @@ fn assert_structure_aware_fuzz_corpus() {
         b"crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed=000000000000000000000000000000000000000000000000000000000000004d\nexpected-epoch=7\ncommand-id=9001\ncommand=crucible.cmd.continue\n",
     );
     assert_vector_bytes(
+        "send-request-set-breakpoint",
+        b"crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed=000000000000000000000000000000000000000000000000000000000000004d\nexpected-epoch=7\ncommand-id=9003\ncommand=crucible.cmd.set-breakpoint\nbreakpoint-predicate=6372756369626c652e7072656469636174652e76310010\nbreakpoint-disposition=action:6372756369626c652e616374696f6e2e76310008\nbreakpoint-policy=repeatable\n",
+    );
+    assert_vector_bytes(
         "send-response",
-        b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
+        b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\nquery-result=none\nbreakpoint-id=none\nsavepoint-info=none\n",
+    );
+    assert_vector_bytes(
+        "send-response-set-breakpoint",
+        b"crucible.rpc/send-response\ncommand-id=9003\ncommand=crucible.cmd.set-breakpoint\nstatus=accepted\nstate-update=none\nquery-result=none\nbreakpoint-id=44\nsavepoint-info=none\n",
+    );
+    assert_vector_bytes(
+        "send-response-breakpoint-firings",
+        b"crucible.rpc/send-response\ncommand-id=9004\ncommand=crucible.cmd.query\nstatus=accepted\nstate-update=none\nquery-result=breakpoint-firings|1|7|44|5|9|6372756369626c652e7072656469636174652e76310010|action:6372756369626c652e616374696f6e2e76310008|1|6372756369626c652e636f6e74726f6c2d6f7065726174696f6e2d6b696e642e76310000\nbreakpoint-id=none\nsavepoint-info=none\n",
     );
     assert_vector_bytes(
         "send-response-rejected-not-found",
-        b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
+        b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nbreakpoint-id=none\nsavepoint-info=none\n",
     );
     assert_vector_bytes(
         "rpc-error-invalid-state",

@@ -71,6 +71,10 @@
         label = "phase5 CLI remote save progress";
         needle = "routes remote-daemon quiescence and virtual-time saves over the RPC control API";
       }
+      {
+        label = "phase5 CLI remote selector proof progress";
+        needle = "routes remote selector proof queries over RPC breakpoint-firing payloads";
+      }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
@@ -249,6 +253,10 @@
         label = "remote daemon dispatch save test";
         needle = "remote-dispatch-save";
       }
+      {
+        label = "remote daemon selector save test";
+        needle = "remote-selector-save";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
       {
@@ -283,6 +291,26 @@
         label = "RPC duration step request payload";
         needle = "\"step-duration-nanos\"";
       }
+      {
+        label = "RPC breakpoint firing query decoder";
+        needle = "parse_breakpoint_firings_fields";
+      }
+      {
+        label = "RPC breakpoint firing result model";
+        needle = "QueryResult::BreakpointFirings(firings)";
+      }
+      {
+        label = "RPC breakpoint id response decoder";
+        needle = "parse_breakpoint_id_line";
+      }
+      {
+        label = "RPC breakpoint predicate request payload";
+        needle = "\"breakpoint-predicate\"";
+      }
+      {
+        label = "RPC breakpoint policy request payload";
+        needle = "\"breakpoint-policy\"";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
       {
@@ -290,8 +318,28 @@
         needle = "Ok(QueryKind::Snapshot)";
       }
       {
+        label = "RPC breakpoint firing query parser";
+        needle = "Ok(QueryKind::BreakpointFirings)";
+      }
+      {
         label = "RPC snapshot result wire";
         needle = "\"snapshot|{}|{}|{}|{}|{}|{}|{}|{}|{}\"";
+      }
+      {
+        label = "RPC breakpoint firing result wire";
+        needle = "breakpoint_firings_wire";
+      }
+      {
+        label = "RPC breakpoint firing result prefix";
+        needle = "\"breakpoint-firings|{}\"";
+      }
+      {
+        label = "RPC breakpoint id result wire";
+        needle = "breakpoint_id_wire";
+      }
+      {
+        label = "RPC breakpoint spec request parser";
+        needle = "parse_breakpoint_spec_lines";
       }
       {
         label = "RPC savepoint result wire";

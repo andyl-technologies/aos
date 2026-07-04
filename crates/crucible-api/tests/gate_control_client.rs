@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
-    BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, GdbAttachInfo,
-    GdbListen, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, RngDecision,
-    RngStreamId, ScenarioDef, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    Seed, SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
+    BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
+    Decision, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
+    GdbAttachInfo, GdbListen, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, RngDecision, RngStreamId, ScenarioDef, SchedulerError, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, Seed, SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph,
+    VirtualTime,
 };
 use crucible_api::{
     API_COMMAND_MAPPINGS, AttachRequest, AttachSnapshot, Attached, ClientControlStream,
@@ -35,9 +36,9 @@ use crucible_api::{
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
-    CheckpointRef, CommandReply, Engine, EngineState, LifecycleStateKind, LiveStateKind,
-    OutcomeKind, QueryKind, QueryResult, SessionActor, SessionCommand, SessionCommandKind,
-    SessionError, SessionRunReport,
+    BreakpointDisposition, BreakpointPolicy, BreakpointSpec, CheckpointRef, CommandReply, Engine,
+    EngineState, LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
+    SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport,
 };
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -628,6 +629,15 @@ async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
         "crucible.cmd.query",
     )
     .await;
+    assert_raw_send_accepted(
+        &format!("http://{addr}"),
+        format!(
+            "{}query=breakpoint-firings\n",
+            raw_send_body(created.session, 3, "crucible.cmd.query")
+        ),
+        "crucible.cmd.query",
+    )
+    .await;
 
     let sessions = rpc
         .list_sessions()
@@ -1106,6 +1116,100 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     assert_eq!(snapshot.configuration.schedule, config.schedule);
     assert!(snapshot.terminal_savepoint.is_none());
 
+    let firing_predicate =
+        crucible::Predicate::guest_marker(crucible::MarkerId::from_name("rpc-save-marker"));
+    let action_disposition = crucible::Action::pass();
+    let scheduler_control = ControlOperationKind::Pause;
+    let breakpoint_result_server = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        format!(
+            "crucible.rpc/send-response\ncommand-id=14\ncommand=crucible.cmd.query\nstatus=accepted\nstate-update=none\nquery-result=breakpoint-firings|2|7|11|2|3|{}|suspend|0|8|12|4|5|{}|action:{}|1|{}\nbreakpoint-id=none\nsavepoint-info=none\n",
+            hex_encode(&firing_predicate.to_compact_binary()),
+            hex_encode(&firing_predicate.to_compact_binary()),
+            hex_encode(&action_disposition.to_compact_binary()),
+            hex_encode(&scheduler_control.to_compact_binary()),
+        ),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(breakpoint_result_server.endpoint()))
+        .unwrap_or_else(|error| panic!("breakpoint result RPC client should build: {error}"));
+    let decoded = client
+        .send_command(SendRequest::new(
+            session,
+            14,
+            SessionCommand::query_breakpoint_firings(),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("breakpoint query-result send should decode: {error}"));
+    let Some(QueryResult::BreakpointFirings(firings)) = decoded.query_result else {
+        panic!("breakpoint query should decode firing records");
+    };
+    assert_eq!(firings.len(), 2);
+    assert_eq!(firings[0].sequence, 7);
+    assert_eq!(firings[0].id, 11);
+    assert_eq!(firings[0].frontier, VirtualTime { ticks: 2 });
+    assert_eq!(firings[0].quanta, 3);
+    assert_eq!(firings[0].predicate, firing_predicate);
+    assert_eq!(firings[0].disposition, BreakpointDisposition::Suspend);
+    assert!(firings[0].scheduler_controls.is_empty());
+    assert_eq!(firings[1].sequence, 8);
+    assert_eq!(firings[1].id, 12);
+    assert_eq!(
+        firings[1].disposition,
+        BreakpointDisposition::Action(action_disposition),
+    );
+    assert_eq!(firings[1].scheduler_controls, vec![scheduler_control]);
+
+    let excessive_firing_count_server = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        format!(
+            "crucible.rpc/send-response\ncommand-id=16\ncommand=crucible.cmd.query\nstatus=accepted\nstate-update=none\nquery-result=breakpoint-firings|{}\nbreakpoint-id=none\nsavepoint-info=none\n",
+            usize::MAX,
+        ),
+    )])
+    .await;
+    let client =
+        RpcControlClient::new(RpcEndpoint::http2(excessive_firing_count_server.endpoint()))
+            .unwrap_or_else(|error| {
+                panic!("excessive firing count RPC client should build: {error}")
+            });
+    let error = client
+        .send_command(SendRequest::new(
+            session,
+            16,
+            SessionCommand::query_breakpoint_firings(),
+        ))
+        .await
+        .expect_err("excessive breakpoint firing count should reject without panicking");
+    assert!(
+        format!("{error:?}").contains("breakpoint firing count is too large"),
+        "unexpected excessive count error: {error:?}"
+    );
+
+    let breakpoint_id_server = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        String::from(
+            "crucible.rpc/send-response\ncommand-id=17\ncommand=crucible.cmd.set-breakpoint\nstatus=accepted\nstate-update=none\nquery-result=none\nbreakpoint-id=44\nsavepoint-info=none\n",
+        ),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(breakpoint_id_server.endpoint()))
+        .unwrap_or_else(|error| panic!("breakpoint id RPC client should build: {error}"));
+    let decoded = client
+        .send_command(SendRequest::new(
+            session,
+            17,
+            SessionCommand::SetBreakpoint {
+                spec: crucible_session::BreakpointSpec::suspend_once(
+                    crucible::Predicate::quiescent(),
+                ),
+                reply: CommandReply::discard(),
+            },
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("breakpoint id send should decode: {error}"));
+    assert_eq!(decoded.breakpoint_id, Some(44));
+
     let golden_error = spawn_scripted_send_server(vec![scripted_send_response(
         axum::http::StatusCode::PRECONDITION_FAILED,
         String::from_utf8(golden_vector_bytes("rpc-error-invalid-state").to_vec())
@@ -1160,7 +1264,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=2.2.0+crucible-rpc-abi-v2\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=3.0.0+crucible-rpc-abi-v3\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1279,7 +1383,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=2.2.0+crucible-rpc-abi-v2\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=3.0.0+crucible-rpc-abi-v3\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1361,7 +1465,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=2.2.0+crucible-rpc-abi-v2\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=3.0.0+crucible-rpc-abi-v3\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1381,7 +1485,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             savepoint_info: None,
         }),
         &format!(
-            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\nsavepoint-info=none\n"
+            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\nbreakpoint-id=none\nsavepoint-info=none\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1399,7 +1503,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             breakpoint_id: None,
             savepoint_info: None,
         }),
-        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
+        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nbreakpoint-id=none\nsavepoint-info=none\n",
     );
 
     let mut attributes = BTreeMap::new();
@@ -2759,6 +2863,7 @@ async fn assert_raw_send_accepted(endpoint: &str, body: String, expected_command
     assert!(text.starts_with("crucible.rpc/send-response\n"));
     assert!(text.contains(&format!("command={expected_command}\n")));
     assert!(text.contains("status=accepted\n"));
+    assert!(text.contains("breakpoint-id=none\n"));
     assert!(text.contains("savepoint-info=none\n"));
 }
 
@@ -2970,6 +3075,7 @@ fn send_response_body(
     push_wire_line(&mut output, "status", &command_status_wire(status));
     push_wire_line(&mut output, "state-update", "none");
     push_wire_line(&mut output, "query-result", "none");
+    push_wire_line(&mut output, "breakpoint-id", "none");
     push_wire_line(&mut output, "savepoint-info", "none");
     output
 }
@@ -3778,6 +3884,14 @@ fn encode_send_response(response: &SendResponse) -> String {
         None => push_wire_line(&mut output, "state-update", "none"),
     }
     push_wire_line(&mut output, "query-result", "none");
+    push_wire_line(
+        &mut output,
+        "breakpoint-id",
+        &response
+            .breakpoint_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| String::from("none")),
+    );
     push_wire_line(&mut output, "savepoint-info", "none");
     output
 }
@@ -3878,30 +3992,59 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
     let command_line = lines.next();
-    let next_line = lines.next();
-    let (query_line, savepoint_label_line, step_duration_line, trailing_line) = match next_line {
-        Some(line) if line.starts_with("query=") => (Some(line), None, None, lines.next()),
-        Some(line) if line.starts_with("savepoint-label=") => {
-            (None, Some(line), None, lines.next())
+    let mut query_line = None;
+    let mut savepoint_label_line = None;
+    let mut step_duration_line = None;
+    let mut breakpoint_predicate_line = None;
+    let mut breakpoint_disposition_line = None;
+    let mut breakpoint_policy_line = None;
+    for line in lines {
+        if line.starts_with("query=") {
+            set_unique_payload_line(&mut query_line, line, "query")?;
+        } else if line.starts_with("savepoint-label=") {
+            set_unique_payload_line(&mut savepoint_label_line, line, "savepoint label")?;
+        } else if line.starts_with("step-duration-nanos=") {
+            set_unique_payload_line(&mut step_duration_line, line, "step duration")?;
+        } else if line.starts_with("breakpoint-predicate=") {
+            set_unique_payload_line(&mut breakpoint_predicate_line, line, "breakpoint predicate")?;
+        } else if line.starts_with("breakpoint-disposition=") {
+            set_unique_payload_line(
+                &mut breakpoint_disposition_line,
+                line,
+                "breakpoint disposition",
+            )?;
+        } else if line.starts_with("breakpoint-policy=") {
+            set_unique_payload_line(&mut breakpoint_policy_line, line, "breakpoint policy")?;
+        } else {
+            return Err(format!("unexpected trailing RPC request field `{line}`"));
         }
-        Some(line) if line.starts_with("step-duration-nanos=") => {
-            (None, None, Some(line), lines.next())
-        }
-        line => (None, None, None, line),
-    };
+    }
     let command = parse_session_command(
         command_line,
         "command=",
         query_line,
         savepoint_label_line,
         step_duration_line,
+        breakpoint_predicate_line,
+        breakpoint_disposition_line,
+        breakpoint_policy_line,
     )?;
-    reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
         request = request.with_expected_epoch(expected_epoch);
     }
     Ok(request)
+}
+
+fn set_unique_payload_line<'a>(
+    slot: &mut Option<&'a str>,
+    line: &'a str,
+    label: &'static str,
+) -> Result<(), String> {
+    if slot.replace(line).is_some() {
+        return Err(format!("duplicate {label} payload"));
+    }
+    Ok(())
 }
 
 fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
@@ -3941,6 +4084,9 @@ fn parse_session_command(
     query_line: Option<&str>,
     savepoint_label_line: Option<&str>,
     step_duration_line: Option<&str>,
+    breakpoint_predicate_line: Option<&str>,
+    breakpoint_disposition_line: Option<&str>,
+    breakpoint_policy_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
@@ -3956,6 +4102,12 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a step duration"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let query_line = query_line
             .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
         return Ok(SessionCommand::Query {
@@ -3973,6 +4125,12 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a step duration"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let label = match savepoint_label_line {
             Some(line) => parse_hex_string_field(
                 Some(parse_wire_line(Some(line), "savepoint-label=")?),
@@ -3995,12 +4153,44 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a savepoint label"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let nanos = match step_duration_line {
             Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
             None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
         };
         return Ok(SessionCommand::Step {
             mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+        });
+    } else if command_kind == SessionCommandKind::SetBreakpoint {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
+        let spec = parse_breakpoint_spec_lines(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
+        return Ok(SessionCommand::SetBreakpoint {
+            spec,
+            reply: CommandReply::discard(),
         });
     } else if query_line.is_some() {
         return Err(format!(
@@ -4014,10 +4204,89 @@ fn parse_session_command(
         return Err(format!(
             "command `{command_kind_wire}` does not accept a step duration"
         ));
+    } else {
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
     }
     command_kind
         .representative_command()
         .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
+}
+
+fn reject_breakpoint_payload_fields(
+    command_kind_wire: &str,
+    breakpoint_predicate_line: Option<&str>,
+    breakpoint_disposition_line: Option<&str>,
+    breakpoint_policy_line: Option<&str>,
+) -> Result<(), String> {
+    if breakpoint_predicate_line.is_some()
+        || breakpoint_disposition_line.is_some()
+        || breakpoint_policy_line.is_some()
+    {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a breakpoint payload"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_breakpoint_spec_lines(
+    command_kind_wire: &str,
+    predicate_line: Option<&str>,
+    disposition_line: Option<&str>,
+    policy_line: Option<&str>,
+) -> Result<BreakpointSpec, String> {
+    let predicate_line = predicate_line
+        .ok_or_else(|| format!("command `{command_kind_wire}` requires a breakpoint predicate"))?;
+    let disposition_line = disposition_line.ok_or_else(|| {
+        format!("command `{command_kind_wire}` requires a breakpoint disposition")
+    })?;
+    let policy_line = policy_line
+        .ok_or_else(|| format!("command `{command_kind_wire}` requires a breakpoint policy"))?;
+    let predicate = parse_breakpoint_predicate_line(Some(predicate_line))?;
+    let disposition = parse_breakpoint_disposition_line(Some(disposition_line))?;
+    let policy = parse_breakpoint_policy_line(Some(policy_line))?;
+    Ok(BreakpointSpec {
+        predicate,
+        disposition,
+        policy,
+    })
+}
+
+fn parse_breakpoint_predicate_line(line: Option<&str>) -> Result<crucible::Predicate, String> {
+    let value = parse_wire_line(line, "breakpoint-predicate=")?;
+    let bytes = parse_hex_bytes(value)?;
+    crucible::Predicate::from_compact_binary(&bytes)
+        .map_err(|error| format!("invalid breakpoint predicate: {error}"))
+}
+
+fn parse_breakpoint_disposition_line(line: Option<&str>) -> Result<BreakpointDisposition, String> {
+    let value = parse_wire_line(line, "breakpoint-disposition=")?;
+    if value == "suspend" {
+        return Ok(BreakpointDisposition::Suspend);
+    }
+    if value == "trace" {
+        return Ok(BreakpointDisposition::Trace);
+    }
+    let Some(action) = value.strip_prefix("action:") else {
+        return Err(format!("invalid breakpoint disposition `{value}`"));
+    };
+    let bytes = parse_hex_bytes(action)?;
+    let action = crucible::Action::from_compact_binary(&bytes)
+        .map_err(|error| format!("invalid breakpoint action disposition: {error}"))?;
+    Ok(BreakpointDisposition::Action(action))
+}
+
+fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, String> {
+    match parse_wire_line(line, "breakpoint-policy=")? {
+        "one-shot" => Ok(BreakpointPolicy::OneShot),
+        "repeatable" => Ok(BreakpointPolicy::Repeatable),
+        value => Err(format!("invalid breakpoint policy `{value}`")),
+    }
 }
 
 fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
@@ -4033,9 +4302,7 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
         }
         "breakpoint-firings" => {
             reject_extra_query_field(fields.next())?;
-            Err(String::from(
-                "breakpoint-firing query is not supported by the RPC wire format",
-            ))
+            Ok(QueryKind::BreakpointFirings)
         }
         "state" => {
             reject_extra_query_field(fields.next())?;
