@@ -1094,11 +1094,16 @@ branch on the verdict without parsing output:
   no-divergence local-double forks through an independent child session to
   quiescence, virtual-time, or interactive command boundaries; applies
   repeatable post-fork `--override` decisions through the session fork path;
-  writes a CLI-replayable child reproduction artifact while reporting separate
-  model artifact/replay-state evidence for the same child configuration; and
-  validates the terminal child savepoint with the replay oracle. Full closure
-  remains blocked on bare-hash checkpoint closure loading, post-fork `--seed`
-  re-seeding semantics, and real-QEMU coverage.
+  applies explicit post-fork `--seed` in the local double by deriving the child's
+  post-fork decision stream from that seed while preserving the requested
+  savepoint prefix, proving distinct explicit seeds produce distinct terminal
+  child savepoints and exact virtual-time fork targets still pause at the
+  requested boundary; writes a CLI-replayable child reproduction artifact whose
+  embedded seed remains the scenario-form seed while CLI output reports the fork
+  seed provenance, separate model artifact/replay-state evidence for the same
+  child configuration, and terminal child savepoint replay-oracle validation.
+  Full closure remains blocked on bare-hash checkpoint closure loading and
+  real-QEMU coverage.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
