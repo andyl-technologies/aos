@@ -89,6 +89,10 @@
         label = "in-process lifecycle client re-exported";
         needle = "InProcessLifecycleClient";
       }
+      {
+        label = "resume session request re-exported";
+        needle = "ResumeSessionRequest";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
       {
@@ -98,6 +102,10 @@
       {
         label = "control client create session method";
         needle = "fn create_session(";
+      }
+      {
+        label = "control client resume session method";
+        needle = "fn resume_session(";
       }
       {
         label = "control client list sessions method";
@@ -116,8 +124,24 @@
         needle = ''"/crucible.rpc/create-session"'';
       }
       {
+        label = "RPC resume session path";
+        needle = ''"/crucible.rpc/resume-session"'';
+      }
+      {
         label = "RPC inline scenario seed field";
         needle = ''"scenario-seed"'';
+      }
+      {
+        label = "RPC resume session encoder";
+        needle = "fn encode_resume_session_request";
+      }
+      {
+        label = "RPC resume scenario payload";
+        needle = "scenario-payload";
+      }
+      {
+        label = "RPC resume session decoder";
+        needle = "fn decode_resume_session_response";
       }
       {
         label = "RPC list sessions path";
@@ -160,6 +184,14 @@
         needle = "pub struct CreateSessionRequest";
       }
       {
+        label = "resume session request";
+        needle = "pub struct ResumeSessionRequest";
+      }
+      {
+        label = "resume session response";
+        needle = "pub struct ResumeSessionResponse";
+      }
+      {
         label = "create source enum";
         needle = "pub enum CreateSessionSource";
       }
@@ -198,6 +230,26 @@
       {
         label = "scenario seed mismatch rejection";
         needle = "ScenarioSeedMismatch";
+      }
+      {
+        label = "resume checkpoint rejection";
+        needle = "ResumeCheckpoint";
+      }
+      {
+        label = "resume lifecycle method";
+        needle = "pub async fn resume_session";
+      }
+      {
+        label = "resume checkpoint closure validation";
+        needle = "fn validate_resume_checkpoint_closure";
+      }
+      {
+        label = "resume baked genesis validation";
+        needle = "baked genesis checkpoint";
+      }
+      {
+        label = "resume checkpoint instantiation";
+        needle = "resume_session_from_checkpoint";
       }
       {
         label = "list reads live mirror";
@@ -253,6 +305,18 @@
         label = "inline seed mismatch test";
         needle = "create_session_rejects_inline_seed_mismatch_without_side_effects";
       }
+      {
+        label = "resume checkpoint closure test";
+        needle = "resume_session_accepts_checkpoint_closure_and_paused_live_mirror";
+      }
+      {
+        label = "resume checkpoint rejection test";
+        needle = "resume_session_rejects_mismatched_checkpoint_closure_without_side_effects";
+      }
+      {
+        label = "resume genesis material rejection test";
+        needle = "resume_session_rejects_non_baked_genesis_checkpoint_material";
+      }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
       {
@@ -266,6 +330,22 @@
       {
         label = "RPC create request parser";
         needle = "parse_create_session_request";
+      }
+      {
+        label = "RPC resume request parser";
+        needle = "parse_resume_session_request";
+      }
+      {
+        label = "RPC resume scenario payload parser";
+        needle = "parse_scenario_form_line";
+      }
+      {
+        label = "RPC resume lifecycle path";
+        needle = "RPC resume session should decode";
+      }
+      {
+        label = "RPC resume route";
+        needle = ''"/crucible.rpc/resume-session"'';
       }
       {
         label = "RPC inline scenario reconstruction";

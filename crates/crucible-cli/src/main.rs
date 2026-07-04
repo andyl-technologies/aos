@@ -28,7 +28,7 @@ use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest,
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
     RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
-    RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
+    ResumeSessionRequest, RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
@@ -5160,6 +5160,293 @@ fn run_local_double_resume_workflow_with_interactive_commands(
     )
 }
 
+async fn run_remote_control_client_resume_workflow_async<C>(
+    client: &C,
+    resume_plan: &ResumeInvocationPlan,
+) -> Result<ResumeWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
+        return Err(backend_error(
+            "remote daemon interactive resume command driving remains tracked by T-CLI-10",
+        ));
+    }
+    if resume_plan.watch_streams_live_status {
+        return Err(backend_error(
+            "remote daemon resume --watch remains tracked by T-CLI-10",
+        ));
+    }
+    let evidence = resume_handle_evidence(resume_plan)?;
+    let request = ResumeSessionRequest::new(
+        evidence.scenario_form.clone(),
+        evidence.schedule.clone(),
+        evidence.checkpoint.clone(),
+        evidence.scenario.seed(),
+    );
+    let resumed = client
+        .resume_session(request)
+        .await
+        .map_err(control_client_error)?;
+    if resumed.checkpoint != evidence.checkpoint.id {
+        return Err(CliError::Identity(format!(
+            "remote resume source checkpoint {} did not match handle checkpoint {}",
+            format_content_hash_ref(resumed.checkpoint),
+            format_content_hash_ref(evidence.checkpoint.id)
+        )));
+    }
+    if resumed.configuration != evidence.configuration.id() {
+        return Err(CliError::Identity(format!(
+            "remote resume configuration {} did not match handle configuration {}",
+            format_content_hash_ref(resumed.configuration),
+            format_content_hash_ref(evidence.configuration.id())
+        )));
+    }
+
+    let mut acknowledged_commands = Vec::new();
+    let mut state_updates = vec![format!("{:?}", resumed.state).to_ascii_lowercase()];
+    let mut command_id = 1;
+    let mut property_violation_reached = false;
+    let boundary = match resume_plan.terminal_condition {
+        RunTerminalCondition::Quiescence => {
+            let before =
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
+            send_resume_workflow_command(
+                client,
+                resumed.session,
+                &mut command_id,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            wait_for_resume_workflow_advanced_paused(
+                client,
+                resumed.session,
+                &before,
+                "paused remote quiescence resume boundary",
+            )
+            .await?
+        }
+        RunTerminalCondition::VirtualTime => {
+            let budget = resume_plan.max_virtual_time_ticks.ok_or_else(|| {
+                usage_error("resume --until virtual-time requires --max-virtual-time")
+            })?;
+            let summary =
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
+            let boundary = if summary.frontier.ticks < budget {
+                send_resume_workflow_command(
+                    client,
+                    resumed.session,
+                    &mut command_id,
+                    SessionCommand::Step {
+                        mode: StepMode::Duration(SimDuration {
+                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                        }),
+                    },
+                    &mut acknowledged_commands,
+                    &mut state_updates,
+                )
+                .await?;
+                wait_for_resume_workflow_summary(
+                    client,
+                    resumed.session,
+                    |candidate| {
+                        candidate.state == LiveStateKind::Paused
+                            && candidate.frontier.ticks >= budget
+                            && candidate.quanta_stepped > summary.quanta_stepped
+                    },
+                    "paused requested remote virtual-time resume boundary",
+                    resume_actor_boundary_yield_budget(summary.frontier.ticks, budget),
+                )
+                .await?
+            } else {
+                summary
+            };
+            if boundary.frontier.ticks != budget {
+                return Err(CliError::Identity(format!(
+                    "resume remote virtual-time boundary reached {}, expected {}",
+                    boundary.frontier.ticks, budget
+                )));
+            }
+            boundary
+        }
+        RunTerminalCondition::Stopped => {
+            wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused).await?
+        }
+        RunTerminalCondition::Property => {
+            let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
+            let response = send_resume_workflow_command(
+                client,
+                resumed.session,
+                &mut command_id,
+                SessionCommand::SetBreakpoint {
+                    spec: BreakpointSpec::suspend_once(predicate.clone()),
+                    reply: CommandReply::discard(),
+                },
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            let breakpoint_id = response.breakpoint_id.ok_or_else(|| {
+                backend_error("remote resume property breakpoint command returned no breakpoint id")
+            })?;
+            let before =
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
+            send_resume_workflow_command(
+                client,
+                resumed.session,
+                &mut command_id,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            let boundary = wait_for_resume_workflow_advanced_paused(
+                client,
+                resumed.session,
+                &before,
+                "paused remote property resume boundary",
+            )
+            .await?;
+            let firings_response = send_resume_workflow_command(
+                client,
+                resumed.session,
+                &mut command_id,
+                SessionCommand::query_breakpoint_firings(),
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            let firings = match firings_response.query_result {
+                Some(QueryResult::BreakpointFirings(firings)) => firings,
+                Some(other) => {
+                    return Err(backend_error(format!(
+                        "remote resume property proof query returned unexpected payload: {other:?}"
+                    )));
+                }
+                None => {
+                    return Err(backend_error(
+                        "remote resume property proof query returned no breakpoint firing payload",
+                    ));
+                }
+            };
+            validate_resume_property_firing_summary(
+                breakpoint_id,
+                &predicate,
+                &boundary,
+                &firings,
+            )?;
+            property_violation_reached = true;
+            boundary
+        }
+    };
+
+    let snapshot_response = send_resume_workflow_command(
+        client,
+        resumed.session,
+        &mut command_id,
+        SessionCommand::query_snapshot(),
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let mut snapshot = match snapshot_response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(other) => {
+            return Err(backend_error(format!(
+                "remote resume boundary snapshot returned unexpected query payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(backend_error(
+                "remote resume boundary snapshot returned no query payload",
+            ));
+        }
+    };
+    let savepoint_response = send_resume_workflow_command(
+        client,
+        resumed.session,
+        &mut command_id,
+        SessionCommand::CreateSavepoint {
+            label: String::from("resume-terminal"),
+            reply: CommandReply::discard(),
+        },
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let savepoint = savepoint_response.savepoint_info.ok_or_else(|| {
+        backend_error("remote resume terminal savepoint command returned no savepoint payload")
+    })?;
+    if savepoint.configuration != snapshot.configuration.id() {
+        return Err(CliError::Identity(format!(
+            "remote resume terminal savepoint configuration {} did not match snapshot {}",
+            format_content_hash_ref(savepoint.configuration),
+            format_content_hash_ref(snapshot.configuration.id())
+        )));
+    }
+    snapshot.terminal_savepoint = Some(savepoint.checkpoint);
+    let terminal_oracle = validate_resume_terminal_savepoint(&evidence, &snapshot)?;
+    send_resume_workflow_command(
+        client,
+        resumed.session,
+        &mut command_id,
+        SessionCommand::Stop,
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+
+    let final_state = match resume_plan.terminal_condition {
+        RunTerminalCondition::Quiescence => String::from("quiescent"),
+        RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+        RunTerminalCondition::Stopped => String::from("stopped"),
+        RunTerminalCondition::Property => String::from("property-failed"),
+    };
+    if state_updates.last() != Some(&final_state) {
+        state_updates.push(final_state.clone());
+    }
+
+    Ok(ResumeWorkflowReport {
+        run: RunWorkflowReport {
+            status: if property_violation_reached {
+                BackendCommandStatus::Failed
+            } else {
+                BackendCommandStatus::Passed
+            },
+            created_state: format!("{:?}", resumed.state).to_ascii_lowercase(),
+            final_state,
+            outcome: Some(if property_violation_reached {
+                OutcomeKind::Failed
+            } else {
+                OutcomeKind::Passed
+            }),
+            terminal_savepoint: Some(terminal_oracle.fat_checkpoint),
+            final_frontier_ticks: snapshot.frontier.ticks.max(boundary.frontier.ticks),
+            final_quanta: snapshot.quanta.max(boundary.quanta_stepped),
+            budget_timed_out: false,
+            state_updates,
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands,
+            watch_statuses: Vec::new(),
+        },
+        source_checkpoint: evidence.checkpoint.id,
+        resumed_configuration: resumed.configuration,
+        scenario_label: resume_plan.savepoint.label(),
+        terminal_oracle,
+    })
+}
+
 fn run_local_double_fork_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -6109,6 +6396,155 @@ fn validate_resume_property_firing(
     Ok(())
 }
 
+fn validate_resume_property_firing_summary(
+    breakpoint_id: BreakpointId,
+    expected: &crucible::Predicate,
+    boundary: &crucible_api::SessionSummary,
+    firings: &[crucible_session::BreakpointFiring],
+) -> Result<(), CliError> {
+    let firing = firings
+        .iter()
+        .find(|firing| firing.id == breakpoint_id)
+        .ok_or_else(|| {
+            backend_error(format!(
+                "remote resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+            ))
+        })?;
+    if &firing.predicate != expected {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint predicate {:?} did not match expected {:?}",
+            firing.predicate, expected
+        )));
+    }
+    if firing.disposition != BreakpointDisposition::Suspend {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint used {:?} disposition instead of suspend",
+            firing.disposition
+        )));
+    }
+    if firing.frontier != boundary.frontier {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint fired at {}, but boundary is {}",
+            firing.frontier.ticks, boundary.frontier.ticks
+        )));
+    }
+    if firing.quanta != boundary.quanta_stepped {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint fired at quantum {}, but boundary is {}",
+            firing.quanta, boundary.quanta_stepped
+        )));
+    }
+    Ok(())
+}
+
+async fn send_resume_workflow_command<C>(
+    client: &C,
+    session: SessionRef,
+    command_id: &mut u64,
+    command: SessionCommand,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+) -> Result<crucible_api::SendResponse, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let command_kind = SessionCommandKind::from(&command);
+    let request =
+        SendRequest::new(session, *command_id, command).with_expected_epoch(session.epoch);
+    let response = client
+        .send_command(request)
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    if let Some(update) = response.state_update {
+        state_updates.push(format!("{:?}", update.state).to_ascii_lowercase());
+    }
+    match &response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(command_kind);
+            Ok(response)
+        }
+        CommandResultStatus::Rejected { reason } => Err(backend_error(format!(
+            "resume workflow command `{}` was rejected: {reason:?}",
+            session_command_name(command_kind)
+        ))),
+    }
+}
+
+async fn wait_for_resume_workflow_state<C>(
+    client: &C,
+    session: SessionRef,
+    expected: LiveStateKind,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let description = format!("{expected:?}");
+    wait_for_resume_workflow_summary(
+        client,
+        session,
+        |summary| summary.state == expected,
+        &description,
+        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+    )
+    .await
+}
+
+async fn wait_for_resume_workflow_advanced_paused<C>(
+    client: &C,
+    session: SessionRef,
+    before: &crucible_api::SessionSummary,
+    description: &str,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    wait_for_resume_workflow_summary(
+        client,
+        session,
+        |summary| {
+            summary.state == LiveStateKind::Paused
+                && summary.frontier.ticks > before.frontier.ticks
+                && summary.quanta_stepped > before.quanta_stepped
+        },
+        description,
+        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+    )
+    .await
+}
+
+async fn wait_for_resume_workflow_summary<C>(
+    client: &C,
+    session: SessionRef,
+    mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
+    description: &str,
+    max_attempts: u64,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    for _ in 0..max_attempts {
+        let sessions = client.list_sessions().await.map_err(control_client_error)?;
+        let Some(summary) = sessions
+            .sessions
+            .iter()
+            .find(|summary| summary.session == session)
+        else {
+            return Err(backend_error("resume workflow session disappeared"));
+        };
+        if accepts(summary) {
+            return Ok(summary.clone());
+        }
+        if summary.state == LiveStateKind::Stopped {
+            return Err(CliError::Outcome(status_from_outcome(summary.outcome)));
+        }
+        tokio::task::yield_now().await;
+    }
+    Err(backend_error(format!(
+        "resume workflow did not reach {description}"
+    )))
+}
+
 async fn wait_resumed_actor_boundary(
     live: &Arc<LiveSnapshot>,
     max_actor_yields: u64,
@@ -6400,6 +6836,31 @@ fn run_remote_save_workflow(
         &client, save_plan,
     ))?;
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
+}
+
+fn run_remote_resume_workflow(
+    daemon: &str,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
+        .map_err(control_client_error)?;
+    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
+        &client,
+        resume_plan,
+    ))?;
+    finish_resume_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        report,
+    )
 }
 
 fn daemon_rpc_endpoint(daemon: &str) -> String {
@@ -9621,6 +10082,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     return Err(CliError::Outcome(outcome.status));
                 }
                 return Ok(());
+            }
+            if backend_plan.target == BackendExecutionTarget::RemoteDaemon {
+                if let Some(daemon) = backend_plan.daemon.as_deref() {
+                    let outcome = run_remote_resume_workflow(
+                        daemon,
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        resume_plan,
+                    )?;
+                    emit_backend_command_output(cli, &outcome)?;
+                    if outcome.status.is_non_passing() {
+                        return Err(CliError::Outcome(outcome.status));
+                    }
+                    return Ok(());
+                }
             }
             return Err(unsupported_resume_backend_error(resume_plan));
         }
@@ -12907,6 +13384,44 @@ mod tests {
         Ok(address.to_string())
     }
 
+    fn spawn_resume_recording_lifecycle_server(
+        fixture: ResumeRecordingFixture,
+        frontier: VirtualTime,
+    ) -> Result<String, Box<dyn Error>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => return,
+            };
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(_) => return,
+                };
+                let control_plane = LifecycleControlPlane::new(
+                    "crucible-cli-resume-test-daemon",
+                    Vec::new(),
+                    move |_scenario: &crucible::ScenarioDef, _seed| match fixture.clone() {
+                        ResumeRecordingFixture::None => ResumeRecordingLifecycleLoop::new(frontier),
+                        ResumeRecordingFixture::PropertyViolation { assertion } => {
+                            ResumeRecordingLifecycleLoop::with_property_violation(
+                                frontier, assertion,
+                            )
+                        }
+                    },
+                );
+                let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
+            });
+        });
+        Ok(address.to_string())
+    }
+
     #[derive(Default)]
     struct FakeSeedEnvironment {
         seed: Option<String>,
@@ -15514,6 +16029,124 @@ mod tests {
                 .any(|entry| entry.kind == "resume_checkpoint"
                     && entry.summary.contains("until=property"))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "remote-resume-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"remote-resume-log"),
+        )?;
+        let daemon = spawn_resume_recording_lifecycle_server(
+            ResumeRecordingFixture::None,
+            VirtualTime { ticks: 1 },
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--daemon"),
+            daemon.clone(),
+            String::from("resume"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+        ]);
+        let Commands::Resume(args) = &cli.command else {
+            panic!("expected resume command");
+        };
+        let resume_plan = plan_resume_invocation(args)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
+        assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+
+        let outcome = run_remote_resume_workflow(
+            &daemon,
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &resume_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+        }));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-oracle\t") && line.contains("status=fat==thin-passed")
+        }));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_checkpoint"
+                    && entry.summary.contains("until=virtual-time"))
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_oracle_validation")
+        );
+
+        let watch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--daemon"),
+            daemon.clone(),
+            String::from("resume"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--watch"),
+        ]);
+        let Commands::Resume(args) = &watch_cli.command else {
+            panic!("expected resume command");
+        };
+        let watch_plan = plan_resume_invocation(args)?;
+        let backend_plan =
+            plan_backend_selection(&watch_cli)?.expect("resume should route to backend");
+        let error = match run_remote_resume_workflow(
+            &daemon,
+            &plan_cli_invocation(&watch_cli),
+            &backend_plan,
+            None,
+            &watch_plan,
+        ) {
+            Ok(_) => panic!("remote resume --watch should remain blocked"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert!(error.to_string().contains("resume --watch"));
 
         Ok(())
     }

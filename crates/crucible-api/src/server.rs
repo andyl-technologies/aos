@@ -16,7 +16,10 @@ use axum::http::{Request, StatusCode, Version};
 use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
-use crucible::{ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, Seed};
+use crucible::{
+    Checkpoint, ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, ScenarioDefForm,
+    Schedule, Seed,
+};
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, BreakpointSpec, EngineState, LifecycleStateKind,
     LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SessionCommand,
@@ -31,7 +34,7 @@ use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, LifecycleControlPlane,
     ListScenariosResponse, ListSessionsResponse, ReproductionCommandRecord,
-    ReproductionCommandResult, SessionId, SessionRef,
+    ReproductionCommandResult, ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionRef,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventSource, open_set_command_kind,
@@ -193,6 +196,10 @@ where
             post(handle_create_session::<L, F>),
         )
         .route(
+            "/crucible.rpc/resume-session",
+            post(handle_resume_session::<L, F>),
+        )
+        .route(
             "/crucible.rpc/list-sessions",
             post(handle_list_sessions::<L, F>),
         )
@@ -296,6 +303,38 @@ where
         Err(error) => return lifecycle_error_response(error),
     };
     http2_response(StatusCode::OK, encode_create_session_response(&response))
+}
+
+async fn handle_resume_session<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+{
+    let body = match read_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("resume-session");
+    }
+    let resume = match parse_resume_session_request(&body) {
+        Ok(resume) => resume,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    let response = match state
+        .control_plane
+        .lock()
+        .await
+        .resume_session(resume)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    http2_response(StatusCode::OK, encode_resume_session_response(&response))
 }
 
 async fn handle_list_sessions<L, F>(
@@ -558,6 +597,45 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
+}
+
+fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/resume-session-request")?;
+    let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
+    let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
+    let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
+    let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+    let scenario_def = scenario.scenario_def();
+    if scenario_def.id() != id {
+        return Err(format!(
+            "scenario payload id {} did not match request scenario id {}",
+            scenario_def.id().to_hex(),
+            id.to_hex()
+        ));
+    }
+    if scenario.seed() != scenario_seed {
+        return Err(format!(
+            "scenario payload seed {} did not match request scenario seed {}",
+            scenario.seed().to_hex(),
+            scenario_seed.to_hex()
+        ));
+    }
+    if scenario.app_random_draw_cap() != app_random_draw_cap {
+        return Err(format!(
+            "scenario payload app-random draw cap {} did not match request cap {}",
+            scenario.app_random_draw_cap(),
+            app_random_draw_cap
+        ));
+    }
+    let seed = parse_seed_line(lines.next(), "seed=")?;
+    let schedule = parse_schedule_line(lines.next(), "schedule=")?;
+    let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
+    reject_extra_line(lines.next())?;
+    Ok(ResumeSessionRequest::new(
+        scenario, schedule, checkpoint, seed,
+    ))
 }
 
 fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
@@ -997,6 +1075,28 @@ fn parse_content_hash_line(
     })
 }
 
+fn parse_schedule_line(line: Option<&str>, prefix: &'static str) -> Result<Schedule, String> {
+    let value = parse_wire_line(line, prefix)?;
+    let bytes = parse_hex_bytes(value)?;
+    Schedule::from_compact_binary(&bytes).map_err(|error| format!("invalid schedule: {error}"))
+}
+
+fn parse_scenario_form_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<ScenarioDefForm, String> {
+    let value = parse_wire_line(line, prefix)?;
+    let bytes = parse_hex_bytes(value)?;
+    ScenarioDefForm::from_compact_binary(&bytes)
+        .map_err(|error| format!("invalid scenario form: {error}"))
+}
+
+fn parse_checkpoint_line(line: Option<&str>, prefix: &'static str) -> Result<Checkpoint, String> {
+    let value = parse_wire_line(line, prefix)?;
+    let bytes = parse_hex_bytes(value)?;
+    Checkpoint::from_compact_binary(&bytes).map_err(|error| format!("invalid checkpoint: {error}"))
+}
+
 fn parse_hex_string_field(value: Option<&str>, label: &'static str) -> Result<String, String> {
     let value = value.ok_or_else(|| format!("missing {label}"))?;
     String::from_utf8(parse_hex_bytes(value)?)
@@ -1079,6 +1179,19 @@ fn encode_create_session_response(response: &CreateSessionResponse) -> String {
     let mut output = String::from("crucible.rpc/create-session-response\n");
     push_session_ref(&mut output, response.session);
     push_wire_line(&mut output, "state", state_wire_name(response.state));
+    output
+}
+
+fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
+    let mut output = String::from("crucible.rpc/resume-session-response\n");
+    push_session_ref(&mut output, response.session);
+    push_wire_line(&mut output, "state", state_wire_name(response.state));
+    push_wire_line(&mut output, "checkpoint", &response.checkpoint.to_hex());
+    push_wire_line(
+        &mut output,
+        "configuration",
+        &response.configuration.to_hex(),
+    );
     output
 }
 
@@ -1518,7 +1631,8 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             "session-limit",
             &error.to_string(),
         ),
-        LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
+        LifecycleApiError::ScenarioSeedMismatch { .. }
+        | LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
             "invalid-argument",

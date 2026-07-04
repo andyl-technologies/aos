@@ -56,6 +56,10 @@
         needle = "local-double resume to quiescence, virtual-time, interactive command driving";
       }
       {
+        label = "T-CLI-10 remote daemon resume progress";
+        needle = "resume over `ResumeSession` RPC for handle-backed virtual-time runs";
+      }
+      {
         label = "T-CLI-10 terminal oracle progress";
         needle = "replay-oracle-validating";
       }
@@ -110,6 +114,18 @@
       {
         label = "resume local double runner";
         needle = "fn run_local_double_resume_workflow";
+      }
+      {
+        label = "resume remote daemon runner";
+        needle = "fn run_remote_resume_workflow";
+      }
+      {
+        label = "resume remote control client workflow";
+        needle = "fn run_remote_control_client_resume_workflow_async";
+      }
+      {
+        label = "resume RPC request";
+        needle = "ResumeSessionRequest::new";
       }
       {
         label = "resume interactive command driver";
@@ -189,7 +205,7 @@
       }
       {
         label = "bare checkpoint closure blocker";
-        needle = "DAG-store checkpoint closure loading remains tracked by T-CLI-10";
+        needle = "DAG-store checkpoint closure loading remains tracked by {task_id}";
       }
       {
         label = "resume planning test";
@@ -198,6 +214,14 @@
       {
         label = "resume execution test";
         needle = "cli_resume_workflow_executes_local_double_handle";
+      }
+      {
+        label = "resume remote daemon execution test";
+        needle = "cli_resume_workflow_executes_remote_daemon_handle";
+      }
+      {
+        label = "resume remote watch blocker";
+        needle = "remote daemon resume --watch remains tracked by T-CLI-10";
       }
       {
         label = "resume unverified evidence test";

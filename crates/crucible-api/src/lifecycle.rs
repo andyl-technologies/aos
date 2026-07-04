@@ -1,9 +1,10 @@
 //! Discovery and lifecycle unary control-plane API.
 //!
 //! This module owns the RFC-0010 T-API-3 boundary. It provides typed unary
-//! methods for `Hello`, `ListScenarios`, `CreateSession`, `ListSessions`, and
-//! `DestroySession`, backed by the same `crucible-session` actor and lock-free
-//! live mirror used by the lower session layer.
+//! methods for `Hello`, `ListScenarios`, `CreateSession`, `ResumeSession`,
+//! `ListSessions`, and `DestroySession`, backed by the same
+//! `crucible-session` actor and lock-free live mirror used by the lower
+//! session layer.
 
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -14,8 +15,8 @@ use crucible::{
     DeliveryOrderDecision, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
     EventLogOffset, ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel,
     MembershipFault, NodeId, PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest,
-    RestartPolicy, ScenarioDef, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
-    TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    RestartPolicy, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
+    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
@@ -351,6 +352,50 @@ pub struct CreateSessionResponse {
     pub session: SessionRef,
     /// State observed from the lock-free mirror after startup.
     pub state: LiveStateKind,
+}
+
+/// Request accepted by `ResumeSession`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeSessionRequest {
+    /// Serialized scenario form owning the checkpoint.
+    pub scenario: ScenarioDefForm,
+    /// Recorded schedule for the checkpoint configuration.
+    pub schedule: Schedule,
+    /// Fat checkpoint that materializes the recorded configuration.
+    pub checkpoint: Checkpoint,
+    /// Seed recorded in the returned [`SessionRef`].
+    pub seed: Seed,
+}
+
+impl ResumeSessionRequest {
+    /// Builds a request from a self-contained checkpoint closure.
+    #[must_use]
+    pub fn new(
+        scenario: ScenarioDefForm,
+        schedule: Schedule,
+        checkpoint: Checkpoint,
+        seed: Seed,
+    ) -> Self {
+        Self {
+            scenario,
+            schedule,
+            checkpoint,
+            seed,
+        }
+    }
+}
+
+/// Response returned by `ResumeSession`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeSessionResponse {
+    /// Epoch-guarded session reference.
+    pub session: SessionRef,
+    /// State observed from the lock-free mirror after resume.
+    pub state: LiveStateKind,
+    /// Checkpoint accepted as the resume source.
+    pub checkpoint: ContentHash,
+    /// Configuration realized by the resumed session.
+    pub configuration: ContentHash,
 }
 
 /// Summary returned by `ListSessions`.
@@ -766,6 +811,12 @@ pub enum LifecycleApiError {
         /// Deterministic graph construction error.
         message: String,
     },
+    /// A resume checkpoint closure was malformed or internally inconsistent.
+    #[error("resume checkpoint closure is invalid: {message}")]
+    ResumeCheckpoint {
+        /// Deterministic resume-checkpoint validation error.
+        message: String,
+    },
     /// A command could not be sent to a session actor.
     #[error("session command channel closed for session {session_id:?}")]
     CommandChannelClosed {
@@ -995,6 +1046,92 @@ where
         Ok(CreateSessionResponse {
             session: session_ref,
             state,
+        })
+    }
+
+    /// Resumes a session actor from a self-contained checkpoint closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::SessionLimitReached`] when the live-session
+    /// cap has been reached, [`LifecycleApiError::ScenarioSeedMismatch`] when
+    /// the scenario seed differs from the request seed,
+    /// [`LifecycleApiError::GenesisGraph`] when the genesis temporal graph
+    /// cannot be built, or [`LifecycleApiError::ResumeCheckpoint`] when the
+    /// supplied scenario, schedule, and checkpoint do not describe one loadable
+    /// recorded configuration.
+    pub async fn resume_session(
+        &mut self,
+        request: ResumeSessionRequest,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError> {
+        if let Some(limit) = self.max_sessions {
+            if self.sessions.len() >= limit {
+                return Err(LifecycleApiError::SessionLimitReached { limit });
+            }
+        }
+        if request.scenario.seed() != request.seed {
+            return Err(LifecycleApiError::ScenarioSeedMismatch {
+                scenario_seed: request.scenario.seed(),
+                request_seed: request.seed,
+            });
+        }
+
+        let scenario = request.scenario.scenario_def();
+        let configuration = Configuration {
+            def: scenario.clone(),
+            schedule: request.schedule.clone(),
+        };
+        validate_resume_checkpoint_closure(&configuration, &request.checkpoint)?;
+
+        let mut graph = graph_with_baked_genesis(&scenario)?;
+        if !configuration.is_genesis() {
+            graph
+                .cache_snapshot(&configuration, request.checkpoint.clone())
+                .map_err(resume_checkpoint_error)?;
+        }
+
+        let parent_loop = (self.loop_factory)(&scenario, request.seed);
+        let resumed_loop = (self.loop_factory)(&scenario, request.seed);
+        let white_box_policies = (self.white_box_policy_provider)(&scenario);
+        let genesis = Configuration::genesis(scenario);
+        let mut parent =
+            Engine::new(genesis, graph, parent_loop).with_white_box_policies(white_box_policies);
+        let resumed = parent
+            .resume_session_from_checkpoint(request.checkpoint.id, resumed_loop)
+            .map_err(|error| LifecycleApiError::ResumeCheckpoint {
+                message: error.to_string(),
+            })?;
+
+        let checkpoint = resumed.checkpoint;
+        let configuration = resumed.configuration.id();
+        let actor = resumed.session_actor;
+        let live = actor.live_snapshot();
+        let event_log = ControlPlaneEventLog::new(actor.event_log());
+        let reproduction_log = actor.reproduction_log();
+        let state_transitions = actor.state_transition_bus();
+        let (sender, actor_task) = {
+            let sender = resumed.session_sender.clone();
+            let actor_task = tokio::spawn(async move { actor.run().await });
+            (sender, actor_task)
+        };
+
+        let session_ref = self.next_session_ref(request.seed);
+        let runtime = SessionRuntime {
+            session: session_ref,
+            sender,
+            live,
+            event_log,
+            reproduction_log,
+            state_transitions,
+            actor_task,
+        };
+        let state = runtime.live.read().state_kind;
+        self.sessions.insert(session_ref.id, runtime);
+        Ok(ResumeSessionResponse {
+            session: session_ref,
+            state,
+            checkpoint,
+            configuration,
         })
     }
 
@@ -1284,6 +1421,20 @@ where
         })
     }
 
+    fn resume_session(
+        &self,
+        request: ResumeSessionRequest,
+    ) -> ControlClientFuture<'_, ResumeSessionResponse> {
+        Box::pin(async move {
+            self.control_plane
+                .lock()
+                .await
+                .resume_session(request)
+                .await
+                .map_err(ControlClientError::from)
+        })
+    }
+
     fn list_sessions(&self) -> ControlClientFuture<'_, ListSessionsResponse> {
         Box::pin(async move { Ok(self.control_plane.lock().await.list_sessions()) })
     }
@@ -1465,6 +1616,97 @@ async fn join_actor(
     }
 }
 
+fn validate_resume_checkpoint_closure(
+    configuration: &Configuration,
+    checkpoint: &Checkpoint,
+) -> Result<(), LifecycleApiError> {
+    let configuration_id = configuration.id();
+    if checkpoint.id != configuration_id {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: format!(
+                "checkpoint id {} did not match configuration {}",
+                checkpoint.id.to_hex(),
+                configuration_id.to_hex()
+            ),
+        });
+    }
+    if checkpoint.configuration != configuration_id {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: format!(
+                "checkpoint configuration {} did not match reconstructed configuration {}",
+                checkpoint.configuration.to_hex(),
+                configuration_id.to_hex()
+            ),
+        });
+    }
+    if checkpoint.scenario_ref != configuration.def.id() {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: format!(
+                "checkpoint scenario {} did not match supplied scenario {}",
+                checkpoint.scenario_ref.to_hex(),
+                configuration.def.id().to_hex()
+            ),
+        });
+    }
+    if configuration.is_genesis() {
+        let expected = Checkpoint::from_recorded_configuration(
+            configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(resume_checkpoint_error)?;
+        if checkpoint != &expected {
+            return Err(LifecycleApiError::ResumeCheckpoint {
+                message: String::from(
+                    "genesis checkpoint material did not match the baked genesis checkpoint",
+                ),
+            });
+        }
+        return Ok(());
+    }
+
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .map_err(|error| LifecycleApiError::ResumeCheckpoint {
+                message: error.to_string(),
+            })?;
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    let expected = Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        checkpoint.virtual_time,
+        checkpoint.node_icounts.clone(),
+        checkpoint.kind,
+        checkpoint.node_blobs.clone(),
+    )
+    .map_err(resume_checkpoint_error)?;
+    if checkpoint.parent != expected.parent {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: format!(
+                "checkpoint parent {:?} did not match expected {:?}",
+                checkpoint.parent, expected.parent
+            ),
+        });
+    }
+    if checkpoint.schedule_delta != expected.schedule_delta {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: String::from("checkpoint schedule delta did not match supplied schedule"),
+        });
+    }
+    Ok(())
+}
+
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> Result<TemporalGraph, LifecycleApiError> {
     let genesis = Configuration::genesis(scenario.clone());
     TemporalGraph::empty()
@@ -1489,6 +1731,12 @@ fn genesis_checkpoint(
 
 fn engine_error(error: EngineError) -> LifecycleApiError {
     LifecycleApiError::GenesisGraph {
+        message: error.to_string(),
+    }
+}
+
+fn resume_checkpoint_error(error: EngineError) -> LifecycleApiError {
+    LifecycleApiError::ResumeCheckpoint {
         message: error.to_string(),
     }
 }
