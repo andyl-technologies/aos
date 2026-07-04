@@ -124,6 +124,37 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const FORCE_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeForceNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value) -> Value;"
+    );
+    const FORCE_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const FORCE_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_force(_rt: *mut c_void, value: Value) -> Value {"
+    );
+    const DIRECT_FORCE_TEST_CALL_LINE: &str =
+        concat!("let actual = ", "uns", "afe { aos_force(rt, expected) };");
+    const FORCE_BINDING_TEST_CALL_LINE: &str = concat!(
+        "let actual = ",
+        "uns",
+        "afe { (binding.function())(rt, expected) };"
+    );
+    const FORCE_MALFORMED_VALUE_TRANSMUTE_LINE: &str = concat!(
+        "let malformed = ",
+        "uns",
+        "afe { std::mem::transmute::<RawValueForTest, Value>(raw) };"
+    );
+    const FORCE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force(rt, malformed) };");
+    const FORCE_THUNK_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force(rt, thunk) };");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -188,7 +219,9 @@ mod tests {
             for (line_number, code) in code_lines.iter().enumerate() {
                 let line = raw_lines[line_number];
                 for token in code_tokens(code) {
-                    if is_allowed_env_wrapper_token(&source_root, &source_path, line, token) {
+                    if is_allowed_env_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_force_wrapper_token(&source_root, &source_path, line, token)
+                    {
                         continue;
                     }
 
@@ -242,6 +275,39 @@ mod tests {
             trimmed == ENV_GET_FN_TYPE_LINE || trimmed == ENV_GET_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == ENV_GET_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_force_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("force.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == FORCE_FN_TYPE_LINE
+                || trimmed == FORCE_EXPORT_ATTR_LINE
+                || trimmed == FORCE_FN_LINE
+                || trimmed == DIRECT_FORCE_TEST_CALL_LINE
+                || trimmed == FORCE_BINDING_TEST_CALL_LINE
+                || trimmed == FORCE_MALFORMED_VALUE_TRANSMUTE_LINE
+                || trimmed == FORCE_MALFORMED_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_THUNK_ABORT_TEST_CALL_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == FORCE_FN_TYPE_LINE || trimmed == FORCE_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == FORCE_EXPORT_ATTR_LINE
         } else {
             false
         }
@@ -494,6 +560,8 @@ mod unchecked_cfg;
     fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let force =
+            fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
 
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_FN_TYPE_LINE),
@@ -535,12 +603,55 @@ mod unchecked_cfg;
             1,
             "metadata function-pointer test call must stay singly reviewed"
         );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_FN_TYPE_LINE),
+            1,
+            "force native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_EXPORT_ATTR_LINE),
+            1,
+            "force native wrapper export attribute must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_FN_LINE),
+            1,
+            "aos_force native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_FORCE_TEST_CALL_LINE),
+            1,
+            "direct test call of aos_force must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_BINDING_TEST_CALL_LINE),
+            1,
+            "force metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_MALFORMED_VALUE_TRANSMUTE_LINE),
+            1,
+            "malformed Value construction test must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_MALFORMED_ABORT_TEST_CALL_LINE),
+            1,
+            "malformed payload abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_THUNK_ABORT_TEST_CALL_LINE),
+            1,
+            "thunk abort test call must stay singly reviewed"
+        );
     }
 
     fn assert_reviewed_safety_comments(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let force =
+            fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let lines = env.lines().collect::<Vec<_>>();
+        let force_lines = force.lines().collect::<Vec<_>>();
 
         assert_has_safety_comment_before(
             &lines,
@@ -562,12 +673,40 @@ mod unchecked_cfg;
             BINDING_TEST_CALL_LINE,
             "metadata function-pointer test call must keep a SAFETY comment",
         );
+        assert_has_safety_comment_before(
+            &force_lines,
+            DIRECT_FORCE_TEST_CALL_LINE,
+            "direct force wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_BINDING_TEST_CALL_LINE,
+            "force metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_MALFORMED_VALUE_TRANSMUTE_LINE,
+            "malformed Value construction test must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_MALFORMED_ABORT_TEST_CALL_LINE,
+            "malformed payload abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_THUNK_ABORT_TEST_CALL_LINE,
+            "thunk abort test call must keep a SAFETY comment",
+        );
     }
 
     fn assert_public_unsafe_docs(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let force =
+            fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let lines = env.lines().collect::<Vec<_>>();
+        let force_lines = force.lines().collect::<Vec<_>>();
 
         assert_has_safety_doc_before(
             &lines,
@@ -578,6 +717,16 @@ mod unchecked_cfg;
             &lines,
             ENV_GET_FN_LINE,
             "public native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &force_lines,
+            FORCE_FN_TYPE_LINE,
+            "public force native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &force_lines,
+            FORCE_FN_LINE,
+            "public force native wrapper must document # Safety",
         );
     }
 

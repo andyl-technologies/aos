@@ -10,6 +10,8 @@
 //! ```text
 //! ratchet_runtime_ffi::env
 //!   aos_env_get success-path wrapper for the frozen `(env, slot) -> Value` ABI
+//! ratchet_runtime_ffi::force
+//!   aos_force WHNF fast-path wrapper for the frozen `(rt, Value) -> Value` ABI
 //! ratchet_runtime_ffi::safety
 //!   unsafe-boundary manifest and source-token allowlist
 //! ```
@@ -22,6 +24,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod env;
+pub mod force;
 pub mod safety;
 
 pub use safety::{

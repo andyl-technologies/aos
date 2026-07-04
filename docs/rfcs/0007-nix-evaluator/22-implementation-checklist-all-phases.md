@@ -5367,15 +5367,16 @@ and helps the oracle directly.
 - [x] Current `aos-nix` JIT address-candidate bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
       composes oracle Rust-callable helper metadata, the `ratchet-runtime-ffi`
-      `aos_env_get` native-wrapper metadata, and `ratchet-jit` runtime-symbol
-      address candidates. It projects the runtime-FFI `aos_env_get` address plus
+      `aos_env_get`/`aos_force` native-wrapper metadata, and `ratchet-jit` runtime-symbol
+      address candidates. It projects the runtime-FFI `aos_env_get` and
+      `aos_force` addresses plus
       process-local callable helper addresses for currently covered allocation,
-      call-control, attrset-access, forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
+      call-control, attrset-access, remaining forcing, and write-barrier helpers into `JitRuntimeSymbolAddressCandidate` values while
       carrying oracle missing bindings for unbound helpers and builtins. The
       bridge now records per-candidate provenance and exposes helper-role filtered
       candidate views, including the allocation-helper manifest-order subset.
       Tests pin allocation, call-control, attrset-access, environment-access,
-      forcing, and write-barrier role filtering, `aos_env_get` runtime-FFI
+      forcing, and write-barrier role filtering, `aos_env_get` and `aos_force` runtime-FFI
       address/provenance, feed only the allocation-filtered subset through JIT
       registration, and still cover registered env-slot tier-1 promotion for
       `aos_env_get`. This is safe integration preflight plumbing only: it does
@@ -5389,9 +5390,10 @@ and helps the oracle directly.
       through `ratchet-jit` runtime-symbol registration readiness. The returned
       report owns those handoff inputs and separately reports the current
       non-final address-provenance gaps. `aos_env_get` now has runtime-FFI
-      native-wrapper provenance, while the other covered helpers still carry
+      native-wrapper provenance, `aos_force` now has runtime-FFI WHNF fast-path
+      provenance, while the other covered helpers still carry
       Rust-callable provenance gaps. Tests prove allocation-helper, `aos_apply`,
-      `aos_env_get`, `aos_force`/`aos_force_deep`, and
+      `aos_env_get`, `aos_blackhole_check`/`aos_force`/`aos_force_deep`, and
       `aos_gc_write_barrier` binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
       prove registered helper addresses still retain native-export blockers plus
@@ -5409,8 +5411,9 @@ and helps the oracle directly.
       the owned Nix preflight while unbound helper/builtin address gaps,
       native-export blockers, and remaining Rust-callable address-provenance gaps
       remain. Separately, `aos_env_get` now has a runtime-FFI address candidate
-      but still carries the oracle native-export blocker report, while
-      `aos_apply`, `aos_force`, and `aos_force_deep` still carry
+      and `aos_force` now has a runtime-FFI WHNF fast-path address candidate, but
+      both still carry the oracle native-export blocker report, while
+      `aos_apply`, `aos_blackhole_check`, and `aos_force_deep` still carry
       family-specific native-export and Rust-callable provenance blockers. This is
       strict metadata gating only: it
       does not call
@@ -5717,23 +5720,32 @@ and helps the oracle directly.
       callable is treated as ABI-callable, no `JITBuilder::symbol` registration
       occurs, and no native trap transfer, frame-layout/borrow binding, or `Value` ABI
       return path is implemented.
-- [x] Current runtime FFI crate and `aos_env_get` success-path wrapper:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_force` success-path wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
       symbol, decodes a live `EvalFrame` pointer inside a scoped unsafe block,
       reads the slot through the same safe frame API used by the oracle, and
-      returns the copied `Value` by value. Metadata exposes the wrapper's typed
-      function pointer, process-local address, frozen ABI signature, and the
-      remaining `TrapTransferUnimplemented` blocker. Tests call the wrapper and
-      metadata function pointer against live frames, and the `aos-nix`
-      address-candidate bridge now uses this wrapper address for `aos_env_get`.
+      returns the copied `Value` by value. Its `force::aos_force` wrapper defines
+      an unmangled frozen `(rt, Value) -> Value` symbol, returns already-WHNF
+      values after representation-level payload validation, and aborts for
+      malformed payloads or thunk-tagged values until the evaluator force
+      protocol is bound to native runtime contexts. Its safety contract still
+      requires a Rust-valid `Value` tag and live evaluator-owned heap payloads
+      for returned WHNF heap values; invalid tag discriminants are undefined
+      before the wrapper can inspect them. Metadata exposes each wrapper's typed
+      function pointer, process-local address, frozen ABI signature, and
+      remaining export blockers. Tests call the wrappers and metadata function
+      pointers on their supported success paths, and the `aos-nix`
+      address-candidate bridge now uses these wrapper addresses for `aos_env_get`
+      and `aos_force`.
       The crate also records its
       unsafe-boundary manifest and tests an allowlist/count for every current
       `unsafe`, `extern`, and `no_mangle` source token. This is only the
-      success-path C ABI body: invalid pointers, borrow conflicts, or slot
-      errors abort until trap transfer exists, the strict native-export plan
-      still rejects through the aggregate readiness gates, and
+      success-path C ABI body: `aos_env_get` invalid pointers, borrow conflicts,
+      and slot errors abort, while `aos_force` thunk-forcing slow paths abort
+      until trap transfer/runtime-context integration exists. The strict
+      native-export plan still rejects through the aggregate readiness gates, and
       `JITBuilder::symbol` registration/native calls remain gated.
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()`
@@ -9299,8 +9311,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       metadata, and missing-`aos_force` candidate rejection with the
       invocation-updated slot preserved. This is still a policy/lowering handoff:
       no evaluator heap thunk is mutated, no atomic thunk-state CAS runs, no
-      native code pointer is cast or called, and no `aos_force` wrapper is
-      exported or invoked.
+      native code pointer is cast or called, and the `aos_force` wrapper is not
+      invoked by this safe promotion path.
 - [x] Current promotion-gated registered native thunk-call precursor:
       `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates()`
       records one tier-up invocation, preserves cold no-lowering/no-candidate

@@ -759,7 +759,13 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
     assert!(
         preflight
             .address_provenance_gap_for_symbol("aos_force")
-            .is_some()
+            .is_none()
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_force")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
 }
 
