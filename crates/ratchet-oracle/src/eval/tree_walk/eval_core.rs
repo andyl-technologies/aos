@@ -411,6 +411,11 @@ impl TreeWalk {
         &self.heap
     }
 
+    /// Returns the worker id configured for parallel thunk sidecar claims.
+    pub(crate) const fn parallel_thunk_worker_id(&self) -> ParallelThunkWorkerId {
+        self.options.parallel_thunk_worker_id()
+    }
+
     /// Returns the remembered set populated by thunk-resolution write barriers.
     pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
         &self.thunk_resolve_remembered_set

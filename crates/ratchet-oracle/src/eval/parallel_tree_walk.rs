@@ -657,7 +657,8 @@ fn eval_drv_outputs_for_parallel_worker(
     let parallel_thunk_worker_id = worker_ids[context.worker_id()];
     let mut options = base_options.clone();
     options.set_parallel_thunk_worker_id(parallel_thunk_worker_id);
-    let output = eval_drv_outputs_for_root(root, options)?;
+    let (output, parallel_thunk_worker_id) =
+        eval_drv_outputs_for_root_with_worker_id(root, options)?;
 
     Ok(ParallelTreeWalkDrvEvaluation {
         output,
@@ -685,6 +686,14 @@ fn eval_drv_outputs_for_root(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
 ) -> Result<ParallelOutputTaskResult, ParallelTreeWalkDrvEvaluationError> {
+    let (output, _) = eval_drv_outputs_for_root_with_worker_id(root, options)?;
+    Ok(output)
+}
+
+fn eval_drv_outputs_for_root_with_worker_id(
+    root: ParallelTreeWalkRoot,
+    options: TreeWalkOptions,
+) -> Result<(ParallelOutputTaskResult, ParallelThunkWorkerId), ParallelTreeWalkDrvEvaluationError> {
     let ParallelTreeWalkRoot { ir, source } = root;
     let mut evaluator = match source {
         Some(source) => {
@@ -692,13 +701,14 @@ fn eval_drv_outputs_for_root(
         }
         None => TreeWalk::with_options(&ir, options),
     };
+    let parallel_thunk_worker_id = evaluator.parallel_thunk_worker_id();
     let value = evaluator.eval_root()?;
     let string_context = root_string_context(&evaluator, value)?;
     evaluator.force_root_derivation_surfaces(value)?;
     let derivations = evaluator.derivation_snapshot()?;
-    Ok(ParallelOutputTaskResult::new(
-        string_context,
-        drv_outputs_from_derivations(derivations)?,
+    Ok((
+        ParallelOutputTaskResult::new(string_context, drv_outputs_from_derivations(derivations)?),
+        parallel_thunk_worker_id,
     ))
 }
 
@@ -1878,6 +1888,74 @@ mod tests {
                 &ContextElement::single_output(output.path().to_vec(), b"out".to_vec())
                     .expect("single-output .drv context builds"),
             )
+        }));
+    }
+
+    #[test]
+    fn drv_output_worker_bridge_installs_context_worker_id_in_evaluator() {
+        let worker_ids =
+            parallel_thunk_worker_ids_for_scheduler(workers(3)).expect("worker ids fit");
+        let sentinel_worker_id = ParallelThunkWorkerId::new(99).expect("valid worker id");
+        let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+        options.set_parallel_thunk_worker_id(sentinel_worker_id);
+
+        let evaluation = eval_drv_outputs_for_parallel_worker(
+            ParallelFallibleTaskContext::for_test(0, 0, 1, 3),
+            derivation_root("parallel-drv-context-worker-id"),
+            &options,
+            &worker_ids,
+        )
+        .expect("worker .drv evaluation completes");
+
+        assert_eq!(
+            evaluation.parallel_thunk_worker_id(),
+            ParallelThunkWorkerId::new(2).expect("valid worker id")
+        );
+        assert_ne!(
+            evaluation.parallel_thunk_worker_id(),
+            ParallelThunkWorkerId::FIRST
+        );
+        assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+        assert_eq!(evaluation.output().drv_outputs().len(), 1);
+        assert!(
+            evaluation.output().drv_outputs()[0]
+                .path()
+                .ends_with(b".drv")
+        );
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_eval_overrides_base_worker_id_with_scheduler_worker_id() {
+        let roots = [
+            derivation_root("parallel-drv-worker-id-alpha"),
+            derivation_root("parallel-drv-worker-id-beta"),
+        ];
+        let sentinel_worker_id = ParallelThunkWorkerId::new(99).expect("valid worker id");
+        let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+        options.set_parallel_thunk_worker_id(sentinel_worker_id);
+
+        let report = eval_drv_outputs_parallel_chase_lev_top_level_roots(
+            roots,
+            workers(1),
+            ParallelFailurePolicy::CollectAll,
+            options,
+        )
+        .expect("Chase-Lev .drv evaluation completes");
+
+        assert_eq!(report.worker_count(), 1);
+        assert_eq!(report.task_count(), 2);
+        assert_eq!(report.completed_task_count(), 2);
+        assert_eq!(report.cancelled_before_start_count(), 0);
+        assert!(!report.cancelled());
+        assert!(report.outcomes().iter().all(|outcome| {
+            let evaluation = outcome.outcome().as_ref().expect("root succeeded");
+            outcome.worker_id() == 0
+                && evaluation.parallel_thunk_worker_id() == ParallelThunkWorkerId::FIRST
+                && evaluation.parallel_thunk_worker_id() != sentinel_worker_id
+                && evaluation.output().drv_outputs().len() == 1
+                && evaluation.output().drv_outputs()[0]
+                    .path()
+                    .ends_with(b".drv")
         }));
     }
 

@@ -7716,10 +7716,13 @@ nurseries build on the bump arena.
       a hardcoded worker at force time. Tests cover the default id, non-default
       option API, payload claim/self-cycle classification through the configured
       id, and successful force-sidecar publication/replay with a non-default
-      id. This is still only a worker-identity plumbing precursor: no scheduler
-      assigns ids to live workers yet, no parallel executor enters the
-      tree-walk force path, no worker-local evaluator state is attached, and the
-      loom/Miri/TSan gates remain open.
+      id. The independent-root raw and `.drv` tree-walk bridges now install a
+      scheduler-derived thunk worker id in each fresh evaluator, including the
+      Chase-Lev `.drv` bridge. This is still only worker-identity plumbing for
+      independent-root evaluators: no shared thunk graph crosses worker heaps,
+      no scheduler executes thunk bodies through the sidecar wait path, no
+      worker-local evaluator state is attached beyond the configured id, and
+      the loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload success-replay precursor:
       `TreeWalk::force_value` now checks an admitted
       `TreeWalkParallelThunkCell` for a successful terminal payload before
@@ -7732,7 +7735,7 @@ nurseries build on the bump arena.
       serial force publication, and later replay without another serial force.
       This is still a default-off single-worker precursor: the force body
       remains the serial tree-walk body, no scheduler executes or steals thunk
-      bodies, and the scheduler-assigned worker identity, park-token,
+      bodies, and shared-thunk scheduler execution, park-token,
       lock-free waiter-list, and loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload failed-replay precursor:
       `TreeWalk::force_value` now reads checked terminal sidecar results before

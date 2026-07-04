@@ -531,6 +531,22 @@ pub struct ParallelFallibleTaskContext {
 }
 
 impl ParallelFallibleTaskContext {
+    /// Builds a worker context for unit tests of worker-aware bridge helpers.
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        task_index: usize,
+        initial_worker: usize,
+        worker_id: usize,
+        worker_count: usize,
+    ) -> Self {
+        Self {
+            task_index,
+            initial_worker,
+            worker_id,
+            worker_count,
+        }
+    }
+
     /// Returns the stable top-level task index.
     pub const fn task_index(self) -> usize {
         self.task_index
