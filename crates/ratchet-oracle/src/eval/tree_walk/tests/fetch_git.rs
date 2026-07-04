@@ -87,6 +87,43 @@ fn fetch_git_primop_fetches_local_repo_and_returns_metadata() {
 }
 
 #[test]
+fn fetch_git_result_records_dynamic_repr_decision() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let result = FetchGitResult {
+        out_path: b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec(),
+        rev: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+        dirty_rev: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+        dirty_short_rev: Some("fedcba9".to_owned()),
+        rev_count: 7,
+        last_modified: 1_700_000_000,
+        last_modified_date: b"20231114221320".to_vec(),
+        nar_hash: b"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
+        submodules: true,
+    };
+
+    let value = evaluator
+        .alloc_fetch_git_result(ir.root, span, result)
+        .expect("fetchGit result attrs allocate");
+
+    let attrs = evaluator
+        .heap
+        .get_attrs(value)
+        .expect("fetchGit result is attrs");
+    assert_eq!(attrs.len(), 10);
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
 fn configured_import_cache_preserves_fetch_git_store_path_surface() {
     fn evaluate_fetch_git_surface(
         source: &str,

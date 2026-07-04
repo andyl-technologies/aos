@@ -90,6 +90,29 @@ fn parse_flake_ref_parses_github_example() {
 }
 
 #[test]
+fn parse_flake_ref_records_dynamic_repr_decision() {
+    let outcome = eval_whnf_owned(&lower(
+        r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib""#,
+    ))
+    .expect("parseFlakeRef evaluates");
+
+    let attrs = outcome
+        .heap()
+        .get_attrs(outcome.value())
+        .expect("parseFlakeRef returns attrs");
+    assert_eq!(attrs.len(), 5);
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
 fn parse_flake_ref_supports_first_class_indirect_refs() {
     assert_eq!(
         eval_string_bytes(

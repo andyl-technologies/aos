@@ -117,6 +117,43 @@ fn fetch_tree_path_input_returns_locked_tree_metadata() {
 }
 
 #[test]
+fn fetch_tree_result_records_dynamic_repr_decision() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let result = FetchTreeResult {
+        out_path: b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec(),
+        nar_hash: b"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
+        last_modified: Some(1_700_000_000),
+        last_modified_date: Some(b"20231114221320".to_vec()),
+        rev: Some(b"0123456789abcdef0123456789abcdef01234567".to_vec()),
+        dirty_rev: Some(b"fedcba9876543210fedcba9876543210fedcba98".to_vec()),
+        dirty_short_rev: Some(b"fedcba9".to_vec()),
+        rev_count: Some(7),
+        submodules: Some(true),
+    };
+
+    let value = evaluator
+        .alloc_fetch_tree_result(ir.root, span, result)
+        .expect("fetchTree result attrs allocate");
+
+    let attrs = evaluator
+        .heap
+        .get_attrs(value)
+        .expect("fetchTree result is attrs");
+    assert_eq!(attrs.len(), 10);
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
 fn configured_import_cache_preserves_fetch_tree_path_store_path_surface() {
     fn evaluate_fetch_tree_surface(
         source: &str,
