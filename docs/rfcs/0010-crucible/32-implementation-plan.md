@@ -467,12 +467,14 @@ long-held locks.
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,
   search strategy/budget/violation-mode validation, seeded coverage-guided fuzz
-  config construction, and an explicit backend error until the
-  exploration-engine driver over phase-6 search/fuzz policies is wired; full
-  closure waits for invoking phase-6 search/fuzz runners through the selected
-  backend, in-search replay-oracle sampling, self-contained counterexample
-  artifact emission with repro commands, budget/outcome exit-code handling,
-  corpus persistence, and real-QEMU coverage.
+  config construction, local-double search execution without `--max-depth` or
+  explicit `--on-violation` through `TemporalGraph::search_with_strategy` with
+  deterministic `search-run` output and `failure_oracle=none`, and explicit
+  backend errors for unsupported search/fuzz execution paths; full closure waits
+  for failure-oracle search artifacts, depth-bounded search, non-built-in
+  fuzz/corpus runners through the selected backend, in-search replay-oracle
+  sampling, self-contained counterexample artifact emission with repro commands,
+  budget/outcome exit-code handling, corpus persistence, and real-QEMU coverage.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result

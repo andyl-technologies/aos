@@ -37,8 +37,9 @@ use crucible_session::{
     LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
     SessionCommand, SessionCommandKind, StepMode,
     engine::{
-        self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint, MemoryDagStore,
-        Schedule, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
+        self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint,
+        MaterializationPolicy, MaterializationTrigger, MemoryDagStore, Schedule, SimDuration,
+        TemporalGraph, TemporalGraphStoreError, VirtualTime,
     },
 };
 use tokio::sync::mpsc;
@@ -454,13 +455,8 @@ struct SearchArgs {
     #[arg(long, value_name = "n", default_value_t = 1)]
     max_states: u64,
     /// Select first-violation handling.
-    #[arg(
-        long,
-        value_enum,
-        value_name = "stop|collect",
-        default_value_t = SearchOnViolationArg::Stop
-    )]
-    on_violation: SearchOnViolationArg,
+    #[arg(long, value_enum, value_name = "stop|collect")]
+    on_violation: Option<SearchOnViolationArg>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -1467,6 +1463,7 @@ struct SearchDriverPlan {
     max_states: u64,
     budget: crucible::SearchBudget,
     on_violation: SearchOnViolationArg,
+    explicit_on_violation: bool,
     delegates_policy_to_advanced_engine: bool,
     opportunistic_replay_oracle_sampling: bool,
     counterexamples_are_self_contained: bool,
@@ -2268,6 +2265,8 @@ fn plan_search_invocation(
     validate_positive_budget("--max-states", args.max_states)?;
     let engine_strategy = args.strategy.engine_strategy();
     let budget = crucible::SearchBudget::new(args.max_states);
+    let explicit_on_violation = args.on_violation.is_some();
+    let on_violation = args.on_violation.unwrap_or(SearchOnViolationArg::Stop);
 
     Ok(SearchDriverPlan {
         scenario,
@@ -2276,7 +2275,8 @@ fn plan_search_invocation(
         max_depth: args.max_depth,
         max_states: args.max_states,
         budget,
-        on_violation: args.on_violation,
+        on_violation,
+        explicit_on_violation,
         delegates_policy_to_advanced_engine: true,
         opportunistic_replay_oracle_sampling: true,
         counterexamples_are_self_contained: true,
@@ -9313,6 +9313,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_fork_backend_error(fork_plan));
         }
         if let Some(search_plan) = &search_plan {
+            if backend_plan.target == BackendExecutionTarget::Local
+                && matches!(
+                    backend_plan.resolved_backend,
+                    Some(ResolvedLocalBackend::Double)
+                )
+            {
+                let outcome = run_local_double_search_workflow(
+                    &thin_plan,
+                    &backend_plan,
+                    ergonomics_plan.as_ref(),
+                    search_plan,
+                )?;
+                if emit_human && backend_plan.should_announce(cli.quiet) {
+                    println!("{}", backend_plan.announcement());
+                }
+                emit_backend_command_output(cli, &outcome)?;
+                if outcome.status.is_non_passing() {
+                    return Err(CliError::Outcome(outcome.status));
+                }
+                return Ok(());
+            }
             return Err(unsupported_search_backend_error(search_plan));
         }
         if let Some(fuzz_plan) = &fuzz_plan {
@@ -9841,6 +9862,71 @@ fn run_builtin_fault_campaign_fuzz(cli: &Cli, plan: &FuzzDriverPlan) -> Result<(
         );
     }
     Ok(())
+}
+
+fn run_local_double_search_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    if plan.max_depth.is_some() {
+        return Err(backend_error(
+            "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13",
+        ));
+    }
+    if plan.explicit_on_violation {
+        return Err(backend_error(
+            "local-double search currently runs with failure_oracle=none; --on-violation requires the failure-oracle search runner tracked by T-CLI-13",
+        ));
+    }
+    let scenario = plan.scenario.scenario_def().clone();
+    let root = crucible::Configuration::genesis(scenario.clone());
+    let mut graph = save_validation_graph(&scenario)?;
+    let run = graph
+        .search_with_strategy(
+            &root,
+            plan.engine_strategy,
+            plan.budget,
+            MaterializationPolicy::thin_only(),
+            MaterializationTrigger::Cold,
+        )
+        .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    outcome.status = BackendCommandStatus::Passed;
+    outcome.exit_code = 0;
+    outcome.stdout.push(format!(
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\texpansions={}\texplored={}\tfailures={}\texhausted={}",
+        plan.scenario.label(),
+        format_content_hash_ref(run.root),
+        plan.strategy_arg.label(),
+        plan.max_states,
+        plan.max_depth
+            .map(|depth| depth.to_string())
+            .unwrap_or_else(|| String::from("none")),
+        run.expansions.len(),
+        run.explored_graph.len(),
+        run.discovered_failures.len(),
+        run.exhausted
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("search"),
+        kind: String::from("search_strategy_run"),
+        summary: format!(
+            "root={} strategy={} max_states={} failure_oracle=none expansions={} explored={} failures={} exhausted={}",
+            format_content_hash_ref(run.root),
+            plan.strategy_arg.label(),
+            plan.max_states,
+            run.expansions.len(),
+            run.explored_graph.len(),
+            run.discovered_failures.len(),
+            run.exhausted
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(outcome)
 }
 
 fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
@@ -15346,6 +15432,7 @@ mod tests {
         assert_eq!(search_plan.max_states, 7);
         assert_eq!(search_plan.budget, crucible::SearchBudget::new(7));
         assert_eq!(search_plan.on_violation, SearchOnViolationArg::Collect);
+        assert!(search_plan.explicit_on_violation);
         assert!(search_plan.delegates_policy_to_advanced_engine);
         assert!(search_plan.opportunistic_replay_oracle_sampling);
         assert!(search_plan.counterexamples_are_self_contained);
@@ -15539,8 +15626,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_search_fuzz_workflow_rejects_execution_until_driver_exists() -> Result<(), Box<dyn Error>>
-    {
+    fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
         let search_cli = Cli::parse_from([
@@ -15553,15 +15639,83 @@ mod tests {
             String::from("--strategy"),
             String::from("dfs"),
         ]);
-        let error = match dispatch(&search_cli) {
-            Ok(_) => panic!("search must not silently pass before exploration driver exists"),
+        let Commands::Search(args) = &search_cli.command else {
+            panic!("expected search command");
+        };
+        let search_plan = plan_search_invocation(args, temp.path())?;
+        let backend_plan =
+            plan_backend_selection(&search_cli)?.expect("search should route to backend");
+        let outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&search_cli),
+            &backend_plan,
+            None,
+            &search_plan,
+        )?;
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        let search_line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("search workflow must emit a search-run line");
+        assert!(search_line.contains("strategy=dfs"));
+        assert!(search_line.contains("max_states=1"));
+        assert!(search_line.contains("failure_oracle=none"));
+        assert!(search_line.contains("failures=0"));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "search_strategy_run")
+        );
+        dispatch(&search_cli)?;
+
+        let depth_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            scenario.display().to_string(),
+            String::from("--max-depth"),
+            String::from("1"),
+        ]);
+        let error = match dispatch(&depth_cli) {
+            Ok(_) => panic!("local-double search must reject unsupported depth bounds"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("--max-depth"));
         assert!(error.to_string().contains("T-CLI-13"));
-        assert!(error.to_string().contains("strategy=dfs"));
 
+        let violation_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            scenario.display().to_string(),
+            String::from("--on-violation"),
+            String::from("stop"),
+        ]);
+        let error = match dispatch(&violation_cli) {
+            Ok(_) => panic!("local-double search must reject explicit violation handling"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("failure_oracle=none"));
+        assert!(error.to_string().contains("--on-violation"));
+        assert!(error.to_string().contains("T-CLI-13"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_search_fuzz_workflow_rejects_fuzz_execution_until_driver_exists()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
         let family_path = temp.path().join("family.toml");
         fs::write(&family_path, "schema = \"scenario-family-fixture\"\n")?;
         let fuzz_cli = Cli::parse_from([
