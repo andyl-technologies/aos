@@ -531,11 +531,13 @@ long-held locks.
   guest assertion marker failures, and event-backed `always` false or
   `unreachable` true guest marker failures; hidden local-double
   `crucible.search-retained-evidence.v1` retained-evidence fixture loading for
-  guest-marker events on root or explicitly hashed configurations, validation
-  of retained guest-marker evidence against scenario nodes and white-box policy,
-  trusted retained-log provider wiring through configuration-bound
-  `SearchRetainedLogAssertionEvidence`, and retained evidence source
-  digest/payload provenance in `search-run` output and reproduction artifacts;
+  guest-marker events and terminal-quiescence entries on root or explicitly
+  hashed configurations, validation of retained guest-marker evidence against
+  scenario nodes and white-box policy, rejection of blocked terminal quiescence
+  until blocker evidence is modeled, trusted retained-log provider wiring
+  through configuration-bound `SearchRetainedLogAssertionEvidence`, and retained
+  evidence source digest/payload provenance in `search-run` output and
+  reproduction artifacts;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
