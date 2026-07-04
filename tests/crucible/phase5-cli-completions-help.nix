@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -51,6 +52,14 @@
       {
         label = "T-CLI-16 progress note";
         needle = "Work in progress under `checks.crucible.phase5.cliCompletionsHelp`";
+      }
+      {
+        label = "T-CLI-16 process coverage note";
+        needle = "process-tests the real binary's\n  top-level `--help`, `--version`, bash completion script, missing-shell usage";
+      }
+      {
+        label = "T-CLI-16 remaining blocker range";
+        needle = "remaining command-behavior gates (`T-CLI-9 … T-CLI-13`)";
       }
       {
         label = "CLI help discipline";
@@ -113,10 +122,48 @@
         needle = "cli_help_surface_rejects_unimplemented_future_flags";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" cliProcessTest [
+      {
+        label = "process help regression";
+        needle = "cli_help_process_outputs_top_level_surface";
+      }
+      {
+        label = "process version regression";
+        needle = "cli_help_process_version_exits_zero";
+      }
+      {
+        label = "process completions regression";
+        needle = "cli_completions_process_emits_bash_script";
+      }
+      {
+        label = "process completions usage regression";
+        needle = "cli_completions_process_rejects_missing_shell";
+      }
+      {
+        label = "process hidden gate flag regression";
+        needle = "cli_help_process_hides_gate_only_flags";
+      }
+      {
+        label = "real crucible binary execution";
+        needle = "CARGO_BIN_EXE_crucible";
+      }
+      {
+        label = "hidden gate flag excluded from process help";
+        needle = "--emit-mock-failure-artifact";
+      }
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI completions/help progress note";
         needle = "`T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently";
+      }
+      {
+        label = "phase5 CLI completions/help process progress";
+        needle = "process-level `--help`, `--version`, bash completion, and\n  missing-shell usage coverage";
+      }
+      {
+        label = "phase5 CLI completions/help blocker range";
+        needle = "gates `T-CLI-9 … T-CLI-13`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
