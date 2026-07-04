@@ -100,7 +100,7 @@
       }
       {
         label = "save handle schema";
-        needle = "crucible.savepoint-handle.v1";
+        needle = "crucible.savepoint-handle.v2";
       }
       {
         label = "save oracle proof";

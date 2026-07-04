@@ -1058,12 +1058,15 @@ branch on the verdict without parsing output:
   Work in progress under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
   parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
   `--interactive`, and `--watch`, decodes `.crucible-savepoint` handles exported
-  by `save`, accepts direct `blake3:<hash>` checkpoint references, validates
-  malformed handles as artifact errors, and fails execution explicitly until the
-  checkpoint-instantiation runner exists. Full closure remains blocked on
-  materializing the referenced configuration through the temporal graph,
-  replay-oracle validation, real-QEMU coverage, and continuing the resumed
-  session to the requested terminal condition.
+  by `save`, validates their compact scenario and schedule evidence, rejects bare
+  `blake3:<hash>` checkpoint references until DAG-store closure loading exists,
+  validates malformed handles as artifact errors, and executes handle-backed
+  local-double resume to quiescence or virtual-time by rebuilding the temporal
+  graph, instantiating the checkpoint through the session resume API, advancing
+  the resumed actor, and stopping with a terminal savepoint. Full closure remains
+  blocked on bare-hash checkpoint closure loading, interactive resume, remote
+  daemon and real-QEMU coverage, and full replay-oracle coverage across those
+  runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

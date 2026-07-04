@@ -433,11 +433,13 @@ long-held locks.
   real-QEMU savepoint coverage.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
-  decoding, direct `blake3:<hash>` checkpoint references, virtual-time budget
-  validation, malformed-handle artifact errors, and an explicit backend error
-  until the checkpoint-instantiation runner is wired; full closure waits for
-  temporal-graph materialization, replay-oracle validation, real-QEMU coverage,
-  and continuing the resumed session.
+  decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
+  checkpoint reference parsing and rejection until DAG-store closure loading
+  exists, virtual-time budget validation, malformed-handle artifact errors, and
+  executable handle-backed local-double resume to quiescence or virtual-time
+  through the session checkpoint-resume API; full closure waits for bare-hash
+  checkpoint closure loading, interactive resume, remote daemon and real-QEMU
+  coverage, and full replay-oracle coverage across those runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
