@@ -25,4 +25,5 @@ toml = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-harness = { path = "../crucible-harness" }
 libc = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }

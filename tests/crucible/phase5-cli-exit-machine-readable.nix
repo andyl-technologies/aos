@@ -52,6 +52,10 @@
         label = "T-CLI-15 machine-readable progress note";
         needle = "Work in progress under `checks.crucible.phase5.cliExitMachineReadable`";
       }
+      {
+        label = "T-CLI-15 search fuzz process coverage note";
+        needle = "process-tests local-double `run`, `save`, `search`,\n  and `fuzz` JSONL output with parsed command-specific canonical events";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -147,8 +151,36 @@
         needle = "cli_exit_machine_readable_process_stdout_is_pure_json";
       }
       {
+        label = "search fuzz process stdout regression";
+        needle = "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome";
+      }
+      {
         label = "real crucible binary execution";
         needle = "CARGO_BIN_EXE_crucible";
+      }
+      {
+        label = "jsonl parser assertion";
+        needle = "serde_json::from_str::<Value>(line)";
+      }
+      {
+        label = "run canonical jsonl assertion";
+        needle = "\"run_scenario\"";
+      }
+      {
+        label = "save canonical jsonl assertion";
+        needle = "\"save_export\"";
+      }
+      {
+        label = "search canonical jsonl assertion";
+        needle = "\"search_strategy_run\"";
+      }
+      {
+        label = "fuzz canonical jsonl assertion";
+        needle = "\"coverage_guided_fuzz_run\"";
+      }
+      {
+        label = "final outcome last record assertion";
+        needle = "final_outcome should be the last machine-readable record";
       }
       {
         label = "jsonl process assertion";
