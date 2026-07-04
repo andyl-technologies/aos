@@ -91,7 +91,16 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
     assert!(stdout.contains("out="));
     assert!(stdout.contains(".crucible-savepoint"));
 
-    let handles = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+    let handles = fs::read_dir(&artifact_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str()?;
+            (file_name.starts_with("savepoint-jsonl-")
+                && file_name.ends_with(".crucible-savepoint"))
+            .then_some(entry)
+        })
+        .collect::<Vec<_>>();
     assert_eq!(handles.len(), 1);
     assert!(
         handles[0]
