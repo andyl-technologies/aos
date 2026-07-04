@@ -216,6 +216,9 @@ impl ParallelThunkMemoryOrderingAudit {
 pub struct ParallelThunkWorkerId(NonZeroU64);
 
 impl ParallelThunkWorkerId {
+    /// The deterministic single-worker id used before scheduler integration.
+    pub const FIRST: Self = Self(NonZeroU64::MIN);
+
     /// Creates a worker id that can be stored in a thunk state word.
     ///
     /// Returns [`None`] when `raw` is zero or exceeds
@@ -805,6 +808,11 @@ mod tests {
 
     #[test]
     fn worker_ids_reject_zero_and_reserved_overflow() {
+        assert_eq!(ParallelThunkWorkerId::FIRST.get(), 1);
+        assert_eq!(
+            ParallelThunkWorkerId::new(1),
+            Some(ParallelThunkWorkerId::FIRST)
+        );
         assert_eq!(ParallelThunkWorkerId::new(0), None);
         assert_eq!(
             ParallelThunkWorkerId::new(PARALLEL_THUNK_MAX_WORKER_ID)

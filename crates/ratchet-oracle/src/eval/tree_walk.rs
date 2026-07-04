@@ -63,7 +63,7 @@ use super::heap::{
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
-use super::thunk_cas::ParallelThunkWorkerId;
+use super::thunk_cas::{ParallelThunkPublish, ParallelThunkWorkerId};
 use super::thunk_payload::{
     ParallelThunkPayloadError, TreeWalkParallelThunkCell, TreeWalkParallelThunkWait,
 };
@@ -424,6 +424,7 @@ pub struct TreeWalkOptions {
     gc_stress_policy: GcStressPolicy,
     thunk_resolve_barrier_tier: GenerationalGcTier,
     parallel_thunk_payloads_enabled: bool,
+    parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
@@ -459,6 +460,7 @@ impl Default for TreeWalkOptions {
             gc_stress_policy: GcStressPolicy::disabled(),
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             parallel_thunk_payloads_enabled: false,
+            parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]

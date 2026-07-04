@@ -810,37 +810,35 @@ impl TreeWalk {
         }
 
         let value = self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk)?;
-        self.publish_parallel_payload_forced_value(id, span, parallel_cell, value)?;
+        let _publish =
+            self.publish_parallel_payload_forced_value(id, span, parallel_cell, value)?;
         Ok(value)
     }
 
-    fn publish_parallel_payload_forced_value(
+    pub(in crate::eval::tree_walk) fn publish_parallel_payload_forced_value(
         &self,
         id: IrId,
         span: Span,
         parallel_cell: &TreeWalkParallelThunkCell,
         value: Value,
-    ) -> Result<(), TreeWalkError> {
-        let Some(worker) = ParallelThunkWorkerId::new(1) else {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::ParallelThunkWorkerUnavailable { id, raw: 1 },
-                span,
-            ));
-        };
+    ) -> Result<Option<ParallelThunkPublish>, TreeWalkError> {
+        let worker = self.options.parallel_thunk_worker_id();
 
-        match parallel_cell
+        let publish = match parallel_cell
             .claim_or_wait_for_result(worker)
             .map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
             })? {
             TreeWalkParallelThunkWait::Claimed(guard) => {
-                guard.publish_value(value).map_err(|source| {
+                Some(guard.publish_value(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
-                })?;
+                })?)
             }
-            TreeWalkParallelThunkWait::Ready(_) | TreeWalkParallelThunkWait::SelfCycle { .. } => {}
-        }
-        Ok(())
+            TreeWalkParallelThunkWait::Ready(_) | TreeWalkParallelThunkWait::SelfCycle { .. } => {
+                None
+            }
+        };
+        Ok(publish)
     }
 
     fn force_serial_thunk_value(

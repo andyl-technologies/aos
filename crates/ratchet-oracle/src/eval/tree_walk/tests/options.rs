@@ -91,13 +91,28 @@ fn eval_cache_option_defaults_off_and_can_be_enabled() {
 #[test]
 fn parallel_thunk_payloads_option_controls_tree_walk_thunk_allocations() {
     let mut options = TreeWalkOptions::new();
+    let worker = ParallelThunkWorkerId::new(7).expect("test worker id is encodable");
 
     assert!(!options.parallel_thunk_payloads_enabled());
+    assert_eq!(
+        options.parallel_thunk_worker_id(),
+        ParallelThunkWorkerId::FIRST
+    );
     options.set_parallel_thunk_payloads_enabled(true);
+    options.set_parallel_thunk_worker_id(worker);
     assert!(options.parallel_thunk_payloads_enabled());
+    assert_eq!(options.parallel_thunk_worker_id(), worker);
 
     let options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
     assert!(options.parallel_thunk_payloads_enabled());
+    assert_eq!(
+        options.parallel_thunk_worker_id(),
+        ParallelThunkWorkerId::FIRST
+    );
+
+    let options = TreeWalkOptions::with_parallel_thunk_worker_id(worker);
+    assert!(!options.parallel_thunk_payloads_enabled());
+    assert_eq!(options.parallel_thunk_worker_id(), worker);
 
     assert_eq!(
         attr_thunk_storage_mode("{ x = 1 / 0; }", b"x", TreeWalkOptions::new()),
@@ -144,6 +159,72 @@ fn parallel_thunk_payloads_option_controls_tree_walk_thunk_allocations() {
         ),
         EvalThunkForceStorageMode::SerialWithParallelPayload
     );
+}
+
+#[test]
+fn parallel_thunk_worker_id_option_controls_payload_claim_identity() {
+    let worker = ParallelThunkWorkerId::new(7).expect("test worker id is encodable");
+    let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+    options.set_parallel_thunk_worker_id(worker);
+
+    let (_ir, evaluator, thunk_value) = attr_thunk_value("{ x = 1 + 2; }", b"x", options.clone());
+    assert_eq!(options.parallel_thunk_worker_id(), worker);
+
+    let thunk = evaluator
+        .heap
+        .clone_thunk(thunk_value)
+        .expect("root attr value is a heap thunk");
+    let parallel_cell = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell is attached");
+    let TreeWalkParallelThunkWait::Claimed(guard) = parallel_cell
+        .claim_or_wait_for_result(options.parallel_thunk_worker_id())
+        .expect("configured worker claims payload cell")
+    else {
+        panic!("fresh parallel payload cell should be claimable");
+    };
+    let TreeWalkParallelThunkWait::SelfCycle { owner } = parallel_cell
+        .claim_or_wait_for_result(options.parallel_thunk_worker_id())
+        .expect("configured worker re-entry is classified")
+    else {
+        panic!("same configured worker should report self-cycle");
+    };
+    assert_eq!(owner, worker);
+    guard
+        .publish_value(Value::int(3))
+        .expect("configured worker publishes forced payload");
+}
+
+#[test]
+fn parallel_thunk_worker_id_option_publishes_sidecar_with_configured_owner() {
+    let worker = ParallelThunkWorkerId::new(7).expect("test worker id is encodable");
+    let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+    options.set_parallel_thunk_worker_id(worker);
+    let (ir, evaluator, thunk_value) = attr_thunk_value("{ x = 1 + 2; }", b"x", options);
+
+    let thunk = evaluator
+        .heap
+        .clone_thunk(thunk_value)
+        .expect("root attr value is a heap thunk");
+    let parallel_cell = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell is attached");
+    let publish = evaluator
+        .publish_parallel_payload_forced_value(
+            ir.root,
+            Span::new(0, 0),
+            parallel_cell,
+            Value::int(3),
+        )
+        .expect("sidecar forced value publishes")
+        .expect("fresh payload cell is published");
+    assert_eq!(publish.owner(), worker);
+
+    let terminal = parallel_cell
+        .terminal_result()
+        .expect("parallel payload stores terminal result")
+        .expect("parallel terminal result is successful");
+    assert_eq!(terminal.as_int(), Ok(3));
 }
 
 #[test]
@@ -198,11 +279,11 @@ fn parallel_thunk_payload_ready_value_bypasses_serial_suspended_force() {
 
 #[test]
 fn parallel_thunk_payload_success_replays_after_serial_force() {
-    let (ir, mut evaluator, thunk_value) = attr_thunk_value(
-        "{ x = 1 + 2; }",
-        b"x",
-        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+    options.set_parallel_thunk_worker_id(
+        ParallelThunkWorkerId::new(7).expect("test worker id is encodable"),
     );
+    let (ir, mut evaluator, thunk_value) = attr_thunk_value("{ x = 1 + 2; }", b"x", options);
 
     {
         let thunk = evaluator

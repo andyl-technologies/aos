@@ -7607,6 +7607,19 @@ nurseries build on the bump arena.
       storage for future scheduler wiring: the default remains off, the force
       body still runs through serial `ThunkCell`, no scheduler executes thunk
       bodies through this slot, and the loom/Miri/TSan gates remain open.
+- [x] Current tree-walk parallel worker-id option precursor:
+      `ParallelThunkWorkerId::FIRST` names the deterministic single-worker id,
+      and `TreeWalkOptions` now carries the active parallel thunk worker id next
+      to the default-off parallel payload admission flag. Callers can set a
+      validated non-zero worker id before evaluation, and the tree-walk
+      sidecar publication path uses that configured id instead of constructing
+      a hardcoded worker at force time. Tests cover the default id, non-default
+      option API, payload claim/self-cycle classification through the configured
+      id, and successful force-sidecar publication/replay with a non-default
+      id. This is still only a worker-identity plumbing precursor: no scheduler
+      assigns ids to live workers yet, no parallel executor enters the
+      tree-walk force path, no worker-local evaluator state is attached, and the
+      loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload success-replay precursor:
       `TreeWalk::force_value` now checks an admitted
       `TreeWalkParallelThunkCell` for a successful terminal payload before
@@ -7622,7 +7635,7 @@ nurseries build on the bump arena.
       This is still a default-off single-worker precursor:
       failed tree-walk results are not replayed by `force_value`, the force body
       remains serial, no scheduler executes or steals thunk bodies, and the
-      final worker identity, park-token, lock-free waiter-list, and
+      scheduler-assigned worker identity, park-token, lock-free waiter-list, and
       loom/Miri/TSan gates remain open.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path

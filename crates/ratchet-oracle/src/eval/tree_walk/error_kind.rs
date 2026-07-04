@@ -883,14 +883,6 @@ pub enum TreeWalkErrorKind {
         /// The underlying parallel payload failure.
         source: ParallelThunkPayloadError,
     },
-    /// A tree-walk parallel thunk worker id could not be encoded.
-    #[error("parallel thunk worker id {raw} is unavailable at node {id:?}")]
-    ParallelThunkWorkerUnavailable {
-        /// The node id associated with the parallel thunk operation.
-        id: IrId,
-        /// The raw worker id that could not be encoded.
-        raw: u64,
-    },
     /// A parallel thunk claim was dropped before publishing a terminal payload.
     #[error("parallel thunk claim was dropped at node {id:?}")]
     ParallelThunkClaimDropped {

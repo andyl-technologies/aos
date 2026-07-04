@@ -237,6 +237,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with the active parallel thunk worker id.
+    pub fn with_parallel_thunk_worker_id(worker_id: ParallelThunkWorkerId) -> Self {
+        let mut options = Self::default();
+        options.set_parallel_thunk_worker_id(worker_id);
+        options
+    }
+
     /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
     pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
         let mut options = Self::default();
@@ -652,6 +659,16 @@ impl TreeWalkOptions {
         self.parallel_thunk_payloads_enabled = enabled;
     }
 
+    /// Replaces the active worker id used for parallel thunk sidecar claims.
+    ///
+    /// The id is observable only through the parallel thunk protocol. The
+    /// default single-worker tree-walk evaluator uses
+    /// [`ParallelThunkWorkerId::FIRST`]; scheduler integration will assign a
+    /// distinct id per worker before entering the force path.
+    pub fn set_parallel_thunk_worker_id(&mut self, worker_id: ParallelThunkWorkerId) {
+        self.parallel_thunk_worker_id = worker_id;
+    }
+
     /// Enables post-evaluation cheap heap advice for owned evaluation outcomes.
     pub fn set_heap_cheap_memory_advice_min_idle_epochs(&mut self, min_idle_epochs: u64) {
         self.heap_cheap_memory_advice_min_idle_epochs = Some(min_idle_epochs);
@@ -839,6 +856,11 @@ impl TreeWalkOptions {
     /// Returns whether newly allocated thunks receive parallel payload cells.
     pub const fn parallel_thunk_payloads_enabled(&self) -> bool {
         self.parallel_thunk_payloads_enabled
+    }
+
+    /// Returns the active worker id for parallel thunk sidecar claims.
+    pub const fn parallel_thunk_worker_id(&self) -> ParallelThunkWorkerId {
+        self.parallel_thunk_worker_id
     }
 
     /// Returns the idle-epoch threshold for post-evaluation cheap heap advice.
