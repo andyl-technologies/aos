@@ -895,6 +895,36 @@ fn repeated_static_select_site_separates_projected_shapes_with_different_slots()
 }
 
 #[test]
+fn projected_shaped_select_site_becomes_megamorphic_after_cap_overflow() {
+    // The default shaped PIC cap is four entries; the fifth distinct projected
+    // shape drives the active bridge into the megamorphic terminal state.
+    let ir = lower(
+        "let f = x: x.a;
+         in (f { a = 1; })
+          + (f { b = 0; a = 2; })
+          + (f { c = 0; a = 3; })
+          + (f { d = 0; a = 4; })
+          + (f { e = 0; a = 5; })",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("megamorphic projected-shaped select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(15));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 5);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.megamorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.megamorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 5);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 5);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.shaped_hits, 5);
+    assert_eq!(counts.shaped_misses, 0);
+}
+
+#[test]
 fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
     let ir = lower("let f = x: x.a or 10; in (f { a = 1; }) + (f {})");
 
