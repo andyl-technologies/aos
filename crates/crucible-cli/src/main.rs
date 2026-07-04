@@ -2016,6 +2016,7 @@ fn plan_save_invocation(
         emit_mock_failure_artifact: false,
     };
     let run_plan = plan_run_invocation(&run_args, store_root)?;
+    validate_save_selector_for_scenario(selector.as_ref(), run_plan.scenario.scenario_form())?;
     let output = args
         .out
         .clone()
@@ -2033,6 +2034,32 @@ fn plan_save_invocation(
 
 fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
     plan_nonempty_label(label, "savepoint")
+}
+
+fn validate_save_selector_for_scenario(
+    selector: Option<&SaveAtSelector>,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<(), CliError> {
+    match selector {
+        Some(SaveAtSelector::PropertyViolation { assertion }) => {
+            let assertion_id = crucible::AssertionId::from_name(assertion.clone());
+            if scenario
+                .properties()
+                .assertions()
+                .iter()
+                .any(|declared| declared.id == assertion_id)
+            {
+                Ok(())
+            } else {
+                Err(invalid_scenario(format!(
+                    "save --at property assertion `{assertion}` is not declared by scenario {}",
+                    scenario.id().to_hex()
+                )))
+            }
+        }
+        Some(SaveAtSelector::Marker { .. }) => Ok(()),
+        None => Ok(()),
+    }
 }
 
 fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliError> {
@@ -11550,7 +11577,7 @@ mod tests {
         let property = Cli::parse_from([
             String::from("crucible"),
             String::from("save"),
-            scenario.display().to_string(),
+            String::from("builtin:fault-campaign"),
             String::from("--at"),
             String::from("property"),
             String::from("--property"),
@@ -11575,7 +11602,7 @@ mod tests {
         let marker = Cli::parse_from([
             String::from("crucible"),
             String::from("save"),
-            scenario.display().to_string(),
+            String::from("builtin:fault-campaign"),
             String::from("--at"),
             String::from("marker"),
             String::from("--marker"),
@@ -11592,6 +11619,25 @@ mod tests {
                 name: String::from("compaction-started")
             })
         );
+
+        let unknown_property = Cli::parse_from([
+            String::from("crucible"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("property"),
+            String::from("--property"),
+            String::from("no-split-brain"),
+        ]);
+        let Commands::Save(args) = &unknown_property.command else {
+            panic!("expected save command");
+        };
+        let error = match plan_save_invocation(args, temp.path(), temp.path()) {
+            Ok(_) => panic!("property savepoint planning requires a declared assertion"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::InvalidScenario(_)));
+        assert!(error.to_string().contains("not declared"));
 
         let missing_at = Cli::parse_from([
             String::from("crucible"),
@@ -11803,7 +11849,7 @@ mod tests {
             String::from("--seed"),
             String::from("13"),
             String::from("save"),
-            scenario.display().to_string(),
+            String::from("builtin:fault-campaign"),
             String::from("--at"),
             String::from("property"),
             String::from("--property"),
@@ -11829,7 +11875,7 @@ mod tests {
             String::from("--seed"),
             String::from("14"),
             String::from("save"),
-            scenario.display().to_string(),
+            String::from("builtin:fault-campaign"),
             String::from("--at"),
             String::from("marker"),
             String::from("--marker"),

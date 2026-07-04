@@ -405,6 +405,8 @@ pub struct SendResponse {
     pub state_update: Option<StateUpdate>,
     /// Query payload returned by accepted read-only commands, when exposed.
     pub query_result: Option<QueryResult>,
+    /// Breakpoint identifier returned by accepted breakpoint commands on typed transports.
+    pub breakpoint_id: Option<BreakpointId>,
     /// Savepoint payload returned by accepted savepoint commands on typed transports.
     pub savepoint_info: Option<SavepointInfo>,
 }
@@ -432,6 +434,7 @@ impl CommandReplyObserver {
         (
             CommandResultStatus,
             Option<QueryResult>,
+            Option<BreakpointId>,
             Option<SavepointInfo>,
         ),
         StreamingApiError,
@@ -439,7 +442,10 @@ impl CommandReplyObserver {
         let rejected = match self {
             Self::FaultTag(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
-            Self::BreakpointId(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::BreakpointId(receiver) => match await_reply(receiver, command).await? {
+                Ok(id) => return Ok((CommandResultStatus::Accepted, None, Some(id), None)),
+                Err(error) => Some(session_error_rejection_kind(&error)),
+            },
             Self::BreakpointRemoval(receiver) => match await_reply(receiver, command).await? {
                 Ok(true) => None,
                 Ok(false) => Some(CommandRejectionKind::NotFound),
@@ -447,13 +453,13 @@ impl CommandReplyObserver {
             },
             Self::Savepoint(receiver) => match await_reply(receiver, command).await? {
                 Ok(savepoint) => {
-                    return Ok((CommandResultStatus::Accepted, None, Some(savepoint)));
+                    return Ok((CommandResultStatus::Accepted, None, None, Some(savepoint)));
                 }
                 Err(error) => Some(session_error_rejection_kind(&error)),
             },
             Self::Fork(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Query(receiver) => match await_reply(receiver, command).await? {
-                Ok(result) => return Ok((CommandResultStatus::Accepted, Some(result), None)),
+                Ok(result) => return Ok((CommandResultStatus::Accepted, Some(result), None, None)),
                 Err(error) => Some(session_error_rejection_kind(&error)),
             },
             Self::DebugAttach(receiver) => rejected_from_reply(receiver, command).await?,
@@ -467,6 +473,7 @@ impl CommandReplyObserver {
                 Some(reason) => CommandResultStatus::Rejected { reason },
                 None => CommandResultStatus::Accepted,
             },
+            None,
             None,
             None,
         ))
@@ -1126,6 +1133,7 @@ async fn dispatch_command(
             },
             state_update: None,
             query_result: None,
+            breakpoint_id: None,
             savepoint_info: None,
         });
     }
@@ -1139,9 +1147,9 @@ async fn dispatch_command(
             command: command_kind,
         })?;
 
-    let (status, query_result, savepoint_info) = match reply_observer {
+    let (status, query_result, breakpoint_id, savepoint_info) = match reply_observer {
         Some(observer) => observer.observe(command_kind).await?,
-        None => (CommandResultStatus::Accepted, None, None),
+        None => (CommandResultStatus::Accepted, None, None, None),
     };
     let result = CommandResult {
         command_id,
@@ -1171,6 +1179,7 @@ async fn dispatch_command(
         result,
         state_update,
         query_result,
+        breakpoint_id,
         savepoint_info,
     })
 }

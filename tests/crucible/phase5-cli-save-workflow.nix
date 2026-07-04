@@ -15,6 +15,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -163,6 +165,18 @@
       {
         label = "qemu save blocker";
         needle = "real-QEMU savepoint export runner tracked by T-CLI-9";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
+      {
+        label = "property selector breakpoint id";
+        needle = "breakpoint_id";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+      {
+        label = "breakpoint firing query plumbing";
+        needle = "BreakpointFirings";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [

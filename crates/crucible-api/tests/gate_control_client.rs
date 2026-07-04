@@ -1327,6 +1327,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 state: LiveStateKind::Paused,
             }),
             query_result: None,
+            breakpoint_id: None,
             savepoint_info: None,
         }),
         &format!(
@@ -1345,6 +1346,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             },
             state_update: None,
             query_result: None,
+            breakpoint_id: None,
             savepoint_info: None,
         }),
         "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\n",
@@ -3880,6 +3882,12 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
             reject_extra_query_field(fields.next())?;
             Err(String::from(
                 "snapshot query is not supported by the RPC wire format",
+            ))
+        }
+        "breakpoint-firings" => {
+            reject_extra_query_field(fields.next())?;
+            Err(String::from(
+                "breakpoint-firing query is not supported by the RPC wire format",
             ))
         }
         "state" => {
