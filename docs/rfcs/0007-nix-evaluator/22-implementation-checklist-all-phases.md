@@ -7398,6 +7398,20 @@ nurseries build on the bump arena.
       scheduler, cannot prove the caller exhausted real worker deques or peer
       steals, does not hold a scheduler park token, and still uses the blocking
       wait-cell precursor rather than a lock-free waiter list.
+- [x] Current scheduler-backed ready-work queue bridge:
+      `ratchet-oracle::eval::parallel_ready_work_queues` seeds worker-local
+      ready-work queues with the same deterministic round-robin placement as the
+      safe L1 scheduler. `ParallelReadyWorkQueues::run_next` pops local work
+      from the hot end, steals older peer work from the FIFO end, runs the
+      caller-supplied task body, and returns a `ParallelThunkReadyWork` signal
+      that can feed the L2 wait-or-steal hook. Tests pin local-before-steal
+      ordering, stable task/worker metadata, idle reporting, unknown-worker and
+      poisoned-queue errors, runner-panic drop behavior, and direct use as the
+      ready-work hook for `ParallelThunkWaitCell::claim_or_run_ready_then_wait`.
+      This is still a safe queue adapter only: it is not the final Chase-Lev
+      deque, cannot prove a real worker exhausted all runnable evaluator work,
+      does not hold a scheduler park token, and does not satisfy the
+      loom/Miri/TSan gate.
 - [x] Current parallel thunk terminal-payload precursor:
       `ParallelThunkPayloadCell` layers typed terminal payload storage over the
       safe CAS/wait-cell protocol. The claim owner stores either a forced payload

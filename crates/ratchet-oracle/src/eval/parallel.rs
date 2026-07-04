@@ -21,6 +21,8 @@ use std::{
 
 use thiserror::Error;
 
+use super::thunk_wait::ParallelThunkReadyWork;
+
 /// Builds the deterministic round-robin seed plan for top-level tasks.
 ///
 /// The returned plan is independent of execution timing and is used by the
@@ -162,6 +164,221 @@ where
         results,
         worker_reports,
     })
+}
+
+/// Builds worker-local ready-work queues for thunk wait-or-steal hooks.
+///
+/// Tasks are seeded with the same round-robin rule as
+/// [`execute_parallel_top_level`]. A worker that is blocked on a foreign-owned
+/// thunk can call [`ParallelReadyWorkQueues::run_next`] from its ready-work hook
+/// to run local work first, then steal older work from peers, and finally report
+/// [`ParallelThunkReadyWork::Idle`] when the queues are exhausted.
+pub fn parallel_ready_work_queues<I, T>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+) -> ParallelReadyWorkQueues<T>
+where
+    I: IntoIterator<Item = T>,
+{
+    let worker_count = worker_count.get();
+    let mut seeded_queues = (0..worker_count)
+        .map(|_| VecDeque::new())
+        .collect::<Vec<_>>();
+    let mut task_count = 0;
+
+    for (task_index, payload) in tasks.into_iter().enumerate() {
+        let initial_worker = task_index % worker_count;
+        seeded_queues[initial_worker].push_back(ParallelReadyWorkTask {
+            task_index,
+            initial_worker,
+            payload,
+        });
+        task_count = task_index + 1;
+    }
+
+    ParallelReadyWorkQueues {
+        worker_count,
+        task_count,
+        queues: seeded_queues.into_iter().map(Mutex::new).collect(),
+    }
+}
+
+/// Worker-local ready-work queues for a blocked thunk owner or waiter.
+///
+/// This is a safe scheduler bridge for the L2 wait-or-steal precursor. It uses
+/// standard-library mutexes and deterministic local-pop/peer-steal order; it is
+/// not the final Chase-Lev deque implementation and does not hold a scheduler
+/// park token.
+#[derive(Debug)]
+pub struct ParallelReadyWorkQueues<T> {
+    worker_count: usize,
+    task_count: usize,
+    queues: Vec<Mutex<VecDeque<ParallelReadyWorkTask<T>>>>,
+}
+
+impl<T> ParallelReadyWorkQueues<T> {
+    /// Returns the number of worker-local queues.
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+
+    /// Returns the number of tasks originally seeded into the queues.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Runs one local or stolen ready-work item for `worker_id`.
+    ///
+    /// The caller supplies `run` so this queue adapter can execute arbitrary
+    /// ready work while preserving stable task metadata. Local work is popped
+    /// from the back of the worker's own queue. If no local work exists, older
+    /// peer work is stolen from the front of peer queues in deterministic worker
+    /// order. When no work is available, this returns
+    /// [`ParallelReadyWorkStep::Idle`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelReadyWorkError`] if `worker_id` is outside the worker
+    /// set or if a ready queue mutex was poisoned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `run` panics. The task has already been removed from its queue
+    /// before `run` is called.
+    pub fn run_next<R>(
+        &self,
+        worker_id: usize,
+        run: impl FnOnce(T) -> R,
+    ) -> Result<ParallelReadyWorkStep<R>, ParallelReadyWorkError> {
+        let Some((task, source)) = self.take_next_task(worker_id)? else {
+            return Ok(ParallelReadyWorkStep::Idle);
+        };
+        let result = run(task.payload);
+        let execution = ParallelReadyWorkExecution {
+            task_index: task.task_index,
+            initial_worker: task.initial_worker,
+            worker_id,
+            result,
+        };
+        Ok(match source {
+            ParallelReadyWorkSource::Local => ParallelReadyWorkStep::RanLocal(execution),
+            ParallelReadyWorkSource::Stolen => ParallelReadyWorkStep::StolePeer(execution),
+        })
+    }
+
+    fn take_next_task(
+        &self,
+        worker_id: usize,
+    ) -> Result<Option<(ParallelReadyWorkTask<T>, ParallelReadyWorkSource)>, ParallelReadyWorkError>
+    {
+        if worker_id >= self.worker_count {
+            return Err(ParallelReadyWorkError::WorkerQueueMissing { worker_id });
+        }
+
+        {
+            let mut own_queue = self.lock_queue(worker_id)?;
+            if let Some(task) = own_queue.pop_back() {
+                return Ok(Some((task, ParallelReadyWorkSource::Local)));
+            }
+        }
+
+        for offset in 1..self.worker_count {
+            let victim_id = (worker_id + offset) % self.worker_count;
+            let mut victim_queue = self.lock_queue(victim_id)?;
+            if let Some(task) = victim_queue.pop_front() {
+                return Ok(Some((task, ParallelReadyWorkSource::Stolen)));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn lock_queue(
+        &self,
+        worker_id: usize,
+    ) -> Result<MutexGuard<'_, VecDeque<ParallelReadyWorkTask<T>>>, ParallelReadyWorkError> {
+        let queue = self
+            .queues
+            .get(worker_id)
+            .ok_or(ParallelReadyWorkError::WorkerQueueMissing { worker_id })?;
+        queue
+            .lock()
+            .map_err(|_| ParallelReadyWorkError::WorkerQueuePoisoned { worker_id })
+    }
+}
+
+#[derive(Debug)]
+struct ParallelReadyWorkTask<T> {
+    task_index: usize,
+    initial_worker: usize,
+    payload: T,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParallelReadyWorkSource {
+    Local,
+    Stolen,
+}
+
+/// One ready-work execution or idle report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParallelReadyWorkStep<R> {
+    /// A task from the worker's own queue was executed.
+    RanLocal(ParallelReadyWorkExecution<R>),
+    /// A task from a peer queue was stolen and executed.
+    StolePeer(ParallelReadyWorkExecution<R>),
+    /// No local or peer ready work was available.
+    Idle,
+}
+
+impl<R> ParallelReadyWorkStep<R> {
+    /// Returns the wait-or-steal hook signal represented by this step.
+    pub const fn ready_work(&self) -> ParallelThunkReadyWork {
+        match self {
+            Self::RanLocal(_) => ParallelThunkReadyWork::RanLocal,
+            Self::StolePeer(_) => ParallelThunkReadyWork::StolePeer,
+            Self::Idle => ParallelThunkReadyWork::Idle,
+        }
+    }
+
+    /// Returns the task execution metadata, if a task ran.
+    pub const fn execution(&self) -> Option<&ParallelReadyWorkExecution<R>> {
+        match self {
+            Self::RanLocal(execution) | Self::StolePeer(execution) => Some(execution),
+            Self::Idle => None,
+        }
+    }
+}
+
+/// The result produced by one ready-work task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelReadyWorkExecution<R> {
+    task_index: usize,
+    initial_worker: usize,
+    worker_id: usize,
+    result: R,
+}
+
+impl<R> ParallelReadyWorkExecution<R> {
+    /// Returns the stable task index.
+    pub const fn task_index(&self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker queue that initially owned the task.
+    pub const fn initial_worker(&self) -> usize {
+        self.initial_worker
+    }
+
+    /// Returns the worker that executed the ready task.
+    pub const fn worker_id(&self) -> usize {
+        self.worker_id
+    }
+
+    /// Returns the ready-work result.
+    pub const fn result(&self) -> &R {
+        &self.result
+    }
 }
 
 fn worker_loop<T, R, F>(
@@ -425,6 +642,23 @@ pub enum ParallelTopLevelError {
     },
 }
 
+/// A failure while running scheduler-backed ready work.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParallelReadyWorkError {
+    /// A worker queue was addressed outside the configured worker set.
+    #[error("parallel ready-work queue {worker_id} is not present")]
+    WorkerQueueMissing {
+        /// The missing worker queue index.
+        worker_id: usize,
+    },
+    /// A worker queue mutex was poisoned.
+    #[error("parallel ready-work queue {worker_id} is poisoned")]
+    WorkerQueuePoisoned {
+        /// The poisoned worker queue index.
+        worker_id: usize,
+    },
+}
+
 impl fmt::Display for ParallelTopLevelSeedPlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -437,10 +671,16 @@ impl fmt::Display for ParallelTopLevelSeedPlan {
 
 #[cfg(test)]
 mod tests {
+    use super::super::thunk_cas::{ParallelThunkTerminalState, ParallelThunkWorkerId};
+    use super::super::thunk_wait::{ParallelThunkWait, ParallelThunkWaitCell};
     use super::*;
 
     fn workers(count: usize) -> NonZeroUsize {
         NonZeroUsize::new(count).expect("test worker count is nonzero")
+    }
+
+    fn worker(raw: u64) -> ParallelThunkWorkerId {
+        ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
     }
 
     #[test]
@@ -531,6 +771,157 @@ mod tests {
         assert!(report.worker_reports().iter().all(|worker| {
             worker.local_pops() == 0 && worker.steals() == 0 && worker.tasks_completed() == 0
         }));
+    }
+
+    #[test]
+    fn ready_work_queues_run_local_before_stealing() {
+        let queues = parallel_ready_work_queues([10, 20, 30, 40], workers(2));
+
+        let first = queues
+            .run_next(0, |value| value + 1)
+            .expect("first ready work runs");
+        assert_eq!(first.ready_work(), ParallelThunkReadyWork::RanLocal);
+        let ParallelReadyWorkStep::RanLocal(execution) = first else {
+            panic!("first task should be local");
+        };
+        assert_eq!(execution.task_index(), 2);
+        assert_eq!(execution.initial_worker(), 0);
+        assert_eq!(execution.worker_id(), 0);
+        assert_eq!(*execution.result(), 31);
+
+        let second = queues
+            .run_next(0, |value| value + 1)
+            .expect("second ready work runs");
+        assert_eq!(second.ready_work(), ParallelThunkReadyWork::RanLocal);
+        let ParallelReadyWorkStep::RanLocal(execution) = second else {
+            panic!("second task should be local");
+        };
+        assert_eq!(execution.task_index(), 0);
+        assert_eq!(execution.initial_worker(), 0);
+        assert_eq!(execution.worker_id(), 0);
+        assert_eq!(*execution.result(), 11);
+
+        let third = queues
+            .run_next(0, |value| value + 1)
+            .expect("third ready work runs");
+        assert_eq!(third.ready_work(), ParallelThunkReadyWork::StolePeer);
+        let ParallelReadyWorkStep::StolePeer(execution) = third else {
+            panic!("third task should be stolen");
+        };
+        assert_eq!(execution.task_index(), 1);
+        assert_eq!(execution.initial_worker(), 1);
+        assert_eq!(execution.worker_id(), 0);
+        assert_eq!(*execution.result(), 21);
+
+        let fourth = queues
+            .run_next(0, |value| value + 1)
+            .expect("fourth ready work runs");
+        assert_eq!(fourth.ready_work(), ParallelThunkReadyWork::StolePeer);
+        let ParallelReadyWorkStep::StolePeer(execution) = fourth else {
+            panic!("fourth task should be stolen");
+        };
+        assert_eq!(execution.task_index(), 3);
+        assert_eq!(execution.initial_worker(), 1);
+        assert_eq!(execution.worker_id(), 0);
+        assert_eq!(*execution.result(), 41);
+
+        let fifth = queues
+            .run_next(0, |value| value + 1)
+            .expect("idle ready work succeeds");
+        assert_eq!(fifth.ready_work(), ParallelThunkReadyWork::Idle);
+        assert!(fifth.execution().is_none());
+    }
+
+    #[test]
+    fn ready_work_queues_reject_unknown_worker() {
+        let queues = parallel_ready_work_queues([1, 2], workers(2));
+
+        let error = queues
+            .run_next(2, |value| value)
+            .expect_err("unknown worker is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueueMissing { worker_id: 2 }
+        );
+    }
+
+    #[test]
+    fn ready_work_queues_report_poisoned_queue() {
+        let queues = parallel_ready_work_queues([1], workers(1));
+        let poison = std::panic::catch_unwind(|| {
+            let _guard = queues.queues[0].lock().expect("queue lock succeeds");
+            panic!("poison ready-work queue");
+        });
+        assert!(poison.is_err());
+
+        let error = queues
+            .run_next(0, |value| value)
+            .expect_err("poisoned queue is reported");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueuePoisoned { worker_id: 0 }
+        );
+    }
+
+    #[test]
+    fn ready_work_queues_drop_popped_task_if_runner_panics() {
+        let queues = parallel_ready_work_queues([1], workers(1));
+
+        let panic = std::panic::catch_unwind(|| {
+            let _ = queues.run_next(0, |_value| {
+                panic!("ready-work runner panics after dequeue");
+            });
+        });
+        assert!(panic.is_err());
+
+        let next = queues
+            .run_next(0, |value| value)
+            .expect("queue remains usable after runner panic");
+        assert_eq!(next.ready_work(), ParallelThunkReadyWork::Idle);
+    }
+
+    #[test]
+    fn ready_work_queues_feed_thunk_wait_or_steal_hook() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let mut owner_guard = Some(owner_guard);
+        let queues = parallel_ready_work_queues([10, 20, 30], workers(2));
+        let mut ran = Vec::new();
+        let mut runs = 0usize;
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait(worker(2), || {
+                runs = runs.saturating_add(1);
+                let step = queues
+                    .run_next(1, |value| ran.push(value))
+                    .expect("ready queue run succeeds");
+                if runs == 2 {
+                    owner_guard
+                        .take()
+                        .expect("owner guard remains available")
+                        .publish_forced()
+                        .expect("owner publishes during ready work");
+                }
+                step.ready_work()
+            })
+            .expect("wait-or-steal hook completes");
+
+        let (result, report) = outcome.into_parts();
+        assert!(matches!(
+            result,
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert_eq!(ran, vec![20, 10]);
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
     }
 
     #[test]
