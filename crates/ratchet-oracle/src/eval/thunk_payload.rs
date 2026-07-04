@@ -121,6 +121,103 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
         self.lock_payload().clone()
     }
 
+    /// Returns the forced terminal payload value, if the cell is forced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the wait-cell synchronization
+    /// fails, or if a forced terminal state is observed without a matching
+    /// forced payload.
+    pub(crate) fn forced_payload_value(&self) -> Result<Option<T>, ParallelThunkPayloadError> {
+        if self.state()? != ParallelThunkTerminalStatus::Forced {
+            return Ok(None);
+        }
+        let ParallelThunkTerminalPayload::Forced(value) =
+            self.payload_for_terminal(ParallelThunkTerminalState::Forced)?
+        else {
+            return Err(ParallelThunkPayloadError::TerminalPayloadMismatch {
+                terminal_state: ParallelThunkTerminalState::Forced,
+                payload_state: ParallelThunkTerminalState::Failed,
+            });
+        };
+        Ok(Some(value))
+    }
+
+    /// Clones this payload cell for a relocating heap writeback.
+    ///
+    /// Claimed cells are rejected because the relocation snapshot cannot safely
+    /// transfer live waiter ownership. Suspended and terminal cells are rebuilt
+    /// with fresh synchronization storage and the same terminal payload, when
+    /// present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the cell is currently claimed,
+    /// if the wait-cell synchronization fails, or if a terminal state is
+    /// observed without a matching terminal payload.
+    pub(crate) fn clone_for_relocation(&self) -> Result<Self, ParallelThunkPayloadError> {
+        match self.state()? {
+            ParallelThunkTerminalStatus::Suspended => {
+                Ok(Self::new(self.dropped_claim_error.clone()))
+            }
+            ParallelThunkTerminalStatus::Claimed => Err(
+                ParallelThunkPayloadError::RelocationRequiresIdleOrTerminalPayload {
+                    status: ParallelThunkTerminalStatus::Claimed,
+                },
+            ),
+            ParallelThunkTerminalStatus::Forced => {
+                let ParallelThunkTerminalPayload::Forced(value) =
+                    self.payload_for_terminal(ParallelThunkTerminalState::Forced)?
+                else {
+                    return Err(ParallelThunkPayloadError::TerminalPayloadMismatch {
+                        terminal_state: ParallelThunkTerminalState::Forced,
+                        payload_state: ParallelThunkTerminalState::Failed,
+                    });
+                };
+                Ok(Self::forced_for_relocation(
+                    value,
+                    self.dropped_claim_error.clone(),
+                ))
+            }
+            ParallelThunkTerminalStatus::Failed => {
+                let ParallelThunkTerminalPayload::Failed(error) =
+                    self.payload_for_terminal(ParallelThunkTerminalState::Failed)?
+                else {
+                    return Err(ParallelThunkPayloadError::TerminalPayloadMismatch {
+                        terminal_state: ParallelThunkTerminalState::Failed,
+                        payload_state: ParallelThunkTerminalState::Forced,
+                    });
+                };
+                Ok(Self::failed_for_relocation(
+                    error,
+                    self.dropped_claim_error.clone(),
+                ))
+            }
+        }
+    }
+
+    /// Rebuilds this forced payload cell with a relocated forced value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the cell is not forced, if the
+    /// wait-cell synchronization fails, or if the forced state is missing its
+    /// terminal forced payload.
+    pub(crate) fn relocated_forced_payload(
+        &self,
+        value: T,
+    ) -> Result<Self, ParallelThunkPayloadError> {
+        let status = self.state()?;
+        if status != ParallelThunkTerminalStatus::Forced {
+            return Err(ParallelThunkPayloadError::RelocationRequiresForcedPayload { status });
+        }
+        self.payload_for_terminal(ParallelThunkTerminalState::Forced)?;
+        Ok(Self::forced_for_relocation(
+            value,
+            self.dropped_claim_error.clone(),
+        ))
+    }
+
     /// Claims the thunk, returns the stored terminal payload, or waits for it.
     ///
     /// A successful owner receives a [`ParallelThunkPayloadGuard`] and must call
@@ -259,6 +356,22 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
 
     fn lock_payload(&self) -> MutexGuard<'_, Option<ParallelThunkTerminalPayload<T, E>>> {
         self.payload.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn forced_for_relocation(value: T, dropped_claim_error: E) -> Self {
+        Self {
+            wait_cell: ParallelThunkWaitCell::forced_for_relocation(),
+            payload: Mutex::new(Some(ParallelThunkTerminalPayload::Forced(value))),
+            dropped_claim_error,
+        }
+    }
+
+    fn failed_for_relocation(error: E, dropped_claim_error: E) -> Self {
+        Self {
+            wait_cell: ParallelThunkWaitCell::failed_for_relocation(),
+            payload: Mutex::new(Some(ParallelThunkTerminalPayload::Failed(error))),
+            dropped_claim_error,
+        }
     }
 }
 
@@ -468,6 +581,18 @@ pub enum ParallelThunkPayloadError {
     /// A payload guard was consumed more than once.
     #[error("parallel thunk payload claim guard is missing")]
     ClaimGuardMissing,
+    /// Payload relocation needs a suspended or terminal cell, not a live claim.
+    #[error("parallel thunk payload relocation requires an idle or terminal cell, got {status:?}")]
+    RelocationRequiresIdleOrTerminalPayload {
+        /// The status observed before relocation.
+        status: ParallelThunkTerminalStatus,
+    },
+    /// Forced-payload relocation needs an existing forced terminal payload.
+    #[error("parallel thunk payload relocation requires a forced payload, got {status:?}")]
+    RelocationRequiresForcedPayload {
+        /// The status observed before forced-payload relocation.
+        status: ParallelThunkTerminalStatus,
+    },
 }
 
 enum TreeWalkParallelThunkPollReadyWorkError<E> {
@@ -530,6 +655,28 @@ impl TreeWalkParallelThunkCell {
         self.payload_cell
             .terminal_payload()
             .map(ParallelThunkTerminalPayload::into_result)
+    }
+
+    /// Returns the forced terminal value, if this cell has one.
+    pub(crate) fn forced_terminal_value(&self) -> Result<Option<Value>, ParallelThunkPayloadError> {
+        self.payload_cell.forced_payload_value()
+    }
+
+    /// Clones this cell for relocating an owning heap record.
+    pub(crate) fn clone_for_relocation(&self) -> Result<Self, ParallelThunkPayloadError> {
+        Ok(Self {
+            payload_cell: self.payload_cell.clone_for_relocation()?,
+        })
+    }
+
+    /// Clones this forced cell with a relocated terminal value.
+    pub(crate) fn relocated_forced_value(
+        &self,
+        value: Value,
+    ) -> Result<Self, ParallelThunkPayloadError> {
+        Ok(Self {
+            payload_cell: self.payload_cell.relocated_forced_payload(value)?,
+        })
     }
 
     /// Claims the thunk, returns its terminal result, or waits for the owner.

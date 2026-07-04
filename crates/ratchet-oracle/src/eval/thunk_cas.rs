@@ -333,6 +333,20 @@ impl ParallelThunkStateWord {
         }
     }
 
+    /// Creates a forced state word for relocating an already-terminal payload.
+    pub(crate) const fn forced_for_relocation() -> Self {
+        Self {
+            state: AtomicU64::new(FORCED_TAG),
+        }
+    }
+
+    /// Creates a failed state word for relocating an already-terminal payload.
+    pub(crate) const fn failed_for_relocation() -> Self {
+        Self {
+            state: AtomicU64::new(FAILED_TAG),
+        }
+    }
+
     /// Loads and decodes the current state with acquire ordering.
     ///
     /// # Errors

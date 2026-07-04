@@ -20,6 +20,7 @@ use std::rc::Rc;
 use super::*;
 use crate::eval::EvalWithScope;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
+use crate::eval::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
 use crate::heap::{
     GcCardTable, GcCardTableSnapshot, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
     HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport,
@@ -696,6 +697,8 @@ pub enum HeapEdgeSource {
     ThunkSelectReceiver,
     /// The cached WHNF result of a forced thunk.
     ThunkCachedResult,
+    /// The successful terminal value stored in a parallel payload cell.
+    ThunkParallelPayloadValue,
 }
 
 /// A precise object field edge.
@@ -2103,6 +2106,7 @@ enum RecordOwnedHeapFieldWriteObjectError {
     Attr(AttrError),
     Environment(EvalEnvError),
     Thunk(ForceError),
+    ParallelThunkPayload(ParallelThunkPayloadError),
 }
 
 /// A summary of heap-record object-generation writes.
@@ -6069,11 +6073,13 @@ impl EvalHeap {
             HeapObjectValue::Thunk(thunk) => match thunk.cell().state()? {
                 ThunkState::Suspended | ThunkState::Blackhole => {
                     push_thunk_kind_edges(&mut edges, thunk.kind())?;
+                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
                 }
                 ThunkState::Forced => {
                     if let Some(value) = thunk.cell().cached_value()? {
                         push_heap_edge(&mut edges, HeapEdgeSource::ThunkCachedResult, value)?;
                     }
+                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
                 }
             },
         }
@@ -7101,6 +7107,11 @@ fn validate_copied_heap_field_write_object_source(
             Ok(())
         }
         (HeapObjectValue::Thunk(thunk), source)
+            if validate_parallel_thunk_payload_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
+        (HeapObjectValue::Thunk(thunk), source)
             if validate_suspended_thunk_field_write_source(thunk, source)? =>
         {
             Ok(())
@@ -7153,6 +7164,11 @@ fn validate_direct_heap_field_write_object_source(
             Ok(())
         }
         (HeapObjectValue::Thunk(thunk), source)
+            if validate_parallel_thunk_payload_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
+        (HeapObjectValue::Thunk(thunk), source)
             if validate_suspended_thunk_field_write_source(thunk, source)? =>
         {
             Ok(())
@@ -7184,6 +7200,9 @@ fn copied_heap_field_write_object_error(
             EvalHeapError::Environment(source)
         }
         RecordOwnedHeapFieldWriteObjectError::Thunk(source) => EvalHeapError::Thunk(source),
+        RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload(source) => {
+            EvalHeapError::ParallelThunkPayload(source)
+        }
     }
 }
 
@@ -7204,6 +7223,9 @@ fn direct_heap_field_write_object_error(
             EvalHeapError::Environment(source)
         }
         RecordOwnedHeapFieldWriteObjectError::Thunk(source) => EvalHeapError::Thunk(source),
+        RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload(source) => {
+            EvalHeapError::ParallelThunkPayload(source)
+        }
     }
 }
 
@@ -7304,9 +7326,38 @@ fn record_owned_heap_field_write_object(
             {
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             }
-            Ok(HeapObjectValue::Thunk(Rc::new(
-                EvalThunk::with_forced_cached_result_from(thunk, replacement),
-            )))
+            let parallel_cell = clone_parallel_thunk_cell_for_heap_field_write(thunk)?;
+            if parallel_cell.is_none() {
+                return Ok(HeapObjectValue::Thunk(Rc::new(
+                    EvalThunk::with_forced_cached_result_from(thunk, replacement),
+                )));
+            }
+            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+                kind: thunk.kind().clone(),
+                cell: ThunkCell::forced(replacement),
+                parallel_cell,
+            })))
+        }
+        (HeapObjectValue::Thunk(thunk), HeapEdgeSource::ThunkParallelPayloadValue) => {
+            let Some(parallel_cell) = thunk.parallel_payload_cell() else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            if parallel_cell
+                .forced_terminal_value()
+                .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?
+                .is_none()
+            {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            }
+            let parallel_cell = parallel_cell
+                .relocated_forced_value(replacement)
+                .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
+            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+                kind: thunk.kind().clone(),
+                cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
+                    .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+                parallel_cell: Some(parallel_cell),
+            })))
         }
         (HeapObjectValue::Thunk(thunk), source) => {
             rewrite_suspended_thunk_field(thunk, source, replacement)
@@ -7334,6 +7385,58 @@ fn validate_forced_thunk_cached_result_write_source(
         .cached_value()
         .map_err(EvalHeapError::Thunk)?
         .is_some())
+}
+
+fn validate_parallel_thunk_payload_write_source(
+    thunk: &EvalThunk,
+    source: &HeapEdgeSource,
+) -> Result<bool, EvalHeapError> {
+    if source != &HeapEdgeSource::ThunkParallelPayloadValue {
+        return Ok(false);
+    }
+    Ok(thunk
+        .parallel_payload_cell()
+        .map(|cell| cell.forced_terminal_value())
+        .transpose()?
+        .flatten()
+        .is_some())
+}
+
+fn clone_serial_thunk_cell_for_heap_field_write(cell: &ThunkCell) -> Result<ThunkCell, ForceError> {
+    match cell.state()? {
+        ThunkState::Suspended => Ok(ThunkCell::new()),
+        ThunkState::Blackhole => Err(ForceError::UnexpectedState {
+            expected: ThunkState::Suspended,
+            actual: ThunkState::Blackhole,
+        }),
+        ThunkState::Forced => Ok(ThunkCell::forced(
+            cell.cached_value()?.ok_or(ForceError::MissingForcedValue)?,
+        )),
+    }
+}
+
+fn clone_parallel_thunk_cell_for_heap_field_write(
+    thunk: &EvalThunk,
+) -> Result<Option<TreeWalkParallelThunkCell>, RecordOwnedHeapFieldWriteObjectError> {
+    thunk
+        .parallel_payload_cell()
+        .map(|cell| {
+            cell.clone_for_relocation()
+                .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)
+        })
+        .transpose()
+}
+
+fn rebuild_thunk_for_heap_field_write(
+    thunk: &EvalThunk,
+    kind: EvalThunkKind,
+) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
+    Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+        kind,
+        cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
+            .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+        parallel_cell: clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
+    })))
 }
 
 fn thunk_supports_suspended_field_write(
@@ -7419,13 +7522,15 @@ fn rewrite_suspended_thunk_field(
             *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
             let with_env = EvalWithEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::with_captures(
-                body.module(),
-                body.id(),
-                env.clone(),
-                with_env,
-                scoped_globals.clone(),
-            ))))
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Node {
+                    body: *body,
+                    env: env.clone(),
+                    with_env,
+                    scoped_globals: scoped_globals.clone(),
+                },
+            )
         }
         (
             EvalThunkKind::Node {
@@ -7446,13 +7551,15 @@ fn rewrite_suspended_thunk_field(
             *scope = replacement;
             let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::with_captures(
-                body.module(),
-                body.id(),
-                env.clone(),
-                with_env.clone(),
-                scoped_globals,
-            ))))
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Node {
+                    body: *body,
+                    env: env.clone(),
+                    with_env: with_env.clone(),
+                    scoped_globals,
+                },
+            )
         }
         (
             EvalThunkKind::Apply {
@@ -7463,15 +7570,16 @@ fn rewrite_suspended_thunk_field(
                 ..
             },
             HeapEdgeSource::ThunkApplyFunction,
-        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply(
-            function.module(),
-            function.id(),
-            *function_span,
-            replacement,
-            argument.module(),
-            argument.id(),
-            *argument_value,
-        )))),
+        ) => rebuild_thunk_for_heap_field_write(
+            thunk,
+            EvalThunkKind::Apply {
+                function: *function,
+                function_span: *function_span,
+                function_value: replacement,
+                argument: *argument,
+                argument_value: *argument_value,
+            },
+        ),
         (
             EvalThunkKind::Apply {
                 function,
@@ -7481,15 +7589,16 @@ fn rewrite_suspended_thunk_field(
                 ..
             },
             HeapEdgeSource::ThunkApplyArgument,
-        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply(
-            function.module(),
-            function.id(),
-            *function_span,
-            *function_value,
-            argument.module(),
-            argument.id(),
-            replacement,
-        )))),
+        ) => rebuild_thunk_for_heap_field_write(
+            thunk,
+            EvalThunkKind::Apply {
+                function: *function,
+                function_span: *function_span,
+                function_value: *function_value,
+                argument: *argument,
+                argument_value: replacement,
+            },
+        ),
         (
             EvalThunkKind::Apply2 {
                 function,
@@ -7503,20 +7612,20 @@ fn rewrite_suspended_thunk_field(
                 ..
             },
             HeapEdgeSource::ThunkApply2Function,
-        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
-            function.module(),
-            function.id(),
-            *function_span,
-            replacement,
-            first_argument.module(),
-            first_argument.id(),
-            *first_argument_span,
-            *first_argument_value,
-            second_argument.module(),
-            second_argument.id(),
-            *second_argument_span,
-            *second_argument_value,
-        )))),
+        ) => rebuild_thunk_for_heap_field_write(
+            thunk,
+            EvalThunkKind::Apply2 {
+                function: *function,
+                function_span: *function_span,
+                function_value: replacement,
+                first_argument: *first_argument,
+                first_argument_span: *first_argument_span,
+                first_argument_value: *first_argument_value,
+                second_argument: *second_argument,
+                second_argument_span: *second_argument_span,
+                second_argument_value: *second_argument_value,
+            },
+        ),
         (
             EvalThunkKind::Apply2 {
                 function,
@@ -7530,20 +7639,20 @@ fn rewrite_suspended_thunk_field(
                 ..
             },
             HeapEdgeSource::ThunkApply2FirstArgument,
-        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
-            function.module(),
-            function.id(),
-            *function_span,
-            *function_value,
-            first_argument.module(),
-            first_argument.id(),
-            *first_argument_span,
-            replacement,
-            second_argument.module(),
-            second_argument.id(),
-            *second_argument_span,
-            *second_argument_value,
-        )))),
+        ) => rebuild_thunk_for_heap_field_write(
+            thunk,
+            EvalThunkKind::Apply2 {
+                function: *function,
+                function_span: *function_span,
+                function_value: *function_value,
+                first_argument: *first_argument,
+                first_argument_span: *first_argument_span,
+                first_argument_value: replacement,
+                second_argument: *second_argument,
+                second_argument_span: *second_argument_span,
+                second_argument_value: *second_argument_value,
+            },
+        ),
         (
             EvalThunkKind::Apply2 {
                 function,
@@ -7557,30 +7666,47 @@ fn rewrite_suspended_thunk_field(
                 ..
             },
             HeapEdgeSource::ThunkApply2SecondArgument,
-        ) => Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::apply2(
-            function.module(),
-            function.id(),
-            *function_span,
-            *function_value,
-            first_argument.module(),
-            first_argument.id(),
-            *first_argument_span,
-            *first_argument_value,
-            second_argument.module(),
-            second_argument.id(),
-            *second_argument_span,
-            replacement,
-        )))),
+        ) => rebuild_thunk_for_heap_field_write(
+            thunk,
+            EvalThunkKind::Apply2 {
+                function: *function,
+                function_span: *function_span,
+                function_value: *function_value,
+                first_argument: *first_argument,
+                first_argument_span: *first_argument_span,
+                first_argument_value: *first_argument_value,
+                second_argument: *second_argument,
+                second_argument_span: *second_argument_span,
+                second_argument_value: replacement,
+            },
+        ),
         (EvalThunkKind::Select { select, path, .. }, HeapEdgeSource::ThunkSelectReceiver) => {
-            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk::select(
-                select.module(),
-                select.id(),
-                replacement,
-                *path,
-            ))))
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Select {
+                    select: *select,
+                    receiver: replacement,
+                    path: *path,
+                },
+            )
         }
         _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
     }
+}
+
+fn push_parallel_thunk_payload_edge(
+    edges: &mut Vec<HeapEdge>,
+    thunk: &EvalThunk,
+) -> Result<(), EvalHeapError> {
+    if let Some(value) = thunk
+        .parallel_payload_cell()
+        .map(|cell| cell.forced_terminal_value())
+        .transpose()?
+        .flatten()
+    {
+        push_heap_edge(edges, HeapEdgeSource::ThunkParallelPayloadValue, value)?;
+    }
+    Ok(())
 }
 
 fn push_thunk_kind_edges(

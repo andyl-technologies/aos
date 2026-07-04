@@ -59,6 +59,24 @@ impl ParallelThunkWaitCell {
         }
     }
 
+    /// Creates a forced wait cell for relocating an already-terminal payload.
+    pub(crate) fn forced_for_relocation() -> Self {
+        Self {
+            state: ParallelThunkStateWord::forced_for_relocation(),
+            waiters: Mutex::new(ParallelThunkWaitState::default()),
+            terminal_ready: Condvar::new(),
+        }
+    }
+
+    /// Creates a failed wait cell for relocating an already-terminal payload.
+    pub(crate) fn failed_for_relocation() -> Self {
+        Self {
+            state: ParallelThunkStateWord::failed_for_relocation(),
+            waiters: Mutex::new(ParallelThunkWaitState::default()),
+            terminal_ready: Condvar::new(),
+        }
+    }
+
     /// Loads the current state with acquire ordering.
     ///
     /// # Errors

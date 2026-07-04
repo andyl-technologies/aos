@@ -3,7 +3,9 @@
 use super::super::ThunkState;
 use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
-use crate::eval::{EvalFrame, EvalWithScope};
+use crate::eval::thunk_cas::ParallelThunkWorkerId;
+use crate::eval::tree_walk::{TreeWalkError, TreeWalkErrorKind};
+use crate::eval::{EvalFrame, EvalWithScope, TreeWalkParallelThunkWait};
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
     HeapGeneration, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
@@ -16,7 +18,7 @@ use crate::heap::{
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
-use crate::syntax::SymbolTable;
+use crate::syntax::{Span, SymbolTable};
 
 mod errors;
 
@@ -62,6 +64,43 @@ fn heap_generation(heap: &EvalHeap, value: Value) -> HeapGeneration {
 fn gc_address(value: Value) -> GcHeapAddress {
     GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
         .expect("heap pointers are valid GC addresses")
+}
+
+fn worker(raw: u64) -> ParallelThunkWorkerId {
+    ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+}
+
+fn tree_walk_error(raw: u32) -> TreeWalkError {
+    TreeWalkError::new(
+        TreeWalkErrorKind::DivisionByZero { id: IrId::new(raw) },
+        Span::new(raw, raw.saturating_add(1)),
+    )
+}
+
+fn publish_parallel_payload(thunk: &EvalThunk, value: Value) {
+    let parallel = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell is attached");
+    let TreeWalkParallelThunkWait::Claimed(guard) = parallel
+        .claim_or_wait_for_result(worker(1))
+        .expect("parallel payload cell claims")
+    else {
+        panic!("parallel payload cell should start suspended");
+    };
+    guard
+        .publish_value(value)
+        .expect("parallel payload publishes");
+}
+
+fn assert_parallel_payload(thunk: &EvalThunk, expected: Value) {
+    let actual = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell is attached")
+        .terminal_result()
+        .expect("parallel terminal result is present")
+        .expect("parallel terminal result is forced");
+    assert!(actual.raw_eq(expected));
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 }
 
 fn static_gc_address(address_bits: usize) -> GcHeapAddress {
@@ -7012,6 +7051,78 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_suspended_thunk_appl
 }
 
 #[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_preserve_parallel_payload_on_suspended_thunk_write()
+ {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("argument thunk allocates");
+    let argument_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("argument destination thunk allocates");
+    let payload = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("parallel payload thunk allocates");
+    let parent = heap
+        .alloc_thunk(
+            EvalThunk::apply(
+                EvalModuleId::ROOT,
+                IrId::new(4),
+                Span::new(0, 1),
+                Value::int(1),
+                EvalModuleId::ROOT,
+                IrId::new(5),
+                argument,
+            )
+            .with_parallel_payload_cell(tree_walk_error(99)),
+        )
+        .expect("parent apply thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    publish_parallel_payload(&parent_thunk, payload);
+
+    let argument_request = object_copy_request_for_values(
+        &heap,
+        argument,
+        argument_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![argument_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ThunkApplyArgument,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(argument_destination),
+            generation: HeapGeneration::Old,
+        },
+        argument_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct thunk apply argument write applies");
+
+    assert_eq!(report.fields(), 1);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
+    let EvalThunkKind::Apply { argument_value, .. } = parent_thunk.kind() else {
+        panic!("parent remains an apply thunk");
+    };
+    assert!(argument_value.raw_eq(argument_destination));
+    assert_parallel_payload(&parent_thunk, payload);
+}
+
+#[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_suspended_thunk_captures() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let with_child = heap
@@ -7483,6 +7594,129 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_forced_thunk_cached_
     assert_eq!(report.fields(), 1);
     let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
     assert_forced_apply_thunk_cached_result(&parent_thunk, function, argument, forced_destination);
+}
+
+#[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_payload() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let forced = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("parallel payload thunk allocates");
+    let forced_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("parallel payload destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99)))
+        .expect("parent thunk allocates");
+    let parent_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(4)))
+        .expect("parent destination thunk allocates");
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    publish_parallel_payload(&parent_thunk, forced);
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let forced_request = object_copy_request_for_values(
+        &heap,
+        forced,
+        forced_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        forced_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        gc_address(parent_destination),
+        0,
+        HeapEdgeSource::ThunkParallelPayloadValue,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(forced_destination),
+            generation: HeapGeneration::Old,
+        },
+        forced_request,
+        parent_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
+        .expect("copied parallel payload write applies");
+
+    assert_eq!(report.fields(), 1);
+    let parent_destination_thunk = heap
+        .clone_thunk(parent_destination)
+        .expect("destination parent thunk clones");
+    assert_parallel_payload(&parent_destination_thunk, forced_destination);
+    let parent_thunk = heap
+        .clone_thunk(parent)
+        .expect("source parent thunk still clones");
+    assert_parallel_payload(&parent_thunk, forced);
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_parallel_thunk_payload() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let forced = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("parallel payload thunk allocates");
+    let forced_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("parallel payload destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99)))
+        .expect("parent thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    publish_parallel_payload(&parent_thunk, forced);
+
+    let forced_request = object_copy_request_for_values(
+        &heap,
+        forced,
+        forced_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![forced_request]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("replacement body binds");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("replacement generation writes");
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ThunkParallelPayloadValue,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(forced_destination),
+            generation: HeapGeneration::Old,
+        },
+        forced_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect("direct parallel payload write applies");
+
+    assert_eq!(report.fields(), 1);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
+    assert_parallel_payload(&parent_thunk, forced_destination);
 }
 
 #[test]
@@ -10236,6 +10470,55 @@ fn precise_root_scan_tracks_thunk_state_instead_of_stale_captures() {
             .iter()
             .all(|object| !object.value().raw_eq(captured))
     );
+}
+
+#[test]
+fn precise_root_scan_reports_parallel_thunk_payload_value() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let captured = heap
+        .alloc_string(NixString::from_bytes(b"captured".to_vec()))
+        .expect("captured string allocates");
+    let payload = heap
+        .alloc_string(NixString::from_bytes(b"parallel".to_vec()))
+        .expect("parallel payload string allocates");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, captured).expect("slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("env captures");
+    let thunk = heap
+        .alloc_thunk(
+            EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(9), env)
+                .with_parallel_payload_cell(tree_walk_error(99)),
+        )
+        .expect("thunk allocates");
+    let thunk_record = heap.clone_thunk(thunk).expect("thunk handle clones");
+    publish_parallel_payload(&thunk_record, payload);
+
+    let mut roots = EvalRootSet::new();
+    assert!(
+        roots
+            .try_push_force_continuation(0, thunk)
+            .expect("thunk root records")
+    );
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+
+    let edges = object_for(&scan, thunk).edges();
+    assert_eq!(edges.len(), 2);
+    assert_eq!(
+        edges[0].source(),
+        &HeapEdgeSource::CapturedEnv {
+            owner: CapturedRootOwner::Thunk,
+            frame: 0,
+            slot: 0,
+        }
+    );
+    assert!(edges[0].value().raw_eq(captured));
+    assert_eq!(
+        edges[1].source(),
+        &HeapEdgeSource::ThunkParallelPayloadValue
+    );
+    assert!(edges[1].value().raw_eq(payload));
+    assert!(object_for(&scan, payload).edges().is_empty());
+    assert_eq!(thunk_record.cell().state(), Ok(ThunkState::Suspended));
 }
 
 #[test]

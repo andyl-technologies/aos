@@ -7574,11 +7574,27 @@ nurseries build on the bump arena.
       replay an inline `Value` while preserving the thunk's deferred-work
       metadata and leaving the serial cell untouched. This is only a
       storage/admission boundary: the slot is not public API, the tree-walk
-      allocator does not opt in by default, the precise heap scanner/writeback
-      does not yet cover terminal payloads stored there, the serial
-      `force_value` path still uses `ThunkCell`, no scheduler executes thunk
-      bodies through this slot, and the final lock-free waiter-list and
-      loom/Miri/TSan gates remain open.
+      allocator does not opt in by default, the serial `force_value` path still
+      uses `ThunkCell`, no scheduler executes thunk bodies through this slot,
+      and the final lock-free waiter-list and loom/Miri/TSan gates remain open.
+- [x] Current parallel payload precise-scan/writeback precursor:
+      `EvalHeap` precise scanning now treats a successful terminal
+      `TreeWalkParallelThunkCell` payload as a typed `ThunkParallelPayloadValue`
+      heap edge, alongside the serial suspended-capture and forced-cache edges.
+      Minor-GC heap-field writeback can relocate that heap-backed payload for
+      both copied destination thunks and direct old-object writes while
+      preserving the thunk's serial state, deferred-work metadata, and cloned
+      suspended/terminal parallel payload state. Tests prove scanner
+      reachability for a captured thunk with a heap-backed parallel payload,
+      copied writeback that leaves the source thunk unchanged, direct writeback
+      that updates the live payload, and suspended-field writeback that
+      preserves an existing parallel payload. This is still only the precise
+      heap-slot precursor: failed `TreeWalkError` payloads do not currently own
+      heap `Value`s, live claimed parallel cells are rejected by relocation, the
+      tree-walk allocator still does not opt thunks into this slot by default,
+      serial
+      `force_value` still uses `ThunkCell`, no scheduler executes thunk bodies
+      through this slot, and the loom/Miri/TSan gates remain open.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every

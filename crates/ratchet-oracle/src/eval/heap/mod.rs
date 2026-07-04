@@ -16,7 +16,7 @@ use thiserror::Error;
 use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
-use super::thunk_payload::TreeWalkParallelThunkCell;
+use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
 use super::tree_walk::TreeWalkError;
 use crate::attrs::{AttrError, FlatAttrs};
 use crate::cache::{HotXxh3Hash, ValueHash};
@@ -575,6 +575,9 @@ pub enum EvalHeapError {
     /// Thunk state access failed during precise root scanning.
     #[error("heap root scan thunk error: {0}")]
     Thunk(#[from] ForceError),
+    /// Parallel thunk payload access failed during precise root scanning.
+    #[error("heap root scan parallel thunk payload error: {0}")]
+    ParallelThunkPayload(#[from] ParallelThunkPayloadError),
     /// Precise root scanning overflowed a side table length.
     #[error("heap root scan {table} length overflow")]
     RootScanLengthOverflow {
