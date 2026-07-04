@@ -121,6 +121,29 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
         self.lock_payload().clone()
     }
 
+    /// Returns the terminal payload matching the current terminal state.
+    ///
+    /// Suspended and claimed cells return `Ok(None)`. Forced and failed cells
+    /// must carry the matching payload before the terminal state can be replayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if wait-cell synchronization fails
+    /// or if a terminal state is missing its matching payload.
+    pub(crate) fn checked_terminal_payload(
+        &self,
+    ) -> Result<Option<ParallelThunkTerminalPayload<T, E>>, ParallelThunkPayloadError> {
+        Ok(match self.state()? {
+            ParallelThunkTerminalStatus::Suspended | ParallelThunkTerminalStatus::Claimed => None,
+            ParallelThunkTerminalStatus::Forced => {
+                Some(self.payload_for_terminal(ParallelThunkTerminalState::Forced)?)
+            }
+            ParallelThunkTerminalStatus::Failed => {
+                Some(self.payload_for_terminal(ParallelThunkTerminalState::Failed)?)
+            }
+        })
+    }
+
     /// Returns the forced terminal payload value, if the cell is forced.
     ///
     /// # Errors
@@ -672,6 +695,16 @@ impl TreeWalkParallelThunkCell {
     /// Returns the forced terminal value, if this cell has one.
     pub(crate) fn forced_terminal_value(&self) -> Result<Option<Value>, ParallelThunkPayloadError> {
         self.payload_cell.forced_payload_value()
+    }
+
+    /// Returns the checked terminal evaluator result, if this cell has one.
+    pub(crate) fn checked_terminal_result(
+        &self,
+    ) -> Result<Option<Result<Value, TreeWalkError>>, ParallelThunkPayloadError> {
+        Ok(self
+            .payload_cell
+            .checked_terminal_payload()?
+            .map(ParallelThunkTerminalPayload::into_result))
     }
 
     /// Clones this cell for relocating an owning heap record.

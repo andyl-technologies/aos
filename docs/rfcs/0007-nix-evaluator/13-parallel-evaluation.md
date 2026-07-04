@@ -1043,6 +1043,23 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       errors to waiters, wire GC-poll safepoints, interrupt in-flight work,
       integrate with Nix derivation evaluation, or satisfy the loom/Miri/TSan gate
       (§6) — **P3.5** precursor, `C-12`/`R-4`.
+- [x] Current tree-walk parallel payload failed-replay precursor:
+      With parallel thunk payloads enabled, `TreeWalk::force_value` now checks
+      an admitted `TreeWalkParallelThunkCell` for terminal success or failure
+      before entering the serial force path, then wins or waits on the sidecar
+      claim before any serial body execution on a miss. Successful sidecar hits
+      replay the `Value` as before; failed sidecar hits re-raise the stored
+      `TreeWalkError`; and a serial force error from the sidecar owner publishes
+      a failed sidecar payload before returning so later force attempts replay
+      the same captured error without rerunning the serial body. Tests cover
+      pre-published failed sidecar replay, same-worker claimed-sidecar
+      self-cycle handling, serial division-by-zero publication and replay, and
+      suspended serial `ThunkCell` preservation after failed force. This is
+      still a default-off payload replay precursor only: the serial `ThunkCell`
+      remains the body/state owner after sidecar admission, the live scheduler
+      wait-or-steal force path does not yet execute evaluator thunk bodies, and
+      the scheduler park-token, lock-free waiter-list, GC-poll cancellation, and
+      loom/Miri/TSan gates remain open (§6).
 
 ## References
 
