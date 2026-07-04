@@ -71,6 +71,7 @@ const DEFAULT_SELFTEST_RUNS: usize = 5;
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
 const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
+const SAVE_GUEST_MARKER_CMDLINE_PREFIX: &str = "crucible-guest-marker=";
 const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
     "gate:layer0-determinism",
     "gate:content-address",
@@ -5274,40 +5275,77 @@ fn run_local_double_save_workflow(
     run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum SaveRecordingFixture {
-    #[default]
-    None,
-    PropertyViolation {
-        assertion: crucible::AssertionId,
-    },
-    GuestMarker {
-        marker: crucible::MarkerId,
-    },
+#[derive(Clone, Debug)]
+struct SaveRecordingSources {
+    assertion_evaluator: crucible::HostAssertionEvaluator,
+    assertion_oracle: crucible::BlackBoxHostOracle,
+    emitted_assertions: BTreeSet<crucible::AssertionId>,
+    guest_markers: Vec<SaveGuestMarkerSource>,
+    emitted_guest_markers: Vec<SaveGuestMarkerSource>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SaveGuestMarkerSource {
+    node: crucible::NodeId,
+    marker: crucible::MarkerId,
+}
+
+impl SaveRecordingSources {
+    fn from_scenario_form(scenario_form: &crucible::ScenarioDefForm) -> Self {
+        Self {
+            assertion_evaluator: crucible::HostAssertionEvaluator::new(scenario_form.properties())
+                .with_world_white_box_policies(scenario_form.world()),
+            assertion_oracle: crucible::BlackBoxHostOracle,
+            emitted_assertions: BTreeSet::new(),
+            guest_markers: save_guest_marker_sources(scenario_form),
+            emitted_guest_markers: Vec::new(),
+        }
+    }
+}
+
+fn save_guest_marker_sources(
+    scenario_form: &crucible::ScenarioDefForm,
+) -> Vec<SaveGuestMarkerSource> {
+    scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .filter(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
+        .flat_map(|node| {
+            node.cmdline.split_whitespace().filter_map(|token| {
+                token
+                    .strip_prefix(SAVE_GUEST_MARKER_CMDLINE_PREFIX)
+                    .filter(|marker| !marker.is_empty())
+                    .map(|marker| SaveGuestMarkerSource {
+                        node: node.id.clone(),
+                        marker: crucible::MarkerId::from_name(marker.to_owned()),
+                    })
+            })
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
 struct SaveRecordingLifecycleLoop {
-    fixture: SaveRecordingFixture,
-    marker_node: Option<crucible::NodeId>,
-    fixture_emitted: bool,
+    sources: SaveRecordingSources,
     quanta: u64,
     event_log_events: u64,
+    retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
 }
 
 impl SaveRecordingLifecycleLoop {
-    fn new(fixture: SaveRecordingFixture, marker_node: Option<crucible::NodeId>) -> Self {
+    fn new(sources: SaveRecordingSources) -> Self {
         Self {
-            fixture,
-            marker_node,
-            fixture_emitted: false,
+            sources,
             quanta: 0,
             event_log_events: 0,
+            retained_event_log: Vec::new(),
         }
     }
 
     fn diagnostic_entry(
         &self,
+        sequence: u64,
         frontier: crucible::VirtualTime,
     ) -> crucible::SchedulerEventLogEntry {
         let mut details = BTreeMap::new();
@@ -5316,7 +5354,7 @@ impl SaveRecordingLifecycleLoop {
             crucible::EventAttributeValue::U64(self.quanta),
         );
         crucible::SchedulerEventLogEntry::diagnostic(
-            self.event_log_events,
+            sequence,
             frontier,
             crucible::EventDiagnosticPayload::new(
                 "crucible.cli.save-lifecycle",
@@ -5326,32 +5364,75 @@ impl SaveRecordingLifecycleLoop {
         )
     }
 
-    fn selector_fixture_entry(
-        &self,
+    fn next_event_log_sequence(&mut self) -> u64 {
+        let sequence = self.event_log_events;
+        self.event_log_events = self.event_log_events.saturating_add(1);
+        sequence
+    }
+
+    fn record_entry(
+        &mut self,
+        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
+        entry: crucible::SchedulerEventLogEntry,
+    ) {
+        self.retained_event_log.push(entry.clone());
+        quantum_entries.push(entry);
+    }
+
+    fn record_scenario_guest_markers(
+        &mut self,
         frontier: crucible::VirtualTime,
-    ) -> Option<crucible::SchedulerEventLogEntry> {
-        match &self.fixture {
-            SaveRecordingFixture::None => None,
-            SaveRecordingFixture::PropertyViolation { assertion } => Some(
-                crucible::SchedulerEventLogEntry::assertion_state_observation(
-                    self.event_log_events,
-                    frontier,
-                    assertion.clone(),
-                    crucible::AssertionPhase::Violated,
-                ),
-            ),
-            SaveRecordingFixture::GuestMarker { marker } => {
-                let node = self.marker_node.clone()?;
-                Some(crucible::SchedulerEventLogEntry::guest_marker_observation(
-                    self.event_log_events,
-                    crucible::Icount {
-                        retired: frontier.ticks,
-                    },
-                    node,
-                    marker.clone(),
-                ))
+        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
+    ) {
+        for source in self.sources.guest_markers.clone() {
+            if self.sources.emitted_guest_markers.contains(&source) {
+                continue;
             }
+            self.sources.emitted_guest_markers.push(source.clone());
+            let entry = crucible::SchedulerEventLogEntry::guest_marker_observation(
+                self.next_event_log_sequence(),
+                crucible::Icount {
+                    retired: frontier.ticks,
+                },
+                source.node,
+                source.marker,
+            );
+            self.record_entry(quantum_entries, entry);
         }
+    }
+
+    fn record_scenario_assertion_events(
+        &mut self,
+        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
+    ) -> Result<(), crucible::SchedulerError> {
+        let prefix = crucible::ConditionEventLogPrefix::from_scheduler_event_log_entries(
+            self.retained_event_log.clone(),
+        )
+        .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+            message: format!("save lifecycle could not check scenario event prefix: {error}"),
+        })?;
+        let outcomes = self
+            .sources
+            .assertion_evaluator
+            .observe_prefix(&prefix, &mut self.sources.assertion_oracle);
+        for outcome in outcomes {
+            if outcome.kind != crucible::HostAssertionOutcomeKind::Violated
+                || self.sources.emitted_assertions.contains(&outcome.assertion)
+            {
+                continue;
+            }
+            self.sources
+                .emitted_assertions
+                .insert(outcome.assertion.clone());
+            let entry = crucible::SchedulerEventLogEntry::assertion_state_observation(
+                self.next_event_log_sequence(),
+                outcome.at,
+                outcome.assertion,
+                crucible::AssertionPhase::Violated,
+            );
+            self.record_entry(quantum_entries, entry);
+        }
+        Ok(())
     }
 }
 
@@ -5363,15 +5444,12 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
         let previous = request.configuration.clone();
         self.quanta = self.quanta.saturating_add(1);
         let frontier = crucible::VirtualTime { ticks: self.quanta };
-        let mut event_log_entries = vec![self.diagnostic_entry(frontier)];
-        self.event_log_events = self.event_log_events.saturating_add(1);
-        if !self.fixture_emitted {
-            if let Some(entry) = self.selector_fixture_entry(frontier) {
-                event_log_entries.push(entry);
-                self.event_log_events = self.event_log_events.saturating_add(1);
-            }
-            self.fixture_emitted = true;
-        }
+        let mut event_log_entries = Vec::new();
+        let diagnostic_sequence = self.next_event_log_sequence();
+        let diagnostic = self.diagnostic_entry(diagnostic_sequence, frontier);
+        self.record_entry(&mut event_log_entries, diagnostic);
+        self.record_scenario_guest_markers(frontier, &mut event_log_entries);
+        self.record_scenario_assertion_events(&mut event_log_entries)?;
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: frontier,
             order: Vec::new(),
@@ -5646,24 +5724,8 @@ fn run_local_save_recording_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let fixture = match save_plan.selector.as_ref() {
-        Some(SaveAtSelector::PropertyViolation { assertion }) => {
-            SaveRecordingFixture::PropertyViolation {
-                assertion: crucible::AssertionId::from_name(assertion.clone()),
-            }
-        }
-        Some(SaveAtSelector::Marker { name }) => SaveRecordingFixture::GuestMarker {
-            marker: crucible::MarkerId::from_name(name.clone()),
-        },
-        None => SaveRecordingFixture::None,
-    };
     let scenario_form = save_plan.run_plan.scenario.scenario_form();
-    let marker_node = scenario_form
-        .world()
-        .nodes()
-        .iter()
-        .find(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
-        .map(|node| node.id.clone());
+    let sources = SaveRecordingSources::from_scenario_form(scenario_form);
     let white_box_policies = scenario_form
         .world()
         .nodes()
@@ -5672,7 +5734,7 @@ fn run_local_save_recording_workflow(
         .collect::<BTreeMap<_, _>>();
     let control_plane = LifecycleControlPlane::new("crucible-cli-save", Vec::new(), {
         move |_scenario: &crucible::ScenarioDef, _seed| {
-            SaveRecordingLifecycleLoop::new(fixture.clone(), marker_node.clone())
+            SaveRecordingLifecycleLoop::new(sources.clone())
         }
     })
     .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
@@ -15930,13 +15992,24 @@ finding.0.detail=synthetic signed finding evidence
         file_name: &str,
         white_box: ::crucible::WhiteBoxPolicy,
     ) -> Result<PathBuf, Box<dyn Error>> {
+        let form = marker_selector_scenario_form(white_box)?;
+        let path = temp.path().join(file_name);
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn marker_selector_scenario_form(
+        white_box: ::crucible::WhiteBoxPolicy,
+    ) -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
         let world = ::crucible::World::from_nodes(vec![::crucible::WorldNode {
             id: ::crucible::NodeId {
                 name: String::from("marker-node"),
             },
             arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
             memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
-            cmdline: String::from("crucible-marker-selector=1"),
+            cmdline: String::from(
+                "crucible-marker-selector=1 crucible-guest-marker=phase-two-marker",
+            ),
             ready_point: ::crucible::ReadyPoint::FixedIcount {
                 icount: ::crucible::Icount { retired: 1 },
             },
@@ -15947,23 +16020,20 @@ finding.0.detail=synthetic signed finding evidence
             root_image: None,
             initrd: None,
         }])?;
-        let form = ::crucible::ScenarioDefForm::from_components(
+        Ok(::crucible::ScenarioDefForm::from_components(
             &world,
             &::crucible::Plan::empty(),
             &::crucible::Properties::empty(),
             ::crucible::Seed::from_u64(14),
-        )?;
-        let path = temp.path().join(file_name);
-        fs::write(&path, form.to_canonical_toml()?)?;
-        Ok(path)
+        )?)
     }
 
     fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
         ::crucible::AssertionDef {
             id: ::crucible::AssertionId::from_name(name),
             message: format!("{name} test selector"),
-            property: ::crucible::Property::Sometimes {
-                predicate: ::crucible::Predicate::quiescent(),
+            property: ::crucible::Property::Always {
+                predicate: ::crucible::Predicate::at(::crucible::VirtualTime { ticks: 999 }),
             },
         }
     }
@@ -15997,11 +16067,18 @@ finding.0.detail=synthetic signed finding evidence
     }
 
     fn spawn_save_recording_lifecycle_server(
-        fixture: SaveRecordingFixture,
+        scenario_form: &::crucible::ScenarioDefForm,
     ) -> Result<String, Box<dyn Error>> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
+        let sources = SaveRecordingSources::from_scenario_form(scenario_form);
+        let white_box_policies = scenario_form
+            .world()
+            .nodes()
+            .iter()
+            .map(|node| (node.id.clone(), node.white_box))
+            .collect::<BTreeMap<_, _>>();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -16019,9 +16096,10 @@ finding.0.detail=synthetic signed finding evidence
                     "crucible-cli-save-selector-test-daemon",
                     Vec::new(),
                     move |_scenario: &crucible::ScenarioDef, _seed| {
-                        SaveRecordingLifecycleLoop::new(fixture.clone(), None)
+                        SaveRecordingLifecycleLoop::new(sources.clone())
                     },
-                );
+                )
+                .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
                 let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
             });
         });
@@ -17806,6 +17884,7 @@ finding.0.detail=synthetic signed finding evidence
         assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
         assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
 
+        let property_selector_scenario = write_property_selector_scenario(&temp)?;
         let property_out = temp.path().join("property.crucible-savepoint");
         let property_cli = Cli::parse_from([
             String::from("crucible"),
@@ -17817,7 +17896,7 @@ finding.0.detail=synthetic signed finding evidence
             String::from("--seed"),
             String::from("13"),
             String::from("save"),
-            String::from("builtin:fault-campaign"),
+            property_selector_scenario.display().to_string(),
             String::from("--at"),
             String::from("property"),
             String::from("--property"),
@@ -17833,7 +17912,6 @@ finding.0.detail=synthetic signed finding evidence
         assert!(property_handle.contains("at\tproperty\n"));
         assert!(property_handle.contains("oracle\tfat==thin-passed\n"));
 
-        let property_selector_scenario = write_property_selector_scenario(&temp)?;
         let split_property_out = temp.path().join("split-property.crucible-savepoint");
         let split_property_cli = Cli::parse_from([
             String::from("crucible"),
@@ -17888,6 +17966,34 @@ finding.0.detail=synthetic signed finding evidence
         assert!(marker_handle.contains("label\tmarker-stop\n"));
         assert!(marker_handle.contains("at\tmarker\n"));
         assert!(marker_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let wrong_marker_out = temp.path().join("wrong-marker.crucible-savepoint");
+        let wrong_marker_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("22"),
+            String::from("save"),
+            marker_selector_scenario.display().to_string(),
+            String::from("--at"),
+            String::from("marker"),
+            String::from("--marker"),
+            String::from("compaction-started"),
+            String::from("--label"),
+            String::from("wrong-marker-stop"),
+            String::from("--out"),
+            wrong_marker_out.display().to_string(),
+        ]);
+        let error = dispatch(&wrong_marker_cli)
+            .expect_err("marker save must wait for the scenario-authored marker identity");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("did not fire"));
+        assert!(!wrong_marker_out.exists());
 
         let no_source_marker_scenario = write_marker_selector_without_source_scenario(&temp)?;
         let no_source_marker_out = temp.path().join("no-source-marker.crucible-savepoint");
@@ -18132,10 +18238,8 @@ finding.0.detail=synthetic signed finding evidence
     fn cli_save_workflow_executes_remote_daemon_selector_savepoint() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_property_selector_scenario(&temp)?;
-        let daemon =
-            spawn_save_recording_lifecycle_server(SaveRecordingFixture::PropertyViolation {
-                assertion: crucible::AssertionId::from_name("split-active"),
-            })?;
+        let scenario_form = property_selector_scenario_form()?;
+        let daemon = spawn_save_recording_lifecycle_server(&scenario_form)?;
         let out = temp.path().join("remote-selector.crucible-savepoint");
         let cli = Cli::parse_from([
             String::from("crucible"),
@@ -18159,6 +18263,36 @@ finding.0.detail=synthetic signed finding evidence
         assert!(handle.contains("label\tremote-selector-save\n"));
         assert!(handle.contains("at\tproperty\n"));
         assert!(handle.contains("oracle\tfat==thin-passed\n"));
+
+        let marker_form = marker_selector_scenario_form(::crucible::WhiteBoxPolicy::Enabled)?;
+        let marker_scenario = temp.path().join("remote-marker-selector-scenario.toml");
+        fs::write(&marker_scenario, marker_form.to_canonical_toml()?)?;
+        let marker_daemon = spawn_save_recording_lifecycle_server(&marker_form)?;
+        let marker_out = temp
+            .path()
+            .join("remote-marker-selector.crucible-savepoint");
+        let marker_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            marker_daemon,
+            String::from("--seed"),
+            String::from("22"),
+            String::from("save"),
+            marker_scenario.display().to_string(),
+            String::from("--at"),
+            String::from("marker"),
+            String::from("--marker"),
+            String::from("phase-two-marker"),
+            String::from("--label"),
+            String::from("remote-marker-selector-save"),
+            String::from("--out"),
+            marker_out.display().to_string(),
+        ]);
+        dispatch(&marker_cli)?;
+        let marker_handle = fs::read_to_string(marker_out)?;
+        assert!(marker_handle.contains("label\tremote-marker-selector-save\n"));
+        assert!(marker_handle.contains("at\tmarker\n"));
+        assert!(marker_handle.contains("oracle\tfat==thin-passed\n"));
 
         Ok(())
     }

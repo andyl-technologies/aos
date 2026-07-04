@@ -182,27 +182,27 @@
         needle = "fn wait_for_save_workflow_advanced_paused";
       }
       {
-        label = "selector-driven assertion fixture";
-        needle = "assertion: crucible::AssertionId";
+        label = "scenario assertion evaluator source";
+        needle = "HostAssertionEvaluator::new";
       }
       {
-        label = "selector-driven marker fixture";
-        needle = "marker: crucible::MarkerId";
+        label = "scenario marker source catalog";
+        needle = "SaveGuestMarkerSource";
       }
       {
-        label = "selector-derived marker id";
-        needle = "MarkerId::from_name(name.clone())";
+        label = "scenario marker cmdline source";
+        needle = "crucible-guest-marker=";
       }
       {
-        label = "local-double marker fixture enum";
-        needle = "SaveRecordingFixture::GuestMarker";
+        label = "wrong marker selector rejection";
+        needle = "wrong-marker-stop";
       }
       {
         label = "marker selector predicate";
         needle = "Predicate::guest_marker";
       }
       {
-        label = "marker selector event-log fixture";
+        label = "marker selector event-log source";
         needle = "guest_marker_observation";
       }
       {
