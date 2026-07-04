@@ -573,6 +573,31 @@ fn function_args_records_dynamic_repr_decisions() {
 }
 
 #[test]
+fn codec_attrsets_record_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.fromJSON ''{\"a\":{\"b\":1}}'')
+            (builtins.fromTOML \"a = 1\\n[nested]\\nb = 2\")
+            (builtins.fromTOML \"a = 1979-05-27T07:32:00Z\")
+        ] 0",
+    );
+    let options = TreeWalkOptions::with_parse_toml_timestamps(true);
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("codec attrsets evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 6);
+    assert_eq!(snapshot.flat_decisions, 6);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 6);
+}
+
+#[test]
 fn active_flat_selects_record_slow_select_telemetry() {
     let ir = lower(
         "builtins.deepSeq [
