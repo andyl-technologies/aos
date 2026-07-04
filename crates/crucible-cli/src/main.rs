@@ -435,6 +435,9 @@ struct ReplayArgs {
     /// Compare the replayed canonical log to this file.
     #[arg(long, value_name = "original-log")]
     check: Option<PathBuf>,
+    /// Bisect this artifact against another reproduction artifact.
+    #[arg(long, value_name = "other-artifact")]
+    bisect: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -6640,7 +6643,7 @@ fn verify_compare_artifacts(
     let expected_identity = expected_replay_identity_for_backend(backend);
     verify_replay_identity(&left_artifact.identity, &expected_identity)?;
     verify_replay_identity(&right_artifact.identity, &expected_identity)?;
-    verify_compare_artifact_inputs_match(&left_artifact, &right_artifact)?;
+    verify_compare_artifact_inputs_match("verify --compare", &left_artifact, &right_artifact)?;
     let witnesses = vec![
         verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
         verify_witness_from_artifact(
@@ -6657,24 +6660,25 @@ fn verify_compare_artifacts(
 }
 
 fn verify_compare_artifact_inputs_match(
+    command: &str,
     left: &CliReproductionArtifact,
     right: &CliReproductionArtifact,
 ) -> Result<(), CliError> {
     if left.seed != right.seed {
         return Err(artifact_error(format!(
-            "verify --compare requires matching seeds, got left={} right={}",
+            "{command} requires matching seeds, got left={} right={}",
             left.seed, right.seed
         )));
     }
     if left.scenario.digest != right.scenario.digest {
         return Err(artifact_error(format!(
-            "verify --compare requires matching scenario digests, got left={} right={}",
+            "{command} requires matching scenario digests, got left={} right={}",
             left.scenario.digest, right.scenario.digest
         )));
     }
     if left.scenario.media_type != right.scenario.media_type {
         return Err(artifact_error(format!(
-            "verify --compare requires matching scenario media types, got left={} right={}",
+            "{command} requires matching scenario media types, got left={} right={}",
             left.scenario.media_type, right.scenario.media_type
         )));
     }
@@ -9406,6 +9410,42 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         check.digest
                     );
                 }
+                if let Some(bisect) = &report.bisect {
+                    match &bisect.divergence {
+                        Some(divergence) => {
+                            println!(
+                                "crucible: replay bisect {} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
+                                bisect.other_path.display(),
+                                divergence.mismatch.label(),
+                                divergence
+                                    .first_different_decision
+                                    .map(|decision| decision.to_string())
+                                    .unwrap_or_else(|| String::from("unknown")),
+                                divergence
+                                    .first_different_fingerprint_sample
+                                    .map(|sample| sample.to_string())
+                                    .unwrap_or_else(|| String::from("unknown")),
+                                divergence.first_different_instruction,
+                                divergence.node.as_deref().unwrap_or("unknown"),
+                                divergence.first_different_byte,
+                                divergence.left_state_digest,
+                                divergence.right_state_digest
+                            );
+                        }
+                        None => {
+                            println!(
+                                "crucible: replay bisect {} status=byte-identical digest={}",
+                                bisect.other_path.display(),
+                                bisect.other_digest
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(bisect) = &report.bisect {
+                if let Some(divergence) = &bisect.divergence {
+                    return Err(replay_bisect_error(&report.path, bisect, divergence));
+                }
             }
             Ok(())
         }
@@ -10136,6 +10176,8 @@ fn replay_reproduction_artifact(
 ) -> Result<ReplayArtifactReport, CliError> {
     let bytes = fs::read(&args.artifact)?;
     let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
+    let seed = artifact.seed;
+    let scenario_digest = artifact.scenario.digest.clone();
     let check = if let Some(path) = &args.check {
         let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
         let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
@@ -10159,13 +10201,78 @@ fn replay_reproduction_artifact(
     } else {
         None
     };
+    let bisect = args
+        .bisect
+        .as_ref()
+        .map(|other| replay_bisect_artifacts(cli, other, &artifact, &bytes))
+        .transpose()?;
     Ok(ReplayArtifactReport {
         path: args.artifact.clone(),
         digest: content_address_bytes(&bytes),
-        seed: artifact.seed,
-        scenario_digest: artifact.scenario.digest,
+        seed,
+        scenario_digest,
         check,
+        bisect,
     })
+}
+
+fn replay_bisect_artifacts(
+    cli: &Cli,
+    other_path: &Path,
+    artifact: &CliReproductionArtifact,
+    artifact_bytes: &[u8],
+) -> Result<ReplayBisectionReport, CliError> {
+    let other_bytes = fs::read(other_path)?;
+    let other_artifact = validate_replayable_reproduction_artifact(cli, &other_bytes)?;
+    verify_compare_artifact_inputs_match("replay --bisect", artifact, &other_artifact)?;
+    let mode = VerifyMode::CompareArtifacts {
+        left: PathBuf::from("replay-left"),
+        right: other_path.to_path_buf(),
+    };
+    let reductions = verify_reduction_plans(2, false, &mode);
+    let mut reductions = reductions.into_iter();
+    let left_reduction = reductions
+        .next()
+        .ok_or_else(|| backend_error("replay bisection omitted left reduction"))?;
+    let right_reduction = reductions
+        .next()
+        .ok_or_else(|| backend_error("replay bisection omitted right reduction"))?;
+    let witnesses = vec![
+        verify_witness_from_artifact(left_reduction, artifact.clone(), artifact_bytes.to_vec())?,
+        verify_witness_from_artifact(right_reduction, other_artifact, other_bytes.clone())?,
+    ];
+    let divergence = compare_verify_witnesses(&witnesses);
+    Ok(ReplayBisectionReport {
+        other_path: other_path.to_path_buf(),
+        other_digest: content_address_bytes(&other_bytes),
+        divergence,
+    })
+}
+
+fn replay_bisect_error(
+    left_path: &Path,
+    bisect: &ReplayBisectionReport,
+    divergence: &VerifyDivergenceReport,
+) -> CliError {
+    CliError::ReplayCheck(format!(
+        "replay --bisect divergence between `{}` and `{}`: mismatch={}, first_decision={}, first_fingerprint_sample={}, first_instruction={}, node={}, first_diff_byte={}, left_state={}, right_state={}",
+        left_path.display(),
+        bisect.other_path.display(),
+        divergence.mismatch.label(),
+        divergence
+            .first_different_decision
+            .map(|decision| decision.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence
+            .first_different_fingerprint_sample
+            .map(|sample| sample.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence.first_different_instruction,
+        divergence.node.as_deref().unwrap_or("unknown"),
+        divergence.first_different_byte,
+        divergence.left_state_digest,
+        divergence.right_state_digest
+    ))
 }
 
 fn write_failure_reproduction_artifact(
@@ -10705,7 +10812,7 @@ fn sanitize_slug(slug: &str) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CliReproductionArtifact {
     seed: u64,
     identity: CliIdentity,
@@ -10830,13 +10937,13 @@ struct CliComponent {
     size_bytes: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CliPayload {
     digest: String,
     bytes: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CliDecision {
     sequence: u64,
     virtual_time_ticks: u64,
@@ -10845,13 +10952,13 @@ struct CliDecision {
     payload_digest: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CliFingerprint {
     index: u64,
     digest: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CliSamplingConfig {
     fine: String,
     coarse: String,
@@ -11589,12 +11696,20 @@ struct ReplayArtifactReport {
     seed: u64,
     scenario_digest: String,
     check: Option<ReplayCheckReport>,
+    bisect: Option<ReplayBisectionReport>,
 }
 
 #[derive(Debug)]
 struct ReplayCheckReport {
     path: PathBuf,
     digest: String,
+}
+
+#[derive(Debug)]
+struct ReplayBisectionReport {
+    other_path: PathBuf,
+    other_digest: String,
+    divergence: Option<VerifyDivergenceReport>,
 }
 
 #[derive(Debug)]
@@ -12917,7 +13032,14 @@ mod tests {
                     "--watch",
                 ],
             ),
-            ("replay", &["ARTIFACT", "--check <original-log>"]),
+            (
+                "replay",
+                &[
+                    "ARTIFACT",
+                    "--check <original-log>",
+                    "--bisect <other-artifact>",
+                ],
+            ),
             (
                 "serve",
                 &[
@@ -12946,13 +13068,6 @@ mod tests {
     fn cli_help_surface_rejects_unimplemented_future_flags() {
         for argv in [
             vec!["crucible", "replay", "case.crucible", "--to", "savepoint"],
-            vec![
-                "crucible",
-                "replay",
-                "case.crucible",
-                "--bisect",
-                "other.crucible",
-            ],
             vec!["crucible", "serve", "--unknown-serve-flag"],
         ] {
             assert!(
@@ -17856,6 +17971,7 @@ mod tests {
             &ReplayArgs {
                 artifact: report.path.clone(),
                 check: None,
+                bisect: None,
             },
         )?;
 
@@ -18515,6 +18631,7 @@ finding.0.kind=property
             &ReplayArgs {
                 artifact: path.clone(),
                 check: None,
+                bisect: None,
             },
         )?;
 
@@ -18637,6 +18754,147 @@ finding.0.kind=property
     }
 
     #[test]
+    fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = crucible::partition_recovery_scenario()?
+            .scenario
+            .scenario_def();
+        let entries = canonical_trace_entries();
+        let first_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"replay-bisect-first-fingerprint"),
+        }];
+        let first = verify_reproduction_artifact_bytes(
+            12,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &first_samples,
+        )?;
+        let mut diverged_entries = entries.clone();
+        diverged_entries[1].summary.push_str(" replay-diverged");
+        let second_samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"replay-bisect-second-fingerprint"),
+        }];
+        let second = verify_reproduction_artifact_bytes(
+            12,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &diverged_entries,
+            &second_samples,
+        )?;
+        let left = temp.path().join("left.crucible");
+        let right = temp.path().join("right.crucible");
+        fs::write(&left, first)?;
+        fs::write(&right, second)?;
+
+        let cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--backend",
+            "double",
+            "replay",
+            left.to_str().unwrap_or("."),
+            "--bisect",
+            right.to_str().unwrap_or("."),
+        ]);
+        let Commands::Replay(args) = &cli.command else {
+            panic!("expected replay command");
+        };
+        let report = replay_reproduction_artifact(&cli, args)?;
+        let bisection = report.bisect.as_ref().expect("bisection report");
+        let divergence = bisection
+            .divergence
+            .as_ref()
+            .expect("divergence should be localized");
+
+        assert_eq!(
+            divergence.mismatch,
+            VerifyMismatchKind::CanonicalLogAndFingerprintStream
+        );
+        assert_eq!(divergence.first_different_decision, Some(1));
+        assert_eq!(divergence.first_different_fingerprint_sample, Some(0));
+        assert_eq!(divergence.first_different_instruction, 12);
+        assert_eq!(divergence.node.as_deref(), Some("node-b"));
+        assert!(divergence.first_different_byte > 0);
+
+        let error = match dispatch(&cli) {
+            Ok(_) => panic!("replay --bisect divergence must use the replay-check exit path"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::ReplayCheck(_)));
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("replay --bisect divergence"));
+        assert!(error.to_string().contains("first_decision=1"));
+
+        let seed_mismatch = verify_reproduction_artifact_bytes(
+            13,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &first_samples,
+        )?;
+        let mismatch = temp.path().join("seed-mismatch.crucible");
+        fs::write(&mismatch, seed_mismatch)?;
+        let mismatch_cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--backend",
+            "double",
+            "replay",
+            left.to_str().unwrap_or("."),
+            "--bisect",
+            mismatch.to_str().unwrap_or("."),
+        ]);
+        let Commands::Replay(mismatch_args) = &mismatch_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&mismatch_cli, mismatch_args) {
+            Ok(_) => panic!("replay --bisect must reject mismatched replay inputs"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CliError::Artifact(message)
+                if message.contains("replay --bisect requires matching seeds")
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("case.crucible");
+        let artifact = mock_e2e_reproduction_artifact()?;
+        fs::write(&path, artifact.encode()?)?;
+        let path_arg = path.display().to_string();
+        let cli = Cli::parse_from([
+            "crucible", "--quiet", "replay", &path_arg, "--bisect", &path_arg,
+        ]);
+        let Commands::Replay(args) = &cli.command else {
+            panic!("expected replay command");
+        };
+
+        let report = replay_reproduction_artifact(&cli, args)?;
+
+        assert!(
+            report
+                .bisect
+                .as_ref()
+                .is_some_and(|item| { item.other_path == path && item.divergence.is_none() })
+        );
+        dispatch(&cli)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_replay_rejects_build_identity_mismatch_with_identity_exit() -> Result<(), Box<dyn Error>>
     {
         let temp = TempDir::new()?;
@@ -18651,6 +18909,7 @@ finding.0.kind=property
             &ReplayArgs {
                 artifact: path,
                 check: None,
+                bisect: None,
             },
         ) {
             Ok(_) => panic!("replay must reject artifacts from a different QEMU identity"),
@@ -18690,6 +18949,7 @@ finding.0.kind=property
             &ReplayArgs {
                 artifact: artifact_path,
                 check: None,
+                bisect: None,
             },
         ) {
             Ok(_) => panic!("replay must reject the selected QEMU identity mismatch"),
@@ -18788,6 +19048,7 @@ finding.0.kind=property
             &ReplayArgs {
                 artifact: report.path.clone(),
                 check: None,
+                bisect: None,
             },
         )?;
         assert_eq!(report.digest, artifact.digest()?);
@@ -19035,6 +19296,7 @@ finding.0.kind=property
             &ReplayArgs {
                 artifact: path,
                 check: None,
+                bisect: None,
             },
         ) {
             Ok(_) => panic!("duplicate singleton line must fail CLI replay validation"),
