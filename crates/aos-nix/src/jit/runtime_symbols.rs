@@ -510,12 +510,13 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// Builds process-local JIT address candidates from runtime wrapper metadata.
 ///
 /// Most returned candidates intentionally use current-process Rust helper
-/// callable addresses, not exported native ABI wrappers. `aos_env_get`,
-/// `aos_blackhole_check`, and `aos_force` are sourced from success-path
-/// `ratchet-runtime-ffi` native wrappers. This lets the bridge distinguish
-/// native-wrapper address provenance from the remaining native-export blockers.
-/// The candidates let integration code exercise JIT registration and relocation
-/// plumbing while keeping the actual native call boundary disabled.
+/// callable addresses, not exported native ABI wrappers. `aos_env_get` and the
+/// `aos_blackhole_check`, `aos_force`, and `aos_force_deep` forcing helpers are
+/// sourced from success-path `ratchet-runtime-ffi` native wrappers. This lets
+/// the bridge distinguish native-wrapper address provenance from the remaining
+/// native-export blockers. The candidates let integration code exercise JIT
+/// registration and relocation plumbing while keeping the actual native call
+/// boundary disabled.
 ///
 /// # Errors
 ///
@@ -525,9 +526,9 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// binding violates the non-null address invariant before it reaches the JIT
 /// registration metadata. Returns
 /// [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
-/// if an `aos_env_get`, `aos_blackhole_check`, or `aos_force` runtime-FFI
-/// wrapper binding violates the non-null address invariant before it reaches
-/// the JIT registration metadata.
+/// if an `aos_env_get`, `aos_blackhole_check`, `aos_force`, or
+/// `aos_force_deep` runtime-FFI wrapper binding violates the non-null address
+/// invariant before it reaches the JIT registration metadata.
 pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightResult {
     let oracle_preflight = runtime_symbol_rust_callable_preflight()?;
     let env_native_wrappers = runtime_env_native_wrappers_by_symbol();

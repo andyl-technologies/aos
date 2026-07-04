@@ -4,7 +4,9 @@
 //! signatures. This module supplies the first success-path wrappers for that ABI:
 //! `aos_blackhole_check` returns for representation-valid non-thunks, and
 //! `aos_force` returns already-WHNF values by validated tag inspection.
-//! Malformed payloads, thunk-protocol values, and blackhole-protocol values
+//! `aos_force_deep` returns only valid WHNF leaves whose tags do not require
+//! recursive list or attrset traversal. Malformed payloads, thunk-protocol
+//! values, blackhole-protocol values, and deep-force container traversal paths
 //! abort until runtime-context decoding, force-root binding, blackhole handling,
 //! force-cache integration, and trap transfer exist. Callers must still pass a
 //! Rust-valid [`Value`]; an invalid tag discriminant is undefined behavior
@@ -16,7 +18,7 @@ use ratchet_oracle::{
     runtime::forcing::{
         RuntimeForcingAbiSignature, RuntimeForcingEntryPoint, RuntimeForcingNativeExportBlocker,
     },
-    value::Value,
+    value::{Value, ValueTag},
 };
 
 /// Native C ABI function pointer shape for `aos_blackhole_check`.
@@ -35,21 +37,22 @@ use ratchet_oracle::{
 /// aborts thunk values before dereferencing `_rt` or the thunk payload.
 pub type RuntimeBlackholeCheckNativeFn = unsafe extern "C" fn(*mut c_void, Value);
 
-/// Native C ABI function pointer shape for `aos_force`.
+/// Native C ABI function pointer shape for value-returning forcing helpers.
 ///
 /// The function returns a by-value [`Value`] and transfers no error state. It
 /// aborts instead of unwinding if a valid [`Value`] carries a malformed payload
-/// or must enter the thunk protocol; final evaluator runtime-context decoding
-/// and trap/error transfer remain future work.
+/// or must enter the thunk or deep-force traversal protocols; final evaluator
+/// runtime-context decoding and trap/error transfer remain future work.
 ///
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
-/// documented on [`aos_force`]. The value argument must be a Rust-valid
-/// [`Value`] with a valid tag discriminant. Any returned heap value must carry a
-/// live evaluator-owned heap payload for the value kind. Future thunk-protocol
-/// forcing will require a valid runtime pointer, even though the current wrapper
-/// aborts thunk values before dereferencing `_rt` or the thunk payload.
+/// documented on the wrapper being called. The value argument must be a
+/// Rust-valid [`Value`] with a valid tag discriminant. Any returned heap value
+/// must carry a live evaluator-owned heap payload for the value kind. Future
+/// thunk-protocol forcing and deep-force traversal will require a valid runtime
+/// pointer, even though the current wrappers abort those paths before
+/// dereferencing `_rt` or heap payloads.
 pub type RuntimeForceNativeFn = unsafe extern "C" fn(*mut c_void, Value) -> Value;
 
 const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
@@ -59,6 +62,14 @@ const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlo
 ];
 
 const FORCE_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
+    RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+    RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
+    RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+    RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
+    RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+];
+
+const FORCE_DEEP_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
     RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
     RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
@@ -117,12 +128,46 @@ pub unsafe extern "C" fn aos_force(_rt: *mut c_void, value: Value) -> Value {
     }
 }
 
+/// Deep-forces an already-deep WHNF leaf through an unmangled frozen native ABI body.
+///
+/// This wrapper is the success-path C ABI body for `aos_force_deep`. It accepts
+/// the frozen runtime-context pointer plus a by-value [`Value`], returns
+/// immediately when the value has a valid payload, is already weak head normal
+/// form, and is not a list or attrset, and aborts for malformed payloads,
+/// thunk-tagged values, lists, and attrsets until recursive evaluator
+/// deep-force traversal is bound to native runtime contexts.
+///
+/// # Safety
+///
+/// `value` must be a Rust-valid [`Value`] with a valid tag discriminant before
+/// crossing this ABI boundary. Any heap payload returned from the leaf fast path
+/// must point at a live evaluator-owned heap object for the value kind; this
+/// wrapper only validates representation-level payload invariants. The current
+/// thunk, list, and attrset paths abort before decoding `_rt` or dereferencing
+/// heap payloads. The caller must also ensure the host ABI used to call this
+/// function matches the frozen `aos_force_deep` runtime signature.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aos_force_deep(_rt: *mut c_void, value: Value) -> Value {
+    if value_is_deep_force_leaf(value) {
+        value
+    } else {
+        process::abort()
+    }
+}
+
 /// Returns metadata for exported forcing wrappers in symbol order.
 pub fn runtime_forcing_native_wrapper_bindings() -> Vec<RuntimeForcingNativeWrapperBinding> {
     vec![
         RuntimeForcingNativeWrapperBinding::aos_blackhole_check(),
         RuntimeForcingNativeWrapperBinding::aos_force(),
+        RuntimeForcingNativeWrapperBinding::aos_force_deep(),
     ]
+}
+
+fn value_is_deep_force_leaf(value: Value) -> bool {
+    value.validate_payload().is_ok()
+        && value.is_whnf()
+        && !matches!(value.tag(), ValueTag::List | ValueTag::Attrs)
 }
 
 /// Process-local address metadata for one forcing native wrapper.
@@ -154,6 +199,8 @@ pub enum RuntimeForcingNativeWrapperFunction {
     BlackholeCheck(RuntimeBlackholeCheckNativeFn),
     /// The `aos_force` value-returning wrapper.
     ForceValue(RuntimeForceNativeFn),
+    /// The `aos_force_deep` value-returning wrapper.
+    ForceDeepValue(RuntimeForceNativeFn),
 }
 
 /// Metadata for one success-path forcing native wrapper.
@@ -185,6 +232,17 @@ impl RuntimeForcingNativeWrapperBinding {
                 aos_force as RuntimeForceNativeFn as *mut c_void,
             ),
             remaining_export_blockers: FORCE_REMAINING_EXPORT_BLOCKERS,
+        }
+    }
+
+    fn aos_force_deep() -> Self {
+        Self {
+            entrypoint: RuntimeForcingEntryPoint::AosForceDeep,
+            function: RuntimeForcingNativeWrapperFunction::ForceDeepValue(aos_force_deep),
+            address: RuntimeForcingNativeWrapperAddress::new(
+                aos_force_deep as RuntimeForceNativeFn as *mut c_void,
+            ),
+            remaining_export_blockers: FORCE_DEEP_REMAINING_EXPORT_BLOCKERS,
         }
     }
 
@@ -233,14 +291,25 @@ mod tests {
 
     use super::*;
     use ratchet_oracle::{
+        attrs::FlatAttrs,
         compile::IrId,
         eval::{EvalHeap, EvalThunk},
+        list::NixList,
+        string::NixString,
         value::ValueTag,
     };
 
     const MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_force_native_wrapper_aborts_malformed_payload_child";
     const THUNK_ABORT_CHILD: &str = "force::tests::aos_force_native_wrapper_aborts_thunk_child";
+    const FORCE_DEEP_MALFORMED_PAYLOAD_ABORT_CHILD: &str =
+        "force::tests::aos_force_deep_native_wrapper_aborts_malformed_payload_child";
+    const FORCE_DEEP_THUNK_ABORT_CHILD: &str =
+        "force::tests::aos_force_deep_native_wrapper_aborts_thunk_child";
+    const FORCE_DEEP_LIST_ABORT_CHILD: &str =
+        "force::tests::aos_force_deep_native_wrapper_aborts_lists_child";
+    const FORCE_DEEP_ATTRS_ABORT_CHILD: &str =
+        "force::tests::aos_force_deep_native_wrapper_aborts_attrs_child";
     const BLACKHOLE_MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_blackhole_check_native_wrapper_aborts_malformed_payload_child";
     const BLACKHOLE_THUNK_ABORT_CHILD: &str =
@@ -256,7 +325,7 @@ mod tests {
     fn force_native_wrapper_binding_preserves_symbol_abi_and_address() {
         let bindings = runtime_forcing_native_wrapper_bindings();
 
-        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings.len(), 3);
         let blackhole = bindings[0];
         assert_eq!(
             blackhole.entrypoint(),
@@ -319,6 +388,40 @@ mod tests {
             .as_slice()
         );
         assert!(!force.is_export_ready());
+
+        let force_deep = bindings[2];
+        assert_eq!(
+            force_deep.entrypoint(),
+            RuntimeForcingEntryPoint::AosForceDeep
+        );
+        assert_eq!(force_deep.symbol_name(), "aos_force_deep");
+        assert_eq!(
+            force_deep.abi_signature(),
+            RuntimeForcingEntryPoint::AosForceDeep.abi_signature()
+        );
+        assert!(matches!(
+            force_deep.function(),
+            RuntimeForcingNativeWrapperFunction::ForceDeepValue(function)
+                if function as RuntimeForceNativeFn as *mut c_void
+                    == aos_force_deep as RuntimeForceNativeFn as *mut c_void
+        ));
+        assert_eq!(
+            force_deep.address().as_ptr(),
+            aos_force_deep as RuntimeForceNativeFn as *mut c_void
+        );
+        assert!(force_deep.address().is_non_null());
+        assert_eq!(
+            force_deep.remaining_export_blockers(),
+            [
+                RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
+                RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
+        );
+        assert!(!force_deep.is_export_ready());
     }
 
     #[test]
@@ -344,6 +447,31 @@ mod tests {
     }
 
     #[test]
+    fn aos_force_deep_native_wrapper_returns_deep_force_leaf_values() {
+        let rt = std::ptr::null_mut();
+        let expected = Value::null();
+
+        // SAFETY: The current wrapper fast path does not dereference `rt`, and
+        // the value is already a non-container WHNF leaf.
+        let actual = unsafe { aos_force_deep(rt, expected) };
+
+        assert!(actual.raw_eq(expected));
+    }
+
+    #[test]
+    fn aos_force_deep_native_wrapper_returns_heap_leaf_values() {
+        let rt = std::ptr::null_mut();
+        let (_heap, heap_expected) = allocated_string_value();
+
+        // SAFETY: The current wrapper fast path does not dereference `rt`, and
+        // the value is already a non-container WHNF heap leaf. The heap remains
+        // alive while the by-value wrapper result is compared.
+        let heap_actual = unsafe { aos_force_deep(rt, heap_expected) };
+
+        assert!(heap_actual.raw_eq(heap_expected));
+    }
+
+    #[test]
     fn force_native_wrapper_binding_function_returns_whnf_values() {
         let binding = runtime_forcing_native_wrapper_bindings()
             .into_iter()
@@ -360,6 +488,26 @@ mod tests {
         let actual = unsafe { function(rt, expected) };
 
         assert!(actual.raw_eq(expected));
+    }
+
+    #[test]
+    fn force_deep_native_wrapper_binding_function_returns_leaf_values() {
+        let binding = runtime_forcing_native_wrapper_bindings()
+            .into_iter()
+            .find(|binding| binding.entrypoint() == RuntimeForcingEntryPoint::AosForceDeep)
+            .expect("force-deep wrapper binding exists");
+        let rt = std::ptr::null_mut();
+        let deep_expected = Value::bool(true);
+        let RuntimeForcingNativeWrapperFunction::ForceDeepValue(function) = binding.function()
+        else {
+            panic!("aos_force_deep binding must carry a force-deep-value function");
+        };
+
+        // SAFETY: The current wrapper fast path does not dereference `rt`, and
+        // the value is already a non-container WHNF leaf.
+        let deep_actual = unsafe { function(rt, deep_expected) };
+
+        assert!(deep_actual.raw_eq(deep_expected));
     }
 
     #[test]
@@ -388,6 +536,26 @@ mod tests {
     #[test]
     fn aos_force_native_wrapper_aborts_thunks() {
         assert_child_process_aborts(THUNK_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_force_deep_native_wrapper_aborts_malformed_payloads() {
+        assert_child_process_aborts(FORCE_DEEP_MALFORMED_PAYLOAD_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_force_deep_native_wrapper_aborts_thunks() {
+        assert_child_process_aborts(FORCE_DEEP_THUNK_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_force_deep_native_wrapper_aborts_lists() {
+        assert_child_process_aborts(FORCE_DEEP_LIST_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_force_deep_native_wrapper_aborts_attrs() {
+        assert_child_process_aborts(FORCE_DEEP_ATTRS_ABORT_CHILD);
     }
 
     #[test]
@@ -421,6 +589,53 @@ mod tests {
         // wrapper aborts thunk values before decoding `rt` or dereferencing the
         // thunk payload.
         let _ = unsafe { aos_force(rt, thunk) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_force_deep_native_wrapper_aborts_malformed_payload_child() {
+        let rt = std::ptr::null_mut();
+        let malformed = malformed_bool_value();
+
+        // SAFETY: `malformed` has a valid tag discriminant and no heap payload;
+        // its invalid bool payload is the abort behavior under test.
+        let _ = unsafe { aos_force_deep(rt, malformed) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_force_deep_native_wrapper_aborts_thunk_child() {
+        let rt = std::ptr::null_mut();
+        let (_heap, thunk) = allocated_thunk_value();
+
+        // SAFETY: `thunk` is a valid evaluator-owned thunk value. The current
+        // wrapper aborts thunk values before decoding `rt` or dereferencing the
+        // thunk payload.
+        let _ = unsafe { aos_force_deep(rt, thunk) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_force_deep_native_wrapper_aborts_lists_child() {
+        let rt = std::ptr::null_mut();
+        let (_heap, list) = allocated_list_value();
+
+        // SAFETY: `list` is a valid evaluator-owned list value. The current
+        // wrapper aborts list values before decoding `rt` or dereferencing the
+        // list payload for recursive deep-force traversal.
+        let _ = unsafe { aos_force_deep(rt, list) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_force_deep_native_wrapper_aborts_attrs_child() {
+        let rt = std::ptr::null_mut();
+        let (_heap, attrs) = allocated_attrs_value();
+
+        // SAFETY: `attrs` is a valid evaluator-owned attrset value. The current
+        // wrapper aborts attrset values before decoding `rt` or dereferencing
+        // the attrset payload for recursive deep-force traversal.
+        let _ = unsafe { aos_force_deep(rt, attrs) };
     }
 
     #[test]
@@ -463,6 +678,30 @@ mod tests {
             .alloc_thunk(EvalThunk::new(IrId::new(1)))
             .expect("test thunk allocates");
         (heap, thunk)
+    }
+
+    fn allocated_list_value() -> (EvalHeap, Value) {
+        let mut heap = EvalHeap::new();
+        let list = heap
+            .alloc_list(NixList::empty())
+            .expect("test list allocates");
+        (heap, list)
+    }
+
+    fn allocated_attrs_value() -> (EvalHeap, Value) {
+        let mut heap = EvalHeap::new();
+        let attrs = heap
+            .alloc_attrs(0, FlatAttrs::empty())
+            .expect("test attrset allocates");
+        (heap, attrs)
+    }
+
+    fn allocated_string_value() -> (EvalHeap, Value) {
+        let mut heap = EvalHeap::new();
+        let string = heap
+            .alloc_string(NixString::from_bytes(b"force-deep-leaf".to_vec()))
+            .expect("test string allocates");
+        (heap, string)
     }
 
     fn assert_child_process_aborts(test_name: &str) {

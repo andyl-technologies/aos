@@ -22,8 +22,9 @@ const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic", "aos_update"];
 const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force", "aos_force_deep"];
-const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force"];
-const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &["aos_force_deep"];
+const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] =
+    &["aos_blackhole_check", "aos_force", "aos_force_deep"];
+const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &[];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]
@@ -125,6 +126,31 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
             })
     );
     assert!(preflight.missing_binding_for("aos_force").is_none());
+    let force_deep = preflight
+        .address_candidate_for("aos_force_deep")
+        .expect("force-deep helper has a native-wrapper address candidate");
+    assert_eq!(
+        force_deep.kind(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+    );
+    assert_eq!(
+        force_deep.address().as_nonzero_usize().get(),
+        force_deep_native_wrapper_address()
+    );
+    assert_ne!(
+        force_deep.address().as_nonzero_usize().get(),
+        force_deep_rust_callable_address()
+    );
+    assert!(
+        preflight
+            .address_provenance_for_symbol("aos_force_deep")
+            .is_some_and(|provenance| {
+                provenance.is_runtime_ffi_native_wrapper()
+                    && provenance.kind()
+                        == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+            })
+    );
+    assert!(preflight.missing_binding_for("aos_force_deep").is_none());
     let runtime_ffi_symbols = preflight
         .address_provenance()
         .iter()
@@ -133,7 +159,12 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
         .collect::<Vec<_>>();
     assert_eq!(
         runtime_ffi_symbols,
-        ["aos_blackhole_check", "aos_env_get", "aos_force"]
+        [
+            "aos_blackhole_check",
+            "aos_env_get",
+            "aos_force",
+            "aos_force_deep"
+        ]
     );
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
         let attr_access = preflight
@@ -472,6 +503,11 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(
+        candidates
+            .address_provenance_for_symbol("aos_force_deep")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
         registration
             .address_provenance_gap_for_symbol("aos_env_get")
             .is_none()
@@ -653,6 +689,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
             .address_provenance_for_symbol("aos_blackhole_check")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_force_deep")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             preflight
@@ -767,6 +809,15 @@ fn force_native_wrapper_address() -> usize {
         .as_ptr() as usize
 }
 
+fn force_deep_native_wrapper_address() -> usize {
+    runtime_forcing_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == "aos_force_deep")
+        .expect("runtime FFI force-deep wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
 fn blackhole_native_wrapper_address() -> usize {
     runtime_forcing_native_wrapper_bindings()
         .into_iter()
@@ -820,5 +871,20 @@ fn force_rust_callable_address() -> usize {
     match binding {
         RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr() as usize,
         _ => panic!("aos_force is a forcing helper"),
+    }
+}
+
+fn force_deep_rust_callable_address() -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_force_deep")
+        .expect("oracle force-deep Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr() as usize,
+        _ => panic!("aos_force_deep is a forcing helper"),
     }
 }

@@ -153,12 +153,34 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_force(_rt: *mut c_void, value: Value) -> Value {"
     );
+    const FORCE_DEEP_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_force_deep(_rt: *mut c_void, value: Value) -> Value {"
+    );
     const DIRECT_BLACKHOLE_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, value) };");
     const DIRECT_FORCE_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_force(rt, expected) };");
+    const DIRECT_FORCE_DEEP_TEST_CALL_LINE: &str = concat!(
+        "let actual = ",
+        "uns",
+        "afe { aos_force_deep(rt, expected) };"
+    );
+    const DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE: &str = concat!(
+        "let heap_actual = ",
+        "uns",
+        "afe { aos_force_deep(rt, heap_expected) };"
+    );
     const FORCE_BINDING_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { function(rt, expected) };");
+    const FORCE_DEEP_BINDING_TEST_CALL_LINE: &str = concat!(
+        "let deep_actual = ",
+        "uns",
+        "afe { function(rt, deep_expected) };"
+    );
     const BLACKHOLE_BINDING_TEST_CALL_LINE: &str = concat!("uns", "afe { function(rt, value) };");
     const FORCE_MALFORMED_VALUE_TRANSMUTE_LINE: &str = concat!(
         "uns",
@@ -168,6 +190,14 @@ mod tests {
         concat!("let _ = ", "uns", "afe { aos_force(rt, malformed) };");
     const FORCE_THUNK_ABORT_TEST_CALL_LINE: &str =
         concat!("let _ = ", "uns", "afe { aos_force(rt, thunk) };");
+    const FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, malformed) };");
+    const FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, thunk) };");
+    const FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, list) };");
+    const FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, attrs) };");
     const BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, malformed) };");
     const BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE: &str =
@@ -318,13 +348,21 @@ mod tests {
                 || trimmed == FORCE_EXPORT_ATTR_LINE
                 || trimmed == BLACKHOLE_FN_LINE
                 || trimmed == FORCE_FN_LINE
+                || trimmed == FORCE_DEEP_FN_LINE
                 || trimmed == DIRECT_BLACKHOLE_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_TEST_CALL_LINE
+                || trimmed == DIRECT_FORCE_DEEP_TEST_CALL_LINE
+                || trimmed == DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE
                 || trimmed == FORCE_BINDING_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_BINDING_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_BINDING_TEST_CALL_LINE
                 || trimmed == FORCE_MALFORMED_VALUE_TRANSMUTE_LINE
                 || trimmed == FORCE_MALFORMED_ABORT_TEST_CALL_LINE
                 || trimmed == FORCE_THUNK_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
@@ -332,6 +370,7 @@ mod tests {
                 || trimmed == FORCE_FN_TYPE_LINE
                 || trimmed == BLACKHOLE_FN_LINE
                 || trimmed == FORCE_FN_LINE
+                || trimmed == FORCE_DEEP_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
         } else {
@@ -641,7 +680,7 @@ mod unchecked_cfg;
         );
         assert_eq!(
             trimmed_line_occurrences(&force, FORCE_EXPORT_ATTR_LINE),
-            2,
+            3,
             "force native wrapper export attributes must stay reviewed"
         );
         assert_eq!(
@@ -655,6 +694,11 @@ mod unchecked_cfg;
             "aos_force native wrapper must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_FN_LINE),
+            1,
+            "aos_force_deep native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&force, DIRECT_BLACKHOLE_TEST_CALL_LINE),
             1,
             "direct test call of aos_blackhole_check must stay singly reviewed"
@@ -665,9 +709,24 @@ mod unchecked_cfg;
             "direct test call of aos_force must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_FORCE_DEEP_TEST_CALL_LINE),
+            1,
+            "direct test call of aos_force_deep must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE),
+            1,
+            "direct heap-leaf test call of aos_force_deep must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&force, FORCE_BINDING_TEST_CALL_LINE),
             1,
             "force metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_BINDING_TEST_CALL_LINE),
+            1,
+            "force-deep metadata function-pointer test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, BLACKHOLE_BINDING_TEST_CALL_LINE),
@@ -688,6 +747,26 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&force, FORCE_THUNK_ABORT_TEST_CALL_LINE),
             1,
             "thunk abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE),
+            1,
+            "force-deep malformed payload abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE),
+            1,
+            "force-deep thunk abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE),
+            1,
+            "force-deep list abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE),
+            1,
+            "force-deep attrset abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE),
@@ -741,8 +820,23 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
+            DIRECT_FORCE_DEEP_TEST_CALL_LINE,
+            "direct force-deep wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE,
+            "direct force-deep heap-leaf wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
             FORCE_BINDING_TEST_CALL_LINE,
             "force metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_DEEP_BINDING_TEST_CALL_LINE,
+            "force-deep metadata function-pointer test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -763,6 +857,26 @@ mod unchecked_cfg;
             &force_lines,
             FORCE_THUNK_ABORT_TEST_CALL_LINE,
             "thunk abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE,
+            "force-deep malformed payload abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE,
+            "force-deep thunk abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE,
+            "force-deep list abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE,
+            "force-deep attrset abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -813,6 +927,11 @@ mod unchecked_cfg;
             &force_lines,
             FORCE_FN_LINE,
             "public force native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &force_lines,
+            FORCE_DEEP_FN_LINE,
+            "public force-deep native wrapper must document # Safety",
         );
     }
 
