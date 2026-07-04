@@ -1162,7 +1162,8 @@ branch on the verdict without parsing output:
   and an explicit resolution context admits symbolic coverage and
   virtual/symbolic memory leaves only when their host resolutions are supplied;
   terminal quiescence evidence on those bundles admits retained
-  after-quiescence violations over quiescent predicates.
+  after-quiescence violations over quiescent predicates and terminal
+  `sometimes` violations over retained-log predicates.
   The default CLI path intentionally excludes absence-based existential/liveness
   failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,

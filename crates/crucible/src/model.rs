@@ -19063,9 +19063,10 @@ impl SearchFailureOracle {
     /// retained-log boundary: every returned [`SearchRetainedLogAssertionEvidence`]
     /// must contain the exact retained log for that configuration and any
     /// host-resolution facts that were valid when the log was captured.
-    /// Terminal scheduler-quiescence evidence is used only for retained
-    /// `after-quiescence` assertions; it does not make quiescence predicates
-    /// admissible for prefix or reachability properties.
+    /// Terminal scheduler-quiescence evidence is used for retained
+    /// `after-quiescence` assertions and terminal retained `sometimes`
+    /// violations only when it proves quiescence; it does not make quiescence
+    /// predicates admissible for prefix or reachability properties.
     ///
     /// # Errors
     ///
@@ -24233,7 +24234,7 @@ fn search_assertion_failure_fingerprint_from_retained_log(
                 outcome,
                 SearchAssertionPredicateScope::RetainedLog,
                 Some(resolutions),
-                terminal_quiescence.is_some(),
+                terminal_quiescence.is_some_and(SchedulerQuiescence::is_quiescent),
             )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
@@ -24269,17 +24270,22 @@ fn prefix_safe_search_assertion_failure(
     outcome: &HostAssertionOutcome,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
-    terminal_quiescence: bool,
+    terminal_quiescent: bool,
 ) -> bool {
+    let terminal_complete_retained_quantifier = predicate_scope
+        == SearchAssertionPredicateScope::RetainedLog
+        && terminal_quiescent
+        && matches!(
+            outcome.quantifier,
+            AssertionQuantifierKind::AfterQuiescence | AssertionQuantifierKind::Sometimes
+        );
     let supported_quantifier = matches!(
         outcome.quantifier,
         AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
-    ) || (predicate_scope == SearchAssertionPredicateScope::RetainedLog
-        && terminal_quiescence
-        && outcome.quantifier == AssertionQuantifierKind::AfterQuiescence);
+    ) || terminal_complete_retained_quantifier;
     let allow_terminal_quiescence_predicates = predicate_scope
         == SearchAssertionPredicateScope::RetainedLog
-        && terminal_quiescence
+        && terminal_quiescent
         && outcome.quantifier == AssertionQuantifierKind::AfterQuiescence;
     outcome.kind == HostAssertionOutcomeKind::Violated
         && supported_quantifier
