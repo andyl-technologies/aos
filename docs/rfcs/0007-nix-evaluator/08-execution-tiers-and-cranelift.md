@@ -1549,6 +1549,17 @@ harness, never cut for scope.
       This remains a harness gate only: no evaluator heap thunk is mutated, no
       code pointer is cast or called, and no registered helper address is
       dereferenced or called.
+- [x] Current no-publish literal native differential precursor:
+      `aos_nix::jit::nix_jit_literal_native_differential_for_ir_root()` lowers
+      a supported no-import literal Core-IR root, calls the reviewed native
+      thunk path while retaining Cranelift module ownership, and compares the
+      returned raw `Value` bits with the safe tier-0 literal value projection.
+      Tests pin direct scalar literal roots, a direct thunk-allocation wrapper
+      around a boolean literal, module ownership/source metadata, and unsupported-root
+      rejection before native invocation. This is not the full differential
+      harness: it does not publish evaluator thunks, perform atomic thunk-state
+      CAS, call registered runtime helpers, execute closure graphs, or prove
+      `.drv` output parity.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

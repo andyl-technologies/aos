@@ -5,7 +5,9 @@
 //! crate. The addresses projected here are process-local Rust callable helper
 //! addresses. They are useful for JIT registration preflights and relocation
 //! plumbing tests, but they are not exported C ABI wrappers and must not be
-//! called from finalized native code.
+//! called from finalized native code. The separate literal conformance
+//! precursor uses `ratchet-jit`'s reviewed no-import thunk-call path only, so it
+//! does not dereference or call those helper addresses.
 
 use ratchet_core::{IrArena, IrId};
 use ratchet_jit::{
@@ -22,9 +24,12 @@ mod runtime_symbols;
 mod thunk_install;
 
 pub use conformance::{
-    NixJitTier1ConformanceGap, NixJitTier1ConformanceReadiness,
-    NixJitTier1ConformanceReadinessError, NixJitTier1ConformanceReadinessResult,
+    NixJitLiteralNativeDifferential, NixJitLiteralNativeDifferentialError,
+    NixJitLiteralNativeDifferentialResult, NixJitTier1ConformanceGap,
+    NixJitTier1ConformanceReadiness, NixJitTier1ConformanceReadinessError,
+    NixJitTier1ConformanceReadinessResult,
     nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
+    nix_jit_literal_native_differential_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_ir_root,
 };
 pub use runtime_symbols::{

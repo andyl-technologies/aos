@@ -2,11 +2,16 @@
 //!
 //! The full Phase-6 gate is byte-for-byte equivalence between tier-1 execution
 //! and the tier-0 oracle across a closure. This module records the current safe
-//! prerequisite state for one candidate thunk before any native execution is
-//! trusted by the harness.
+//! prerequisite state for one candidate thunk, plus the first literal-only
+//! native differential sample that keeps evaluator thunk publication disabled.
 
-use ratchet_core::{IrArena, IrId};
-use ratchet_jit::{JitTieredCodeSlot, TierUpDemandHint, TierUpPolicy};
+use ratchet_core::{IrArena, IrData, IrId, IrKind, IrNode};
+use ratchet_jit::{
+    JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation, JitLowerError,
+    JitTieredCodeSlot, TierUpDemandHint, TierUpPolicy,
+    jit_cranelift_native_thunk_call_for_artifact, lower_constant_ir_thunk_body_artifact,
+};
+use ratchet_value::value::Value;
 use thiserror::Error;
 
 use super::{
@@ -65,6 +70,64 @@ pub struct NixJitTier1ConformanceReadiness {
     runtime_symbol_registration: NixJitRuntimeSymbolRegistrationPreflight,
     thunk_install_readiness: NixJitThunkInstallReadiness,
     gaps: Vec<NixJitTier1ConformanceGap>,
+}
+
+/// Result of comparing one literal native thunk result against the safe value projection.
+///
+/// This value owns the native invocation so the backing Cranelift module remains
+/// alive. It is deliberately narrower than the future differential harness: it
+/// accepts only literal Core-IR roots supported by the current no-import
+/// lowerer, calls the reviewed native thunk path, and compares the returned
+/// representation-level [`Value`] with the same literal value constructed by
+/// the safe tier-0 side.
+pub struct NixJitLiteralNativeDifferential {
+    root: IrId,
+    oracle_value: Value,
+    native_invocation: JitCraneliftNativeThunkInvocation,
+}
+
+impl NixJitLiteralNativeDifferential {
+    fn new(
+        root: IrId,
+        oracle_value: Value,
+        native_invocation: JitCraneliftNativeThunkInvocation,
+    ) -> Self {
+        Self {
+            root,
+            oracle_value,
+            native_invocation,
+        }
+    }
+
+    /// Returns the Core IR root compared by this differential sample.
+    pub const fn root(&self) -> IrId {
+        self.root
+    }
+
+    /// Returns the safe literal value used as the oracle side of the comparison.
+    pub const fn oracle_value(&self) -> Value {
+        self.oracle_value
+    }
+
+    /// Returns the native thunk value returned by the no-import JIT call path.
+    pub const fn native_value(&self) -> Value {
+        self.native_invocation.value()
+    }
+
+    /// Returns the native invocation that owns the backing Cranelift module.
+    pub const fn native_invocation(&self) -> &JitCraneliftNativeThunkInvocation {
+        &self.native_invocation
+    }
+
+    /// Returns true when native and oracle values match at the representation level.
+    pub const fn values_match(&self) -> bool {
+        self.native_value().raw_eq(self.oracle_value)
+    }
+
+    /// Returns true because the invocation owns the module backing the call target.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.native_invocation.owns_encapsulated_module()
+    }
 }
 
 impl NixJitTier1ConformanceReadiness {
@@ -131,6 +194,52 @@ pub enum NixJitTier1ConformanceReadinessError {
 /// Result returned by tier-1 conformance readiness preflights.
 pub type NixJitTier1ConformanceReadinessResult =
     Result<NixJitTier1ConformanceReadiness, NixJitTier1ConformanceReadinessError>;
+
+/// A failure while building a literal native differential sample.
+#[derive(Debug, Error)]
+pub enum NixJitLiteralNativeDifferentialError {
+    /// The safe literal value could not be projected for the oracle side.
+    #[error("literal oracle value projection failed for IR root {root:?}")]
+    ProjectOracleLiteral {
+        /// The requested IR root.
+        root: IrId,
+        /// The underlying literal-shape error.
+        source: JitLowerError,
+    },
+
+    /// The literal IR root could not be lowered into a no-import thunk artifact.
+    #[error("literal thunk lowering failed for IR root {root:?}")]
+    LowerLiteral {
+        /// The requested IR root.
+        root: IrId,
+        /// The underlying lowerer error.
+        source: JitLowerError,
+    },
+
+    /// The no-import native thunk call failed.
+    #[error("native literal thunk call failed for IR root {root:?}")]
+    NativeCall {
+        /// The requested IR root.
+        root: IrId,
+        /// The underlying native-call error.
+        source: JitCraneliftNativeCallError,
+    },
+
+    /// The native result did not match the safe literal value projection.
+    #[error("native literal result for IR root {root:?} was {actual:?}, expected {expected:?}")]
+    ValueMismatch {
+        /// The requested IR root.
+        root: IrId,
+        /// The value constructed by the safe literal projection.
+        expected: Value,
+        /// The value returned by native code.
+        actual: Value,
+    },
+}
+
+/// Result returned by literal native differential samples.
+pub type NixJitLiteralNativeDifferentialResult =
+    Result<NixJitLiteralNativeDifferential, NixJitLiteralNativeDifferentialError>;
 
 /// Builds a safe JIT-enabled conformance readiness report for one IR root.
 ///
@@ -223,6 +332,59 @@ pub fn nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
     ))
 }
 
+/// Compares one no-import literal native thunk result against the safe literal value projection.
+///
+/// This is a bounded precursor for the future JIT-enabled differential harness.
+/// It does not publish into evaluator thunk state, perform atomic thunk-state
+/// transitions, call registered runtime helpers, or run a full closure oracle.
+/// It only accepts literal Core-IR roots currently supported by
+/// [`lower_constant_ir_thunk_body_artifact`], calls the reviewed no-import
+/// native thunk path, and returns an owned comparison report when the raw
+/// [`Value`] bits match.
+///
+/// # Errors
+///
+/// Returns [`NixJitLiteralNativeDifferentialError::ProjectOracleLiteral`] when
+/// the root cannot be projected into a safe literal value. Returns
+/// [`NixJitLiteralNativeDifferentialError::LowerLiteral`] when the root cannot
+/// be lowered into a no-import thunk artifact. Returns
+/// [`NixJitLiteralNativeDifferentialError::NativeCall`] when finalization or
+/// native invocation fails. Returns
+/// [`NixJitLiteralNativeDifferentialError::ValueMismatch`] when the native
+/// result differs from the safe literal projection at the representation level.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift unresolved-import and finalized-function
+/// lookup conditions as [`jit_cranelift_native_thunk_call_for_artifact`].
+pub fn nix_jit_literal_native_differential_for_ir_root(
+    arena: &IrArena,
+    root: IrId,
+) -> NixJitLiteralNativeDifferentialResult {
+    let oracle_value = literal_oracle_value_for_ir_root(arena, root).map_err(|source| {
+        NixJitLiteralNativeDifferentialError::ProjectOracleLiteral { root, source }
+    })?;
+    let artifact = lower_constant_ir_thunk_body_artifact(arena, root)
+        .map_err(|source| NixJitLiteralNativeDifferentialError::LowerLiteral { root, source })?;
+    let native_invocation = jit_cranelift_native_thunk_call_for_artifact(artifact)
+        .map_err(|source| NixJitLiteralNativeDifferentialError::NativeCall { root, source })?;
+    let actual = native_invocation.value();
+
+    if !actual.raw_eq(oracle_value) {
+        return Err(NixJitLiteralNativeDifferentialError::ValueMismatch {
+            root,
+            expected: oracle_value,
+            actual,
+        });
+    }
+
+    Ok(NixJitLiteralNativeDifferential::new(
+        root,
+        oracle_value,
+        native_invocation,
+    ))
+}
+
 fn conformance_gaps_for(
     runtime_symbol_registration: &NixJitRuntimeSymbolRegistrationPreflight,
     thunk_install_readiness: &NixJitThunkInstallReadiness,
@@ -257,6 +419,55 @@ fn conformance_gaps_for(
     gaps
 }
 
+fn literal_oracle_value_for_ir_root(arena: &IrArena, root: IrId) -> Result<Value, JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            literal_oracle_value_for_body(body)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => literal_oracle_value_for_node(node),
+    }
+}
+
+fn literal_oracle_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
+        (IrKind::Null, IrData::None) => Ok(Value::null()),
+        (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
+            Err(JitLowerError::MismatchedBodyConstantData { kind, data })
+        }
+        (kind, _) => Err(JitLowerError::UnsupportedIrBody { kind }),
+    }
+}
+
+fn literal_oracle_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
+        (IrKind::Null, IrData::None) => Ok(Value::null()),
+        (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
+            Err(JitLowerError::MismatchedConstantData { kind, data })
+        }
+        (kind, _) => Err(JitLowerError::UnsupportedIrRoot { kind }),
+    }
+}
+
 fn push_nonzero_gap(
     gaps: &mut Vec<NixJitTier1ConformanceGap>,
     missing_count: usize,
@@ -272,7 +483,9 @@ mod tests {
     use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 
     use ratchet_core::{EffectClass, IrData, IrKind, IrNode, syntax::Span};
-    use ratchet_jit::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter};
+    use ratchet_jit::{
+        DEFAULT_TIER1_INVOCATION_THRESHOLD, JitClifArtifactSource, JitTier, TierUpCounter,
+    };
 
     use super::*;
 
@@ -312,8 +525,142 @@ mod tests {
         )
     }
 
+    fn int_arena(value: i64) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Int(value),
+            )],
+            Vec::new(),
+        )
+    }
+
+    fn float_arena(value: f64) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Float,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Float(value),
+            )],
+            Vec::new(),
+        )
+    }
+
+    fn null_arena() -> IrArena {
+        IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Null,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        )
+    }
+
+    fn thunk_alloc_bool_arena(value: bool) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Bool,
+                    Span::new(0, 4),
+                    EffectClass::pure(),
+                    IrData::Bool(value),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 4),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        )
+    }
+
     fn hot_slot() -> JitTieredCodeSlot {
         JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1))
+    }
+
+    #[test]
+    fn literal_native_differential_matches_direct_scalar_values() {
+        let cases = [
+            (int_arena(-17), Value::int(-17)),
+            (float_arena(-13.5), Value::float(-13.5)),
+            (bool_arena(false), Value::bool(false)),
+            (null_arena(), Value::null()),
+        ];
+
+        for (arena, expected) in cases {
+            let differential =
+                nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0))
+                    .expect("literal native differential succeeds");
+
+            assert_eq!(differential.root(), IrId::new(0));
+            assert!(differential.values_match());
+            assert!(differential.owns_encapsulated_module());
+            assert!(differential.oracle_value().raw_eq(expected));
+            assert!(differential.native_value().raw_eq(expected));
+            assert_eq!(
+                differential
+                    .native_invocation()
+                    .finalization()
+                    .artifact()
+                    .source(),
+                JitClifArtifactSource::IrRoot(IrId::new(0))
+            );
+            assert_eq!(
+                differential
+                    .native_invocation()
+                    .finalized_function()
+                    .symbol_name(),
+                "aos.jit.ir_root.0.thunk_body"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_native_differential_matches_direct_thunk_bool_value() {
+        let arena = thunk_alloc_bool_arena(true);
+
+        let differential = nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(1))
+            .expect("direct thunk literal native differential succeeds");
+
+        assert_eq!(differential.root(), IrId::new(1));
+        assert!(differential.values_match());
+        assert!(differential.oracle_value().raw_eq(Value::bool(true)));
+        assert!(differential.native_value().raw_eq(Value::bool(true)));
+        assert_eq!(
+            differential
+                .native_invocation()
+                .finalization()
+                .artifact()
+                .source(),
+            JitClifArtifactSource::IrRoot(IrId::new(1))
+        );
+    }
+
+    #[test]
+    fn literal_native_differential_rejects_unsupported_root_before_native_call() {
+        let arena = local_var_arena(2);
+
+        let Err(error) = nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0))
+        else {
+            panic!("local variables are not no-import literal differential inputs");
+        };
+
+        assert!(matches!(
+            error,
+            NixJitLiteralNativeDifferentialError::ProjectOracleLiteral {
+                root,
+                source: JitLowerError::UnsupportedIrRoot {
+                    kind: IrKind::LocalVar
+                }
+            } if root == IrId::new(0)
+        ));
     }
 
     #[test]

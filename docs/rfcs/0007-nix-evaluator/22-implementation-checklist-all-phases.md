@@ -5511,6 +5511,18 @@ and helps the oracle directly.
       is a harness gate only: it does not mutate heap thunks, perform atomic
       thunk-state CAS, cast or call code pointers, dereference registered
       addresses, call native code, or complete runtime-symbol registration.
+- [x] Current no-publish literal native differential precursor:
+      `aos_nix::jit::nix_jit_literal_native_differential_for_ir_root()` lowers
+      a supported no-import literal Core-IR root, calls the reviewed native
+      thunk path while retaining Cranelift module ownership, and compares the
+      returned raw `Value` bits with the safe tier-0 literal value projection.
+      Tests pin direct scalar literal roots, a direct thunk-allocation wrapper
+      around a boolean literal, module ownership/source metadata, and unsupported-root
+      rejection before native invocation. This is a literal-only precursor, not
+      the full differential harness: it does not publish evaluator thunks,
+      perform atomic thunk-state CAS, call registered runtime helpers, execute
+      closure graphs, prove `.drv` output parity, or complete runtime-symbol
+      registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context
