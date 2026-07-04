@@ -72,6 +72,7 @@ pub use parallel_tree_walk::{
     ParallelTreeWalkEvaluationError, ParallelTreeWalkRawEvaluation,
     ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot, ParallelTreeWalkRootSource,
     ParallelTreeWalkTopLevelError, compare_parallel_tree_walk_raw_across_worker_counts,
+    compare_parallel_tree_walk_raw_chase_lev_across_worker_counts,
     eval_raw_bytes_parallel_chase_lev_top_level, eval_raw_bytes_parallel_chase_lev_top_level_roots,
     eval_raw_bytes_parallel_top_level, eval_raw_bytes_parallel_top_level_roots,
 };

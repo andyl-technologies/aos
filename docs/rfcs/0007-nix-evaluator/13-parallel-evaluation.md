@@ -954,6 +954,24 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       harness, does not execute the parallel scheduler, does not materialize
       derivations, and does not audit live attrset iteration under nondeterminism
       (§4.4) — **P3.5** precursor, `C-12`/`S-13`.
+- [x] Current Chase-Lev-backed tree-walk raw differential precursor:
+      `ratchet-oracle::eval::compare_parallel_tree_walk_raw_chase_lev_across_worker_counts`
+      evaluates independent lowered roots with the serial tree-walk raw renderer,
+      re-evaluates those roots through the Chase-Lev-backed tree-walk bridge for
+      each requested worker count, and compares normalized raw bytes or exact
+      root-local tree-walk errors in stable task order. It preserves
+      source-backed root provenance, preflights worker-count encodability before
+      serial evaluation, rejects persistent parse/eval cache roots, and uses
+      collect-all execution so every root participates in the differential.
+      Tests cover 1/3 worker-count parity, empty roots, empty worker-count
+      rejection, worker-count preflight with an observable no-serial-eval guard,
+      parse/eval persistent-cache rejection, root-local errors, and
+      source-backed root-local errors. This is an independent-root raw-rendering
+      differential only: it does not run a full derivation closure, compare live
+      `.drv` materialization, prove shared-thunk graph scheduling, audit all
+      nondeterministic attrset iteration, wire ready-work park tokens or CAS wait
+      integration, or satisfy the full parallel evaluator parity gate (§4.4) —
+      **P3.5** precursor, `C-12`/`S-13`.
 
 ### Concurrency runtime — rayon, fibers, tokio (§5.5)
 
