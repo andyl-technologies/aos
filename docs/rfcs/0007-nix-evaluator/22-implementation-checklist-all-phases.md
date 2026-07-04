@@ -8402,13 +8402,14 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
 - [x] Current semantic escape-signature fuzz expansion:
       the `ratchet-oracle` semantic escape-signature harness now checks actual
       inline scalar payloads, not only tags, for randomized type predicates,
-      `length`, `stringLength`, `hasContext`, `compareVersions`, `elem`, `all`,
-      `any`, `hasAttr`, integer arithmetic, bitwise operations, `lessThan`, and
-      `ceil`/`floor` inputs. It keeps every generated root tied to the direct
-      immediate-scalar primop signature before evaluation, so randomized
-      semantic cases fail for that generated subset if the tree-walk result is
-      heap-valued or value-mismatched, while the existing sample-surface test
-      still catches newly allowlisted names without semantic samples. This is
+      `length`, context-free and context-bearing `stringLength`/`hasContext`,
+      `compareVersions`, `elem`, `all`, `any`, `hasAttr`, integer arithmetic,
+      bitwise operations, `lessThan`, and `ceil`/`floor` inputs. It keeps every
+      generated root tied to the direct immediate-scalar primop signature before
+      evaluation, so randomized semantic cases fail for that generated subset if
+      the tree-walk result is heap-valued or value-mismatched, while the existing
+      sample-surface test still catches newly allowlisted names without semantic
+      samples. This is
       still a tree-walk semantic harness only; it does not exhaustively generate
       valid inputs for every builtin, compare against the C++ oracle for each
       generated sample, or prove aggregate/result-forwarding escape behavior.

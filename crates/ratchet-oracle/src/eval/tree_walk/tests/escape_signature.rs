@@ -459,6 +459,7 @@ proptest! {
         needle in -8_i64..=8,
         threshold in -8_i64..=8,
         text in simple_ascii_string(),
+        context_name in simple_attr_name(),
         left_version in 0_u8..=20,
         right_version in 0_u8..=20,
     ) {
@@ -467,12 +468,16 @@ proptest! {
         let needle_source = nix_int(needle);
         let threshold_source = nix_int(threshold);
         let text_source = format!("{text:?}");
+        let context_path = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-{context_name}");
+        let context_text_source = format!(
+            r#"builtins.appendContext {text_source} {{ "{context_path}" = {{ path = true; }}; }}"#
+        );
         let compare_versions_expected = match left_version.cmp(&right_version) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
             std::cmp::Ordering::Greater => 1,
         };
-        let cases: [(&[u8], String, ExpectedScalar); 7] = [
+        let cases: [(&[u8], String, ExpectedScalar); 9] = [
             (
                 b"length",
                 format!("builtins.length {list}"),
@@ -484,9 +489,19 @@ proptest! {
                 ExpectedScalar::Int(text.len() as i64),
             ),
             (
+                b"stringLength",
+                format!("builtins.stringLength ({context_text_source})"),
+                ExpectedScalar::Int(text.len() as i64),
+            ),
+            (
                 b"hasContext",
                 format!("builtins.hasContext {text_source}"),
                 ExpectedScalar::Bool(false),
+            ),
+            (
+                b"hasContext",
+                format!("builtins.hasContext ({context_text_source})"),
+                ExpectedScalar::Bool(true),
             ),
             (
                 b"compareVersions",
