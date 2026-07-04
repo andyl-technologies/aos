@@ -338,9 +338,14 @@ impl TreeWalk {
         entries.push(AttrEntry::new(wrong_key, wrong));
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_concat_map_primop(
@@ -700,9 +705,14 @@ impl TreeWalk {
         }
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_sort_primop(

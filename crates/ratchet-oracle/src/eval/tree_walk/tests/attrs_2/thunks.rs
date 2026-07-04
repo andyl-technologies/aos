@@ -504,6 +504,75 @@ fn attr_position_builtins_record_dynamic_repr_decisions() {
 }
 
 #[test]
+fn partition_records_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.partition (value: value < 2) [ 1 2 ])
+            (let partition = builtins.partition (value: value < 2); in partition [ 1 2 ])
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("partition evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
+fn group_by_records_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.groupBy (value: if value < 2 then \"small\" else \"large\") [ 1 2 ])
+            (let group = builtins.groupBy (value: \"all\"); in group [ 3 ])
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("groupBy evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
+fn function_args_records_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.functionArgs ({ a, b ? 1 }: a))
+            (let functionArgs = builtins.functionArgs; in functionArgs builtins.length)
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("functionArgs evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
 fn active_flat_selects_record_slow_select_telemetry() {
     let ir = lower(
         "builtins.deepSeq [
