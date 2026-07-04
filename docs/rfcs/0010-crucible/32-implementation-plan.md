@@ -440,8 +440,9 @@ long-held locks.
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
   checkpoint reference parsing and rejection until DAG-store closure loading
   exists, virtual-time budget validation, malformed-handle artifact errors, and
-  executable handle-backed local-double resume to quiescence or virtual-time
-  through the session checkpoint-resume API; full closure waits for bare-hash
+  executable handle-backed local-double resume to quiescence, virtual-time, or a
+  declared property violation through the session checkpoint-resume API with
+  breakpoint-firing proof for the property stop; full closure waits for bare-hash
   checkpoint closure loading, interactive resume, remote daemon and real-QEMU
   coverage, and full replay-oracle coverage across those runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
