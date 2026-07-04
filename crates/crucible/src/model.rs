@@ -1804,6 +1804,26 @@ impl ScenarioDef {
         self.app_random_draw_cap
     }
 
+    /// Rebuilds a scenario definition handle from trusted content-addressed identity fields.
+    ///
+    /// This is a transport and artifact decoding helper for cases that already
+    /// received a validated scenario definition elsewhere and only need to
+    /// rehydrate the identity-bearing execution handle. Scenario authors should
+    /// use [`ScenarioDefForm`] or the builder APIs instead so component hashes
+    /// are derived from canonical scenario content.
+    #[must_use]
+    pub const fn from_trusted_identity(
+        id: ContentHash,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Self {
+        Self {
+            id,
+            seed,
+            app_random_draw_cap,
+        }
+    }
+
     /// Builds a scenario definition from canonical material.
     ///
     /// This helper is the engine-side content-addressing entry point for
@@ -13326,6 +13346,30 @@ impl Checkpoint {
             refs.extend(state.cow_delta_refs());
         }
         refs
+    }
+
+    /// Serializes this checkpoint as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC);
+        write_checkpoint_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses and validates a compact checkpoint payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the payload is
+    /// malformed, when embedded materialized-state identity fields do not
+    /// match their decoded components, or when the outer checkpoint shape is
+    /// internally inconsistent.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC)?;
+        let checkpoint = read_checkpoint_binary(&mut reader)?;
+        validate_checkpoint_binary_shape(&checkpoint)?;
+        reader.finish()?;
+        Ok(checkpoint)
     }
 }
 
@@ -27527,6 +27571,7 @@ const WORLD_BINARY_MAGIC: &[u8] = b"crucible.world.v1\0";
 const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
 const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
 const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
+const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v1\0";
 const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
@@ -30046,6 +30091,652 @@ fn read_schedule_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Schedul
     let schedule = Schedule { decisions };
     validate_serialized_id("schedule", expected, schedule.content_hash())?;
     Ok(schedule)
+}
+
+fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(checkpoint.id);
+    writer.write_hash(checkpoint.configuration);
+    writer.write_hash(checkpoint.scenario_ref);
+    write_optional_hash_binary(checkpoint.parent, writer);
+    write_schedule_binary(&checkpoint.schedule_delta, writer);
+    write_checkpoint_kind_binary(checkpoint.kind, writer);
+    writer.write_u64(checkpoint.virtual_time.ticks);
+    write_node_icounts_binary(&checkpoint.node_icounts, writer);
+    write_optional_materialized_state_binary(checkpoint.state.as_ref(), writer);
+    writer.write_hash(checkpoint.coverage_fingerprint);
+    writer.write_hash(checkpoint.assertion_proximity_fingerprint);
+    write_checkpoint_metadata_binary(&checkpoint.metadata, writer);
+    write_node_blobs_binary(&checkpoint.node_blobs, writer);
+}
+
+fn read_checkpoint_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Checkpoint, EngineError> {
+    let id = reader.read_hash()?;
+    let configuration = reader.read_hash()?;
+    let scenario_ref = reader.read_hash()?;
+    let parent = read_optional_hash_binary(reader)?;
+    let schedule_delta = read_schedule_binary(reader)?;
+    let kind = read_checkpoint_kind_binary(reader)?;
+    let virtual_time = VirtualTime {
+        ticks: reader.read_u64()?,
+    };
+    let node_icounts = read_node_icounts_binary(reader)?;
+    let state = read_optional_materialized_state_binary(reader)?;
+    let coverage_fingerprint = reader.read_hash()?;
+    let assertion_proximity_fingerprint = reader.read_hash()?;
+    let metadata = read_checkpoint_metadata_binary(reader)?;
+    let node_blobs = read_node_blobs_binary(reader)?;
+    Ok(Checkpoint {
+        id,
+        configuration,
+        scenario_ref,
+        parent,
+        schedule_delta,
+        virtual_time,
+        node_icounts,
+        state,
+        coverage_fingerprint,
+        assertion_proximity_fingerprint,
+        metadata,
+        node_blobs,
+        kind,
+    })
+}
+
+fn validate_checkpoint_binary_shape(checkpoint: &Checkpoint) -> Result<(), EngineError> {
+    match (checkpoint.kind, checkpoint.state.is_some()) {
+        (CheckpointKind::Fat, false) => {
+            return Err(scenario_serialization_error(
+                "fat checkpoint is missing materialized state",
+            ));
+        }
+        (CheckpointKind::Thin, true) => {
+            return Err(scenario_serialization_error(
+                "thin checkpoint carries materialized state",
+            ));
+        }
+        (CheckpointKind::Fat, true) | (CheckpointKind::Thin, false) => {}
+    }
+    if checkpoint.id != checkpoint.configuration {
+        return Err(scenario_serialization_error(
+            "checkpoint id does not match configuration id",
+        ));
+    }
+    Ok(())
+}
+
+fn write_checkpoint_kind_binary(kind: CheckpointKind, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match kind {
+        CheckpointKind::Fat => 0,
+        CheckpointKind::Thin => 1,
+    });
+}
+
+fn read_checkpoint_kind_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<CheckpointKind, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(CheckpointKind::Fat),
+        1 => Ok(CheckpointKind::Thin),
+        _ => Err(scenario_serialization_error("invalid checkpoint-kind tag")),
+    }
+}
+
+fn write_optional_hash_binary(hash: Option<ContentHash>, writer: &mut ScenarioBinaryWriter) {
+    match hash {
+        Some(hash) => {
+            writer.write_u8(1);
+            writer.write_hash(hash);
+        }
+        None => writer.write_u8(0),
+    }
+}
+
+fn read_optional_hash_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Option<ContentHash>, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(reader.read_hash()?)),
+        _ => Err(scenario_serialization_error("invalid optional hash tag")),
+    }
+}
+
+fn write_node_icounts_binary(
+    node_icounts: &BTreeMap<NodeId, Icount>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_count(node_icounts.len());
+    for (node, icount) in node_icounts {
+        writer.write_string(&node.name);
+        writer.write_u64(icount.retired);
+    }
+}
+
+fn read_node_icounts_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<BTreeMap<NodeId, Icount>, EngineError> {
+    let count = reader.read_collection_count("checkpoint.node-icount")?;
+    let mut node_icounts = BTreeMap::new();
+    for _ in 0..count {
+        node_icounts.insert(
+            NodeId {
+                name: reader.read_string()?,
+            },
+            Icount {
+                retired: reader.read_u64()?,
+            },
+        );
+    }
+    Ok(node_icounts)
+}
+
+fn write_optional_materialized_state_binary(
+    state: Option<&MaterializedState>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match state {
+        Some(state) => {
+            writer.write_u8(1);
+            write_materialized_state_binary(state, writer);
+        }
+        None => writer.write_u8(0),
+    }
+}
+
+fn read_optional_materialized_state_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Option<MaterializedState>, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(None),
+        1 => read_materialized_state_binary(reader).map(Some),
+        _ => Err(scenario_serialization_error(
+            "invalid optional materialized-state tag",
+        )),
+    }
+}
+
+fn write_materialized_state_binary(state: &MaterializedState, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(state.id);
+    write_vm_snapshots_binary(&state.vm_snapshots, writer);
+    write_device_overlays_binary(&state.device_overlays, writer);
+    write_scheduler_state_binary(&state.scheduler, writer);
+    write_decision_rng_state_binary(&state.decision_rng, writer);
+    write_event_log_offset_binary(state.event_log, writer);
+    writer.write_count(state.event_log_segments.len());
+    for segment in &state.event_log_segments {
+        writer.write_hash(*segment);
+    }
+}
+
+fn read_materialized_state_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<MaterializedState, EngineError> {
+    let expected = reader.read_hash()?;
+    let vm_snapshots = read_vm_snapshots_binary(reader)?;
+    let device_overlays = read_device_overlays_binary(reader)?;
+    let scheduler = read_scheduler_state_binary(reader)?;
+    let decision_rng = read_decision_rng_state_binary(reader)?;
+    let event_log = read_event_log_offset_binary(reader)?;
+    let segment_count = reader.read_collection_count("materialized-state.event-log-segment")?;
+    let mut event_log_segments = Vec::with_capacity(segment_count);
+    for _ in 0..segment_count {
+        event_log_segments.push(reader.read_hash()?);
+    }
+    let state = MaterializedState::from_components_with_event_log_segments(
+        vm_snapshots,
+        device_overlays,
+        scheduler,
+        decision_rng,
+        event_log,
+        event_log_segments,
+    );
+    validate_serialized_id("materialized-state", expected, state.id)?;
+    Ok(state)
+}
+
+fn write_vm_snapshots_binary(
+    snapshots: &BTreeMap<NodeId, VmSnapshotRef>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_count(snapshots.len());
+    for (node, snapshot) in snapshots {
+        writer.write_string(&node.name);
+        write_node_blob_ref_binary(&snapshot.blob, writer);
+        writer.write_u64(snapshot.icount.retired);
+    }
+}
+
+fn read_vm_snapshots_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<BTreeMap<NodeId, VmSnapshotRef>, EngineError> {
+    let count = reader.read_collection_count("materialized-state.vm-snapshot")?;
+    let mut snapshots = BTreeMap::new();
+    for _ in 0..count {
+        let node = NodeId {
+            name: reader.read_string()?,
+        };
+        let blob = read_node_blob_ref_binary(reader)?;
+        let icount = Icount {
+            retired: reader.read_u64()?,
+        };
+        snapshots.insert(node, VmSnapshotRef { blob, icount });
+    }
+    Ok(snapshots)
+}
+
+fn write_device_overlays_binary(
+    overlays: &BTreeMap<DeviceId, DeviceOverlayDelta>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_count(overlays.len());
+    for (device, overlay) in overlays {
+        writer.write_string(&device.name);
+        writer.write_hash(overlay.parent);
+        writer.write_hash(overlay.delta);
+        writer.write_hash(overlay.resolved);
+        write_device_rng_state_binary(&overlay.rng, writer);
+    }
+}
+
+fn read_device_overlays_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<BTreeMap<DeviceId, DeviceOverlayDelta>, EngineError> {
+    let count = reader.read_collection_count("materialized-state.device-overlay")?;
+    let mut overlays = BTreeMap::new();
+    for _ in 0..count {
+        let device = DeviceId {
+            name: reader.read_string()?,
+        };
+        let parent = reader.read_hash()?;
+        let delta = reader.read_hash()?;
+        let resolved = reader.read_hash()?;
+        let rng = read_device_rng_state_binary(reader)?;
+        overlays.insert(
+            device,
+            DeviceOverlayDelta {
+                parent,
+                delta,
+                resolved,
+                rng,
+            },
+        );
+    }
+    Ok(overlays)
+}
+
+fn write_node_blobs_binary(
+    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_count(node_blobs.len());
+    for (node, blob) in node_blobs {
+        writer.write_string(&node.name);
+        write_node_blob_ref_binary(blob, writer);
+    }
+}
+
+fn read_node_blobs_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<BTreeMap<NodeId, NodeBlobRef>, EngineError> {
+    let count = reader.read_collection_count("checkpoint.node-blob")?;
+    let mut node_blobs = BTreeMap::new();
+    for _ in 0..count {
+        node_blobs.insert(
+            NodeId {
+                name: reader.read_string()?,
+            },
+            read_node_blob_ref_binary(reader)?,
+        );
+    }
+    Ok(node_blobs)
+}
+
+fn write_node_blob_ref_binary(blob: &NodeBlobRef, writer: &mut ScenarioBinaryWriter) {
+    match blob {
+        NodeBlobRef::Baked(hash) => {
+            writer.write_u8(0);
+            writer.write_hash(*hash);
+        }
+        NodeBlobRef::CowDelta {
+            parent,
+            delta,
+            resolved,
+        } => {
+            writer.write_u8(1);
+            writer.write_hash(*parent);
+            writer.write_hash(*delta);
+            writer.write_hash(*resolved);
+        }
+    }
+}
+
+fn read_node_blob_ref_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NodeBlobRef, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NodeBlobRef::Baked(reader.read_hash()?)),
+        1 => Ok(NodeBlobRef::CowDelta {
+            parent: reader.read_hash()?,
+            delta: reader.read_hash()?,
+            resolved: reader.read_hash()?,
+        }),
+        _ => Err(scenario_serialization_error("invalid node-blob-ref tag")),
+    }
+}
+
+fn write_device_rng_state_binary(state: &DeviceRngState, writer: &mut ScenarioBinaryWriter) {
+    writer.write_count(state.streams.len());
+    for (stream, position) in &state.streams {
+        write_rng_stream_binary(stream, writer);
+        writer.write_u64(position.draws);
+    }
+}
+
+fn read_device_rng_state_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<DeviceRngState, EngineError> {
+    let count = reader.read_collection_count("device-rng-state.stream")?;
+    let mut streams = BTreeMap::new();
+    for _ in 0..count {
+        streams.insert(
+            read_rng_stream_binary(reader)?,
+            RngStreamPosition {
+                draws: reader.read_u64()?,
+            },
+        );
+    }
+    Ok(DeviceRngState { streams })
+}
+
+fn write_decision_rng_state_binary(state: &DecisionRngState, writer: &mut ScenarioBinaryWriter) {
+    writer.write_count(state.positions.len());
+    for (stream, position) in &state.positions {
+        write_rng_stream_binary(stream, writer);
+        writer.write_u64(position.draws);
+    }
+}
+
+fn read_decision_rng_state_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<DecisionRngState, EngineError> {
+    let count = reader.read_collection_count("decision-rng-state.stream")?;
+    let mut positions = BTreeMap::new();
+    for _ in 0..count {
+        positions.insert(
+            read_rng_stream_binary(reader)?,
+            RngStreamPosition {
+                draws: reader.read_u64()?,
+            },
+        );
+    }
+    Ok(DecisionRngState { positions })
+}
+
+fn write_event_log_offset_binary(offset: EventLogOffset, writer: &mut ScenarioBinaryWriter) {
+    writer.write_hash(offset.prefix);
+    write_optional_hash_binary(offset.appended_segment, writer);
+    writer.write_u64(offset.bytes);
+    writer.write_u64(offset.events);
+}
+
+fn read_event_log_offset_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<EventLogOffset, EngineError> {
+    Ok(EventLogOffset {
+        prefix: reader.read_hash()?,
+        appended_segment: read_optional_hash_binary(reader)?,
+        bytes: reader.read_u64()?,
+        events: reader.read_u64()?,
+    })
+}
+
+fn write_scheduler_state_binary(state: &SchedulerState, writer: &mut ScenarioBinaryWriter) {
+    writer.write_count(state.horizons.len());
+    for (node, horizon) in &state.horizons {
+        writer.write_string(&node.name);
+        writer.write_u64(horizon.ticks);
+    }
+    writer.write_count(state.pending_frames.len());
+    for (node, frames) in &state.pending_frames {
+        writer.write_string(&node.name);
+        writer.write_count(frames.len());
+        for frame in frames {
+            writer.write_string(&frame.source.name);
+            writer.write_u64(frame.sequence);
+            writer.write_u64(frame.delivery_icount.retired);
+            writer.write_hash(frame.payload);
+        }
+    }
+    writer.write_count(state.event_sequences.next.len());
+    for (key, next) in &state.event_sequences.next {
+        write_scheduler_node_id_binary(&key.producer, writer);
+        write_scheduler_node_id_binary(&key.consumer, writer);
+        writer.write_u64(*next);
+    }
+    writer.write_count(state.timers.timers.len());
+    for (id, timer) in &state.timers.timers {
+        writer.write_string(&id.name);
+        writer.write_string(&timer.owner.name);
+        writer.write_u64(timer.armed_at.ticks);
+        writer.write_u64(timer.fire_at.ticks);
+        writer.write_u64(timer.fire_icount.retired);
+    }
+    writer.write_count(state.active_faults.len());
+    for (fault, state) in &state.active_faults {
+        writer.write_string(&fault.name);
+        writer.write_u64(state.active_since.ticks);
+        write_optional_virtual_time_binary(state.heal_at, writer);
+    }
+    writer.write_count(state.active_fault_tags.len());
+    for (tag, fault) in &state.active_fault_tags {
+        writer.write_string(&tag.name);
+        write_membership_fault_binary(fault, writer);
+    }
+    write_search_frontier_choices_binary(&state.search_frontier, writer);
+}
+
+fn read_scheduler_state_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<SchedulerState, EngineError> {
+    let horizon_count = reader.read_collection_count("scheduler-state.horizon")?;
+    let mut horizons = BTreeMap::new();
+    for _ in 0..horizon_count {
+        horizons.insert(
+            NodeId {
+                name: reader.read_string()?,
+            },
+            VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+        );
+    }
+
+    let pending_count = reader.read_collection_count("scheduler-state.pending-frame-node")?;
+    let mut pending_frames = BTreeMap::new();
+    for _ in 0..pending_count {
+        let node = NodeId {
+            name: reader.read_string()?,
+        };
+        let frame_count = reader.read_collection_count("scheduler-state.pending-frame")?;
+        let mut frames = Vec::with_capacity(frame_count);
+        for _ in 0..frame_count {
+            frames.push(PendingFrame {
+                source: NodeId {
+                    name: reader.read_string()?,
+                },
+                sequence: reader.read_u64()?,
+                delivery_icount: Icount {
+                    retired: reader.read_u64()?,
+                },
+                payload: reader.read_hash()?,
+            });
+        }
+        pending_frames.insert(node, frames);
+    }
+
+    let sequence_count = reader.read_collection_count("scheduler-state.event-sequence")?;
+    let mut event_sequences = EventSequenceState::empty();
+    for _ in 0..sequence_count {
+        event_sequences.next.insert(
+            EventSequenceKey {
+                producer: read_scheduler_node_id_binary(reader)?,
+                consumer: read_scheduler_node_id_binary(reader)?,
+            },
+            reader.read_u64()?,
+        );
+    }
+
+    let timer_count = reader.read_collection_count("scheduler-state.timer")?;
+    let mut timers = TimerRegistry::empty();
+    for _ in 0..timer_count {
+        timers.timers.insert(
+            TimerId {
+                name: reader.read_string()?,
+            },
+            TimerState {
+                owner: NodeId {
+                    name: reader.read_string()?,
+                },
+                armed_at: VirtualTime {
+                    ticks: reader.read_u64()?,
+                },
+                fire_at: VirtualTime {
+                    ticks: reader.read_u64()?,
+                },
+                fire_icount: Icount {
+                    retired: reader.read_u64()?,
+                },
+            },
+        );
+    }
+
+    let active_fault_count = reader.read_collection_count("scheduler-state.active-fault")?;
+    let mut active_faults = BTreeMap::new();
+    for _ in 0..active_fault_count {
+        active_faults.insert(
+            FaultId {
+                name: reader.read_string()?,
+            },
+            FaultState {
+                active_since: VirtualTime {
+                    ticks: reader.read_u64()?,
+                },
+                heal_at: read_optional_virtual_time_binary(reader)?,
+            },
+        );
+    }
+
+    let active_fault_tag_count =
+        reader.read_collection_count("scheduler-state.active-fault-tag")?;
+    let mut active_fault_tags = BTreeMap::new();
+    for _ in 0..active_fault_tag_count {
+        active_fault_tags.insert(
+            FaultTag {
+                name: reader.read_string()?,
+            },
+            read_membership_fault_binary(reader)?,
+        );
+    }
+    let active_fault_table = ActiveFaultTable::from_active_faults(&active_fault_tags);
+    let search_frontier = read_search_frontier_choices_binary(reader)?;
+
+    Ok(SchedulerState {
+        horizons,
+        pending_frames,
+        event_sequences,
+        timers,
+        active_faults,
+        active_fault_tags,
+        active_fault_table,
+        search_frontier,
+    })
+}
+
+fn write_optional_virtual_time_binary(
+    value: Option<VirtualTime>,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match value {
+        Some(value) => {
+            writer.write_u8(1);
+            writer.write_u64(value.ticks);
+        }
+        None => writer.write_u8(0),
+    }
+}
+
+fn read_optional_virtual_time_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Option<VirtualTime>, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(VirtualTime {
+            ticks: reader.read_u64()?,
+        })),
+        _ => Err(scenario_serialization_error(
+            "invalid optional virtual-time tag",
+        )),
+    }
+}
+
+fn write_search_frontier_choices_binary(
+    frontier: &SearchFrontierChoices,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_count(frontier.choices.len());
+    for choice in &frontier.choices {
+        write_decision_binary(&choice.decision, writer);
+        writer.write_count(choice.decisions.len());
+        for decision in &choice.decisions {
+            write_decision_binary(decision, writer);
+        }
+    }
+}
+
+fn read_search_frontier_choices_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<SearchFrontierChoices, EngineError> {
+    let count = reader.read_collection_count("scheduler-state.search-frontier-choice")?;
+    let mut choices = Vec::with_capacity(count);
+    for _ in 0..count {
+        let decision = read_decision_binary(reader)?;
+        let decision_count =
+            reader.read_collection_count("scheduler-state.search-frontier-choice.decision")?;
+        let mut decisions = Vec::with_capacity(decision_count);
+        for _ in 0..decision_count {
+            decisions.push(read_decision_binary(reader)?);
+        }
+        choices.push(SearchFrontierChoice {
+            decision,
+            decisions,
+        });
+    }
+    let decisions = choices
+        .iter()
+        .map(|choice| choice.decision.clone())
+        .collect();
+    Ok(SearchFrontierChoices { choices, decisions })
+}
+
+fn write_checkpoint_metadata_binary(metadata: &CheckpointMeta, writer: &mut ScenarioBinaryWriter) {
+    writer.write_count(metadata.labels.len());
+    for (key, value) in &metadata.labels {
+        writer.write_string(key);
+        writer.write_string(value);
+    }
+}
+
+fn read_checkpoint_metadata_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<CheckpointMeta, EngineError> {
+    let count = reader.read_collection_count("checkpoint.metadata-label")?;
+    let mut labels = BTreeMap::new();
+    for _ in 0..count {
+        labels.insert(reader.read_string()?, reader.read_string()?);
+    }
+    Ok(CheckpointMeta { labels })
 }
 
 fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter) {

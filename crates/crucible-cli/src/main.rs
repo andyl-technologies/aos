@@ -4478,10 +4478,14 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError> {
-        if save_plan.is_some() {
-            return Err(backend_error(
-                "save through a remote daemon requires a replay-oracle proof in the exported RPC savepoint reply; use a local backend for this workflow",
-            ));
+        if let Some(save_plan) = save_plan {
+            return run_remote_save_workflow(
+                daemon,
+                thin_plan,
+                backend_plan,
+                ergonomics_plan,
+                save_plan,
+            );
         }
         if let Some(run_plan) = run_plan {
             return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
@@ -6380,6 +6384,24 @@ fn run_remote_verify_workflow(
     )
 }
 
+fn run_remote_save_workflow(
+    daemon: &str,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
+        .map_err(control_client_error)?;
+    let report = runtime.block_on(run_remote_control_client_save_workflow_async(
+        &client, save_plan,
+    ))?;
+    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
+}
+
 fn daemon_rpc_endpoint(daemon: &str) -> String {
     if daemon.contains("://") {
         daemon.to_string()
@@ -7649,6 +7671,8 @@ where
                     &mut state_updates,
                 )
                 .await?;
+                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
+                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
                 wait_for_save_workflow_summary(
                     client,
                     created.session,
@@ -7658,6 +7682,7 @@ where
                             && candidate.quanta_stepped > summary.quanta_stepped
                     },
                     "paused requested virtual-time save boundary",
+                    max_attempts,
                 )
                 .await?
             } else {
@@ -7779,6 +7804,250 @@ where
         state_updates.push(final_state.clone());
     }
 
+    Ok(SaveWorkflowReport {
+        run: RunWorkflowReport {
+            status: BackendCommandStatus::Passed,
+            created_state: format!("{:?}", created.state).to_ascii_lowercase(),
+            final_state,
+            outcome: Some(OutcomeKind::Passed),
+            terminal_savepoint: Some(oracle.fat_checkpoint),
+            final_frontier_ticks: stopped
+                .as_ref()
+                .map(|summary| summary.frontier.ticks)
+                .unwrap_or(boundary.frontier.ticks)
+                .max(boundary.frontier.ticks),
+            final_quanta: stopped
+                .as_ref()
+                .map(|summary| summary.quanta_stepped)
+                .unwrap_or(boundary.quanta_stepped)
+                .max(boundary.quanta_stepped),
+            budget_timed_out: false,
+            state_updates,
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands,
+            watch_statuses: Vec::new(),
+        },
+        oracle,
+    })
+}
+
+async fn run_remote_control_client_save_workflow_async<C>(
+    client: &C,
+    save_plan: &SaveInvocationPlan,
+) -> Result<SaveWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
+    if matches!(save_plan.at, SaveAtArg::Property | SaveAtArg::Marker) {
+        return Err(backend_error(
+            "save selector workflows over a remote daemon require breakpoint-firing query RPC support tracked by T-CLI-9",
+        ));
+    }
+    let run_plan = &save_plan.run_plan;
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
+        .with_start_paused(true);
+    let created = client
+        .create_session(request)
+        .await
+        .map_err(save_control_client_error)?;
+    let mut acknowledged_commands = Vec::new();
+    let mut state_updates = Vec::new();
+    let mut command_id = 1;
+
+    let boundary = match save_plan.at {
+        SaveAtArg::Quiescence => {
+            let before =
+                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
+                    .await?;
+            send_save_workflow_command(
+                client,
+                created.session,
+                &mut command_id,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?;
+            wait_for_save_workflow_advanced_paused(
+                client,
+                created.session,
+                &before,
+                "paused remote quiescence save boundary",
+            )
+            .await?
+        }
+        SaveAtArg::VirtualTime => {
+            let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
+                usage_error("save --at virtual-time requires --max-virtual-time <dur>")
+            })?;
+            let summary =
+                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
+                    .await?;
+            let boundary = if summary.frontier.ticks < budget {
+                send_save_workflow_command(
+                    client,
+                    created.session,
+                    &mut command_id,
+                    SessionCommand::Step {
+                        mode: StepMode::Duration(SimDuration {
+                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                        }),
+                    },
+                    &mut acknowledged_commands,
+                    &mut state_updates,
+                )
+                .await?;
+                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
+                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
+                wait_for_save_workflow_summary(
+                    client,
+                    created.session,
+                    |candidate| {
+                        candidate.state == LiveStateKind::Paused
+                            && candidate.frontier.ticks >= budget
+                            && candidate.quanta_stepped > summary.quanta_stepped
+                    },
+                    "paused requested remote virtual-time save boundary",
+                    max_attempts,
+                )
+                .await?
+            } else {
+                summary
+            };
+            if boundary.frontier.ticks != budget {
+                return Err(CliError::Identity(format!(
+                    "save remote virtual-time boundary reached {}, expected {}",
+                    boundary.frontier.ticks, budget
+                )));
+            }
+            boundary
+        }
+        SaveAtArg::Property | SaveAtArg::Marker => unreachable!("selector saves rejected above"),
+    };
+
+    let snapshot_response = send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::query_snapshot(),
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let snapshot = match snapshot_response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(other) => {
+            return Err(save_backend_error(format!(
+                "remote save boundary snapshot returned unexpected query payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(save_backend_error(
+                "remote save boundary snapshot returned no query payload",
+            ));
+        }
+    };
+    let savepoint_response = send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::CreateSavepoint {
+            label: save_plan.label.clone(),
+            reply: CommandReply::discard(),
+        },
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let savepoint = savepoint_response.savepoint_info.ok_or_else(|| {
+        save_backend_error("remote savepoint command returned no savepoint payload")
+    })?;
+    if savepoint.label != save_plan.label {
+        return Err(CliError::Identity(format!(
+            "remote savepoint label mismatch: expected `{}`, got `{}`",
+            save_plan.label, savepoint.label
+        )));
+    }
+    let configuration = snapshot.configuration.id();
+    if savepoint.configuration != configuration {
+        return Err(CliError::Identity(format!(
+            "remote savepoint configuration {} did not match boundary snapshot {}",
+            format_content_hash_ref(savepoint.configuration),
+            format_content_hash_ref(configuration)
+        )));
+    }
+    let confirmed_snapshot_response = send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::query_snapshot(),
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let confirmed_snapshot = match confirmed_snapshot_response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(other) => {
+            return Err(save_backend_error(format!(
+                "remote savepoint confirmation snapshot returned unexpected query payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(save_backend_error(
+                "remote savepoint confirmation snapshot returned no query payload",
+            ));
+        }
+    };
+    if confirmed_snapshot.configuration.id() != configuration {
+        return Err(CliError::Identity(format!(
+            "remote savepoint confirmation configuration {} did not match boundary snapshot {}",
+            format_content_hash_ref(confirmed_snapshot.configuration.id()),
+            format_content_hash_ref(configuration)
+        )));
+    }
+    if confirmed_snapshot.frontier != boundary.frontier {
+        return Err(CliError::Identity(format!(
+            "remote savepoint confirmation frontier {} did not match boundary {}",
+            confirmed_snapshot.frontier.ticks, boundary.frontier.ticks
+        )));
+    }
+    let oracle = validate_savepoint_checkpoint(
+        save_plan,
+        &snapshot.configuration,
+        &savepoint.checkpoint,
+        boundary.frontier,
+    )?;
+    send_save_workflow_command(
+        client,
+        created.session,
+        &mut command_id,
+        SessionCommand::Stop,
+        &mut acknowledged_commands,
+        &mut state_updates,
+    )
+    .await?;
+    let stopped = client
+        .list_sessions()
+        .await
+        .map_err(control_client_error)?
+        .sessions
+        .into_iter()
+        .find(|summary| summary.session == created.session);
+    let final_state = match save_plan.at {
+        SaveAtArg::Quiescence => String::from("quiescent"),
+        SaveAtArg::VirtualTime => String::from("virtual-time"),
+        SaveAtArg::Property | SaveAtArg::Marker => unreachable!("selector rejected above"),
+    };
+    if state_updates.last() != Some(&final_state) {
+        state_updates.push(final_state.clone());
+    }
     Ok(SaveWorkflowReport {
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
@@ -7998,6 +8267,7 @@ where
         session,
         |summary| summary.state == expected,
         &description,
+        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
     )
     .await
 }
@@ -8020,6 +8290,7 @@ where
                 && summary.quanta_stepped > before.quanta_stepped
         },
         description,
+        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
     )
     .await
 }
@@ -8029,11 +8300,12 @@ async fn wait_for_save_workflow_summary<C>(
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
     description: &str,
+    max_attempts: u64,
 ) -> Result<crucible_api::SessionSummary, CliError>
 where
     C: ControlClient + Sync,
 {
-    for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+    for _ in 0..max_attempts {
         let sessions = client
             .list_sessions()
             .await
@@ -14380,6 +14652,125 @@ mod tests {
         let qemu_dispatch_handle = fs::read_to_string(qemu_dispatch_out)?;
         assert!(qemu_dispatch_handle.contains("label\tqemu-dispatch-save\n"));
         assert!(qemu_dispatch_handle.contains("oracle\tfat==thin-passed\n"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let scenario = write_valid_run_scenario(&temp)?;
+        let daemon = spawn_production_lifecycle_server()?;
+        let out = temp.path().join("remote.crucible-savepoint");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon.clone(),
+            String::from("--seed"),
+            String::from("18"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("remote-save"),
+            String::from("--out"),
+            out.display().to_string(),
+        ]);
+        let Commands::Save(args) = &cli.command else {
+            panic!("expected save command");
+        };
+        let save_plan = plan_save_invocation(args, temp.path(), &cli.artifact_dir)?;
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("save should resolve a seed");
+        let backend_plan = plan_backend_selection(&cli)?.expect("save should require backend");
+        assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+
+        let mut outcome = execute_backend_routed_command(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            Some(&seed_plan),
+            Some(&save_plan.run_plan),
+            None,
+            Some(&save_plan),
+            &mut NullBackendCommandRunner,
+        )?;
+        export_savepoint_handle(&save_plan, &mut outcome)?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
+        assert!(
+            outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("save-oracle\tstatus=fat==thin-passed"))
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "save_oracle_validation")
+        );
+        assert!(
+            !outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("save-qemu-runner\t"))
+        );
+        let handle = fs::read_to_string(out)?;
+        assert!(handle.contains("label\tremote-save\n"));
+        assert!(handle.contains("oracle\tfat==thin-passed\n"));
+
+        let dispatch_out = temp.path().join("remote-dispatch.crucible-savepoint");
+        let dispatch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon.clone(),
+            String::from("--seed"),
+            String::from("19"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("remote-dispatch-save"),
+            String::from("--out"),
+            dispatch_out.display().to_string(),
+        ]);
+        dispatch(&dispatch_cli)?;
+        let dispatch_handle = fs::read_to_string(dispatch_out)?;
+        assert!(dispatch_handle.contains("label\tremote-dispatch-save\n"));
+        assert!(dispatch_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let virtual_time_out = temp.path().join("remote-virtual-time.crucible-savepoint");
+        let virtual_time_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--daemon"),
+            daemon,
+            String::from("--seed"),
+            String::from("20"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("remote-virtual-time-save"),
+            String::from("--out"),
+            virtual_time_out.display().to_string(),
+        ]);
+        dispatch(&virtual_time_cli)?;
+        let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
+        assert!(virtual_time_handle.contains("label\tremote-virtual-time-save\n"));
+        assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
+        assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
 
         Ok(())
     }

@@ -18,8 +18,8 @@ use axum::routing::post;
 use bytes::Bytes;
 use crucible::{ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, Seed};
 use crucible_session::{
-    LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
-    SessionCommandKind,
+    EngineState, LifecycleStateKind, LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind,
+    QueryResult, SessionCommand, SessionCommandKind, StepMode,
 };
 use futures_util::stream;
 use tokio::net::TcpListener;
@@ -614,11 +614,23 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
     let command_line = lines.next();
     let next_line = lines.next();
-    let (query_line, trailing_line) = match next_line {
-        Some(line) if line.starts_with("query=") => (Some(line), lines.next()),
-        line => (None, line),
+    let (query_line, savepoint_label_line, step_duration_line, trailing_line) = match next_line {
+        Some(line) if line.starts_with("query=") => (Some(line), None, None, lines.next()),
+        Some(line) if line.starts_with("savepoint-label=") => {
+            (None, Some(line), None, lines.next())
+        }
+        Some(line) if line.starts_with("step-duration-nanos=") => {
+            (None, None, Some(line), lines.next())
+        }
+        line => (None, None, None, line),
     };
-    let command = parse_session_command(command_line, "command=", query_line)?;
+    let command = parse_session_command(
+        command_line,
+        "command=",
+        query_line,
+        savepoint_label_line,
+        step_duration_line,
+    )?;
     reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
@@ -692,20 +704,80 @@ fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
     query_line: Option<&str>,
+    savepoint_label_line: Option<&str>,
+    step_duration_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
         .ok_or_else(|| format!("unknown command `{command_kind_wire}`"))?;
     if command_kind == SessionCommandKind::Query {
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
         let query_line = query_line
             .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
         return Ok(SessionCommand::Query {
             kind: parse_query_kind_line(Some(query_line))?,
             reply: crucible_session::CommandReply::discard(),
         });
+    } else if command_kind == SessionCommandKind::CreateSavepoint {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
+        let label = match savepoint_label_line {
+            Some(line) => parse_hex_string_field(
+                Some(parse_wire_line(Some(line), "savepoint-label=")?),
+                "savepoint label",
+            )?,
+            None => String::from("lifecycle-model"),
+        };
+        return Ok(SessionCommand::CreateSavepoint {
+            label,
+            reply: crucible_session::CommandReply::discard(),
+        });
+    } else if command_kind == SessionCommandKind::StepDuration {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        let nanos = match step_duration_line {
+            Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
+            None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
+        };
+        return Ok(SessionCommand::Step {
+            mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+        });
     } else if query_line.is_some() {
         return Err(format!(
             "command `{command_kind_wire}` does not accept a query payload"
+        ));
+    } else if savepoint_label_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a savepoint label"
+        ));
+    } else if step_duration_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a step duration"
         ));
     }
     command_kind
@@ -722,9 +794,7 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
     {
         "snapshot" => {
             reject_extra_query_field(fields.next())?;
-            Err(String::from(
-                "snapshot query is not supported by the RPC wire format",
-            ))
+            Ok(QueryKind::Snapshot)
         }
         "breakpoint-firings" => {
             reject_extra_query_field(fields.next())?;
@@ -980,6 +1050,11 @@ fn encode_send_response(response: &SendResponse) -> String {
         "query-result",
         &query_result_wire(response.query_result.as_ref()),
     );
+    push_wire_line(
+        &mut output,
+        "savepoint-info",
+        &savepoint_info_wire(response.savepoint_info.as_ref()),
+    );
     output
 }
 
@@ -997,9 +1072,84 @@ fn query_result_wire(result: Option<&QueryResult>) -> String {
             sample.at.ticks,
             sample.fingerprint.hash.to_hex()
         ),
-        Some(QueryResult::Snapshot(_)) => String::from("unsupported-snapshot"),
+        Some(QueryResult::Snapshot(snapshot)) => {
+            let terminal = snapshot
+                .terminal_savepoint
+                .as_ref()
+                .map(|checkpoint| hex_encode(&checkpoint.to_compact_binary()))
+                .unwrap_or_else(|| String::from("none"));
+            format!(
+                "snapshot|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                snapshot_engine_state_wire(&snapshot.state),
+                snapshot.frontier.ticks,
+                snapshot.event_log_len,
+                snapshot.quanta,
+                snapshot.configuration.def.id().to_hex(),
+                snapshot.configuration.def.seed().to_hex(),
+                snapshot.configuration.def.app_random_draw_cap(),
+                hex_encode(&snapshot.configuration.schedule.to_compact_binary()),
+                terminal
+            )
+        }
         Some(QueryResult::BreakpointFirings(_)) => String::from("unsupported-breakpoint-firings"),
         None => String::from("none"),
+    }
+}
+
+fn savepoint_info_wire(info: Option<&crucible_session::SavepointInfo>) -> String {
+    match info {
+        Some(info) => format!(
+            "savepoint|{}|{}|{}",
+            hex_encode(info.label.as_bytes()),
+            info.configuration.to_hex(),
+            hex_encode(&info.checkpoint.to_compact_binary())
+        ),
+        None => String::from("none"),
+    }
+}
+
+fn snapshot_engine_state_wire(state: &EngineState) -> String {
+    match state {
+        EngineState::Loaded => String::from("loaded"),
+        EngineState::Running => String::from("running"),
+        EngineState::Paused { reason } => format!("paused:{}", pause_reason_wire(reason)),
+        EngineState::Stopped { outcome } => format!("stopped:{}", snapshot_outcome_wire(outcome)),
+    }
+}
+
+fn pause_reason_wire(reason: &PauseReason) -> String {
+    match reason {
+        PauseReason::Instantiated => String::from("instantiated"),
+        PauseReason::UserRequested => String::from("user-requested"),
+        PauseReason::Breakpoint { id } => format!("breakpoint:{id}"),
+        PauseReason::StepComplete { mode } => format!("step:{}", step_mode_wire(*mode)),
+    }
+}
+
+fn step_mode_wire(mode: StepMode) -> String {
+    match mode {
+        StepMode::Quantum => String::from("quantum"),
+        StepMode::Event => String::from("event"),
+        StepMode::Assertion => String::from("assertion"),
+        StepMode::Timer => String::from("timer"),
+        StepMode::Duration(duration) => format!("duration:{}", duration.nanos),
+    }
+}
+
+fn snapshot_outcome_wire(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Passed => String::from("passed"),
+        Outcome::Failed { violations } => {
+            let violations = violations
+                .iter()
+                .map(|violation| hex_encode(violation.as_bytes()))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("failed:{violations}")
+        }
+        Outcome::Timeout => String::from("timeout"),
+        Outcome::Crashed { detail } => format!("crashed:{}", hex_encode(detail.as_bytes())),
+        Outcome::Stopped => String::from("stopped"),
     }
 }
 

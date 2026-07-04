@@ -1713,6 +1713,39 @@ mod tests {
     }
 
     #[test]
+    fn compact_checkpoint_decode_rejects_inconsistent_outer_shape() {
+        let config = Configuration::genesis(generated_scenario(87));
+        let valid = fat_checkpoint_for(&config);
+
+        let mut fat_without_state = valid.clone();
+        fat_without_state.state = None;
+        assert!(matches!(
+            Checkpoint::from_compact_binary(&fat_without_state.to_compact_binary()),
+            Err(EngineError::ScenarioSerialization { reason })
+                if reason == "fat checkpoint is missing materialized state"
+        ));
+
+        let mut thin_with_state = Checkpoint::new(config.id(), config.id(), CheckpointKind::Thin);
+        thin_with_state.state = valid.state.clone();
+        assert!(matches!(
+            Checkpoint::from_compact_binary(&thin_with_state.to_compact_binary()),
+            Err(EngineError::ScenarioSerialization { reason })
+                if reason == "thin checkpoint carries materialized state"
+        ));
+
+        let mut identity_mismatch = valid;
+        identity_mismatch.id = ContentHash::from_canonical_material(
+            "crucible.test.invalid-checkpoint",
+            "identity-mismatch",
+        );
+        assert!(matches!(
+            Checkpoint::from_compact_binary(&identity_mismatch.to_compact_binary()),
+            Err(EngineError::ScenarioSerialization { reason })
+                if reason == "checkpoint id does not match configuration id"
+        ));
+    }
+
+    #[test]
     fn temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth() {
         let scenario = generated_scenario(76);
         let genesis = Configuration::genesis(scenario.clone());
@@ -5034,6 +5067,23 @@ tag = "negative-time"
         let pinned_genesis_artifact =
             ReproductionArtifact::from_pinned_configuration(&pinned_genesis)
                 .unwrap_or_else(|error| panic!("pinned genesis should capture: {error}"));
+        let checkpoint_configuration = Configuration {
+            def: artifact.scenario_def(),
+            schedule: artifact.schedule().clone(),
+        };
+        let genesis_configuration = pinned_genesis.configuration().clone();
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &checkpoint_configuration,
+            Some(&genesis_configuration),
+            VirtualTime { ticks: 7 },
+            std::collections::BTreeMap::new(),
+            CheckpointKind::Fat,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap_or_else(|error| panic!("checkpoint should record: {error}"));
+        let checkpoint_binary = checkpoint.to_compact_binary();
+        let decoded_checkpoint = Checkpoint::from_compact_binary(&checkpoint_binary)
+            .unwrap_or_else(|error| panic!("checkpoint binary should parse: {error}"));
         let drifted_schedule = artifact.schedule().appended(Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("node-1"),
             value: 99,
@@ -5080,6 +5130,11 @@ tag = "negative-time"
                 .replay()
                 .unwrap_or_else(|error| panic!("offline replay should verify: {error}")),
             replay
+        );
+        assert_eq!(decoded_checkpoint, checkpoint);
+        assert_eq!(
+            decoded_checkpoint.to_compact_binary(),
+            checkpoint.to_compact_binary()
         );
         assert_eq!(pinned_genesis_artifact.scenario_form(), pinned.form());
         assert!(pinned_genesis_artifact.schedule().is_empty());

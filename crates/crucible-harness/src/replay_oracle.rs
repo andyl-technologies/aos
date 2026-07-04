@@ -1270,7 +1270,7 @@ mod tests {
             ),
             shmem_abi_version: String::from("1"),
             guest_host_protocol_version: String::from("1"),
-            rpc_abi_version: String::from("2.0.0"),
+            rpc_abi_version: String::from("2.2.0"),
             rpc_abi_build: String::from("crucible-rpc-abi-v2"),
             plugin_abi: String::from("unit-test-plugin-abi"),
         }
