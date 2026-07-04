@@ -1,6 +1,7 @@
 //! The exhaustive `TreeWalkErrorKind` enum enumerating every evaluation failure.
 
 use super::*;
+use crate::eval::TreeWalkThunkAllocationError;
 
 /// The category of a tree-walk evaluation failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -34,6 +35,14 @@ pub enum TreeWalkErrorKind {
         kind: IrKind,
         /// The expected payload contract.
         expected: &'static str,
+    },
+    /// Thunk allocation planning rejected a malformed node or missing proof.
+    #[error("thunk allocation planning failed at node {id:?}: {source}")]
+    ThunkAllocation {
+        /// The thunk allocation node being planned.
+        id: IrId,
+        /// The lower-level planning failure.
+        source: TreeWalkThunkAllocationError,
     },
     /// A child-pool slice payload did not resolve through the IR arena.
     #[error("invalid child slice {slice:?} at node {id:?}")]

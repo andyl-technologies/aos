@@ -154,6 +154,83 @@ fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
 }
 
 #[test]
+fn single_entry_thunk_plan_currently_allocates_update_storage() {
+    let mut ir = lower("[ (1 + 6) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Unknown,
+        cardinality: crate::compile::Cardinality::Once,
+        escape: crate::compile::Escape::NoEscape,
+    };
+
+    let outcome = eval_whnf_owned(&ir).expect("single-entry thunk alloc evaluates");
+    let element = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    assert_eq!(element.tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+    let thunk = outcome
+        .heap()
+        .get_thunk(element)
+        .expect("element is a heap-owned thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn demanded_absent_thunk_plan_currently_allocates_update_storage() {
+    let mut ir = lower("[ (1 + 6) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Unknown,
+        cardinality: crate::compile::Cardinality::Absent,
+        escape: crate::compile::Escape::NoEscape,
+    };
+
+    let outcome = eval_whnf_owned(&ir).expect("absent demanded thunk alloc evaluates");
+    let element = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    assert_eq!(element.tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+    let thunk = outcome
+        .heap()
+        .get_thunk(element)
+        .expect("element is a heap-owned thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn demanded_thunk_allocation_rejects_missing_fact_records() {
+    let mut ir = lower("[ (1 + 6) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    ir.facts = IrFacts::conservative(thunk_alloc.index());
+
+    let error = eval_whnf_owned(&ir).expect_err("missing thunk facts reject");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::ThunkAllocation {
+            id: thunk_alloc,
+            source: crate::eval::TreeWalkThunkAllocationError::Downgrade(
+                crate::compile::FrameLocalThunkDowngradeError::MissingFact { id: thunk_alloc },
+            ),
+        }
+    );
+}
+
+#[test]
 fn strict_thunk_alloc_facts_evaluate_eagerly() {
     for (escape, label) in [
         (crate::compile::Escape::Escapes, "eager"),

@@ -1,6 +1,9 @@
 //! Heap allocation, value interning, and attrset/path materialization helpers.
 
 use super::*;
+use crate::eval::{
+    TreeWalkThunkAllocationContext, TreeWalkThunkAllocationPlan, tree_walk_thunk_allocation_plan,
+};
 use crate::runtime::barrier::{
     runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
 };
@@ -589,32 +592,48 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        let IrData::Node(body) = node.data else {
+        let IrData::Node(_) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
-        match self.binding_lowering_for_thunk_alloc(id) {
-            BindingLowering::Thunk => {
-                let value = self.alloc_thunk_for_node(id, body, node.span)?;
-                let region_plan =
-                    self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
-                self.record_source_thunk_region_plan_decision(region_plan);
-                Ok(value)
+        let context = self.thunk_allocation_context();
+        let plan =
+            tree_walk_thunk_allocation_plan(self.current_ir(), id, context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::ThunkAllocation { id, source }, node.span)
+            })?;
+        match plan {
+            TreeWalkThunkAllocationPlan::UpdateSlot(update) => {
+                self.alloc_update_thunk_from_plan(update.thunk(), update.body(), node.span)
             }
-            BindingLowering::Eager | BindingLowering::Scalar => {
+            TreeWalkThunkAllocationPlan::SingleEntry(single_entry) => self
+                .alloc_update_thunk_from_plan(single_entry.thunk(), single_entry.body(), node.span),
+            TreeWalkThunkAllocationPlan::Omit(omitted) => {
+                self.alloc_update_thunk_from_plan(omitted.thunk(), omitted.body(), node.span)
+            }
+            TreeWalkThunkAllocationPlan::ElideToWhnf(elision) => {
                 self.increment_thunks_elided();
-                self.eval_node(body)
+                self.eval_node(elision.body())
             }
         }
     }
 
-    pub(super) fn binding_lowering_for_thunk_alloc(&self, id: IrId) -> BindingLowering {
+    fn thunk_allocation_context(&self) -> TreeWalkThunkAllocationContext {
         if self.order_sensitive_binding_depth > 0 {
-            return BindingLowering::Thunk;
+            TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly
+        } else {
+            TreeWalkThunkAllocationContext::DemandPosition
         }
-        self.current_ir()
-            .node_facts(id)
-            .map(|facts| facts.binding_lowering())
-            .unwrap_or_default()
+    }
+
+    fn alloc_update_thunk_from_plan(
+        &mut self,
+        id: IrId,
+        body: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.alloc_thunk_for_node(id, body, span)?;
+        let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
+        self.record_source_thunk_region_plan_decision(region_plan);
+        Ok(value)
     }
 
     pub(super) fn begin_order_sensitive_binding_assembly(&mut self) {

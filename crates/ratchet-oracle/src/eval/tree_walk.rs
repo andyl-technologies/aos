@@ -103,7 +103,7 @@ use crate::cache::{
     lowered_ir_fingerprint,
 };
 use crate::compile::{
-    BindingLowering, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
+    DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
     IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness,
     dead_binding_elimination_plan, resolve,
