@@ -1048,6 +1048,54 @@ fn escape_keeps_with_chain_aggregate_scalar_primop_arguments_conservative() {
 }
 
 #[test]
+fn escape_rejects_malformed_with_chain_scope_references_for_aggregates() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let missing_scope = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([IrWithChain::new(Box::new([missing_scope]))]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+
+    let error = annotate_escape(&mut ir).expect_err("malformed with-chain scope rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidNode { id: missing_scope }
+    );
+}
+
+#[test]
 fn escape_keeps_dynamic_attr_path_aggregate_scalar_primop_arguments_conservative() {
     let list = IrId::new(0);
     let primop = IrId::new(1);
@@ -1147,6 +1195,25 @@ fn escape_keeps_with_chain_strict_wrapping_thunks_conservative() {
 
     assert_eq!(escape(&ir, body), Escape::NoEscape);
     assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_rejects_malformed_with_chain_scope_references_for_strict_thunks() {
+    let body = IrId::new(0);
+    let apply = IrId::new(5);
+    let missing_scope = IrId::new(99);
+    let mut ir = raw_identity_thunk_ir(
+        apply,
+        body,
+        Box::new([IrWithChain::new(Box::new([missing_scope]))]),
+    );
+
+    let error = annotate_escape(&mut ir).expect_err("malformed with-chain scope rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidNode { id: missing_scope }
+    );
 }
 
 fn raw_identity_thunk_ir(root: IrId, aggregate_child: IrId, with_chains: Box<[IrWithChain]>) -> Ir {

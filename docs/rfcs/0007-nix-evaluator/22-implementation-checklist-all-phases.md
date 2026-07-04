@@ -8278,7 +8278,9 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `annotate_escape` now rejects malformed side-table references while
       rechecking strict aggregate uniqueness for scalar-result primop consumers:
       dangling aggregate binding values, dangling dynamic binding keys, and
-      dangling dynamic attr-path segment ids. This is an analyzer-boundary check
+      dangling dynamic attr-path segment ids. The same uniqueness rechecks now
+      validate dynamic `with`-chain scope ids before stale or forged facts can
+      ignore malformed scope side tables. This is an analyzer-boundary check
       only; it does not expand the aggregate escape surface or add optimized
       storage lowering.
 - [x] Current scalar replacement planning precursor:
@@ -8307,9 +8309,10 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       strict/no-escape proofs over malformed aggregate and primop side tables:
       unresolved primop symbols, invalid primop child slices, dangling primop
       child ids, invalid attrset shapes, invalid attrset binding slices,
-      invalid attr-path ids, and dangling dynamic attr-path segment ids. This is
-      a planner-boundary hardening check only; it does not add new
-      scalar-replacement candidates or optimized storage lowering.
+      invalid attr-path ids, dangling dynamic attr-path segment ids, and
+      dangling `with`-chain scope ids. This is a planner-boundary hardening
+      check only; it does not add new scalar-replacement candidates or optimized
+      storage lowering.
 - [x] Current primop escape-signature precursor:
       `ratchet-core::analysis::escape_signature` classifies only direct primops
       whose result is guaranteed to be an immediate scalar, and `annotate_escape`

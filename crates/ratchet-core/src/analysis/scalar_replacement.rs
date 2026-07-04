@@ -150,7 +150,8 @@ fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, Scalar
     let mut scalar_argument_count = 0usize;
 
     for with_chain in &ir.with_chains {
-        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+        reference_count =
+            reference_count.saturating_add(count_validated_ids(ir, &with_chain.scopes, argument)?);
     }
 
     for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
@@ -285,6 +286,19 @@ fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], ScalarRe
 
 fn count_ids(ids: &[IrId], target: IrId) -> usize {
     ids.iter().filter(|id| **id == target).count()
+}
+
+fn count_validated_ids(
+    ir: &Ir,
+    ids: &[IrId],
+    target: IrId,
+) -> Result<usize, ScalarReplacementError> {
+    let mut count = 0usize;
+    for id in ids {
+        validate_node(ir, *id)?;
+        count += count_id(*id, target);
+    }
+    Ok(count)
 }
 
 fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {

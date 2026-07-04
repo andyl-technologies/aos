@@ -329,7 +329,8 @@ fn unique_direct_identity_lambda_argument(
     let mut identity_argument_count = 0usize;
 
     for with_chain in &ir.with_chains {
-        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+        reference_count =
+            reference_count.saturating_add(count_validated_ids(ir, &with_chain.scopes, argument)?);
     }
 
     for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
@@ -519,6 +520,15 @@ fn count_ids(ids: &[IrId], target: IrId) -> usize {
     ids.iter().filter(|id| **id == target).count()
 }
 
+fn count_validated_ids(ir: &Ir, ids: &[IrId], target: IrId) -> Result<usize, EscapeAnalysisError> {
+    let mut count = 0usize;
+    for id in ids {
+        validate_node(ir, *id)?;
+        count += count_id(*id, target);
+    }
+    Ok(count)
+}
+
 fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {
     id.map_or(0, |id| count_id(id, target))
 }
@@ -550,7 +560,8 @@ fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, Escape
     let mut scalar_argument_count = 0usize;
 
     for with_chain in &ir.with_chains {
-        reference_count = reference_count.saturating_add(count_ids(&with_chain.scopes, argument));
+        reference_count =
+            reference_count.saturating_add(count_validated_ids(ir, &with_chain.scopes, argument)?);
     }
 
     for (index, node) in ir.arena.nodes().iter().copied().enumerate() {

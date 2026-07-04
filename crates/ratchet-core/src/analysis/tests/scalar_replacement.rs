@@ -593,6 +593,54 @@ fn scalar_replacement_plan_retains_with_chain_aggregate_despite_forged_proofs() 
 }
 
 #[test]
+fn scalar_replacement_plan_rejects_malformed_with_chain_scope_references() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let missing_scope = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(2),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([IrWithChain::new(Box::new([missing_scope]))]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir).expect_err("malformed with-chain scope rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_scope }
+    );
+}
+
+#[test]
 fn scalar_replacement_plan_retains_dynamic_attr_path_aggregate_despite_forged_proofs() {
     let list = IrId::new(0);
     let primop = IrId::new(1);
