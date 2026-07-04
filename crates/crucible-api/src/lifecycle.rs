@@ -19,10 +19,10 @@ use crucible::{
     SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
-    OutcomeKind, SessionActor, SessionCommand, SessionCommandKind, SessionControlLogEntry,
-    SessionControlPayload, SessionControlResult, SessionError, SessionReproductionLog,
-    SessionRunReport, SessionStateTransitionBus,
+    BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, Engine, LiveSnapshot,
+    LiveStateKind, OutcomeKind, SessionActor, SessionCommand, SessionCommandKind,
+    SessionControlLogEntry, SessionControlPayload, SessionControlResult, SessionError,
+    SessionReproductionLog, SessionRunReport, SessionStateTransitionBus,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -31,9 +31,9 @@ use tokio::task::JoinHandle;
 use crate::{
     AttachRequest, ClientControlStream, ClientWatchStream, CommandResultStatus, ControlClient,
     ControlClientError, ControlClientFuture, ControlPlaneEventLog, ControlTransportKind,
-    ControlWireModel, HelloRequest, HelloResponse, InProcessStreamingSession,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RpcAbiError, SendRequest, SendResponse, StreamingApiError,
-    negotiate_rpc_protocol,
+    ControlWireModel, HelloRequest, HelloResponse, InProcessLifecycleControlStream,
+    InProcessStreamingSession, RPC_OPEN_SET_PAYLOAD_KINDS, RpcAbiError, SendRequest, SendResponse,
+    StreamingApiError, negotiate_rpc_protocol,
 };
 
 /// Default actor mailbox capacity for lifecycle-created sessions.
@@ -1012,7 +1012,7 @@ where
         let engine = Engine::new(configuration, graph, loop_instance)
             .with_white_box_policies(white_box_policies);
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
-        let actor = SessionActor::new(engine, receiver);
+        let actor = SessionActor::new(engine, receiver).with_terminal_command_keepalive(true);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
@@ -1104,7 +1104,7 @@ where
 
         let checkpoint = resumed.checkpoint;
         let configuration = resumed.configuration.id();
-        let actor = resumed.session_actor;
+        let actor = resumed.session_actor.with_terminal_command_keepalive(true);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
@@ -1190,7 +1190,7 @@ where
                 session_id: request.session.id,
             },
         )?;
-        if runtime.sender.send(SessionCommand::Stop).await.is_err() {
+        if runtime.sender.send(actor_shutdown_command()).await.is_err() {
             join_actor(runtime.actor_task).await?;
             return Err(LifecycleApiError::CommandChannelClosed {
                 session_id: request.session.id,
@@ -1343,18 +1343,27 @@ where
         if command_kind == SessionCommandKind::Stop
             && response.result.status == CommandResultStatus::Accepted
         {
-            if let Some(runtime) = self.sessions.remove(&session.id) {
-                join_actor(runtime.actor_task).await?;
-            }
+            self.cleanup_accepted_streaming_stop(session).await?;
         }
 
         Ok(response)
+    }
+
+    async fn cleanup_accepted_streaming_stop(
+        &mut self,
+        session: SessionRef,
+    ) -> Result<(), ControlClientError> {
+        if let Some(runtime) = self.sessions.remove(&session.id) {
+            let _ = runtime.sender.send(actor_shutdown_command()).await;
+            join_actor(runtime.actor_task).await?;
+        }
+        Ok(())
     }
 }
 
 /// In-process [`ControlClient`] implementation for unary lifecycle methods.
 pub struct InProcessLifecycleClient<L, F> {
-    control_plane: tokio::sync::Mutex<LifecycleControlPlane<L, F>>,
+    control_plane: Arc<tokio::sync::Mutex<LifecycleControlPlane<L, F>>>,
     wire_model: ControlWireModel,
 }
 
@@ -1363,7 +1372,7 @@ impl<L, F> InProcessLifecycleClient<L, F> {
     #[must_use]
     pub fn new(control_plane: LifecycleControlPlane<L, F>) -> Self {
         Self {
-            control_plane: tokio::sync::Mutex::new(control_plane),
+            control_plane: Arc::new(tokio::sync::Mutex::new(control_plane)),
             wire_model: ControlWireModel::current(),
         }
     }
@@ -1471,13 +1480,24 @@ where
         request: AttachRequest,
     ) -> ControlClientFuture<'_, ClientControlStream> {
         Box::pin(async move {
-            let streaming_session = self
-                .control_plane
+            let control_plane = Arc::clone(&self.control_plane);
+            let streaming_session = control_plane
                 .lock()
                 .await
                 .streaming_session(request.session)?;
-            Ok(ClientControlStream::InProcess(
-                streaming_session.control(request)?,
+            let stream = streaming_session.control(request)?;
+            let cleanup_control_plane = Arc::clone(&control_plane);
+            Ok(ClientControlStream::InProcessLifecycle(
+                InProcessLifecycleControlStream::new(stream, move |session| {
+                    let cleanup_control_plane = Arc::clone(&cleanup_control_plane);
+                    async move {
+                        cleanup_control_plane
+                            .lock()
+                            .await
+                            .cleanup_accepted_streaming_stop(session)
+                            .await
+                    }
+                }),
             ))
         })
     }
@@ -1586,7 +1606,7 @@ async fn wait_for_live_state(
 }
 
 async fn cleanup_runtime(runtime: SessionRuntime) {
-    let _ = runtime.sender.send(SessionCommand::Stop).await;
+    let _ = runtime.sender.send(actor_shutdown_command()).await;
     if runtime.actor_task.is_finished() {
         let _ = runtime.actor_task.await;
         return;
@@ -1600,6 +1620,13 @@ async fn cleanup_runtime(runtime: SessionRuntime) {
     }
     runtime.actor_task.abort();
     let _ = runtime.actor_task.await;
+}
+
+fn actor_shutdown_command() -> SessionCommand {
+    SessionCommand::Acknowledge {
+        command: Box::new(SessionCommand::Stop),
+        reply: CommandReply::discard(),
+    }
 }
 
 async fn join_actor(

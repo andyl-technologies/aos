@@ -1082,10 +1082,11 @@ branch on the verdict without parsing output:
   command driving, instantiating the checkpoint through the session resume API,
   streaming `--watch` status at observed remote boundaries, advancing the
   resumed actor, stopping with a terminal savepoint, and replay-oracle-validating
-  that terminal materialization. It fails terminal remote interactive command
-  sequences explicitly before racing post-terminal snapshot collection. Full
-  closure remains blocked on terminal remote interactive finalization, real-QEMU
-  coverage, and full replay-oracle coverage across those runners.
+  that terminal materialization. Terminal remote interactive command sequences
+  now query the stopped snapshot, validate the actor-materialized terminal
+  savepoint, emit the same replay-oracle proof, and clean up the stopped remote
+  session. Full closure remains blocked on real-QEMU coverage and full
+  replay-oracle coverage across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

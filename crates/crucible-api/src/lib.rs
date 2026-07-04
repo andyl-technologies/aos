@@ -34,8 +34,8 @@ pub mod streaming;
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
     ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
-    RpcControlClient, RpcControlStream, RpcEndpoint, RpcTransportProtocol, RpcWatchStream,
-    assert_shared_wire_model,
+    InProcessLifecycleControlStream, RpcControlClient, RpcControlStream, RpcEndpoint,
+    RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,

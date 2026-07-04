@@ -71,10 +71,21 @@ const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
 
+type InProcessStopCleanup = Arc<
+    dyn Fn(
+            SessionRef,
+        )
+            -> Pin<Box<dyn Future<Output = Result<(), ControlClientError>> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
 /// Attached bidirectional `Control` stream returned by a [`ControlClient`].
 pub enum ClientControlStream {
     /// Same-process stream over the session actor mailbox and event-log hub.
     InProcess(crate::streaming::ControlStream),
+    /// Same-process lifecycle stream with accepted-`Stop` registry cleanup.
+    InProcessLifecycle(InProcessLifecycleControlStream),
     /// HTTP/2 RPC stream.
     Rpc(RpcControlStream),
 }
@@ -85,6 +96,7 @@ impl ClientControlStream {
     pub fn attached(&self) -> &Attached {
         match self {
             Self::InProcess(stream) => stream.attached(),
+            Self::InProcessLifecycle(stream) => stream.attached(),
             Self::Rpc(stream) => stream.attached(),
         }
     }
@@ -98,6 +110,9 @@ impl ClientControlStream {
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
         match self {
             Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
+            Self::InProcessLifecycle(stream) => {
+                stream.recv_event().await.map_err(ControlClientError::from)
+            }
             Self::Rpc(stream) => stream.recv_event().await,
         }
     }
@@ -114,6 +129,10 @@ impl ClientControlStream {
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
         match self {
             Self::InProcess(stream) => stream
+                .recv_state_update()
+                .await
+                .map_err(ControlClientError::from),
+            Self::InProcessLifecycle(stream) => stream
                 .recv_state_update()
                 .await
                 .map_err(ControlClientError::from),
@@ -137,8 +156,70 @@ impl ClientControlStream {
                 .send_command(command_id, command)
                 .await
                 .map_err(ControlClientError::from),
+            Self::InProcessLifecycle(stream) => stream.send_command(command_id, command).await,
             Self::Rpc(stream) => stream.send_command(command_id, command).await,
         }
+    }
+}
+
+/// Same-process lifecycle `Control` stream with lifecycle registry cleanup.
+///
+/// This wrapper preserves the raw streaming behavior while routing an accepted
+/// `Stop` through the owning lifecycle registry, matching the RPC control-send
+/// path.
+pub struct InProcessLifecycleControlStream {
+    stream: crate::streaming::ControlStream,
+    stop_cleanup: InProcessStopCleanup,
+}
+
+impl InProcessLifecycleControlStream {
+    pub(crate) fn new<C, Fut>(stream: crate::streaming::ControlStream, stop_cleanup: C) -> Self
+    where
+        C: Fn(SessionRef) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), ControlClientError>> + Send + 'static,
+    {
+        let stop_cleanup: InProcessStopCleanup = Arc::new(move |session| {
+            Box::pin(stop_cleanup(session))
+                as Pin<Box<dyn Future<Output = Result<(), ControlClientError>> + Send + 'static>>
+        });
+        Self {
+            stream,
+            stop_cleanup,
+        }
+    }
+
+    fn attached(&self) -> &Attached {
+        self.stream.attached()
+    }
+
+    async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
+        self.stream.recv_event().await
+    }
+
+    async fn recv_state_update(
+        &mut self,
+    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
+        self.stream.recv_state_update().await
+    }
+
+    async fn send_command(
+        &self,
+        command_id: u64,
+        command: SessionCommand,
+    ) -> Result<SendResponse, ControlClientError> {
+        let command_kind = SessionCommandKind::from(&command);
+        let session = self.stream.attached().session;
+        let response = self
+            .stream
+            .send_command(command_id, command)
+            .await
+            .map_err(ControlClientError::from)?;
+        if command_kind == SessionCommandKind::Stop
+            && response.result.status == CommandResultStatus::Accepted
+        {
+            (self.stop_cleanup)(session).await?;
+        }
+        Ok(response)
     }
 }
 

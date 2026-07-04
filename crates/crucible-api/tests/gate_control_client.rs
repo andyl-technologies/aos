@@ -613,6 +613,56 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
+    let client = InProcessLifecycleClient::new(lifecycle_control_plane());
+    let created = client
+        .create_session(
+            CreateSessionRequest::scenario_ref(
+                "api-control-client-scenario",
+                Seed::from_u64(30_516),
+            )
+            .with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("in-process CreateSession should succeed: {error}"));
+    assert_eq!(created.state, LiveStateKind::Paused);
+
+    let control = client
+        .control_attach(
+            AttachRequest::new(created.session).with_expected_epoch(created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control attach should succeed: {error}"));
+    let stopped = control
+        .send_command(30_517, SessionCommand::Stop)
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control Stop should clean up: {error}"));
+    assert_eq!(stopped.result.status, CommandResultStatus::Accepted);
+    assert_eq!(
+        stopped.state_update.map(|update| update.state),
+        Some(LiveStateKind::Stopped),
+    );
+
+    let sessions = client.list_sessions().await.unwrap_or_else(|error| {
+        panic!("in-process list after Control Stop should succeed: {error}")
+    });
+    assert!(
+        sessions.sessions.is_empty(),
+        "accepted in-process Control Stop should remove session: {:?}",
+        sessions.sessions
+    );
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("idempotent destroy after Control Stop should succeed: {error}")
+        });
+    assert_eq!(destroyed.session, created.session);
+    assert!(destroyed.already_absent);
+    assert!(!destroyed.stopped);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
