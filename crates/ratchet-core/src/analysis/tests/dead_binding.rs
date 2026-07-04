@@ -381,6 +381,288 @@ fn dead_binding_plan_rejects_malformed_absent_value_payloads() {
 }
 
 #[test]
+fn dead_binding_plan_rejects_dangling_absent_thunk_bodies() {
+    let value = IrId::new(0);
+    let body = IrId::new(1);
+    let root = IrId::new(2);
+    let missing_body = IrId::new(99);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(4, 8),
+                EffectClass::pure(),
+                IrData::Node(missing_body),
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(13, 14),
+                EffectClass::pure(),
+                IrData::Int(7),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 14),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"dead").expect("symbol interns");
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let error = dead_binding_elimination_plan(&ir).expect_err("dangling thunk body rejects");
+
+    assert_eq!(
+        error,
+        DeadBindingEliminationError::InvalidNode { id: missing_body }
+    );
+}
+
+#[test]
+fn dead_binding_plan_retains_dangling_thunk_bodies_required_by_cardinality() {
+    let value = IrId::new(0);
+    let body = IrId::new(1);
+    let root = IrId::new(2);
+    let missing_body = IrId::new(99);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(4, 8),
+                EffectClass::pure(),
+                IrData::Node(missing_body),
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(13, 14),
+                EffectClass::pure(),
+                IrData::Int(7),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 14),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"kept").expect("symbol interns");
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Once,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let plan = dead_binding_elimination_plan(&ir).expect("retained dangling thunk succeeds");
+
+    assert!(plan.is_empty());
+    assert_eq!(plan.retained().len(), 1);
+    assert_eq!(
+        plan.retained()[0].reason(),
+        DeadBindingRetentionReason::RequiredByCardinality {
+            cardinality: Cardinality::Once,
+        }
+    );
+}
+
+#[test]
+fn dead_binding_plan_retains_dangling_absent_but_strict_thunk_bodies() {
+    let value = IrId::new(0);
+    let body = IrId::new(1);
+    let root = IrId::new(2);
+    let missing_body = IrId::new(99);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(4, 8),
+                EffectClass::pure(),
+                IrData::Node(missing_body),
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(13, 14),
+                EffectClass::pure(),
+                IrData::Int(7),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 14),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"strict").expect("symbol interns");
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let plan = dead_binding_elimination_plan(&ir).expect("strict dangling thunk succeeds");
+
+    assert!(plan.is_empty());
+    assert_eq!(plan.retained().len(), 1);
+    assert_eq!(
+        plan.retained()[0].reason(),
+        DeadBindingRetentionReason::AbsentButStrict
+    );
+}
+
+#[test]
+fn dead_binding_plan_retains_dangling_thunk_bodies_for_dynamic_keys() {
+    let key = IrId::new(0);
+    let value = IrId::new(1);
+    let root = IrId::new(2);
+    let missing_body = IrId::new(99);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(4, 8),
+                EffectClass::pure(),
+                IrData::Node(missing_body),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body: key,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Dynamic(key),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let plan = dead_binding_elimination_plan(&ir).expect("dynamic-key dangling thunk succeeds");
+
+    assert!(plan.is_empty());
+    assert_eq!(plan.retained().len(), 1);
+    assert_eq!(
+        plan.retained()[0].reason(),
+        DeadBindingRetentionReason::DynamicBindingKey { key }
+    );
+}
+
+#[test]
 fn dead_binding_plan_rejects_invalid_dynamic_key_value_nodes() {
     let key = IrId::new(0);
     let value = IrId::new(99);

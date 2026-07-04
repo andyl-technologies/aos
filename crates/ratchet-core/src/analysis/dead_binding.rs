@@ -114,6 +114,7 @@ fn retention_reason(
     if facts.strictness == Strictness::Strict {
         return Ok(Some(DeadBindingRetentionReason::AbsentButStrict));
     }
+    validate_omittable_value_edges(ir, binding.value, *value_node)?;
     Ok(None)
 }
 
@@ -176,6 +177,27 @@ fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), DeadBinding
             expected: expected_payload(node.kind),
         })
     }
+}
+
+fn validate_omittable_value_edges(
+    ir: &Ir,
+    id: IrId,
+    node: crate::ir::IrNode,
+) -> Result<(), DeadBindingEliminationError> {
+    if node.kind != IrKind::ThunkAlloc {
+        return Ok(());
+    }
+    let IrData::Node(body) = node.data else {
+        return Err(DeadBindingEliminationError::InvalidPayload {
+            id,
+            kind: node.kind,
+            expected: expected_payload(node.kind),
+        });
+    };
+    ir.arena
+        .node(body)
+        .ok_or(DeadBindingEliminationError::InvalidNode { id: body })?;
+    Ok(())
 }
 
 fn expected_payload(kind: IrKind) -> &'static str {

@@ -8213,8 +8213,9 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       raw/imported IR cannot produce an omission plan under forged absent facts.
       It also rejects unresolved static binding-key symbols and malformed
       binding-value kind/payload pairs before absent facts can license
-      key-preserving omission. This is still a planner-boundary check; it does
-      not recursively validate all side-table references below an omitted value,
+      key-preserving omission, and it validates the direct body edge of omitted
+      thunk bindings. This is still a planner-boundary check; it does not
+      recursively validate all side-table references below an omitted value,
       rewrite IR, or improve usage precision.
 - [x] Current tree-walk dead-binding consumer:
       `ratchet-oracle` builds a module-local omitted-binding index from
