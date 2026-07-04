@@ -7501,6 +7501,24 @@ nurseries build on the bump arena.
       Chase-Lev deque, does not attach a real scheduler park token to the wait
       cell, cannot prevent future ready-work enqueueing, and does not satisfy
       the loom/Miri/TSan gate.
+- [x] Current Chase-Lev ready-work poll/preflight bridge:
+      `ratchet-oracle::eval::parallel_chase_lev_ready_work_queues` seeds
+      owner-local Chase-Lev ready-work deques and returns per-worker handles that
+      feed wait-or-steal hooks one poll at a time: local pop, peer steal, or idle
+      `ParallelReadyWorkParkPreflight`. Local/stolen polls preserve stable
+      task-index, initial-worker, and executing-worker metadata; idle polls
+      carry non-locking Chase-Lev deque length observations in worker-id order so
+      the existing `ParallelReadyWorkParkReadiness` checks can reject non-idle or
+      wrong-worker snapshots. Tests cover local-before-steal ordering, seeded and
+      drained preflight depths, idle readiness validation and rejection,
+      one-task poll metadata, idle polls not invoking the runner, and direct use
+      as the ready-work hook for `ParallelThunkWaitCell::claim_or_run_ready_then_wait`.
+      This is still an owner-local Chase-Lev hook-shape bridge only: its idle
+      snapshot is an observation that can become stale immediately, does not
+      reserve a scheduler park token, does not prevent future ready-work
+      enqueueing, does not prove live evaluator scheduler exhaustion, does not
+      replace the blocking waiter path with a lock-free waiter list, and does
+      not satisfy the loom/Miri/TSan gate.
 - [x] Current parallel thunk terminal-payload precursor:
       `ParallelThunkPayloadCell` layers typed terminal payload storage over the
       safe CAS/wait-cell protocol. The claim owner stores either a forced payload

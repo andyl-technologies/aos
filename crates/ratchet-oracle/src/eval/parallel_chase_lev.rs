@@ -81,9 +81,9 @@ impl<T> ParallelChaseLevWorkerQueues<T> {
     pub fn into_worker_queues(self) -> Vec<ParallelChaseLevWorkerQueue<T>> {
         let Self {
             worker_count,
+            task_count,
             workers,
             stealers,
-            ..
         } = self;
 
         workers
@@ -92,6 +92,7 @@ impl<T> ParallelChaseLevWorkerQueues<T> {
             .map(|(worker_id, local)| ParallelChaseLevWorkerQueue {
                 worker_id,
                 worker_count,
+                task_count,
                 local,
                 stealers: stealers.clone(),
             })
@@ -103,6 +104,7 @@ impl<T> ParallelChaseLevWorkerQueues<T> {
 pub struct ParallelChaseLevWorkerQueue<T> {
     worker_id: usize,
     worker_count: usize,
+    task_count: usize,
     local: Worker<ParallelChaseLevTask<T>>,
     stealers: Vec<Stealer<ParallelChaseLevTask<T>>>,
 }
@@ -116,6 +118,20 @@ impl<T> ParallelChaseLevWorkerQueue<T> {
     /// Returns the number of worker deques in the pool.
     pub const fn worker_count(&self) -> usize {
         self.worker_count
+    }
+
+    /// Returns the number of tasks originally seeded into the pool.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns observed queue depths in worker-id order.
+    ///
+    /// This is a non-locking observation over the underlying Chase-Lev deque
+    /// lengths. Under concurrent workers, the returned depths can become stale
+    /// immediately and are not a scheduler park token.
+    pub fn queue_lengths_snapshot(&self) -> Vec<usize> {
+        self.stealers.iter().map(Stealer::len).collect()
     }
 
     /// Attempts one local pop or peer-steal pass.
@@ -151,7 +167,7 @@ impl<T> ParallelChaseLevWorkerQueue<T> {
         ParallelChaseLevTake::Empty
     }
 
-    /// Repeats [`Self::try_take_next`] until a task or true empty pass is observed.
+    /// Repeats [`Self::try_take_next`] until a task or non-retry empty pass is observed.
     pub fn take_next_retrying(&self) -> Option<ParallelChaseLevTaskTake<T>> {
         loop {
             match self.try_take_next() {
@@ -311,6 +327,8 @@ mod tests {
             vec![0, 1, 2]
         );
         assert!(worker_queues.iter().all(|queue| queue.worker_count() == 3));
+        assert!(worker_queues.iter().all(|queue| queue.task_count() == 7));
+        assert_eq!(worker_queues[0].queue_lengths_snapshot(), vec![3, 2, 2]);
     }
 
     #[test]
