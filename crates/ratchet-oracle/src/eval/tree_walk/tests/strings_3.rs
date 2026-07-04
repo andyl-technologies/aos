@@ -283,6 +283,7 @@ fn invalid_expression_nodes_report_kind_and_span() {
 fn pipe_operators_apply_functions() {
     let mut symbols = SymbolTable::new();
     let to_string = symbols.intern(b"toString").expect("symbol interns");
+    let site = IrInlineCacheSiteId::new(0);
 
     let forward = manual_ir_with_symbols(
         IrId::new(2),
@@ -291,7 +292,10 @@ fn pipe_operators_apply_functions() {
             pure_node(
                 IrKind::GlobalVar,
                 Span::new(6, 14),
-                IrData::Symbol(to_string),
+                IrData::GlobalVar {
+                    site,
+                    symbol: to_string,
+                },
             ),
             pure_node(
                 IrKind::BinOp,
@@ -321,7 +325,10 @@ fn pipe_operators_apply_functions() {
             pure_node(
                 IrKind::GlobalVar,
                 Span::new(0, 8),
-                IrData::Symbol(to_string),
+                IrData::GlobalVar {
+                    site,
+                    symbol: to_string,
+                },
             ),
             pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(7)),
             pure_node(

@@ -406,6 +406,7 @@ fn subtree_contains_upval_capture(ir: &Ir, root: IrId) -> bool {
             | IrData::Float(_)
             | IrData::Bool(_)
             | IrData::Symbol(_)
+            | IrData::GlobalVar { .. }
             | IrData::Local { .. } => {}
             IrData::SearchPath { search_path, .. } => stack.extend(search_path),
             IrData::Node(child) => stack.push(child),

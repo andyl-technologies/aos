@@ -233,7 +233,7 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
             | (IrKind::Uri, IrData::Symbol(_))
             | (IrKind::LocalVar, IrData::Local { .. })
             | (IrKind::UpvalVar, IrData::Upval { .. })
-            | (IrKind::GlobalVar, IrData::Symbol(_))
+            | (IrKind::GlobalVar, IrData::GlobalVar { .. })
             | (IrKind::BuiltinAttr, IrData::Symbol(_))
             | (IrKind::List, IrData::Children(_))
             | (IrKind::AttrSet, IrData::AttrSet { .. })
@@ -317,6 +317,7 @@ fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
     match data {
         IrData::None | IrData::Int(_) | IrData::Float(_) | IrData::Bool(_) => Ok(()),
         IrData::Symbol(symbol) => check_ir_symbol(ir, symbol),
+        IrData::GlobalVar { symbol, .. } => check_ir_symbol(ir, symbol),
         IrData::SearchPath {
             literal,
             search_path,

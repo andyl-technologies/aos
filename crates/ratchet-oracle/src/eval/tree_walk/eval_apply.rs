@@ -150,7 +150,7 @@ impl TreeWalk {
             return Ok(value);
         }
 
-        self.eval_global_fallback(id, symbol, node.span)
+        self.eval_global_fallback(id, symbol, node.span, site, scope_count)
     }
 
     pub(super) fn eval_lambda(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {

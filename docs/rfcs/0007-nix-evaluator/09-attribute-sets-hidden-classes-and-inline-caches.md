@@ -839,11 +839,13 @@ harness, never cut for scope.
       heap values carrying projected shape metadata use a transient
       `ShapedAttrs` view and `ShapedSelectCache` for static `Select`/`HasAttr`
       segments, active `WithVar` scope probes, and crate-internal Rust-callable
-      `aos_has_attr`/`aos_select_ic` wrappers; unprojected flat values keep the
+      `aos_has_attr`/`aos_select_ic` wrappers; scoped-import global fallback
+      probes carry stable `GlobalVar` lookup sites and use the same bridge;
+      unprojected flat values keep the
       key-validated `FlatSelectCache` fallback; projected-HAMT values use the
       HAMT policy cache described below. Builtin static-select shortcuts,
-      dynamic segments, scoped-global fallback probes, native exported keyed
-      helpers, and native storage paths remain on the shared slow dispatcher.
+      dynamic segments, native exported keyed helpers, and native storage paths
+      remain on the shared slow dispatcher.
       Cached hits increment mirrored inline-cache
       hit stats; resolved lookups and misses increment miss stats and preserve
       representation-specific slow-select telemetry; successful `EvalOutcome`
@@ -857,9 +859,9 @@ harness, never cut for scope.
       [25](25-intermediate-representation.md) §4, while `WithVar` probes
       active scopes in lowered with-chain order and scoped-global fallback
       probes walk scoped-import overlays innermost-first. Dynamic path segments
-      and scoped-global fallback probes use the representation-dispatching
-      `select_slow` precursor; static `Select`/`HasAttr` segments and active
-      `WithVar` probes use the checked flat/shaped/HAMT cache bridge described
+      use the representation-dispatching `select_slow` precursor; static
+      `Select`/`HasAttr` segments, active `WithVar` probes, and scoped-global
+      fallback probes use the checked flat/shaped/HAMT cache bridge described
       above when metadata permits. This still claims no native `aos_select_ic`,
       `select_slow` runtime helper, active shaped/HAMT storage replacement, or
       deopt/uncommon-trap edge.
@@ -871,8 +873,8 @@ harness, never cut for scope.
       dispatches slow selection over `FlatAttrs`, `HamtAttrs`, and `ShapedAttrs`.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
       shape slot then load the value array. Tree-walk dynamic path segments and
-      scoped-global fallback probes route active flat attrsets through this
-      dispatcher; `FlatSelectCache`,
+      scoped-global fallback probes now reach this dispatcher through checked
+      cache miss paths; `FlatSelectCache`,
       `ShapedSelectCache`, and `HamtSelectCache` also use this value-level
       dispatcher for slow resolution. HAMT/shaped active evaluator storage,
       native runtime attr representation, full shaped/native PIC integration,

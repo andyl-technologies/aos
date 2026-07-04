@@ -324,7 +324,7 @@ fn write_meta_creates_entry_directory() {
 
     entry.write_meta(&meta).expect("metadata writes");
     let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-    assert!(text.contains("schema_version = 9"));
+    assert!(text.contains("schema_version = 10"));
     assert!(!entry.is_complete());
 
     let _ = fs::remove_dir_all(root);

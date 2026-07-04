@@ -183,6 +183,7 @@ fn reference_count_in_node(
         | IrData::Float(_)
         | IrData::Bool(_)
         | IrData::Symbol(_)
+        | IrData::GlobalVar { .. }
         | IrData::Local { .. }
         | IrData::Upval { .. }
         | IrData::DialectScopeVar { .. } => Ok(0),

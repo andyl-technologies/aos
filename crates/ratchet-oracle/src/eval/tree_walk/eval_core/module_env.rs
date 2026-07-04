@@ -1,6 +1,7 @@
 //! Module, environment, scope, attr-path, and scoped-global helpers.
 
 use super::*;
+use crate::compile::IrInlineCacheSiteId;
 
 impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
@@ -532,8 +533,10 @@ impl TreeWalk {
         id: IrId,
         symbol: Symbol,
         span: Span,
+        site: IrInlineCacheSiteId,
+        path_index_base: usize,
     ) -> Result<Value, TreeWalkError> {
-        if let Some(value) = self.scoped_global_value(id, symbol, span)? {
+        if let Some(value) = self.scoped_global_value(id, symbol, span, site, path_index_base)? {
             return Ok(value);
         }
         match self.symbols.resolve(symbol) {
@@ -556,6 +559,8 @@ impl TreeWalk {
         id: IrId,
         symbol: Symbol,
         span: Span,
+        site: IrInlineCacheSiteId,
+        path_index_base: usize,
     ) -> Result<Option<Value>, TreeWalkError> {
         if self.symbols.resolve(symbol).is_none() {
             return Err(TreeWalkError::new(
@@ -576,8 +581,9 @@ impl TreeWalk {
                     span,
                 ));
             }
+            let path_index = path_index_base + self.scoped_globals.len() - 1 - index;
             if let AttrSelectOutcome::Hit { value, .. } =
-                self.select_slow_flat_attr(id, span, scope, symbol)?
+                self.select_static_attr_with_cache(id, span, scope, symbol, site, path_index)?
             {
                 return Ok(Some(value));
             }
@@ -590,8 +596,8 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        let IrData::Symbol(symbol) = node.data else {
-            return Err(self.invalid_payload(id, node, "global symbol payload"));
+        let IrData::GlobalVar { site, symbol } = node.data else {
+            return Err(self.invalid_payload(id, node, "global-var payload"));
         };
         let Some(name) = self.symbols.resolve(symbol) else {
             return Err(TreeWalkError::new(
@@ -613,7 +619,7 @@ impl TreeWalk {
         if is_nix_path {
             return self.eval_nix_path_value(id, node.span);
         }
-        if let Some(value) = self.scoped_global_value(id, symbol, node.span)? {
+        if let Some(value) = self.scoped_global_value(id, symbol, node.span, site, 0)? {
             return Ok(value);
         }
         if !self.scoped_globals.is_empty() && !is_builtins && !is_unshadowable_global {

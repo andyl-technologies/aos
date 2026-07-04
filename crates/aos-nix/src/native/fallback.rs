@@ -45,7 +45,7 @@ pub(super) fn ensure_native_json_subset(
         }
 
         if node.kind == IrKind::GlobalVar
-            && let IrData::Symbol(symbol) = node.data
+            && let IrData::GlobalVar { symbol, .. } = node.data
         {
             let Some(name) = ir.symbols.resolve(symbol) else {
                 continue;
@@ -215,7 +215,7 @@ pub(super) fn native_instantiation_cli_fallback_feature(
     }
 
     for (index, node) in ir.arena.nodes().iter().enumerate() {
-        let (IrKind::GlobalVar, IrData::Symbol(symbol)) = (node.kind, node.data) else {
+        let (IrKind::GlobalVar, IrData::GlobalVar { symbol, .. }) = (node.kind, node.data) else {
             continue;
         };
         let Some(name) = ir.symbols.resolve(symbol) else {

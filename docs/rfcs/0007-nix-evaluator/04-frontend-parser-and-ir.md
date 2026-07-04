@@ -281,7 +281,7 @@ pub enum NodeKind {
     List, AttrSet, RecAttrSet, Lambda, Apply, Select, HasAttr,
     LetIn, With, Assert, IfThenElse, BinOp, UnaryOp, Inherit, Interp,
     // post-resolve forms (filled in by the resolver, §6)
-    LocalVar /* slot */, UpvalVar /* depth, slot */, GlobalVar /* symbol */,
+    LocalVar /* slot */, UpvalVar /* depth, slot */, GlobalVar /* site, symbol */,
     WithVar /* dynamic lookup */,
 }
 ```
@@ -420,7 +420,7 @@ The frontend's output is not the raw AST; it is an **IR**: the AST after scope
 resolution and lowering. The IR differs from the AST in three ways:
 
 1. **Variables are resolved to static accesses.** Every `Ident` becomes a
-   `LocalVar(slot)`, `UpvalVar(depth, slot)`, `GlobalVar(symbol)`, or
+   `LocalVar(slot)`, `UpvalVar(depth, slot)`, `GlobalVar(site, symbol)`, or
    `WithVar(...)` (§6). No name lookup survives into evaluation except the
    genuinely dynamic `with` case.
 2. **Thunking is explicit.** Each subexpression is annotated with whether
@@ -517,7 +517,7 @@ outer:
     if any enclosing `with` is active:
         return WithVar(sym, with_chain)     # dynamic, §6.3
     if sym is a builtin/global:
-        return GlobalVar(sym)               # e.g. `true`, `builtins`, `map`
+        return GlobalVar(site, sym)         # e.g. `true`, `builtins`, `map`
     else:
         error: undefined variable `sym`     # parity-exact message & position
 ```
@@ -773,7 +773,7 @@ $AOS_NIX_CACHE/parse/
 
 ```toml
 # meta.toml — diagnostic metadata only; never part of the cache key's identity.
-schema_version = 9
+schema_version = 10
 source_hint    = "pkgs/foo/default.nix"
 node_count     = 3194
 symbol_count   = 412
@@ -1000,7 +1000,7 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 
 ### Scope resolution → IR (§5–§6)
 
-- [x] Bottom-up resolver turning every `Ident` into `LocalVar(slot)` / `UpvalVar(depth, slot)` / `GlobalVar(sym)` / `WithVar(...)` via a scope-frame stack (de Bruijn `(depth, slot)`) (§6.1–§6.2) — **P1**, `S-11`.
+- [x] Bottom-up resolver turning every `Ident` into `LocalVar(slot)` / `UpvalVar(depth, slot)` / `GlobalVar(site, sym)` / `WithVar(...)` via a scope-frame stack (de Bruijn `(depth, slot)`) (§6.1–§6.2) — **P1**, `S-11`.
 - [x] Self-visible `rec`/`let` frames pushed before resolving RHSes, preserving Nix thunk-cycle/blackhole behavior (§6.2) — **P1**.
 - [x] `with`-classification: emit `WithVar` only when no lexical binder shadows; record the innermost-first `with` chain; reproduce lexical-beats-`with` / inner-beats-outer probe order exactly (§6.3) — **P1**; `with`-scope conformance (§8). Frontend `with`-shape speculation hooks left entirely to runtime inline caches (`R-8`, **P5/P8** research-grade) — IN SCOPE, deferred in dependency order.
 - [x] Precise per-lambda upvalue/free-variable capture set computation (no over-capture) (§6.4) — **P1**; prerequisite for escape analysis ([07](07-laziness-and-whole-program-analyses.md)).

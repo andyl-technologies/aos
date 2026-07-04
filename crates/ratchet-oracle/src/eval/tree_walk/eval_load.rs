@@ -375,6 +375,16 @@ impl TreeWalk {
                 symbol_map,
                 symbol,
             )?)),
+            IrData::GlobalVar { site, symbol } => Ok(IrData::GlobalVar {
+                site,
+                symbol: Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    symbol_map,
+                    symbol,
+                )?,
+            }),
             IrData::PrimOp { symbol, args } => Ok(IrData::PrimOp {
                 symbol: Self::remap_cached_symbol(
                     argument,

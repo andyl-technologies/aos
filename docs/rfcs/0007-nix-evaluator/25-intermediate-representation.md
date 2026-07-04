@@ -84,7 +84,7 @@ these node kinds. The taxonomy is fixed; adding a kind is an
 
 ```text
   literals        Int  Float  Bool  Null  Str  Path
-  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(sym)
+  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(site,sym)
   binders         Lambda(pattern, body)  Let(frame, bindings, body)  With(scrutinee, body)
   construction    AttrSet(shape, entries, rec?, dynamic?)  List(elems)
   access          Select(recv, path, default?)  HasAttr(recv, path)
@@ -154,7 +154,7 @@ pub enum NodeKind {
     // --- de Bruijn variable references (post-resolution; §3) ---
     LocalVar,   // data: slot                    -> env[slot]
     UpvalVar,   // data: (depth, slot)           -> parent^depth[slot]
-    GlobalVar,  // data: Symbol                  -> builtins/global (true, map, ...)
+    GlobalVar,  // data: (site, Symbol)          -> builtins/global (true, map, ...)
 
     // --- binders ---
     Lambda,     // data: LambdaId (pattern, frame, captures) -> §4.2
@@ -241,7 +241,7 @@ already run, and three guarantees hold over every node:
 
 1. **No name lookup survives except the genuinely dynamic `with` case.** Every
    `Ident` of the AST has become a `LocalVar(slot)`, `UpvalVar(depth, slot)`,
-   `GlobalVar(sym)`, or a dialect `WithVar` payload under `IrKind::PrimOp`.
+   `GlobalVar(site, sym)`, or a dialect `WithVar` payload under `IrKind::PrimOp`.
    Lexical access is an array index off an environment pointer — `env[slot]` at
    depth 0, a parent-chain walk
    `env.parent^depth[slot]` otherwise — never a hash lookup. This is the de
@@ -388,8 +388,10 @@ innermost-first that must be probed at runtime. Nix's resolution order —
 source-level `WithVar` is emitted (only if no lexical binder shadows) and into the
 chain's probe order. The tree-walk probe rides the same checked inline-cache
 bridge as `Select`: successful shaped/HAMT lookups can reuse cached slots per
-site and chain depth, while absent shaped/flat membership entries and native
-`aos_select_ic` dispatch remain future work.
+site and chain depth. Scoped-global fallback probes also carry stable
+`GlobalVar` lookup sites and use the same bridge while walking scoped-import
+overlays. Absent shaped/flat membership entries and native `aos_select_ic`
+dispatch remain future work.
 
 ### 4.5 Primops
 
@@ -699,7 +701,7 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 
 ### Scope-resolved typed form (§3)
 
-- [x] Born-resolved lexical invariant: no lexical name lookup survives lowering; local access is `LocalVar { slot }`, captured access is `UpvalVar { depth, slot }`, and the only surviving name-bearing lookup nodes are explicit `WithVar` and `GlobalVar` dynamic/global cases (§3 item 1) — **P1**, `S-19`/`S-11`. Implemented by `ScopeResolver::resolve_identifier` classifying lexical hits before globals/with scopes and by IR lowering preserving those resolved coordinates in `IrData::Local`/`IrData::Upval`. Covered by `resolves_let_lambda_to_de_bruijn_slots`, `lexical_bindings_beat_active_with_scopes`, `global_names_are_classified_separately_from_undefined_names`, `shadowed_bool_and_null_names_remain_lexical_variables`, and the `with`-chain tests.
+- [x] Born-resolved lexical invariant: no lexical name lookup survives lowering; local access is `LocalVar { slot }`, captured access is `UpvalVar { depth, slot }`, and the only surviving name-bearing lookup nodes are explicit `WithVar` and `GlobalVar` dynamic/global cases (§3 item 1) — **P1**, `S-19`/`S-11`. Implemented by `ScopeResolver::resolve_identifier` classifying lexical hits before globals/with scopes and by IR lowering preserving those resolved coordinates in `IrData::Local`/`IrData::Upval`; surviving `GlobalVar` payloads carry stable inline-cache lookup sites for scoped-global fallback probes. Covered by `resolves_let_lambda_to_de_bruijn_slots`, `lexical_bindings_beat_active_with_scopes`, `global_names_are_classified_separately_from_undefined_names`, `shadowed_bool_and_null_names_remain_lexical_variables`, and the `with`-chain tests.
 - [x] Exact per-lambda capture list in `FrameInfo.captures` (free-var set, nothing more) — precondition for cheap GC tracing and escape analysis (§3 item 2) — **P1**. Implemented by resolver capture bookkeeping: `lookup_symbol` identifies the binding frame/slot, `record_captures` records `Upvalue { depth, slot }` only for intervening lambda frames, stores captures in a deduplicating `BTreeSet`, and finalizes each `FrameInfo` with a sorted boxed capture slice. Covered by `resolves_let_lambda_to_de_bruijn_slots`, `nested_lambdas_record_transitive_capture_sets`, and lambda-shadowing/default tests that keep local slots out of capture lists. The later GC tracing and escape-analysis consumers remain tracked by their own memory/analysis rows.
 - [x] Explicit thunk placement: `ThunkAlloc` materialized conservatively (everything non-trivial), with thunk *placement* part of the IR contract (§3 item 3) — **P1**; strictness later *removes* `ThunkAlloc` nodes (**P4**, [07](07-laziness-and-whole-program-analyses.md)). Implemented by routing lazy positions through `IrLowerer::lower_lazy`/`wrap_lazy`, which emits `IrKind::ThunkAlloc` around non-trivial nodes while leaving the explicit trivial-value whitelist (`Int`, `Float`, `Bool`, `Null`, `Str`, `Uri`) unwrapped. Covered by `materializes_thunks_at_lazy_binding_and_list_positions`, `bool_and_null_literals_are_not_thunked_in_lists`, `unsupported_literal_values_stay_lazy`, `uri_literals_are_trivial_values`, plus primop-lowering tests that assert strict versus lazy argument placement. Strictness-driven thunk deletion remains the separate P4 optimization row.
 

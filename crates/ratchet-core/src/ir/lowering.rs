@@ -133,14 +133,19 @@ impl IrLowerer {
             return Err(self.invalid_shape(node, "global symbol payload"));
         };
         if self.options.dynamic_builtin_scope() {
-            return self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol));
+            return self.push_global_var(node.span, symbol);
         }
         match self.resolved.symbols.resolve(symbol) {
             Some(b"true") => self.push(IrKind::Bool, node.span, IrData::Bool(true)),
             Some(b"false") => self.push(IrKind::Bool, node.span, IrData::Bool(false)),
             Some(b"null") => self.push(IrKind::Null, node.span, IrData::None),
-            _ => self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol)),
+            _ => self.push_global_var(node.span, symbol),
         }
+    }
+
+    fn push_global_var(&mut self, span: Span, symbol: Symbol) -> Result<IrId, IrError> {
+        let site = self.next_inline_cache_site(span)?;
+        self.push(IrKind::GlobalVar, span, IrData::GlobalVar { site, symbol })
     }
 
     pub(super) fn lower_dynamic_scope_var(&mut self, node: Node) -> Result<IrId, IrError> {

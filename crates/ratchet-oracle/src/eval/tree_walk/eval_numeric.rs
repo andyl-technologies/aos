@@ -158,7 +158,11 @@ impl TreeWalk {
             return Ok(None);
         }
         let receiver_node = self.node(receiver)?;
-        let IrData::Symbol(receiver_symbol) = receiver_node.data else {
+        let IrData::GlobalVar {
+            symbol: receiver_symbol,
+            ..
+        } = receiver_node.data
+        else {
             return Ok(None);
         };
         if receiver_node.kind != IrKind::GlobalVar
@@ -295,7 +299,11 @@ impl TreeWalk {
             return Ok(None);
         }
         let receiver_node = self.node(receiver)?;
-        let IrData::Symbol(receiver_symbol) = receiver_node.data else {
+        let IrData::GlobalVar {
+            symbol: receiver_symbol,
+            ..
+        } = receiver_node.data
+        else {
             return Ok(None);
         };
         if receiver_node.kind != IrKind::GlobalVar

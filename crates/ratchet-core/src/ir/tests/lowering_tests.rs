@@ -317,6 +317,24 @@ fn with_var_select_and_has_attr_sites_share_one_monotonic_namespace() {
 }
 
 #[test]
+fn global_var_select_and_has_attr_sites_share_one_monotonic_namespace() {
+    let ir = lowered("if __nixPath then ({ a = 1; } ? a) else ({ b = 2; }).b");
+    let IrData::Triple {
+        first: condition,
+        second: then_branch,
+        third: else_branch,
+    } = root_node(&ir).data
+    else {
+        panic!("if payload expected");
+    };
+
+    assert_eq!(node(&ir, condition).kind, IrKind::GlobalVar);
+    assert_eq!(lookup_site(&ir, condition).as_u32(), 0);
+    assert_eq!(lookup_site(&ir, then_branch).as_u32(), 1);
+    assert_eq!(lookup_site(&ir, else_branch).as_u32(), 2);
+}
+
+#[test]
 fn bool_and_null_literals_are_not_thunked_in_lists() {
     let ir = lowered("[ true null false ]");
     let IrData::Children(elements) = root_node(&ir).data else {

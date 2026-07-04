@@ -179,9 +179,10 @@ fn validate_body_root(ir: &Ir, id: IrId) -> Result<(), WorkerWrapperPlanError> {
         IrKind::Float => matches!(node.data, IrData::Float(_)),
         IrKind::Bool => matches!(node.data, IrData::Bool(_)),
         IrKind::Null => matches!(node.data, IrData::None),
-        IrKind::Str | IrKind::Path | IrKind::Uri | IrKind::GlobalVar | IrKind::BuiltinAttr => {
+        IrKind::Str | IrKind::Path | IrKind::Uri | IrKind::BuiltinAttr => {
             matches!(node.data, IrData::Symbol(_))
         }
+        IrKind::GlobalVar => matches!(node.data, IrData::GlobalVar { .. }),
         IrKind::LocalVar => matches!(node.data, IrData::Local { .. }),
         IrKind::UpvalVar => matches!(node.data, IrData::Upval { .. }),
         IrKind::SearchPath => matches!(node.data, IrData::SearchPath { .. }),
@@ -243,7 +244,8 @@ fn expected_payload(kind: IrKind) -> &'static str {
         IrKind::Str | IrKind::Path | IrKind::Uri => "symbol payload",
         IrKind::LocalVar => "local slot payload",
         IrKind::UpvalVar => "upvalue slot payload",
-        IrKind::GlobalVar | IrKind::BuiltinAttr => "symbol payload",
+        IrKind::GlobalVar => "global-var payload",
+        IrKind::BuiltinAttr => "symbol payload",
         IrKind::SearchPath => "search-path payload",
         IrKind::List => "children payload",
         IrKind::AttrSet => "attrset payload",

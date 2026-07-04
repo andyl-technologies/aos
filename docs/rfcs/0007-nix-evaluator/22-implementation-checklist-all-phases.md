@@ -8604,12 +8604,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       values carrying projected shape metadata use a transient `ShapedAttrs`
       view and `ShapedSelectCache` for static `Select`/`HasAttr` path segments,
       active `WithVar` scope probes, and crate-internal Rust-callable
-      `aos_has_attr`/`aos_select_ic` wrappers; unprojected flat values keep the
+      `aos_has_attr`/`aos_select_ic` wrappers; scoped-import global fallback
+      probes carry stable `GlobalVar` lookup sites and use the same bridge;
+      unprojected flat values keep the
       key-validated `FlatSelectCache` fallback; projected-HAMT values use the
       HAMT policy cache described below. Builtin static-select shortcuts,
-      dynamic path segments, scoped-global fallback probes, native exported
-      keyed helpers, and native storage paths remain on the existing slow
-      dispatcher. Cached shaped/flat/HAMT hits
+      dynamic path segments, native exported keyed helpers, and native storage
+      paths remain on the existing slow dispatcher. Cached shaped/flat/HAMT hits
       increment the mirrored inline-cache hit counter; resolved lookups and
       misses increment the inline-cache miss counter and keep
       representation-specific slow-select telemetry; successful `EvalOutcome`
@@ -8620,10 +8621,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
-      array. Tree-walk dynamic path segments and scoped-global fallback probes
-      route active flat attrsets through this dispatcher. `FlatSelectCache`,
-      `ShapedSelectCache`, and `HamtSelectCache` also use it for slow
-      resolution in their respective precursor paths. HAMT/shaped active
+      array. Tree-walk dynamic path segments route active flat attrsets through
+      this dispatcher directly; scoped-global fallback probes now reach it
+      through checked cache miss paths. `FlatSelectCache`, `ShapedSelectCache`,
+      and `HamtSelectCache` also use it for slow resolution in their respective
+      precursor paths. HAMT/shaped active
       evaluator storage, native runtime attr representation, full shaped/native
       PIC integration, and `.drv` effects remain open.
 - [x] Current shaped update precursor: `ratchet-value` exposes

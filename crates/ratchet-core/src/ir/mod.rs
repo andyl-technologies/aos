@@ -548,6 +548,13 @@ pub enum IrData {
     Bool(bool),
     /// The node carries an interned symbol.
     Symbol(Symbol),
+    /// The node represents a global-variable probe.
+    GlobalVar {
+        /// The stable inline-cache site for scoped-global probes.
+        site: IrInlineCacheSiteId,
+        /// The unresolved global symbol to probe.
+        symbol: Symbol,
+    },
     /// The node represents a search-path literal.
     SearchPath {
         /// The literal text, including the surrounding angle brackets.

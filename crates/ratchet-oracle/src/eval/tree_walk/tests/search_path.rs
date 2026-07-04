@@ -155,10 +155,10 @@ fn scoped_import_injects_globals_and_bypasses_result_cache() {
 }
 
 #[test]
-fn scoped_import_global_probe_records_slow_select_telemetry() {
+fn repeated_scoped_import_global_probe_uses_shaped_inline_cache() {
     let root = fs::canonicalize(unique_temp_dir("scoped-import-telemetry"))
         .expect("temp directory canonicalizes");
-    fs::write(root.join("value.nix"), b"x").expect("value writes");
+    fs::write(root.join("value.nix"), b"let get = _: x; in get 0 + get 1").expect("value writes");
 
     let mut options = TreeWalkOptions::new();
     options
@@ -170,14 +170,49 @@ fn scoped_import_global_probe_records_slow_select_telemetry() {
         options.clone(),
     );
 
-    assert_eq!(outcome.value().as_int(), Ok(7));
+    assert_eq!(outcome.value().as_int(), Ok(14));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
     assert_eq!(counts.hamt_hits, 0);
     assert_eq!(counts.hamt_misses, 0);
-    assert_eq!(counts.shaped_hits, 0);
+    assert_eq!(counts.shaped_hits, 1);
     assert_eq!(counts.shaped_misses, 0);
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn with_var_fallback_to_scoped_global_uses_offset_inline_cache() {
+    let root = fs::canonicalize(unique_temp_dir("scoped-import-with-fallback-telemetry"))
+        .expect("temp directory canonicalizes");
+    fs::write(
+        root.join("value.nix"),
+        b"let get = _: with { y = 0; }; x; in get 0 + get 1",
+    )
+    .expect("value writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    let outcome = eval_owned_with_options("builtins.scopedImport { x = 7; } ./value.nix", options);
+
+    assert_eq!(outcome.value().as_int(), Ok(14));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 3);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 2);
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }

@@ -877,6 +877,7 @@ impl TreeWalk {
                 | IrData::Float(_)
                 | IrData::Bool(_)
                 | IrData::Symbol(_)
+                | IrData::GlobalVar { .. }
                 | IrData::SearchPath { .. }
                 | IrData::Node(_)
                 | IrData::Pair { .. }
@@ -1052,6 +1053,7 @@ impl TreeWalk {
                 | IrData::Float(_)
                 | IrData::Bool(_)
                 | IrData::Symbol(_)
+                | IrData::GlobalVar { .. }
                 | IrData::SearchPath { .. }
                 | IrData::Node(_)
                 | IrData::Pair { .. }
@@ -1643,7 +1645,8 @@ impl TreeWalk {
             | IrData::Int(_)
             | IrData::Float(_)
             | IrData::Bool(_)
-            | IrData::Symbol(_) => {}
+            | IrData::Symbol(_)
+            | IrData::GlobalVar { .. } => {}
             IrData::SearchPath { search_path, .. } => {
                 stack.extend(search_path);
             }

@@ -42,6 +42,11 @@ pub(super) fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
             out.push(4);
             write_u32(out, symbol.as_u32());
         }
+        IrData::GlobalVar { site, symbol } => {
+            out.push(26);
+            write_u32(out, site.as_u32());
+            write_u32(out, symbol.as_u32());
+        }
         IrData::SearchPath {
             literal,
             search_path,
@@ -201,6 +206,10 @@ pub(super) fn decode_ir_data(reader: &mut BinaryReader<'_>) -> Result<IrData, St
         2 => Ok(IrData::Float(reader.read_f64()?)),
         3 => Ok(IrData::Bool(reader.read_bool()?)),
         4 => Ok(IrData::Symbol(Symbol::new(reader.read_u32()?))),
+        26 => Ok(IrData::GlobalVar {
+            site: IrInlineCacheSiteId::new(reader.read_u32()?),
+            symbol: Symbol::new(reader.read_u32()?),
+        }),
         25 => Ok(IrData::SearchPath {
             literal: Symbol::new(reader.read_u32()?),
             search_path: reader.read_option_u32()?.map(IrId::new),
