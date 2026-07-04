@@ -77,10 +77,11 @@ pub use thunk_lowering::{
 };
 pub use thunk_payload::{
     ParallelThunkPayloadCell, ParallelThunkPayloadError, ParallelThunkPayloadGuard,
-    ParallelThunkPayloadWait, ParallelThunkPayloadWorkWait, ParallelThunkTerminalPayload,
-    ParallelThunkTerminalStatus, TreeWalkParallelThunkCell, TreeWalkParallelThunkForceOutcome,
-    TreeWalkParallelThunkForcePollOutcome, TreeWalkParallelThunkForceWorkOutcome,
-    TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait, TreeWalkParallelThunkWorkWait,
+    ParallelThunkPayloadReadyWorkError, ParallelThunkPayloadWait, ParallelThunkPayloadWorkWait,
+    ParallelThunkTerminalPayload, ParallelThunkTerminalStatus, TreeWalkParallelThunkCell,
+    TreeWalkParallelThunkForceOutcome, TreeWalkParallelThunkForcePollOutcome,
+    TreeWalkParallelThunkForceWorkOutcome, TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait,
+    TreeWalkParallelThunkWorkWait,
 };
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,

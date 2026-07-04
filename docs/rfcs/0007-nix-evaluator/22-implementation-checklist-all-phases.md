@@ -7529,6 +7529,23 @@ nurseries build on the bump arena.
       registration, call the serial `TreeWalk::force_value` path, replace
       `EvalThunk` storage, install the final lock-free waiter list, or satisfy
       the loom/Miri/TSan audit.
+- [x] Current fallible payload/tree-walk ready-work bridge:
+      `ParallelThunkPayloadCell::claim_or_try_run_ready_then_wait_for_payload`
+      and `TreeWalkParallelThunkCell::force_or_try_poll_ready_then_wait_with`
+      propagate typed ready-work hook errors through
+      `ParallelThunkPayloadReadyWorkError` instead of requiring scheduler-backed
+      hooks to panic or unwrap queue errors. Payload/wait-cell failures remain
+      separate from ready-work failures, local/stolen polls keep the existing
+      wait-or-steal counters, and idle polls still preserve their
+      `ParallelReadyWorkParkPreflight` snapshot in the tree-walk force outcome.
+      Tests cover payload-level ready-work error propagation before waiter
+      registration, tree-walk result-path ready-work error propagation, direct
+      scheduler queue-error propagation from `ParallelReadyWorkQueues`, and a
+      successful fallible poll/preflight replay path. This is still a typed error
+      boundary over the safe queue and blocking wait-cell precursors: it does not
+      install the final scheduler, validate scheduler exhaustion, attach a real
+      park token to waiter registration, replace `EvalThunk` storage, install
+      the final lock-free waiter list, or satisfy the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
