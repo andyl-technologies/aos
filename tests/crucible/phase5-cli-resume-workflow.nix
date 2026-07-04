@@ -53,7 +53,7 @@
       }
       {
         label = "T-CLI-10 handle-backed resume progress";
-        needle = "local-double resume to quiescence, virtual-time, or a declared property";
+        needle = "local-double resume to quiescence, virtual-time, interactive command driving";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -106,6 +106,30 @@
       {
         label = "resume local double runner";
         needle = "fn run_local_double_resume_workflow";
+      }
+      {
+        label = "resume interactive command driver";
+        needle = "enum ResumeInteractiveCommandDriver";
+      }
+      {
+        label = "resume interactive actor acknowledgement";
+        needle = "fn resume_actor_interactive_command";
+      }
+      {
+        label = "resume interactive stdin reader";
+        needle = "fn drive_resumed_actor_interactive_command_reader";
+      }
+      {
+        label = "resume interactive final state";
+        needle = "final=interactive";
+      }
+      {
+        label = "resume interactive savepoint command test";
+        needle = "SessionCommandKind::CreateSavepoint";
+      }
+      {
+        label = "resume interactive rejection test";
+        needle = "interactive command `start`";
       }
       {
         label = "resume property predicate";
