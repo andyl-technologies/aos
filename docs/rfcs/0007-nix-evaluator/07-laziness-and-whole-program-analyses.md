@@ -845,6 +845,14 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       and observing the argument `ThunkAlloc` elided with `thunks_elided == 1`,
       while annotated foldl-empty and unreached dynamic attr-path regressions stay
       lazy.
+- [x] Current worker-wrapper planning precursor:
+      `ratchet-core::analysis::worker_wrapper` reports direct literal lambda
+      calls where a wrapper could force a proven-strict lazy argument before a
+      stricter worker call. It admits simple-formal patterns and validated
+      formal-set patterns only when replayed strictness proves the argument is
+      demanded, so forged strict facts over frame-slot mismatches remain
+      retained. This is still a plan surface only; it does not rewrite IR,
+      generate workers, unbox fields, or solve the closed-call-graph fixpoint.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes the THUNK/EAGER/SCALAR decision lattice so conservative or
       escape-only facts still choose THUNK, `Eager` requires proven strictness,

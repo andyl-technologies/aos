@@ -3,8 +3,8 @@
 //! The full worker-wrapper transform will split a function into an always-inline
 //! wrapper and a worker with a stricter calling convention. This precursor does
 //! not rewrite IR. It names only the current safe boundary: direct literal
-//! lambda applications with a simple formal parameter whose argument is already
-//! proven strict.
+//! lambda applications whose argument is already proven strict, and whose simple
+//! formal parameter or formal-set pattern replays as demanded by strictness.
 
 use thiserror::Error;
 
@@ -14,16 +14,18 @@ use crate::ir::{Ir, IrData, IrFacts, IrId, IrKind, Strictness};
 /// Builds a worker-wrapper split plan for direct literal lambda calls.
 ///
 /// A call is admitted only when the callee is a literal [`IrKind::Lambda`], the
-/// lambda pattern is a simple [`IrKind::Formal`], and the current fact table
-/// proves the lazy argument is [`Strictness::Strict`]. Non-literal callees,
-/// non-simple patterns, and unproven arguments are retained so later passes can
-/// report why no worker can be introduced yet.
+/// lambda pattern is split-eligible, and the current fact table proves the lazy
+/// argument is [`Strictness::Strict`]. Split-eligible patterns are simple
+/// [`IrKind::Formal`] parameters and validated [`IrKind::FormalSet`] patterns
+/// whose strictness replay proves that binding forces the argument. Non-literal
+/// callees, unsupported patterns, and unproven arguments are retained so later
+/// passes can report why no worker can be introduced yet.
 ///
 /// # Errors
 ///
-/// Returns [`WorkerWrapperPlanError`] if an apply node, lambda payload, simple
-/// formal payload, lambda body root, argument node, argument fact record, or
-/// cloned strictness proof is malformed.
+/// Returns [`WorkerWrapperPlanError`] if an apply node, lambda payload, pattern
+/// payload, lambda body root, argument node, argument fact record, or cloned
+/// strictness proof is malformed.
 pub fn worker_wrapper_plan(ir: &Ir) -> Result<WorkerWrapperPlan, WorkerWrapperPlanError> {
     let mut plan = WorkerWrapperPlan::default();
 
@@ -117,8 +119,8 @@ fn retention_reason(
     ir.arena
         .node(body)
         .ok_or(WorkerWrapperPlanError::InvalidNode { id: body })?;
-    let pattern_is_simple = simple_formal_pattern(pattern, pattern_node)?;
-    if !pattern_is_simple {
+    let pattern_is_split_eligible = split_eligible_pattern(pattern, pattern_node)?;
+    if !pattern_is_split_eligible {
         return Ok(Some(WorkerWrapperRetentionReason::NonSimplePattern {
             pattern,
             kind: pattern_node.kind,
@@ -142,7 +144,7 @@ fn retention_reason(
     Ok(None)
 }
 
-fn simple_formal_pattern(
+fn split_eligible_pattern(
     id: IrId,
     node: crate::ir::IrNode,
 ) -> Result<bool, WorkerWrapperPlanError> {
@@ -159,7 +161,7 @@ fn simple_formal_pattern(
             kind: node.kind,
             expected: "formal payload",
         }),
-        (IrKind::FormalSet, IrData::FormalSet { .. }) => Ok(false),
+        (IrKind::FormalSet, IrData::FormalSet { .. }) => Ok(true),
         (IrKind::FormalSet, _) => Err(WorkerWrapperPlanError::InvalidPayload {
             id,
             kind: node.kind,
@@ -372,7 +374,7 @@ pub enum WorkerWrapperRetentionReason {
         /// The callee node kind.
         kind: IrKind,
     },
-    /// The literal lambda pattern is not a simple formal parameter.
+    /// The literal lambda pattern is not eligible for this precursor's split.
     NonSimplePattern {
         /// The pattern node.
         pattern: IrId,
@@ -384,7 +386,7 @@ pub enum WorkerWrapperRetentionReason {
         /// The strictness fact that prevented the split.
         strictness: Strictness,
     },
-    /// The lambda body does not prove the simple formal is demanded.
+    /// Strictness replay does not prove the argument is demanded.
     FormalNotDemanded,
 }
 

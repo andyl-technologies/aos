@@ -13,9 +13,124 @@ fn set_facts(ir: &mut Ir, id: IrId, facts: ExprFacts) {
     *ir.facts.get_mut(id).expect("fact exists") = facts;
 }
 
+fn strict_argument_facts() -> ExprFacts {
+    ExprFacts {
+        strictness: Strictness::Strict,
+        cardinality: Cardinality::Many,
+        escape: Escape::Escapes,
+    }
+}
+
+fn raw_formal_set_worker_wrapper_ir(
+    formal_symbol: crate::syntax::Symbol,
+    symbols: SymbolTable,
+    formals: IrChildSlice,
+    child_pool: Vec<IrId>,
+    frame: Option<FrameId>,
+    frames: Box<[FrameInfo]>,
+) -> (Ir, IrId, IrId, IrId) {
+    let pattern = IrId::new(0);
+    let formal = IrId::new(1);
+    let body = IrId::new(2);
+    let lambda = IrId::new(3);
+    let argument = IrId::new(4);
+    let root = IrId::new(5);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::FormalSet,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::FormalSet {
+                    formals,
+                    ellipsis: false,
+                    alias: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Formal,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Formal {
+                    name: formal_symbol,
+                    default: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(7, 8),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::Lambda,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Lambda {
+                    pattern,
+                    body,
+                    frame,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(9, 10),
+                EffectClass::pure(),
+                IrData::Int(2),
+            ),
+            IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 10),
+                EffectClass::pure(),
+                IrData::Pair {
+                    first: lambda,
+                    second: argument,
+                },
+            ),
+        ],
+        child_pool,
+    );
+    (
+        Ir {
+            root,
+            facts: IrFacts::conservative(arena.nodes().len()),
+            arena,
+            symbols,
+            frames,
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        },
+        formal,
+        lambda,
+        argument,
+    )
+}
+
 #[test]
 fn worker_wrapper_plan_splits_direct_lambda_strict_argument() {
     let mut ir = lowered("(x: x + 1) (1 + 2)");
+    annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+    let (lambda, argument) = apply_parts(&ir, ir.root);
+
+    let plan = worker_wrapper_plan(&ir).expect("worker-wrapper plan succeeds");
+
+    assert_eq!(plan.apply_count(), 1);
+    assert_eq!(plan.splits().len(), 1);
+    assert!(plan.retained().is_empty());
+    assert_eq!(plan.splits()[0].apply(), ir.root);
+    assert_eq!(plan.splits()[0].lambda(), lambda);
+    assert_eq!(plan.splits()[0].argument(), argument);
+    assert_eq!(
+        plan.splits()[0].mode(),
+        WorkerWrapperArgumentMode::StrictValue
+    );
+}
+
+#[test]
+fn worker_wrapper_plan_splits_direct_formal_set_strict_argument() {
+    let mut ir = lowered("({ x }: 1) { x = 1 / 0; }");
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
     let (lambda, argument) = apply_parts(&ir, ir.root);
 
@@ -102,9 +217,188 @@ fn worker_wrapper_plan_retains_non_literal_callees() {
 }
 
 #[test]
+fn worker_wrapper_plan_retains_forged_formal_set_strict_fact_on_frame_mismatch() {
+    let mut symbols = SymbolTable::new();
+    let name = symbols.intern(b"x").expect("symbol interns");
+    let (mut ir, _, lambda, argument) = raw_formal_set_worker_wrapper_ir(
+        name,
+        symbols,
+        IrChildSlice::new(0, 1),
+        vec![IrId::new(1)],
+        Some(FrameId::new(0)),
+        Box::new([FrameInfo {
+            slot_count: 0,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+    set_facts(&mut ir, argument, strict_argument_facts());
+
+    let plan = worker_wrapper_plan(&ir).expect("worker-wrapper plan succeeds");
+
+    assert!(plan.is_empty());
+    assert_eq!(plan.retained().len(), 1);
+    assert_eq!(plan.retained()[0].apply(), ir.root);
+    assert_eq!(plan.retained()[0].callee(), lambda);
+    assert_eq!(plan.retained()[0].argument(), argument);
+    assert_eq!(
+        plan.retained()[0].reason(),
+        WorkerWrapperRetentionReason::FormalNotDemanded
+    );
+}
+
+#[test]
+fn worker_wrapper_plan_rejects_invalid_formal_set_frame_during_strictness_replay() {
+    let mut symbols = SymbolTable::new();
+    let name = symbols.intern(b"x").expect("symbol interns");
+    let invalid_frame = FrameId::new(1);
+    let (mut ir, _, lambda, argument) = raw_formal_set_worker_wrapper_ir(
+        name,
+        symbols,
+        IrChildSlice::new(0, 1),
+        vec![IrId::new(1)],
+        Some(invalid_frame),
+        Box::new([FrameInfo {
+            slot_count: 1,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+    set_facts(&mut ir, argument, strict_argument_facts());
+
+    let error = worker_wrapper_plan(&ir).expect_err("invalid formal-set frame rejects");
+
+    assert_eq!(
+        error,
+        WorkerWrapperPlanError::Strictness(StrictnessAnalysisError::InvalidFrame {
+            id: lambda,
+            frame: invalid_frame,
+        })
+    );
+}
+
+#[test]
+fn worker_wrapper_plan_rejects_invalid_formal_set_child_slice_during_strictness_replay() {
+    let mut symbols = SymbolTable::new();
+    let name = symbols.intern(b"x").expect("symbol interns");
+    let invalid_formals = IrChildSlice::new(2, 1);
+    let (mut ir, _, _, argument) = raw_formal_set_worker_wrapper_ir(
+        name,
+        symbols,
+        invalid_formals,
+        vec![IrId::new(1)],
+        Some(FrameId::new(0)),
+        Box::new([FrameInfo {
+            slot_count: 1,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+    set_facts(&mut ir, argument, strict_argument_facts());
+
+    let error = worker_wrapper_plan(&ir).expect_err("invalid formal-set child slice rejects");
+
+    assert_eq!(
+        error,
+        WorkerWrapperPlanError::Strictness(StrictnessAnalysisError::InvalidChildSlice {
+            id: IrId::new(0),
+            slice: invalid_formals,
+        })
+    );
+}
+
+#[test]
+fn worker_wrapper_plan_rejects_invalid_formal_set_symbol_during_strictness_replay() {
+    let invalid_symbol = crate::syntax::Symbol::new(99);
+    let (mut ir, formal, _, argument) = raw_formal_set_worker_wrapper_ir(
+        invalid_symbol,
+        SymbolTable::new(),
+        IrChildSlice::new(0, 1),
+        vec![IrId::new(1)],
+        Some(FrameId::new(0)),
+        Box::new([FrameInfo {
+            slot_count: 1,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+    set_facts(&mut ir, argument, strict_argument_facts());
+
+    let error = worker_wrapper_plan(&ir).expect_err("invalid formal-set symbol rejects");
+
+    assert_eq!(
+        error,
+        WorkerWrapperPlanError::Strictness(StrictnessAnalysisError::InvalidSymbol {
+            id: formal,
+            symbol: invalid_symbol,
+        })
+    );
+}
+
+#[test]
 fn worker_wrapper_plan_retains_non_simple_literal_lambda_patterns() {
-    let mut ir = lowered("({ x }: x) { x = 1; }");
-    let (lambda, argument) = apply_parts(&ir, ir.root);
+    let pattern = IrId::new(0);
+    let body = IrId::new(1);
+    let lambda = IrId::new(2);
+    let argument = IrId::new(3);
+    let root = IrId::new(4);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(3, 4),
+                EffectClass::pure(),
+                IrData::Int(2),
+            ),
+            IrNode::new(
+                IrKind::Lambda,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Lambda {
+                    pattern,
+                    body,
+                    frame: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(5, 6),
+                EffectClass::pure(),
+                IrData::Int(3),
+            ),
+            IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 6),
+                EffectClass::pure(),
+                IrData::Pair {
+                    first: lambda,
+                    second: argument,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
     set_facts(
         &mut ir,
         argument,
@@ -114,9 +408,6 @@ fn worker_wrapper_plan_retains_non_simple_literal_lambda_patterns() {
             escape: Escape::Escapes,
         },
     );
-    let IrData::Lambda { pattern, .. } = node(&ir, lambda).data else {
-        panic!("lambda payload expected");
-    };
 
     let plan = worker_wrapper_plan(&ir).expect("worker-wrapper plan succeeds");
 
@@ -126,7 +417,7 @@ fn worker_wrapper_plan_retains_non_simple_literal_lambda_patterns() {
         plan.retained()[0].reason(),
         WorkerWrapperRetentionReason::NonSimplePattern {
             pattern,
-            kind: IrKind::FormalSet
+            kind: IrKind::Int
         }
     );
 }

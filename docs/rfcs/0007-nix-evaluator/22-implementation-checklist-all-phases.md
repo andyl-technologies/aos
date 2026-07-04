@@ -8156,13 +8156,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       whole-program call-graph demand propagation or worker/wrapper rewriting.
 - [x] Current worker-wrapper planning precursor:
       `ratchet-core::analysis::worker_wrapper` consumes strictness facts for
-      direct literal lambda applications and reports where a simple-formal
-      wrapper could force a strict lazy argument before tail-calling a stricter
-      worker. The planner retains unproven arguments, non-literal callees, and
-      non-simple literal patterns, and rejects malformed apply/lambda payloads
-      or missing argument facts. This is a planning precursor only: it does not
-      rewrite IR, generate workers or wrappers, handle multi-argument currying,
-      destructuring patterns, absent arguments, or whole-program call-graph
+      direct literal lambda applications and reports where a wrapper could force
+      a proven-strict lazy argument before tail-calling a stricter worker. It now
+      admits simple-formal patterns and validated formal-set patterns whose
+      replayed strictness proof demands the argument, while retaining unproven
+      arguments, non-literal callees, unsupported literal patterns, and forged
+      strict facts that replay as non-demanding. It rejects malformed
+      apply/lambda payloads or missing argument facts. This is a planning
+      precursor only: it does not rewrite IR, generate workers or wrappers,
+      unbox formal-set fields, handle multi-argument currying, absent arguments,
+      or whole-program call-graph
       specialization.
 - [ ] `analysis/cardinality.rs` — single-entry thunk detection (blackhole-skip
       only for escape-proven *frame-local* thunks, `C-8`) + dead-binding removal.
