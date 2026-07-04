@@ -832,22 +832,24 @@ harness, never cut for scope.
       attrsets have no stable absent slot. This does not replace active flat
       attr storage with shaped/native layouts, call the native runtime helper,
       or affect `.drv` bytes.
-- [x] Current active projected-shape select/with IC bridge:
+- [x] Current active projected-shape select/with/runtime-callable IC bridge:
       the tree-walk evaluator stores per-run flat, shaped, and HAMT select-cache
       cells by module, select-site id, and attr-path segment or with-chain
       depth. Active flat
       heap values carrying projected shape metadata use a transient
       `ShapedAttrs` view and `ShapedSelectCache` for static `Select`/`HasAttr`
-      segments and active `WithVar` scope probes; unprojected flat values keep the key-validated `FlatSelectCache`
-      fallback; projected-HAMT values use the HAMT policy cache described
-      below. Builtin static-select shortcuts, dynamic segments,
-      scoped-global fallback probes, generic runtime keyed helpers, and native storage paths remain on
-      the shared slow dispatcher. Cached hits increment mirrored inline-cache
+      segments, active `WithVar` scope probes, and crate-internal Rust-callable
+      `aos_has_attr`/`aos_select_ic` wrappers; unprojected flat values keep the
+      key-validated `FlatSelectCache` fallback; projected-HAMT values use the
+      HAMT policy cache described below. Builtin static-select shortcuts,
+      dynamic segments, scoped-global fallback probes, native exported keyed
+      helpers, and native storage paths remain on the shared slow dispatcher.
+      Cached hits increment mirrored inline-cache
       hit stats; resolved lookups and misses increment miss stats and preserve
       representation-specific slow-select telemetry; successful `EvalOutcome`
       exits also record terminal shaped/flat/HAMT select-cache site states in
-      `attr_telemetry`. This is a tree-walk bridge over flat payloads, not the
-      final native `aos_select_ic` lowering.
+      `attr_telemetry`. This is a tree-walk/Rust-callable bridge over flat
+      payloads, not the final native `aos_select_ic` lowering.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and

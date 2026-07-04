@@ -8598,22 +8598,24 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       state because flat attrsets have no stable absent slot. Native runtime
       helper dispatch, shaped/HAMT active storage replacement, and `.drv`
       effects remain open.
-- [x] Current active projected-shape select/with IC bridge: the tree-walk
+- [x] Current active projected-shape select/with/runtime-callable IC bridge: the tree-walk
       evaluator keeps per-run flat, shaped, and HAMT select-cache cells keyed by
       module, select-site id, and attr-path segment or with-chain depth. Active flat heap
       values carrying projected shape metadata use a transient `ShapedAttrs`
-      view and `ShapedSelectCache` for static `Select`/`HasAttr` path segments
-      and active `WithVar` scope probes; unprojected flat values keep the key-validated `FlatSelectCache`
-      fallback; projected-HAMT values use the HAMT policy cache described
-      below. Builtin static-select shortcuts, dynamic path segments,
-      scoped-global fallback probes, generic runtime keyed helpers, and native storage paths
-      remain on the existing slow dispatcher. Cached shaped/flat/HAMT hits
+      view and `ShapedSelectCache` for static `Select`/`HasAttr` path segments,
+      active `WithVar` scope probes, and crate-internal Rust-callable
+      `aos_has_attr`/`aos_select_ic` wrappers; unprojected flat values keep the
+      key-validated `FlatSelectCache` fallback; projected-HAMT values use the
+      HAMT policy cache described below. Builtin static-select shortcuts,
+      dynamic path segments, scoped-global fallback probes, native exported
+      keyed helpers, and native storage paths remain on the existing slow
+      dispatcher. Cached shaped/flat/HAMT hits
       increment the mirrored inline-cache hit counter; resolved lookups and
       misses increment the inline-cache miss counter and keep
       representation-specific slow-select telemetry; successful `EvalOutcome`
       exits also record terminal shaped/flat/HAMT select-cache site states in
-      `attr_telemetry`. This is a tree-walk bridge over flat payloads, not the
-      final native `aos_select_ic` lowering.
+      `attr_telemetry`. This is a tree-walk/Rust-callable bridge over flat
+      payloads, not the final native `aos_select_ic` lowering.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie

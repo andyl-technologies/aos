@@ -488,14 +488,14 @@ impl TreeWalk {
     ///
     /// Callers own WHNF forcing and lazy-foldl normalization before entering this
     /// select-IC helper boundary; this routine only checks the receiver shape and
-    /// performs the key lookup.
+    /// performs the cached key lookup.
     pub(crate) fn select_attr_value(
         &mut self,
         id: IrId,
         span: Span,
         attrs_value: Value,
         symbol: Symbol,
-        _site: IrInlineCacheSiteId,
+        site: IrInlineCacheSiteId,
     ) -> Result<Value, TreeWalkError> {
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -507,7 +507,7 @@ impl TreeWalk {
                 span,
             ));
         }
-        match self.select_slow_flat_attr(id, span, attrs_value, symbol)? {
+        match self.select_static_attr_with_cache(id, span, attrs_value, symbol, site, 0)? {
             AttrSelectOutcome::Hit { value, .. } => Ok(value),
             AttrSelectOutcome::Missing { .. } => Err(TreeWalkError::new(
                 TreeWalkErrorKind::MissingAttribute { id, symbol },
@@ -519,15 +519,15 @@ impl TreeWalk {
     /// Returns whether an already-forced attrset value contains one static attr.
     ///
     /// Callers own WHNF forcing and lazy-foldl normalization before entering this
-    /// helper boundary; this routine only checks the receiver shape and probes key
-    /// presence.
+    /// helper boundary; this routine only checks the receiver shape and probes
+    /// cached key presence.
     pub(crate) fn has_attr_value(
         &mut self,
         id: IrId,
         span: Span,
         attrs_value: Value,
         symbol: Symbol,
-        _site: IrInlineCacheSiteId,
+        site: IrInlineCacheSiteId,
     ) -> Result<Value, TreeWalkError> {
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -539,7 +539,7 @@ impl TreeWalk {
                 span,
             ));
         }
-        match self.select_slow_flat_attr(id, span, attrs_value, symbol)? {
+        match self.select_static_attr_with_cache(id, span, attrs_value, symbol, site, 0)? {
             AttrSelectOutcome::Hit { .. } => Ok(Value::bool(true)),
             AttrSelectOutcome::Missing { .. } => Ok(Value::bool(false)),
         }

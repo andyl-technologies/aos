@@ -5,9 +5,11 @@
 //! WHNF. Future native tiers reference the keyed inline-cache boundary and the
 //! non-keyed update slow path through stable attrset-access helper symbols.
 //! This module pins the helpers' safe family metadata and exposes process-local
-//! Rust callable wrappers for registration preflight only. It does not export a
-//! C ABI function, install a polymorphic inline cache, decode a native runtime
-//! context, merge attrsets through native code, or register a JIT symbol.
+//! Rust callable wrappers for registration preflight only. The Rust callable
+//! select/presence wrappers use the tree-walk checked select-cache bridge, but
+//! this module does not export a C ABI function, install a native polymorphic
+//! inline cache, decode a native runtime context, merge attrsets through native
+//! code, or register a JIT symbol.
 
 use crate::compile::{IrId, IrInlineCacheSiteId};
 use crate::eval::tree_walk::{TreeWalk, TreeWalkError};
@@ -352,7 +354,7 @@ pub enum RuntimeAttrAccessNativeExportBlocker {
     SymbolTableBindingUnimplemented,
     /// Native wrappers cannot yet bind inline-cache site ids to evaluator metadata.
     InlineCacheSiteBindingUnimplemented,
-    /// The hidden-class/PIC dispatch path behind attrset-access helpers is not implemented yet.
+    /// Native exported helpers cannot yet dispatch through hidden-class/PIC storage.
     InlineCacheDispatchUnimplemented,
     /// The attrset update slow path has no native merge implementation yet.
     NativeAttrUpdateMergeUnimplemented,
@@ -565,6 +567,7 @@ mod tests {
     use crate::eval::tree_walk::TreeWalkErrorKind;
     use crate::syntax::parse_str;
     use crate::value::ValueTag;
+    use ratchet_value::attrs::pic::ShapedSelectError;
 
     use super::*;
 
@@ -970,18 +973,35 @@ mod tests {
             IrInlineCacheSiteId::new(7),
         )
         .expect("has-attr presence check succeeds");
+        let repeated_present = rust_callable_aos_has_attr(
+            &mut eval,
+            ir.root,
+            span,
+            attrs,
+            present_key,
+            IrInlineCacheSiteId::new(7),
+        )
+        .expect("repeated has-attr presence check succeeds");
         let missing = rust_callable_aos_has_attr(
             &mut eval,
             ir.root,
             span,
             attrs,
             missing_key,
-            IrInlineCacheSiteId::new(7),
+            IrInlineCacheSiteId::new(8),
         )
         .expect("has-attr missing check succeeds");
 
         assert_eq!(present.as_bool().expect("present result is bool"), true);
+        assert_eq!(
+            repeated_present
+                .as_bool()
+                .expect("repeated present result is bool"),
+            true
+        );
         assert_eq!(missing.as_bool().expect("missing result is bool"), false);
+        assert_eq!(eval.stats().inline_cache_hits(), 1);
+        assert_eq!(eval.stats().inline_cache_misses(), 2);
     }
 
     #[test]
@@ -1005,8 +1025,53 @@ mod tests {
             IrInlineCacheSiteId::new(7),
         )
         .expect("static attr selection succeeds");
+        let repeated = rust_callable_aos_select_ic(
+            &mut eval,
+            ir.root,
+            span,
+            attrs,
+            key,
+            IrInlineCacheSiteId::new(7),
+        )
+        .expect("repeated static attr selection succeeds");
 
         assert_eq!(selected.as_int().expect("selected value is int"), 42);
+        assert_eq!(repeated.as_int().expect("repeated value is int"), 42);
+        assert_eq!(eval.stats().inline_cache_hits(), 1);
+        assert_eq!(eval.stats().inline_cache_misses(), 1);
+    }
+
+    #[test]
+    fn attr_access_rust_callable_rejects_same_site_different_key_reuse() {
+        let source = "{ a = 42; b = 7; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers");
+        let mut symbols = ir.symbols.clone();
+        let a = symbols.intern(b"a").expect("a symbol exists");
+        let b = symbols.intern(b"b").expect("b symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let attrs = eval.eval_root().expect("attrset evaluates");
+        let site = IrInlineCacheSiteId::new(7);
+
+        let selected = rust_callable_aos_select_ic(&mut eval, ir.root, span, attrs, a, site)
+            .expect("initial static attr selection succeeds");
+        let error = rust_callable_aos_select_ic(&mut eval, ir.root, span, attrs, b, site)
+            .expect_err("same IC site rejects different static key");
+
+        assert_eq!(selected.as_int(), Ok(42));
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::ShapedSelectCache {
+                source: ShapedSelectError::KeyChanged {
+                    previous,
+                    attempted,
+                },
+                ..
+            } if previous == a && attempted == b
+        ));
     }
 
     #[test]
