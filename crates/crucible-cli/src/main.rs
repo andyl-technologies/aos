@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-schedule-named-truths+toml";
@@ -9293,16 +9294,7 @@ fn verify_reproduction_artifact_bytes_with_components(
     let scenario_digest = content_address_bytes(&scenario_bytes);
     let store_uri = format!("cas:{scenario_digest}");
     let identity = expected_replay_identity_for_backend(backend);
-    let decisions = canonical_log
-        .iter()
-        .map(|entry| CliDecision {
-            sequence: entry.sequence,
-            virtual_time_ticks: entry.virtual_time_ticks,
-            node: entry.node.clone(),
-            kind: entry.kind.clone(),
-            payload_digest: content_address_bytes(entry.summary.as_bytes()),
-        })
-        .collect::<Vec<_>>();
+    let decisions = cli_decisions_from_canonical_log(canonical_log);
     let extra_components = extra_payloads
         .iter()
         .map(|payload| CliComponent {
@@ -11793,16 +11785,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     );
                 }
                 if let Some(target) = &report.to_savepoint {
-                    println!(
-                        "crucible: replay --to {} status=target-validated checkpoint={} frontier_ticks={} target_decisions={} artifact_prefix_digest={} oracle={} store_objects={}",
-                        target.target_label,
-                        format_content_hash_ref(target.checkpoint),
-                        target.frontier_ticks,
-                        target.target_decisions,
-                        target.artifact_prefix_digest,
-                        target.oracle.status_label(),
-                        target.oracle.store_objects
-                    );
+                    println!("{}", replay_to_savepoint_status_line(target));
                 }
                 if let Some(bisect) = &report.bisect {
                     match &bisect.divergence {
@@ -13269,14 +13252,7 @@ fn replay_to_savepoint(
             evidence_scenario_digest, artifact.scenario.digest
         )));
     }
-    let target_decisions = evidence.schedule.len();
-    if target_decisions > artifact.decisions.len() {
-        return Err(CliError::ReplayCheck(format!(
-            "replay --to savepoint frontier has {target_decisions} decisions, but artifact encodes only {} decisions",
-            artifact.decisions.len()
-        )));
-    }
-    let artifact_prefix_digest = schedule_digest(&artifact.decisions[..target_decisions]);
+    let schedule_prefix = prove_replay_schedule_prefix(artifact, &evidence.schedule)?;
     let oracle = validate_checkpoint_with_replay_oracle(
         "replay --to",
         &evidence.scenario,
@@ -13288,10 +13264,124 @@ fn replay_to_savepoint(
         target_label: savepoint.label(),
         checkpoint: evidence.checkpoint.id,
         frontier_ticks: evidence.checkpoint.virtual_time.ticks,
-        target_decisions,
-        artifact_prefix_digest,
+        schedule_prefix,
         oracle,
     })
+}
+
+fn prove_replay_schedule_prefix(
+    artifact: &CliReproductionArtifact,
+    target_schedule: &Schedule,
+) -> Result<ReplaySchedulePrefixProof, CliError> {
+    let target_decisions = target_schedule.len();
+    if target_decisions > artifact.decisions.len() {
+        return Err(CliError::ReplayCheck(format!(
+            "replay --to savepoint frontier has {target_decisions} decisions, but artifact encodes only {} decisions",
+            artifact.decisions.len()
+        )));
+    }
+
+    let expected = replay_schedule_prefix_decisions(target_schedule);
+    for (index, expected_decision) in expected.iter().enumerate() {
+        let actual = &artifact.decisions[index];
+        let actual_payload_summary = decision_payload_summary(artifact, actual)?;
+        if !replay_schedule_prefix_decision_matches(
+            actual,
+            &actual_payload_summary,
+            expected_decision,
+        ) {
+            return Err(CliError::ReplayCheck(format!(
+                "replay --to schedule-prefix mismatch at decision {index}: expected sequence={} virtual_time={} kind={} payload={}, got sequence={} virtual_time={} kind={} payload={}",
+                expected_decision.sequence,
+                expected_decision.virtual_time_ticks,
+                expected_decision.kind,
+                expected_decision.payload_digest,
+                actual.sequence,
+                actual.virtual_time_ticks,
+                actual.kind,
+                actual.payload_digest
+            )));
+        }
+    }
+
+    Ok(ReplaySchedulePrefixProof {
+        target_decisions,
+        artifact_decisions: artifact.decisions.len(),
+        matched_decisions: expected.len(),
+        typed_prefix_digest: typed_schedule_prefix_digest(&expected),
+        artifact_prefix_digest: schedule_digest(&artifact.decisions[..target_decisions]),
+    })
+}
+
+fn replay_schedule_prefix_decisions(schedule: &Schedule) -> Vec<ReplaySchedulePrefixDecisionProof> {
+    schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| {
+            let payload_summary = format!("{decision:?}");
+            ReplaySchedulePrefixDecisionProof {
+                sequence: index as u64,
+                virtual_time_ticks: index as u64 + 1,
+                kind: engine_decision_kind(decision).to_string(),
+                payload_digest: content_address_bytes(payload_summary.as_bytes()),
+                payload_summary,
+            }
+        })
+        .collect()
+}
+
+fn replay_schedule_prefix_decision_matches(
+    actual: &CliDecision,
+    actual_payload_summary: &str,
+    expected: &ReplaySchedulePrefixDecisionProof,
+) -> bool {
+    actual.sequence == expected.sequence
+        && actual.virtual_time_ticks == expected.virtual_time_ticks
+        && replay_schedule_prefix_kind_matches(&actual.kind, &expected.kind)
+        && actual.payload_digest == expected.payload_digest
+        && actual_payload_summary == expected.payload_summary
+}
+
+fn replay_schedule_prefix_kind_matches(actual: &str, expected: &str) -> bool {
+    actual == expected || actual == expected.replace('-', "_")
+}
+
+fn typed_schedule_prefix_digest(decisions: &[ReplaySchedulePrefixDecisionProof]) -> String {
+    let mut material = String::new();
+    artifact_line(
+        &mut material,
+        &["schema", REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA],
+    );
+    for decision in decisions {
+        artifact_line(
+            &mut material,
+            &[
+                "typed-decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    content_address_bytes(material.as_bytes())
+}
+
+fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
+    format!(
+        "crucible: replay --to {} status=target-validated schedule_prefix=typed checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} oracle={} store_objects={}",
+        target.target_label,
+        format_content_hash_ref(target.checkpoint),
+        target.frontier_ticks,
+        target.schedule_prefix.target_decisions,
+        target.schedule_prefix.artifact_decisions,
+        target.schedule_prefix.matched_decisions,
+        target.schedule_prefix.typed_prefix_digest,
+        target.schedule_prefix.artifact_prefix_digest,
+        target.oracle.status_label(),
+        target.oracle.store_objects
+    )
 }
 
 fn replay_bisect_artifacts(
@@ -14597,13 +14687,26 @@ struct CliPayload {
     bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CliDecision {
     sequence: u64,
     virtual_time_ticks: u64,
     node: String,
     kind: String,
     payload_digest: String,
+}
+
+fn cli_decisions_from_canonical_log(canonical_log: &[CanonicalLogEntry]) -> Vec<CliDecision> {
+    canonical_log
+        .iter()
+        .map(|entry| CliDecision {
+            sequence: entry.sequence,
+            virtual_time_ticks: entry.virtual_time_ticks,
+            node: entry.node.clone(),
+            kind: entry.kind.clone(),
+            payload_digest: content_address_bytes(entry.summary.as_bytes()),
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15370,9 +15473,26 @@ struct ReplayToSavepointReport {
     target_label: String,
     checkpoint: crucible::ContentHash,
     frontier_ticks: u64,
-    target_decisions: usize,
-    artifact_prefix_digest: String,
+    schedule_prefix: ReplaySchedulePrefixProof,
     oracle: SavepointOracleProof,
+}
+
+#[derive(Debug)]
+struct ReplaySchedulePrefixProof {
+    target_decisions: usize,
+    artifact_decisions: usize,
+    matched_decisions: usize,
+    typed_prefix_digest: String,
+    artifact_prefix_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReplaySchedulePrefixDecisionProof {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    kind: String,
+    payload_summary: String,
+    payload_digest: String,
 }
 
 #[derive(Debug)]
@@ -25059,7 +25179,7 @@ finding.0.kind=property
             schedule.len() as u64,
             &content_address_bytes(b"replay-to-savepoint-canonical-log"),
         )?;
-        let entries = canonical_trace_entries();
+        let entries = canonical_log_entries_from_engine_schedule(&schedule);
         let samples = vec![VerifyFingerprintSample {
             index: 0,
             instruction: 0,
@@ -25097,7 +25217,35 @@ finding.0.kind=property
 
         assert_eq!(target_report.checkpoint, checkpoint.id);
         assert_eq!(target_report.frontier_ticks, schedule.len() as u64);
-        assert_eq!(target_report.target_decisions, schedule.len());
+        assert_eq!(
+            target_report.schedule_prefix.target_decisions,
+            schedule.len()
+        );
+        assert_eq!(
+            target_report.schedule_prefix.artifact_decisions,
+            entries.len()
+        );
+        assert_eq!(
+            target_report.schedule_prefix.matched_decisions,
+            schedule.len()
+        );
+        assert_eq!(
+            target_report.schedule_prefix.artifact_prefix_digest,
+            schedule_digest(&cli_decisions_from_canonical_log(&entries))
+        );
+        assert!(
+            target_report
+                .schedule_prefix
+                .typed_prefix_digest
+                .starts_with(CONTENT_ADDRESS_PREFIX)
+        );
+        let status_line = replay_to_savepoint_status_line(target_report);
+        assert!(status_line.contains("schedule_prefix=typed"));
+        assert!(status_line.contains(&format!("target_decisions={}", schedule.len())));
+        assert!(status_line.contains(&format!("artifact_decisions={}", entries.len())));
+        assert!(status_line.contains(&format!("matched_decisions={}", schedule.len())));
+        assert!(status_line.contains("typed_prefix_digest=crucible-hash:"));
+        assert!(status_line.contains("artifact_prefix_digest=crucible-hash:"));
         assert_eq!(target_report.oracle.fat_checkpoint, checkpoint.id);
         assert_eq!(target_report.oracle.thin_checkpoint, checkpoint.id);
         dispatch(&replay_cli)?;
@@ -25128,6 +25276,169 @@ finding.0.kind=property
                 .expect("hash replay --to should report a target savepoint")
                 .checkpoint,
             checkpoint.id
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("missing-prefix-payload.crucible");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = replay_to_savepoint_schedule(1);
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(
+            &configuration,
+            VirtualTime {
+                ticks: schedule.len() as u64,
+            },
+        )?;
+        let target = write_savepoint_handle_fixture(
+            temp.path(),
+            "replay-target-missing-prefix-payload",
+            &form,
+            &schedule,
+            checkpoint.id,
+            schedule.len() as u64,
+            &content_address_bytes(b"replay-to-savepoint-missing-payload-canonical-log"),
+        )?;
+        let entries = canonical_log_entries_from_engine_schedule(&schedule);
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"replay-to-savepoint-missing-payload-fingerprint"),
+            }],
+        )?;
+        let decoded = decode_reproduction_artifact(&artifact_bytes)?;
+        let missing_digest = decoded.decisions[0].payload_digest.clone();
+        let payload_prefix = format!("payload\t{missing_digest}\t");
+        let artifact_text = String::from_utf8(artifact_bytes)?;
+        let without_decision_payload = artifact_text
+            .lines()
+            .filter(|line| !line.starts_with(&payload_prefix))
+            .map(|line| {
+                let mut line = line.to_string();
+                line.push('\n');
+                line
+            })
+            .collect::<String>();
+        fs::write(&artifact_path, without_decision_payload)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let target_arg = target.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "replay",
+            &artifact_arg,
+            "--to",
+            &target_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --to must reject missing prefix decision payloads"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert!(error.to_string().contains("decision payload"));
+        assert!(
+            error
+                .to_string()
+                .contains("is missing from artifact payloads")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("prefix-mismatch.crucible");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let target_schedule = replay_to_savepoint_schedule(1);
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: target_schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(
+            &configuration,
+            VirtualTime {
+                ticks: target_schedule.len() as u64,
+            },
+        )?;
+        let target = write_savepoint_handle_fixture(
+            temp.path(),
+            "replay-target-prefix-mismatch",
+            &form,
+            &target_schedule,
+            checkpoint.id,
+            target_schedule.len() as u64,
+            &content_address_bytes(b"replay-to-savepoint-prefix-mismatch-canonical-log"),
+        )?;
+        let artifact_schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 99 },
+                order: Vec::new(),
+            },
+        )]);
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &canonical_log_entries_from_engine_schedule(&artifact_schedule),
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"replay-to-savepoint-prefix-mismatch-fingerprint"),
+            }],
+        )?;
+        fs::write(&artifact_path, artifact_bytes)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let target_arg = target.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "replay",
+            &artifact_arg,
+            "--to",
+            &target_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --to must reject non-prefix savepoint schedules"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::ReplayCheck(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("schedule-prefix mismatch at decision 0")
         );
 
         Ok(())

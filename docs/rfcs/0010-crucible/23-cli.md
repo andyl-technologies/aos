@@ -1130,10 +1130,12 @@ branch on the verdict without parsing output:
   `replay --to <SAVEPOINT>` now accepts a savepoint handle or local DAG-store
   checkpoint hash, validates the target through savepoint evidence and the pure
   replay oracle, proves the savepoint scenario identity matches the artifact,
-  and requires the savepoint schedule length to fit within the encoded artifact
-  decision stream. Full closure remains blocked on typed schedule-prefix proof,
-  materialized backend replay-to-savepoint, and machine-independent backend
-  replay coverage.
+  builds a payload-backed typed schedule-prefix proof from the target `Schedule`,
+  rejects equal-length non-prefix artifacts with deterministic mismatch
+  diagnostics, requires artifact decision payload bytes to resolve for the proved
+  prefix, and still requires the savepoint schedule length to fit within the
+  encoded artifact decision stream. Full closure remains blocked on materialized
+  backend replay-to-savepoint and machine-independent backend replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
