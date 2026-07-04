@@ -482,9 +482,12 @@ long-held locks.
   inline payloads, byte-identical canonical-log comparison, exit 1 on mismatch
   with deterministic first-difference byte localization, artifact-to-artifact
   `--bisect <other-artifact>` over validated matching replay inputs with
-  canonical-log/fingerprint divergence localization, and continued rejection of
-  `--to`; full closure waits for replay-to-savepoint and machine-independent
-  backend replay coverage.
+  canonical-log/fingerprint divergence localization, and `replay --to
+  <SAVEPOINT>` validation for savepoint handles or local DAG-store checkpoint
+  hashes through savepoint evidence, scenario-identity matching, artifact
+  decision-count bound checks, and pure replay-oracle validation; full closure
+  waits for typed schedule-prefix proof, materialized backend
+  replay-to-savepoint, and machine-independent backend replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,

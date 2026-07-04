@@ -442,6 +442,9 @@ struct ReplayArgs {
     /// Read this reproduction artifact.
     #[arg(value_name = "ARTIFACT")]
     artifact: PathBuf,
+    /// Validate this savepoint target against the replay artifact.
+    #[arg(long, value_name = "savepoint")]
+    to: Option<String>,
     /// Compare the replayed canonical log to this file.
     #[arg(long, value_name = "original-log")]
     check: Option<PathBuf>,
@@ -11601,6 +11604,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         check.digest
                     );
                 }
+                if let Some(target) = &report.to_savepoint {
+                    println!(
+                        "crucible: replay --to {} status=target-validated checkpoint={} frontier_ticks={} target_decisions={} artifact_prefix_digest={} oracle={} store_objects={}",
+                        target.target_label,
+                        format_content_hash_ref(target.checkpoint),
+                        target.frontier_ticks,
+                        target.target_decisions,
+                        target.artifact_prefix_digest,
+                        target.oracle.status_label(),
+                        target.oracle.store_objects
+                    );
+                }
                 if let Some(bisect) = &report.bisect {
                     match &bisect.divergence {
                         Some(divergence) => {
@@ -12914,6 +12929,11 @@ fn replay_reproduction_artifact(
     let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
     let seed = artifact.seed;
     let scenario_digest = artifact.scenario.digest.clone();
+    let to_savepoint = args
+        .to
+        .as_deref()
+        .map(|target| replay_to_savepoint(cli, target, &artifact))
+        .transpose()?;
     let check = if let Some(path) = &args.check {
         let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
         let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
@@ -12947,8 +12967,49 @@ fn replay_reproduction_artifact(
         digest: content_address_bytes(&bytes),
         seed,
         scenario_digest,
+        to_savepoint,
         check,
         bisect,
+    })
+}
+
+fn replay_to_savepoint(
+    cli: &Cli,
+    target: &str,
+    artifact: &CliReproductionArtifact,
+) -> Result<ReplayToSavepointReport, CliError> {
+    let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
+    let evidence = savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))?;
+    let evidence_scenario_digest =
+        content_address_bytes(&scenario_identity_bytes(&evidence.scenario));
+    if evidence_scenario_digest != artifact.scenario.digest {
+        return Err(artifact_error(format!(
+            "replay --to savepoint scenario {} did not match artifact scenario {}",
+            evidence_scenario_digest, artifact.scenario.digest
+        )));
+    }
+    let target_decisions = evidence.schedule.len();
+    if target_decisions > artifact.decisions.len() {
+        return Err(CliError::ReplayCheck(format!(
+            "replay --to savepoint frontier has {target_decisions} decisions, but artifact encodes only {} decisions",
+            artifact.decisions.len()
+        )));
+    }
+    let artifact_prefix_digest = schedule_digest(&artifact.decisions[..target_decisions]);
+    let oracle = validate_checkpoint_with_replay_oracle(
+        "replay --to",
+        &evidence.scenario,
+        &evidence.configuration,
+        &evidence.checkpoint,
+        evidence.checkpoint.virtual_time,
+    )?;
+    Ok(ReplayToSavepointReport {
+        target_label: savepoint.label(),
+        checkpoint: evidence.checkpoint.id,
+        frontier_ticks: evidence.checkpoint.virtual_time.ticks,
+        target_decisions,
+        artifact_prefix_digest,
+        oracle,
     })
 }
 
@@ -15018,8 +15079,19 @@ struct ReplayArtifactReport {
     digest: String,
     seed: u64,
     scenario_digest: String,
+    to_savepoint: Option<ReplayToSavepointReport>,
     check: Option<ReplayCheckReport>,
     bisect: Option<ReplayBisectionReport>,
+}
+
+#[derive(Debug)]
+struct ReplayToSavepointReport {
+    target_label: String,
+    checkpoint: crucible::ContentHash,
+    frontier_ticks: u64,
+    target_decisions: usize,
+    artifact_prefix_digest: String,
+    oracle: SavepointOracleProof,
 }
 
 #[derive(Debug)]
@@ -16446,6 +16518,17 @@ finding.0.detail=synthetic signed finding evidence
         Ok(artifact_key)
     }
 
+    fn replay_to_savepoint_schedule(len: usize) -> Schedule {
+        Schedule::from_decisions((0..len).map(|index| {
+            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: VirtualTime {
+                    ticks: (index as u64).saturating_add(1),
+                },
+                order: Vec::new(),
+            })
+        }))
+    }
+
     fn externalized_replay_artifact_text(
         artifact_bytes: &[u8],
         store_root: &Path,
@@ -16495,6 +16578,7 @@ finding.0.detail=synthetic signed finding evidence
             cli,
             &ReplayArgs {
                 artifact: path.clone(),
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -16772,6 +16856,7 @@ finding.0.detail=synthetic signed finding evidence
                 "replay",
                 &[
                     "ARTIFACT",
+                    "--to <savepoint>",
                     "--check <original-log>",
                     "--bisect <other-artifact>",
                 ],
@@ -16803,7 +16888,12 @@ finding.0.detail=synthetic signed finding evidence
     #[test]
     fn cli_help_surface_rejects_unimplemented_future_flags() {
         for argv in [
-            vec!["crucible", "replay", "case.crucible", "--to", "savepoint"],
+            vec![
+                "crucible",
+                "replay",
+                "case.crucible",
+                "--future-replay-flag",
+            ],
             vec!["crucible", "serve", "--unknown-serve-flag"],
         ] {
             assert!(
@@ -23503,6 +23593,7 @@ active_fault_tags = ["network-partition"]
             &cli,
             &ReplayArgs {
                 artifact: report.path.clone(),
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -24258,6 +24349,7 @@ finding.0.kind=property
             &cli,
             &ReplayArgs {
                 artifact: path.clone(),
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -24371,6 +24463,253 @@ finding.0.kind=property
 
         assert!(report.check.is_some());
         assert_eq!(report.path, artifact_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("case.crucible");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = replay_to_savepoint_schedule(1);
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(
+            &configuration,
+            VirtualTime {
+                ticks: schedule.len() as u64,
+            },
+        )?;
+        let target = write_savepoint_handle_fixture(
+            temp.path(),
+            "replay-target",
+            &form,
+            &schedule,
+            checkpoint.id,
+            schedule.len() as u64,
+            &content_address_bytes(b"replay-to-savepoint-canonical-log"),
+        )?;
+        let entries = canonical_trace_entries();
+        let samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"replay-to-savepoint-fingerprint-sample"),
+        }];
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &samples,
+        )?;
+        fs::write(&artifact_path, artifact_bytes)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let target_arg = target.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "replay",
+            &artifact_arg,
+            "--to",
+            &target_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let report = replay_reproduction_artifact(&replay_cli, args)?;
+        let target_report = report
+            .to_savepoint
+            .as_ref()
+            .expect("replay --to should report a target savepoint");
+
+        assert_eq!(target_report.checkpoint, checkpoint.id);
+        assert_eq!(target_report.frontier_ticks, schedule.len() as u64);
+        assert_eq!(target_report.target_decisions, schedule.len());
+        assert_eq!(target_report.oracle.fat_checkpoint, checkpoint.id);
+        assert_eq!(target_report.oracle.thin_checkpoint, checkpoint.id);
+        dispatch(&replay_cli)?;
+
+        let store_root = temp.path().join("store");
+        write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
+        let store_arg = store_root.display().to_string();
+        let checkpoint_arg = format_content_hash_ref(checkpoint.id);
+        let hash_replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "--store",
+            &store_arg,
+            "replay",
+            &artifact_arg,
+            "--to",
+            &checkpoint_arg,
+        ]);
+        let Commands::Replay(hash_args) = &hash_replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let hash_report = replay_reproduction_artifact(&hash_replay_cli, hash_args)?;
+        assert_eq!(
+            hash_report
+                .to_savepoint
+                .as_ref()
+                .expect("hash replay --to should report a target savepoint")
+                .checkpoint,
+            checkpoint.id
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("scenario-mismatch.crucible");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = replay_to_savepoint_schedule(1);
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(
+            &configuration,
+            VirtualTime {
+                ticks: schedule.len() as u64,
+            },
+        )?;
+        let target = write_savepoint_handle_fixture(
+            temp.path(),
+            "replay-target-mismatch",
+            &form,
+            &schedule,
+            checkpoint.id,
+            schedule.len() as u64,
+            &content_address_bytes(b"replay-to-savepoint-mismatch-canonical-log"),
+        )?;
+        let other_scenario = crucible::partition_recovery_scenario()?
+            .scenario
+            .scenario_def();
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &other_scenario,
+            &canonical_trace_entries(),
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"replay-to-savepoint-mismatch-fingerprint"),
+            }],
+        )?;
+        fs::write(&artifact_path, artifact_bytes)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let target_arg = target.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "replay",
+            &artifact_arg,
+            "--to",
+            &target_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --to must reject mismatched savepoint scenarios"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("did not match artifact scenario")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("short-artifact.crucible");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = replay_to_savepoint_schedule(2);
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(
+            &configuration,
+            VirtualTime {
+                ticks: schedule.len() as u64,
+            },
+        )?;
+        let target = write_savepoint_handle_fixture(
+            temp.path(),
+            "replay-target-beyond-artifact",
+            &form,
+            &schedule,
+            checkpoint.id,
+            schedule.len() as u64,
+            &content_address_bytes(b"replay-to-savepoint-beyond-canonical-log"),
+        )?;
+        let entries = canonical_trace_entries();
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries[..1],
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"replay-to-savepoint-beyond-fingerprint"),
+            }],
+        )?;
+        fs::write(&artifact_path, artifact_bytes)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let target_arg = target.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--backend",
+            "double",
+            "replay",
+            &artifact_arg,
+            "--to",
+            &target_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --to must reject savepoints beyond the artifact prefix"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::ReplayCheck(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("but artifact encodes only 1 decisions")
+        );
 
         Ok(())
     }
@@ -24695,6 +25034,7 @@ finding.0.kind=property
             &cli,
             &ReplayArgs {
                 artifact: path,
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -24735,6 +25075,7 @@ finding.0.kind=property
             &cli,
             &ReplayArgs {
                 artifact: artifact_path,
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -24834,6 +25175,7 @@ finding.0.kind=property
             &cli,
             &ReplayArgs {
                 artifact: report.path.clone(),
+                to: None,
                 check: None,
                 bisect: None,
             },
@@ -25082,6 +25424,7 @@ finding.0.kind=property
             &cli,
             &ReplayArgs {
                 artifact: path,
+                to: None,
                 check: None,
                 bisect: None,
             },

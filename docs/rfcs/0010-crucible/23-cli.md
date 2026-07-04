@@ -615,7 +615,7 @@ operator-facing.
 
   FLAGS
     --check <original-log>   Assert the replayed canonical log is byte-identical to this one.
-    --to <virtual-time|icount>   Replay only up to this point, then pause (for inspection).
+    --to <savepoint>        Validate a target savepoint handle or checkpoint hash.
     --bisect <other-artifact>    Bisect this artifact against another (24 §5).
 ```
 
@@ -1127,9 +1127,13 @@ branch on the verdict without parsing output:
   `--bisect <other-artifact>` by validating both artifacts, requiring matching
   replay inputs, localizing the first differing canonical-log/fingerprint
   coordinate, and returning the replay-check failure exit path on divergence.
-  `--to` remains rejected until replay-to-savepoint is implemented. Full closure
-  remains blocked on replay-to-savepoint and machine-independent backend replay
-  coverage.
+  `replay --to <SAVEPOINT>` now accepts a savepoint handle or local DAG-store
+  checkpoint hash, validates the target through savepoint evidence and the pure
+  replay oracle, proves the savepoint scenario identity matches the artifact,
+  and requires the savepoint schedule length to fit within the encoded artifact
+  decision stream. Full closure remains blocked on typed schedule-prefix proof,
+  materialized backend replay-to-savepoint, and machine-independent backend
+  replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
