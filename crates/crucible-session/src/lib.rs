@@ -18,8 +18,8 @@
 pub mod engine {
     pub use crucible::{
         AssertionId, AssertionPhase, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind,
-        Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig, DagStore,
-        DagStoreError, DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
+        ChoiceTag, Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
+        DagStore, DagStoreError, DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
         DebugFailureFooterCommand, DebugGdbEndpoint, DebugReverseStepGrain, Decision,
         DeliveryOrderDecision, EventAttributeValue, EventDiagnosticPayload, EventLevel,
         EventLogOffset, ExampleCorpusError, ExampleScenarioVerifyReport, ExecutionFingerprint,
@@ -27,17 +27,17 @@ pub mod engine {
         FailureClusterReportSet, FailureClusteringResult, FailureFindingsLedger,
         FailureSignaturePreservingMinimizationResult, FailureTriageResult,
         FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
-        FailureTriageStoredArtifact, FingerprintSample, GenesisCheckpoint,
-        HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore, MarkerId, MaterializationPolicy,
-        MaterializationTrigger, MemoryDagStore, NodeId, PARTITION_RECOVERY_SCENARIO_NAME,
-        Predicate, QuantumLoop, QuantumOutcome, QuantumRequest, SHMEM_ABI_VERSION, ScenarioDef,
-        ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence,
-        SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SignaturePolicy,
-        SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,
-        TemporalGraphStoreError, VirtualTime, WhiteBoxPolicy, World, built_in_example_corpus,
-        crash_restart_scenario, fault_campaign_family, happy_path_scenario,
-        partition_recovery_scenario, run_fault_campaign_example, try_step,
-        verify_example_scenario_runs,
+        FailureTriageStoredArtifact, FindingDiscoveryPath, FindingReproductionArtifact,
+        FingerprintSample, GenesisCheckpoint, HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore,
+        MarkerId, MaterializationPolicy, MaterializationTrigger, MemoryDagStore, NodeId,
+        OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome,
+        QuantumRequest, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError,
+        SchedulerEventLogEntry, SchedulerQuiescence, SchedulingPoint, SearchBudget,
+        SearchFailureOracle, SearchStrategy, Seed, SignaturePolicy, SignaturePolicyLevel,
+        SimBackend, SimDuration, SimulationBackend, TemporalGraph, TemporalGraphStoreError,
+        VirtualTime, WhiteBoxPolicy, World, built_in_example_corpus, crash_restart_scenario,
+        fault_campaign_family, happy_path_scenario, partition_recovery_scenario,
+        run_fault_campaign_example, try_step, verify_example_scenario_runs,
     };
 }
 
@@ -1925,9 +1925,9 @@ pub struct SessionForkRecord {
 
 /// Result of creating an independent child session from a fork point.
 ///
-/// The child is an ordinary [`SessionActor`] loaded at the forked branch
-/// configuration. Starting the child actor realizes that configuration through
-/// the same [`instantiate`] path used by start and resume.
+/// The child is an ordinary [`SessionActor`] paused at the forked branch
+/// checkpoint. Continuing it advances from the same realized-checkpoint path
+/// used by resume.
 pub struct SessionFork<L> {
     /// Parent engine state observed while servicing the fork.
     pub parent_state: EngineState,
@@ -1941,7 +1941,7 @@ pub struct SessionFork<L> {
     pub record: SessionForkRecord,
     /// Command sender for the independent child session actor.
     pub child_sender: mpsc::Sender<SessionCommand>,
-    /// Independent child session actor loaded at `branch_configuration`.
+    /// Independent child session actor paused at `branch_configuration`.
     pub child_actor: SessionActor<L>,
 }
 
@@ -2917,9 +2917,9 @@ impl<L> Engine<L> {
     /// The fork is recorded through [`TemporalGraph::fork`], which realizes
     /// `base` via [`instantiate`], appends the supplied [`Decision`] values with
     /// the execution-model step operation, and records the branch as a thin
-    /// checkpoint. The returned child is a normal loaded [`SessionActor`] with
-    /// its own mailbox and live snapshot; starting it realizes the branch
-    /// through the same path as any other session start or resume.
+    /// checkpoint. The returned child is a normal paused [`SessionActor`] with
+    /// its own mailbox and live snapshot; continuing it advances from the
+    /// branch checkpoint through the same path as resume.
     ///
     /// # Errors
     ///
@@ -2948,18 +2948,21 @@ impl<L> Engine<L> {
         }
 
         let fork = self.graph.fork(base, decisions)?;
-        let child_graph = self.graph.clone();
         let branch_configuration = fork.branch.clone();
         let branch_checkpoint = fork.branch_checkpoint.clone();
+        let runtime = self.graph.resume_checkpoint(branch_checkpoint.id)?.runtime;
+        let child_graph = self.graph.clone();
         let record = SessionForkRecord {
             from_checkpoint: fork.base.checkpoint,
             branch_checkpoint: branch_checkpoint.id,
             schedule_delta: branch_checkpoint.schedule_delta.clone(),
         };
-        let child_engine = Engine::new(
+        let child_engine = Engine::from_realized_checkpoint(
             branch_configuration.clone(),
             child_graph,
             child_quantum_loop,
+            runtime,
+            &branch_checkpoint,
         )
         .with_white_box_policies(self.white_box_policies.clone());
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);

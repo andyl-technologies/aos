@@ -55,11 +55,27 @@
         label = "T-CLI-11 local child runner progress";
         needle = "no-divergence local-double forks through an independent child session";
       }
+      {
+        label = "T-CLI-11 override execution progress";
+        needle = "applies\n  repeatable post-fork `--override` decisions";
+      }
+      {
+        label = "T-CLI-11 child artifact progress";
+        needle = "writes a CLI-replayable child reproduction artifact";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI fork progress note";
         needle = "`T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently";
+      }
+      {
+        label = "phase5 CLI fork override progress";
+        needle = "repeatable post-fork\n  `--override` decision application";
+      }
+      {
+        label = "phase5 CLI fork artifact progress";
+        needle = "CLI-replayable child reproduction artifact writing with separate model";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -108,8 +124,32 @@
         needle = "fork --seed execution remains tracked by T-CLI-11";
       }
       {
-        label = "fork override blocker";
-        needle = "fork --override execution remains tracked by T-CLI-11";
+        label = "fork override lowering";
+        needle = "fn fork_override_decisions";
+      }
+      {
+        label = "fork artifact writer";
+        needle = "fn write_fork_reproduction_artifact";
+      }
+      {
+        label = "fork artifact replay test";
+        needle = "fn assert_fork_artifact_replays";
+      }
+      {
+        label = "fork artifact output";
+        needle = "fork-artifact";
+      }
+      {
+        label = "fork override virtual-time test";
+        needle = "child-override-virtual";
+      }
+      {
+        label = "fork override stopped test";
+        needle = "child-override-stopped";
+      }
+      {
+        label = "fork override interactive test";
+        needle = "child-override-interactive";
       }
       {
         label = "fork help test";
