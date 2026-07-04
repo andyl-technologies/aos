@@ -341,6 +341,44 @@ fn hamt_select_cache_records_distinguished_entry_for_missing_keys() {
 }
 
 #[test]
+fn hamt_select_cache_rechecks_distinguished_missing_keys_on_new_hamt_values() {
+    let (symbols, ids) = symbols(&[b"a", b"missing"]);
+    let missing = HamtAttrs::new(vec![AttrEntry::new(ids[0], Value::int(10))], &symbols)
+        .expect("missing HAMT attrs build");
+    let present = HamtAttrs::new(
+        vec![
+            AttrEntry::new(ids[0], Value::int(10)),
+            AttrEntry::new(ids[1], Value::int(20)),
+        ],
+        &symbols,
+    )
+    .expect("present HAMT attrs build");
+    let mut cache = HamtSelectCache::new(HamtSelectPolicy::DistinguishedEntry);
+
+    assert_eq!(
+        expect_hamt_missing(
+            cache
+                .select(&missing, ids[1])
+                .expect("missing HAMT select resolves policy"),
+        ),
+        HamtSelectSource::Resolved {
+            update: HamtSelectUpdate::InstalledDistinguishedHamt,
+        }
+    );
+    assert_eq!(cache.state(), HamtSelectCacheState::DistinguishedHamt);
+
+    assert_eq!(
+        expect_hamt_hit_int(
+            cache
+                .select(&present, ids[1])
+                .expect("present HAMT select still performs keyed lookup"),
+            20,
+        ),
+        HamtSelectSource::CachedDistinguishedHamt
+    );
+}
+
+#[test]
 fn hamt_select_cache_can_fold_hamt_values_into_megamorphic_path() {
     let (symbols, ids) = symbols(&[b"a"]);
     let attrs = HamtAttrs::new(vec![AttrEntry::new(ids[0], Value::int(10))], &symbols)

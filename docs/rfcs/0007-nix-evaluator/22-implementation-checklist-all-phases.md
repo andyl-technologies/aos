@@ -8706,8 +8706,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       bridge now routes heap values carrying projected `Hamt` metadata through
       `HamtSelectCache` using a transient HAMT view over the current flat
       payload, so HAMT select-site telemetry observes resolved and cached
-      distinguished-HAMT outcomes. Native PIC lowering, active HAMT heap
-      payloads, and megamorphic fallback policy tuning remain open.
+      distinguished-HAMT outcomes. The value-layer tests also pin that a
+      distinguished missing-key observation does not cache absence: later HAMT
+      values at the same site still run keyed lookup and can return a newly
+      present key. Native PIC lowering, active HAMT heap payloads, and
+      megamorphic fallback policy tuning remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current in-process order-parity precursor: `ratchet-value` exposes
