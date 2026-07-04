@@ -9,7 +9,8 @@
 //! `JITModule` declaration, artifact-definition/finalization,
 //! registered-symbol artifact-definition/finalization, unregistered/registered
 //! tier-slot, promotion-gated preflights, and a bounded native thunk-call path
-//! for no-import artifacts,
+//! for no-import artifacts plus an explicit unsafe registered native-call path
+//! for caller-supplied host-ABI-matched runtime candidates,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
 //! environment-slot, and constant-thunk smoke tests,
 //! [`module`] composes artifacts with runtime-symbol declaration
@@ -28,9 +29,11 @@
 //! Actual exported `unsafe extern "C"` wrappers, full runtime symbol tables, and
 //! evaluator thunk-state dispatch remain future work inside this crate. The
 //! current `JITBuilder::symbol` precursor registers only explicit opaque address
-//! metadata with an encapsulated builder, while the current native-call path is
-//! restricted to no-import thunk artifacts and keeps its code-pointer cast/call
-//! behind local `// SAFETY:` invariants.
+//! metadata with an encapsulated builder. Native-call paths keep code-pointer
+//! casts/calls behind local `// SAFETY:` invariants, and the registered
+//! runtime-importing path is an `unsafe fn` because callers must prove supplied
+//! native-address candidates, runtime pointers, valid `Value` tags, and the
+//! supported host `Value` calling convention satisfy the frozen ABI.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -58,7 +61,8 @@ pub use cranelift::{
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
     JitCraneliftModuleSetupError, JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation,
     JitCraneliftRegisteredArtifactDefinitionPreflight,
-    JitCraneliftRegisteredArtifactFinalizationPreflight, JitCraneliftRegisteredSymbol,
+    JitCraneliftRegisteredArtifactFinalizationPreflight,
+    JitCraneliftRegisteredNativeThunkInvocation, JitCraneliftRegisteredSymbol,
     JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftRegisteredTier1SlotPreflight,
     JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1PromotionError,
     JitCraneliftTier1PromotionPreflight, JitCraneliftTier1SlotPreflight,
@@ -72,6 +76,7 @@ pub use cranelift::{
     jit_cranelift_native_thunk_call_for_artifact,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
+    jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
     jit_cranelift_registered_tier1_slot_preflight_with_candidates,
     jit_cranelift_symbol_registration_preflight_with_candidates,

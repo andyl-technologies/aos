@@ -1137,6 +1137,21 @@ harness, never cut for scope.
       not publish into evaluator thunk state, perform thunk-state CAS, call
       registered helper addresses, support runtime-importing artifacts, run the
       differential `.drv` harness, or export runtime ABI wrappers.
+- [x] Current registered native thunk-call precursor:
+      `ratchet-jit::cranelift::jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates()`
+      finalizes runtime-importing thunk artifacts through the registered-symbol
+      path, casts the finalized code pointer to the frozen `JitThunkFn` ABI, and
+      calls it only from an explicit `unsafe fn` whose caller must prove supplied
+      candidates, runtime/environment pointers, valid returned `Value` tags, and
+      the supported host `Value` calling convention satisfy the native ABI.
+      Tests use integration-test `extern "C"` candidates on the reviewed host
+      ABI to execute `aos_env_get` and `aos_env_get` + `aos_force` artifacts,
+      and preserve missing-import rejection before native invocation. This
+      proves registered helper relocation plus a native thunk call with
+      synthetic host-ABI-matched candidates only: real exported oracle wrappers,
+      evaluator thunk publication, thunk-state CAS, runtime trap transfer, full
+      runtime-symbol registration, and the `.drv` differential harness remain
+      open.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs

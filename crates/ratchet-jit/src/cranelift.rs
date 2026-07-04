@@ -10,9 +10,9 @@
 //! defined artifact and returns opaque code-pointer metadata. The promotion
 //! scaffold records safe slot hotness and compiles currently-supported literal
 //! and registered env-slot roots when policy requests tier 1. The native
-//! thunk-call scaffold casts and calls finalized no-import thunk artifacts
-//! behind a documented unsafe boundary while leaving evaluator dispatch and
-//! runtime wrapper calls outside this module.
+//! thunk-call scaffold casts and calls finalized no-import thunk artifacts, and
+//! can also call registered runtime-importing artifacts behind an explicit
+//! unsafe boundary when the caller supplies host-ABI-matched native candidates.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,7 +32,7 @@ use ratchet_core::{IrArena, IrData, IrId, IrKind};
 use ratchet_value::value::{Value, ValueError};
 
 use crate::{
-    abi::JitThunkFn,
+    abi::{JitEnvFramePtr, JitRuntimeContextPtr, JitThunkFn},
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
         JitLowerError, lower_constant_ir_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
@@ -661,6 +661,51 @@ impl JitCraneliftNativeThunkInvocation {
     }
 }
 
+/// Result of calling one finalized registered thunk body through the native ABI.
+///
+/// The invocation owns the registered finalization preflight that keeps the
+/// backing [`JITModule`] alive. Unlike [`JitCraneliftNativeThunkInvocation`],
+/// this value can represent artifacts that call registered runtime imports, so
+/// constructing it requires the caller to uphold the unsafe native-address and
+/// runtime-pointer invariants of
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`].
+pub struct JitCraneliftRegisteredNativeThunkInvocation {
+    finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+    value: Value,
+}
+
+impl JitCraneliftRegisteredNativeThunkInvocation {
+    fn new(
+        finalization: JitCraneliftRegisteredArtifactFinalizationPreflight,
+        value: Value,
+    ) -> Self {
+        Self {
+            finalization,
+            value,
+        }
+    }
+
+    /// Returns the registered finalization preflight that owns the backing JIT module.
+    pub const fn finalization(&self) -> &JitCraneliftRegisteredArtifactFinalizationPreflight {
+        &self.finalization
+    }
+
+    /// Returns the finalized artifact body metadata.
+    pub const fn finalized_function(&self) -> &JitCraneliftFinalizedFunction {
+        self.finalization.finalized_function()
+    }
+
+    /// Returns the value produced by the native thunk call.
+    pub const fn value(&self) -> Value {
+        self.value
+    }
+
+    /// Returns true because this invocation owns the module backing the call target.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.finalization.owns_encapsulated_module()
+    }
+}
+
 /// A finalized artifact kept alive beside safe tier-1 slot metadata.
 pub struct JitCraneliftTier1SlotPreflight {
     finalization: JitCraneliftArtifactFinalizationPreflight,
@@ -1176,6 +1221,11 @@ pub enum JitCraneliftModuleSetupError {
 /// A failure while calling finalized native thunk code.
 #[derive(Debug)]
 pub enum JitCraneliftNativeCallError {
+    /// The current host does not have a reviewed native `Value` calling convention.
+    UnsupportedNativeValueAbi {
+        /// Human-readable reason this host is not enabled for native thunk calls.
+        message: &'static str,
+    },
     /// The artifact could not be finalized into callable code.
     FinalizeArtifact {
         /// The underlying Cranelift setup error.
@@ -1186,11 +1236,11 @@ pub enum JitCraneliftNativeCallError {
         /// The lowered artifact kind carried by finalization metadata.
         kind: JitClifArtifactKind,
     },
-    /// The native call returned bits that violate the runtime value layout.
+    /// The native call returned valid-tag bits that violate the runtime value payload layout.
     InvalidReturnValue {
         /// The stable module symbol that was called.
         symbol_name: String,
-        /// The invalid value returned by native code.
+        /// The valid-tag value whose payload failed validation.
         value: Value,
         /// The underlying value-layout error.
         source: ValueError,
@@ -1200,6 +1250,7 @@ pub enum JitCraneliftNativeCallError {
 impl fmt::Display for JitCraneliftNativeCallError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnsupportedNativeValueAbi { message } => write!(formatter, "{message}"),
             Self::FinalizeArtifact { source } => write!(formatter, "{source}"),
             Self::UnsupportedArtifactKind { kind } => {
                 write!(
@@ -1222,6 +1273,7 @@ impl fmt::Display for JitCraneliftNativeCallError {
 impl Error for JitCraneliftNativeCallError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::UnsupportedNativeValueAbi { .. } => None,
             Self::FinalizeArtifact { source } => Some(source),
             Self::UnsupportedArtifactKind { .. } => None,
             Self::InvalidReturnValue { source, .. } => Some(source),
@@ -1685,10 +1737,13 @@ pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
 /// Returns [`JitCraneliftNativeCallError::FinalizeArtifact`] when the artifact
 /// cannot be finalized, including the current registered-symbol requirement for
 /// runtime-importing artifacts. Returns
+/// [`JitCraneliftNativeCallError::UnsupportedNativeValueAbi`] when the current
+/// host has no reviewed by-value [`Value`] ABI parity with the two-word CLIF
+/// lowering. Returns
 /// [`JitCraneliftNativeCallError::UnsupportedArtifactKind`] when the finalized
 /// artifact metadata is not a thunk body. Returns
 /// [`JitCraneliftNativeCallError::InvalidReturnValue`] when the native thunk
-/// returns bits that violate the runtime [`Value`] layout.
+/// returns a valid-tag [`Value`] whose payload bits violate the runtime layout.
 ///
 /// # Panics
 ///
@@ -1697,6 +1752,8 @@ pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
 pub fn jit_cranelift_native_thunk_call_for_artifact(
     artifact: JitClifArtifact,
 ) -> Result<JitCraneliftNativeThunkInvocation, JitCraneliftNativeCallError> {
+    require_supported_native_value_abi()?;
+
     let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)
         .map_err(|source| JitCraneliftNativeCallError::FinalizeArtifact { source })?;
 
@@ -1721,6 +1778,90 @@ pub fn jit_cranelift_native_thunk_call_for_artifact(
         })?;
 
     Ok(JitCraneliftNativeThunkInvocation::new(finalization, value))
+}
+
+/// Finalizes one registered thunk artifact and calls it through the native thunk ABI.
+///
+/// This is the bounded native-call path for artifacts that import runtime
+/// helpers, such as the current local environment-slot and forced environment
+/// precursors. It composes explicit native-address candidates with the
+/// registered finalization path, then calls the finalized thunk entry while
+/// keeping the backing [`JITModule`] alive in the returned invocation.
+///
+/// This function does not publish the code pointer into evaluator thunk state,
+/// perform an atomic thunk-state transition, or validate that supplied helper
+/// addresses came from exported AOS runtime wrappers. It only checks that
+/// candidate symbol names and kinds match JIT declaration metadata before those
+/// addresses are registered with Cranelift.
+///
+/// # Safety
+///
+/// Every native-address candidate that can be called by `artifact` must point to
+/// a live function with the exact frozen `extern "C"` ABI for its runtime
+/// symbol, and it must remain valid until the returned invocation is dropped.
+/// `rt` and `env` must be valid for the compiled thunk body and for every helper
+/// candidate the body can call. Candidate functions must not unwind across the C
+/// ABI boundary. Every compiled body and candidate return path must produce a
+/// valid [`Value`] tag; payload-layout violations can be reported as
+/// [`JitCraneliftNativeCallError::InvalidReturnValue`], but invalid enum
+/// discriminants cannot be materialized safely after crossing back into Rust.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError::FinalizeArtifact`] when the artifact
+/// cannot be finalized through the registered-symbol path, including missing or
+/// wrong-kind candidates for artifact imports. Returns
+/// [`JitCraneliftNativeCallError::UnsupportedNativeValueAbi`] when the current
+/// host has no reviewed by-value [`Value`] ABI parity with the two-word CLIF
+/// lowering. Returns
+/// [`JitCraneliftNativeCallError::UnsupportedArtifactKind`] when the finalized
+/// artifact metadata is not a thunk body. Returns
+/// [`JitCraneliftNativeCallError::InvalidReturnValue`] when the native thunk
+/// returns a valid-tag [`Value`] whose payload bits violate the runtime layout.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift unresolved-import and finalized-function
+/// lookup conditions as
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`].
+pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
+    artifact: JitClifArtifact,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+    rt: JitRuntimeContextPtr,
+    env: JitEnvFramePtr,
+) -> Result<JitCraneliftRegisteredNativeThunkInvocation, JitCraneliftNativeCallError> {
+    require_supported_native_value_abi()?;
+
+    let finalization = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+        artifact, candidates,
+    )
+    .map_err(|source| JitCraneliftNativeCallError::FinalizeArtifact { source })?;
+
+    if finalization.artifact().kind() != JitClifArtifactKind::ThunkBody {
+        return Err(JitCraneliftNativeCallError::UnsupportedArtifactKind {
+            kind: finalization.artifact().kind(),
+        });
+    }
+
+    let thunk_entry = thunk_entry_from_finalized_code(finalization.finalized_function().code_ptr());
+    // SAFETY: The caller guarantees that registered helper candidates and the
+    // runtime/environment pointers satisfy the frozen native ABI for this
+    // artifact. The artifact body was produced by this crate's thunk lowerers,
+    // verified with the frozen thunk CLIF signature, finalized by Cranelift, and
+    // kept alive by `finalization`.
+    let value = unsafe { thunk_entry(rt, env) };
+    value
+        .validate_payload()
+        .map_err(|source| JitCraneliftNativeCallError::InvalidReturnValue {
+            symbol_name: finalization.finalized_function().symbol_name().to_owned(),
+            value,
+            source,
+        })?;
+
+    Ok(JitCraneliftRegisteredNativeThunkInvocation::new(
+        finalization,
+        value,
+    ))
 }
 
 /// Finalizes one artifact and installs its pointer into owned tier-1 slot metadata.
@@ -2435,6 +2576,19 @@ fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> Stri
         JitClifArtifactSource::IrRoot(root) => {
             format!("aos.jit.ir_root.{}.{kind}", root.as_u32())
         }
+    }
+}
+
+fn require_supported_native_value_abi() -> Result<(), JitCraneliftNativeCallError> {
+    if cfg!(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        any(target_os = "linux", target_os = "macos")
+    )) {
+        Ok(())
+    } else {
+        Err(JitCraneliftNativeCallError::UnsupportedNativeValueAbi {
+            message: "native thunk calls require a reviewed by-value Value ABI on this host",
+        })
     }
 }
 

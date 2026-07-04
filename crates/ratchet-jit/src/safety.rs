@@ -4,7 +4,7 @@
 //! machine-code entry requires raw function-pointer calls that Rust cannot
 //! validate. This module records the standing review controls for that future
 //! boundary while the current crate contains mostly safe metadata, inert
-//! native-entry type aliases, one bounded native thunk-call boundary, and policy
+//! native-entry type aliases, bounded native thunk-call boundaries, and policy
 //! adapters.
 
 /// Crate-level lint required for the JIT unsafe boundary.
@@ -151,6 +151,8 @@ mod tests {
             "ratchet-jit contains unreviewed unsafe-boundary tokens:\n{}",
             findings.join("\n")
         );
+
+        assert_reviewed_unsafe_boundary_counts(&source_root);
     }
 
     fn is_allowed_native_entry_alias_token(source_path: &Path, code: &str, token: &str) -> bool {
@@ -175,7 +177,12 @@ mod tests {
         let trimmed = code.trim_start();
         match token {
             "unsafe" => {
-                trimmed == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
+                trimmed.starts_with(
+                    "pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(",
+                )
+                    || trimmed
+                        == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
+                    || trimmed == "let value = unsafe { thunk_entry(rt, env) };"
                     || trimmed
                         == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
             }
@@ -239,5 +246,47 @@ mod tests {
     fn code_tokens(code: &str) -> impl Iterator<Item = &str> {
         code.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
             .filter(|token| !token.is_empty())
+    }
+
+    fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
+        let cranelift = fs::read_to_string(source_root.join("cranelift.rs"))
+            .expect("Cranelift source file is readable");
+
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
+                "pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(",
+            ),
+            1,
+            "registered native thunk-call entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
+                "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };",
+            ),
+            1,
+            "no-import native thunk call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&cranelift, "let value = unsafe { thunk_entry(rt, env) };"),
+            1,
+            "registered native thunk call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
+                "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };",
+            ),
+            1,
+            "native thunk code-pointer transmute must stay singly reviewed"
+        );
+    }
+
+    fn trimmed_line_occurrences(source: &str, expected: &str) -> usize {
+        source
+            .lines()
+            .filter(|line| line.trim_start() == expected)
+            .count()
     }
 }
