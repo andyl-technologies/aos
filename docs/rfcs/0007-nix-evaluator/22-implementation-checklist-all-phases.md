@@ -7863,6 +7863,24 @@ nurseries build on the bump arena.
       evaluate a full derivation closure, replace the serial tree-walk force
       path, install the final Chase-Lev deque, or satisfy the full
       differential/loom/Miri/TSan gates.
+- [x] Current Chase-Lev-backed tree-walk raw-evaluation bridge:
+      `ratchet-oracle::eval::eval_raw_bytes_parallel_chase_lev_top_level` runs
+      independent lowered roots through the Chase-Lev fallible L1 executor,
+      creates a fresh serial tree-walk evaluator for each completed root,
+      renders strict raw bytes with the existing tree-walk raw renderer, and
+      stores root-local tree-walk failures as stable task-order outcomes.
+      Source-backed roots preserve source names and bytes for
+      position-sensitive builtins, and parallel thunk payloads observe a
+      non-zero thunk worker id derived from the Chase-Lev worker that completed
+      each root. Tests cover stable raw-byte parity with serial tree-walk
+      evaluation, source-provenance preservation, canonical observed tree-walk
+      error selection, fail-fast cancellation before later task-boundary
+      checks, and scheduler-worker to thunk-worker id bounds. This is an
+      independent-root bridge only: it does not share evaluator heaps or thunk
+      graphs between roots, allocate through live per-worker nurseries,
+      evaluate a full derivation closure, replace the serial tree-walk force
+      path, wire ready-work park tokens or CAS wait integration, or satisfy the
+      full differential/loom/Miri/TSan gates.
 
 **Conformance (hold parity).**
 
