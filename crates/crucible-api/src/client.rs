@@ -32,8 +32,8 @@ use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
     DestroySessionResponse, GetReproductionRequest, GetReproductionResponse, LifecycleApiError,
     ListScenariosResponse, ListSessionsResponse, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ScenarioSummary, SessionId, SessionRef,
-    SessionSummary,
+    ReproductionCommandRecord, ReproductionCommandResult, ResumeSessionRequest,
+    ResumeSessionResponse, ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime,
@@ -55,6 +55,7 @@ use crate::streaming::{
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
 const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
 const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
+const RESUME_SESSION_RPC_PATH: &str = "/crucible.rpc/resume-session";
 const LIST_SESSIONS_RPC_PATH: &str = "/crucible.rpc/list-sessions";
 const DESTROY_SESSION_RPC_PATH: &str = "/crucible.rpc/destroy-session";
 const GET_REPRODUCTION_RPC_PATH: &str = "/crucible.rpc/get-reproduction";
@@ -580,6 +581,24 @@ pub trait ControlClient {
         })
     }
 
+    /// Resumes a session through the lifecycle unary API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the transport rejects the request,
+    /// the lifecycle server rejects the checkpoint closure, or this client
+    /// handle does not implement lifecycle resume.
+    fn resume_session(
+        &self,
+        _request: ResumeSessionRequest,
+    ) -> ControlClientFuture<'_, ResumeSessionResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "ResumeSession",
+            })
+        })
+    }
+
     /// Lists sessions from the lifecycle registry and live mirrors.
     ///
     /// # Errors
@@ -1004,6 +1023,21 @@ impl ControlClient for RpcControlClient {
         })
     }
 
+    fn resume_session(
+        &self,
+        request: ResumeSessionRequest,
+    ) -> ControlClientFuture<'_, ResumeSessionResponse> {
+        Box::pin(async move {
+            let body = self
+                .post_rpc_body(
+                    RESUME_SESSION_RPC_PATH,
+                    encode_resume_session_request(&request),
+                )
+                .await?;
+            decode_resume_session_response(&body)
+        })
+    }
+
     fn list_sessions(&self) -> ControlClientFuture<'_, ListSessionsResponse> {
         Box::pin(async move {
             let body = self
@@ -1250,6 +1284,39 @@ fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
     output.into_bytes()
 }
 
+fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("crucible.rpc/resume-session-request\n");
+    push_line(&mut output, "scenario-id", &request.scenario.id().to_hex());
+    push_line(
+        &mut output,
+        "scenario-seed",
+        &request.scenario.seed().to_hex(),
+    );
+    push_line(
+        &mut output,
+        "app-random-draw-cap",
+        &request.scenario.app_random_draw_cap().to_string(),
+    );
+    push_line(
+        &mut output,
+        "scenario-payload",
+        &hex_encode(&request.scenario.to_compact_binary()),
+    );
+    push_line(&mut output, "seed", &request.seed.to_hex());
+    push_line(
+        &mut output,
+        "schedule",
+        &hex_encode(&request.schedule.to_compact_binary()),
+    );
+    push_line(
+        &mut output,
+        "checkpoint",
+        &hex_encode(&request.checkpoint.to_compact_binary()),
+    );
+    output.into_bytes()
+}
+
 fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
     let mut output = String::new();
     output.push_str("crucible.rpc/destroy-session-request\n");
@@ -1410,6 +1477,31 @@ fn decode_create_session_response(
     let state = parse_state_line(lines.next())?;
     reject_trailing(lines.next())?;
     Ok(CreateSessionResponse { session, state })
+}
+
+fn decode_resume_session_response(
+    body: &[u8],
+) -> Result<ResumeSessionResponse, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/resume-session-response")?;
+    let session = parse_session_ref(&mut lines)?;
+    let state = parse_state_line(lines.next())?;
+    let checkpoint = parse_required_content_hash_field(
+        Some(parse_prefixed_line(lines.next(), "checkpoint=")?),
+        "resume checkpoint",
+    )?;
+    let configuration = parse_required_content_hash_field(
+        Some(parse_prefixed_line(lines.next(), "configuration=")?),
+        "resume configuration",
+    )?;
+    reject_trailing(lines.next())?;
+    Ok(ResumeSessionResponse {
+        session,
+        state,
+        checkpoint,
+        configuration,
+    })
 }
 
 fn decode_list_sessions_response(body: &[u8]) -> Result<ListSessionsResponse, ControlClientError> {

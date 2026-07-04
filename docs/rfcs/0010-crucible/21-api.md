@@ -124,6 +124,7 @@ command set; none invents control semantics ([API-2]).
 
     // ── session lifecycle (unary) ───────────────────────────────────────────
     CreateSession(…)               -> SessionRef             // 20 §4: instantiate(genesis)
+    ResumeSession(…)               -> SessionRef             // 20 §4: instantiate(checkpoint)
     ListSessions(…)                -> ListSessionsResponse
     DestroySession(…)              -> DestroySessionResponse  // 20 §4: stop + drop
     GetReproduction(…)             -> GetReproductionResponse // recorded command stream (20 §8)
@@ -144,6 +145,7 @@ command set; none invents control semantics ([API-2]).
   ListScenarios     (none; read scenario registry)           names + descriptions; no session
   CreateSession     new actor; Command::Start (20 §4.1)      from scenario ref OR inline def;
                                                              seed; start_paused → Paused(Instan.)
+  ResumeSession     new actor at checkpoint (20 §4.1)        self-contained scenario/schedule/checkpoint closure
   ListSessions      read registry + each mirror (SESS-23)    current state may be stale; attach for live
   DestroySession    Command::Stop then drop the actor        epoch-guarded (§21.5)
   GetReproduction   read control log (20 §8)                 recorded command stream (§21.5.2)
@@ -153,11 +155,12 @@ command set; none invents control semantics ([API-2]).
 ```
 
 - **[API-5]** The service MUST expose at least: `Hello` (server version +
-  capabilities, §21.6), `ListScenarios`, `CreateSession`, `ListSessions`,
-  `DestroySession`, `GetReproduction` (§21.5.2), a bidirectional `Control` stream
-  (§21.4), a server-streaming `Watch`, and a unary `Send`. Each MUST map to the
-  session operation named in §21.2.1 and MUST add no control semantics beyond the
-  session command set ([API-2]). *Gate:* `gate:abi-conformance`,
+  capabilities, §21.6), `ListScenarios`, `CreateSession`, `ResumeSession`,
+  `ListSessions`, `DestroySession`, `GetReproduction` (§21.5.2), a
+  bidirectional `Control` stream (§21.4), a server-streaming `Watch`, and a unary
+  `Send`. Each MUST map to the session operation named in §21.2.1 and MUST add no
+  control semantics beyond the session command set ([API-2]). *Gate:*
+  `gate:abi-conformance`,
   `gate:control-responsive`. *Spec:* §21.2, §21.2.1.
 
 - **[API-6]** `Hello` MUST be callable before any session exists, MUST be
@@ -175,7 +178,11 @@ command set; none invents control semantics ([API-2]).
   in `Paused { Instantiated }` after `Start`, [SESS-5], so a client can set
   breakpoints and faults before the first `Continue`). It MUST instantiate the
   genesis configuration `(def, [])` via the session's single `instantiate`
-  ([SESS-11]) and return a `SessionRef` (id + epoch + seed, §21.5). *Gate:*
+  ([SESS-11]) and return a `SessionRef` (id + epoch + seed, §21.5).
+  `ResumeSession` MUST accept a self-contained scenario form payload, schedule,
+  and fat checkpoint closure, reject seed, scenario-payload, or closure
+  mismatches, instantiate the recorded non-genesis configuration through the same
+  session lifecycle, and return a normal `SessionRef`. *Gate:*
   `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §21.2; cross-ref 20
   §4.1, 06.
 
@@ -353,12 +360,13 @@ the whole log itself.
 ## 21.5 Epoch guards and session identity
 
 A `SessionRef` is `(session_id, session_epoch, …)`. The **epoch** is a
-server-monotonic counter incremented on every `CreateSession`, so a session id
-that has been destroyed and recreated has a different epoch. A client that cached
-an id can pass `expected_epoch` on attach and on any lifecycle/command RPC; the
-server fails fast (a typed precondition error, or `SessionClosed` with reason
-`EPOCH_MISMATCH` on a stream) when the epoch does not match — detecting a
-**recycled session id** before a command lands on the wrong incarnation.
+server-monotonic counter incremented on every `CreateSession` or
+`ResumeSession`, so a session id that has been destroyed and recreated has a
+different epoch. A client that cached an id can pass `expected_epoch` on attach
+and on any lifecycle/command RPC; the server fails fast (a typed precondition
+error, or `SessionClosed` with reason `EPOCH_MISMATCH` on a stream) when the
+epoch does not match — detecting a **recycled session id** before a command lands
+on the wrong incarnation.
 
 The session also exposes its **reproduction context**: the recorded operator
 command stream ([`20-session-control-plane.md`](20-session-control-plane.md) §8,
@@ -377,11 +385,12 @@ surfaces this through the per-attach snapshot and the unary `GetReproduction` RP
 ```
 
 - **[API-20]** A `SessionRef` MUST carry a `session_id` and a server-monotonic
-  `session_epoch` incremented on every `CreateSession`, so a recreated id has a
-  distinct epoch. Every attach, lifecycle (`DestroySession`, `GetReproduction`),
-  and command RPC (`Send`) MUST accept an optional `expected_epoch`; when set and
-  it does not match the session's current epoch, the server MUST fail fast — a
-  typed `FailedPrecondition`/epoch-mismatch error on a unary RPC, or a
+  `session_epoch` incremented on every `CreateSession` or `ResumeSession`, so a
+  recreated id has a distinct epoch. Every attach, lifecycle (`DestroySession`,
+  `GetReproduction`), and command RPC (`Send`) MUST accept an optional
+  `expected_epoch`; when set and it does not match the session's current epoch,
+  the server MUST fail fast — a typed `FailedPrecondition`/epoch-mismatch error
+  on a unary RPC, or a
   `SessionClosed { reason: EPOCH_MISMATCH }` on a stream — and MUST NOT apply the
   command. This detects a **recycled session id** before a command lands on the
   wrong incarnation. *Gate:* `gate:abi-conformance`, `gate:control-responsive`.
@@ -555,9 +564,10 @@ SCOPE (§21.1): a programmatic in-process Rust client + an RPC surface (gRPC/Con
   over HTTP/2), both ONE ControlClient trait. THIN wrapper over the session command
   set (20 §4). NO web UI, NO browser-shaped RPCs (NG-4).
 
-SERVICE (§21.2): Hello · ListScenarios · CreateSession · ListSessions ·
-  DestroySession · GetReproduction · Control(bidi) · Watch(server-stream) ·
-  Send(unary). Each maps to a session command (20) or a mirror read.
+SERVICE (§21.2): Hello · ListScenarios · CreateSession · ResumeSession ·
+  ListSessions · DestroySession · GetReproduction · Control(bidi) ·
+  Watch(server-stream) · Send(unary). Each maps to a session command (20) or a
+  mirror read.
 
 PAYLOAD MODEL (§21.3): open-set dotted `kind` + typed attribute map for commands,
   events, faults, breakpoints — SAME catalog as the event log (19 §19.7). New kinds
@@ -622,17 +632,20 @@ ran in-process against the double or over the wire against QEMU.
   RPC execution remains T-API-3; streaming equivalence remains T-API-4.
 - [x] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
   (version + open-set capabilities), `ListScenarios`, `CreateSession` (scenario ref
-  or inline def + seed + start-paused), `ListSessions`, `DestroySession`
+  or inline def + seed + start-paused), `ResumeSession` (self-contained scenario
+  payload and checkpoint closure), `ListSessions`, `DestroySession`
   (epoch-guarded, idempotent) — each mapped to its session op (§21.2.1). —
   satisfies [API-5], [API-6], [API-7], [API-8]; spec §21.2, §21.2.1.
   Completed by `checks.crucible.phase5.apiLifecycleUnary`:
   `crucible-api::lifecycle` implements side-effect-free `Hello` and
   `ListScenarios`, scenario-ref and inline `CreateSession` backed by a live
   `SessionActor` and `SessionCommand::Start`, lock-free mirror-backed
-  `ListSessions`, and epoch-guarded/idempotent `DestroySession` via
+  `ListSessions`, self-contained scenario-payload/checkpoint-closure
+  `ResumeSession`, and epoch-guarded/idempotent `DestroySession` via
   `SessionCommand::Stop`. The shared `ControlClient` trait exposes those unary
-  methods, with `InProcessLifecycleClient` driving the actor registry directly
-  and `RpcControlClient` posting the corresponding HTTP/2 unary RPC paths.
+  methods, with
+  `InProcessLifecycleClient` driving the actor registry directly and
+  `RpcControlClient` posting the corresponding HTTP/2 unary RPC paths.
   Scenario-ref creation re-materializes canonical scenario material with the
   request seed; inline RPC carries the scenario seed separately from the request
   seed so mismatches are rejected. Streaming `Control`, `Watch`, and `Send`

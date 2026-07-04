@@ -1070,13 +1070,17 @@ branch on the verdict without parsing output:
   `blake3:<hash>` checkpoint references until DAG-store closure loading exists,
   validates malformed handles as artifact errors, and executes handle-backed
   local-double resume to quiescence, virtual-time, interactive command driving,
-  or a declared property violation by rebuilding the temporal graph,
+  or a declared property violation by rebuilding the temporal graph, validating
+  property-stop breakpoint firing evidence when requested, stopping with a
+  terminal savepoint, and replay-oracle-validating that terminal
+  materialization. The same check also routes non-interactive remote-daemon
+  resume over `ResumeSession` RPC for handle-backed virtual-time runs,
   instantiating the checkpoint through the session resume API, advancing the
-  resumed actor, validating property-stop breakpoint firing evidence when
-  requested, stopping with a terminal savepoint, and replay-oracle-validating
+  resumed actor, stopping with a terminal savepoint, and replay-oracle-validating
   that terminal materialization. Full closure remains blocked on bare-hash
-  checkpoint closure loading, remote daemon and real-QEMU coverage, and full
-  replay-oracle coverage across those runners.
+  checkpoint closure loading, remote interactive command driving, remote
+  `--watch` status streaming, real-QEMU coverage, and full replay-oracle coverage
+  across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

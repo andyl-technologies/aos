@@ -8,11 +8,11 @@ use std::time::Duration;
 use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
     BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
-    Decision, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
-    GdbAttachInfo, GdbListen, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, RngDecision, RngStreamId, ScenarioDef, SchedulerError, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, Seed, SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph,
-    VirtualTime,
+    Decision, DeliveryOrderDecision, EventAttributeValue, EventDiagnosticPayload, EventLevel,
+    EventLogOffset, GdbAttachInfo, GdbListen, GenesisCheckpoint, NodeId, QuantumLoop,
+    QuantumOutcome, QuantumRequest, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm,
+    Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload, Seed, SimDouble,
+    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
 };
 use crucible_api::{
     API_COMMAND_MAPPINGS, AttachRequest, AttachSnapshot, Attached, ClientControlStream,
@@ -25,12 +25,13 @@ use crucible_api::{
     ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope,
     OpenSetEventSource, OpenSetEventTime, OpenSetPayload, QuiescentLifecycleLoop,
     RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, RpcControlClient, RpcEndpoint,
-    RpcStatusCode, RpcTransportProtocol, ScenarioCatalogEntry, ScenarioSummary, SendRequest,
-    SendResponse, SessionId, SessionRef, SessionSummary, StateUpdate, StreamingApiError,
-    StreamingCapabilitySet, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
-    WatchStream, assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
-    open_set_command_kind, rpc_status_code_wire_name, serve_lifecycle_http2,
+    ReproductionCommandRecord, ReproductionCommandResult, ResumeSessionRequest,
+    ResumeSessionResponse, RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol,
+    ScenarioCatalogEntry, ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef,
+    SessionSummary, StateUpdate, StreamingApiError, StreamingCapabilitySet, StreamingEventFrame,
+    StreamingFrame, StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model,
+    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
+    rpc_status_code_wire_name, serve_lifecycle_http2,
     serve_lifecycle_http2_with_mode_until_shutdown, session_command_for_open_set_command_kind,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -436,6 +437,44 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(inline_sessions.sessions.len(), 1);
     assert_eq!(inline_sessions.sessions[0].session, inline_created.session);
     assert_eq!(inline_sessions.sessions[0].state, LiveStateKind::Paused);
+
+    let resume_request = resume_session_request(79);
+    let expected_resume_checkpoint = resume_request.checkpoint.id;
+    let expected_resume_scenario = resume_request.scenario.scenario_def();
+    let expected_resume_configuration = Configuration {
+        def: expected_resume_scenario,
+        schedule: resume_request.schedule.clone(),
+    }
+    .id();
+    let resumed = rpc
+        .resume_session(resume_request)
+        .await
+        .unwrap_or_else(|error| panic!("RPC resume session should decode: {error}"));
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    assert_eq!(resumed.checkpoint, expected_resume_checkpoint);
+    assert_eq!(resumed.configuration, expected_resume_configuration);
+    assert_eq!(resumed.session.id.value, 3);
+    assert_eq!(resumed.session.epoch, 3);
+    assert_eq!(resumed.session.seed, Seed::from_u64(79));
+    let resume_sessions = rpc
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("RPC resume list sessions should decode: {error}"));
+    assert!(
+        resume_sessions
+            .sessions
+            .iter()
+            .any(|summary| summary.session == resumed.session
+                && summary.state == LiveStateKind::Paused
+                && summary.frontier == VirtualTime { ticks: 1 })
+    );
+    let resumed_destroyed = rpc
+        .destroy_session(
+            DestroySessionRequest::new(resumed.session).with_expected_epoch(resumed.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("RPC resumed destroy session should decode: {error}"));
+    assert!(resumed_destroyed.stopped);
 
     let injected_fault = rpc
         .send_command(SendRequest::new(
@@ -1299,6 +1338,24 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         &create_inline,
     );
 
+    let resume_request = resume_session_request(78);
+    let resume_wire = format!(
+        "crucible.rpc/resume-session-request\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap={}\nscenario-payload={}\nseed={}\nschedule={}\ncheckpoint={}\n",
+        resume_request.scenario.id().to_hex(),
+        resume_request.scenario.seed().to_hex(),
+        resume_request.scenario.app_random_draw_cap(),
+        hex_encode(&resume_request.scenario.to_compact_binary()),
+        resume_request.seed.to_hex(),
+        hex_encode(&resume_request.schedule.to_compact_binary()),
+        hex_encode(&resume_request.checkpoint.to_compact_binary()),
+    );
+    assert_eq!(
+        parse_resume_session_request(resume_wire.as_bytes())
+            .unwrap_or_else(|error| panic!("resume request should parse: {error}")),
+        resume_request,
+    );
+    assert_rpc_snapshot("resume-session-request", &resume_wire, &resume_wire);
+
     assert_rpc_snapshot(
         "list-sessions-request",
         "crucible.rpc/list-sessions-request\n",
@@ -1404,6 +1461,22 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         }),
         &format!(
             "crucible.rpc/create-session-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nstate=paused\n"
+        ),
+    );
+    let resume_checkpoint = ContentHash { bytes: [0x33; 32] };
+    let resume_configuration = ContentHash { bytes: [0x44; 32] };
+    assert_rpc_snapshot(
+        "resume-session-response",
+        &encode_resume_session_response(&ResumeSessionResponse {
+            session,
+            state: LiveStateKind::Paused,
+            checkpoint: resume_checkpoint,
+            configuration: resume_configuration,
+        }),
+        &format!(
+            "crucible.rpc/resume-session-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nstate=paused\ncheckpoint={}\nconfiguration={}\n",
+            resume_checkpoint.to_hex(),
+            resume_configuration.to_hex(),
         ),
     );
     assert_rpc_snapshot(
@@ -3129,6 +3202,7 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     let saw_http2_for_hello = Arc::clone(&saw_http2);
     let saw_http2_for_list_scenarios = Arc::clone(&saw_http2);
     let saw_http2_for_create_session = Arc::clone(&saw_http2);
+    let saw_http2_for_resume_session = Arc::clone(&saw_http2);
     let saw_http2_for_list_sessions = Arc::clone(&saw_http2);
     let saw_http2_for_destroy_session = Arc::clone(&saw_http2);
     let saw_http2_for_get_reproduction = Arc::clone(&saw_http2);
@@ -3139,6 +3213,7 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     let control_plane_for_hello = Arc::clone(&control_plane);
     let control_plane_for_list_scenarios = Arc::clone(&control_plane);
     let control_plane_for_create_session = Arc::clone(&control_plane);
+    let control_plane_for_resume_session = Arc::clone(&control_plane);
     let control_plane_for_list_sessions = Arc::clone(&control_plane);
     let control_plane_for_destroy_session = Arc::clone(&control_plane);
     let control_plane_for_get_reproduction = Arc::clone(&control_plane);
@@ -3149,6 +3224,7 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     let arrival_log_for_hello = Arc::clone(&arrival_log);
     let arrival_log_for_list_scenarios = Arc::clone(&arrival_log);
     let arrival_log_for_create_session = Arc::clone(&arrival_log);
+    let arrival_log_for_resume_session = Arc::clone(&arrival_log);
     let arrival_log_for_list_sessions = Arc::clone(&arrival_log);
     let arrival_log_for_destroy_session = Arc::clone(&arrival_log);
     let arrival_log_for_get_reproduction = Arc::clone(&arrival_log);
@@ -3190,6 +3266,18 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
                 async move {
                     record_rpc_arrival(arrival_log, "create-session").await;
                     handle_create_session(request, control_plane, saw_http2).await
+                }
+            }),
+        )
+        .route(
+            "/crucible.rpc/resume-session",
+            post(move |request: Request<Body>| {
+                let control_plane = Arc::clone(&control_plane_for_resume_session);
+                let saw_http2 = Arc::clone(&saw_http2_for_resume_session);
+                let arrival_log = Arc::clone(&arrival_log_for_resume_session);
+                async move {
+                    record_rpc_arrival(arrival_log, "resume-session").await;
+                    handle_resume_session(request, control_plane, saw_http2).await
                 }
             }),
         )
@@ -3372,6 +3460,29 @@ async fn handle_create_session(
     http2_response(
         axum::http::StatusCode::OK,
         encode_create_session_response(&response),
+    )
+}
+
+async fn handle_resume_session(
+    request: axum::http::Request<axum::body::Body>,
+    control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
+    saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> axum::response::Response {
+    let Ok(body) = read_rpc_body(request, saw_http2).await else {
+        return http2_response(axum::http::StatusCode::BAD_REQUEST, "invalid request body");
+    };
+    let resume = match parse_resume_session_request(&body) {
+        Ok(resume) => resume,
+        Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
+    };
+
+    let response = match control_plane.lock().await.resume_session(resume).await {
+        Ok(response) => response,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    http2_response(
+        axum::http::StatusCode::OK,
+        encode_resume_session_response(&response),
     )
 }
 
@@ -3588,6 +3699,19 @@ fn encode_create_session_response(response: &CreateSessionResponse) -> String {
     output
 }
 
+fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
+    let mut output = String::from("crucible.rpc/resume-session-response\n");
+    push_session_ref(&mut output, response.session);
+    push_wire_line(&mut output, "state", state_wire_name(response.state));
+    push_wire_line(&mut output, "checkpoint", &response.checkpoint.to_hex());
+    push_wire_line(
+        &mut output,
+        "configuration",
+        &response.configuration.to_hex(),
+    );
+    output
+}
+
 fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
     let mut output = String::from("crucible.rpc/list-sessions-response\n");
     for session in &response.sessions {
@@ -3667,6 +3791,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Respons
             &error.to_string(),
         ),
         LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            crucible_api::RpcStatusCode::InvalidArgument,
+            "invalid-argument",
+            &error.to_string(),
+        ),
+        LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
             axum::http::StatusCode::BAD_REQUEST,
             crucible_api::RpcStatusCode::InvalidArgument,
             "invalid-argument",
@@ -3936,6 +4066,45 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
+}
+
+fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/resume-session-request")?;
+    let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
+    let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
+    let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
+    let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+    let scenario_def = scenario.scenario_def();
+    if scenario_def.id() != id {
+        return Err(format!(
+            "scenario payload id {} did not match request scenario id {}",
+            scenario_def.id().to_hex(),
+            id.to_hex()
+        ));
+    }
+    if scenario.seed() != scenario_seed {
+        return Err(format!(
+            "scenario payload seed {} did not match request scenario seed {}",
+            scenario.seed().to_hex(),
+            scenario_seed.to_hex()
+        ));
+    }
+    if scenario.app_random_draw_cap() != app_random_draw_cap {
+        return Err(format!(
+            "scenario payload app-random draw cap {} did not match request cap {}",
+            scenario.app_random_draw_cap(),
+            app_random_draw_cap
+        ));
+    }
+    let seed = parse_seed_line(lines.next(), "seed=")?;
+    let schedule = parse_schedule_line(lines.next(), "schedule=")?;
+    let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
+    reject_extra_line(lines.next())?;
+    Ok(ResumeSessionRequest::new(
+        scenario, schedule, checkpoint, seed,
+    ))
 }
 
 fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
@@ -4343,6 +4512,27 @@ fn parse_content_hash_line(
     Ok(ContentHash {
         bytes: parse_hex_32(value, "content hash")?,
     })
+}
+
+fn parse_schedule_line(line: Option<&str>, prefix: &'static str) -> Result<Schedule, String> {
+    let value = parse_wire_line(line, prefix)?;
+    Schedule::from_compact_binary(&parse_hex_bytes(value)?)
+        .map_err(|error| format!("invalid compact schedule: {error}"))
+}
+
+fn parse_scenario_form_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<ScenarioDefForm, String> {
+    let value = parse_wire_line(line, prefix)?;
+    ScenarioDefForm::from_compact_binary(&parse_hex_bytes(value)?)
+        .map_err(|error| format!("invalid compact scenario form: {error}"))
+}
+
+fn parse_checkpoint_line(line: Option<&str>, prefix: &'static str) -> Result<Checkpoint, String> {
+    let value = parse_wire_line(line, prefix)?;
+    Checkpoint::from_compact_binary(&parse_hex_bytes(value)?)
+        .map_err(|error| format!("invalid compact checkpoint: {error}"))
 }
 
 fn parse_hex_string_field(value: Option<&str>, label: &'static str) -> Result<String, String> {
@@ -5076,4 +5266,62 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
         &format!("seed={seed}"),
         Seed::from_u64(seed),
     )
+}
+
+fn resume_session_request(seed: u64) -> ResumeSessionRequest {
+    let mut scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    if scenario.seed() != Seed::from_u64(seed) {
+        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
+    }
+    let scenario_def = scenario.scenario_def();
+    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 1 },
+        order: Vec::new(),
+    }));
+    let configuration = Configuration {
+        def: scenario_def,
+        schedule: schedule.clone(),
+    };
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
+    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
+}
+
+fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
+    ScenarioDefForm::from_components_with_app_random_draw_cap(
+        scenario.world(),
+        scenario.plan(),
+        scenario.properties(),
+        seed,
+        scenario.app_random_draw_cap(),
+    )
+    .unwrap_or_else(|error| panic!("test scenario should rebuild with seed: {error}"))
+}
+
+fn checkpoint_for_configuration(
+    configuration: &Configuration,
+    frontier: VirtualTime,
+) -> Checkpoint {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .unwrap_or_else(|error| panic!("test schedule prefix should exist: {error}"));
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        frontier,
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("test checkpoint should record configuration: {error}"))
 }

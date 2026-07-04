@@ -2,14 +2,19 @@
 
 #![forbid(unsafe_code)]
 
-use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed};
+use crucible::{
+    Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, Seed,
+    VirtualTime,
+};
 use crucible_api::{
     ControlClient, CreateSessionRequest, DestroySessionRequest, HelloRequest,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError,
     LifecycleControlPlane, ListScenariosResponse, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
-    ScenarioCatalogEntry,
+    ResumeSessionRequest, ScenarioCatalogEntry,
 };
 use crucible_session::LiveStateKind;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -101,6 +106,21 @@ async fn lifecycle_unary_methods_are_exposed_on_control_client_trait() {
         .destroy_session(DestroySessionRequest::new(created.session))
         .await
         .unwrap_or_else(|error| panic!("trait destroy session should stop actor: {error}"));
+    assert!(destroyed.stopped);
+    assert_eq!(client.session_count().await, 0);
+
+    let resume = resume_request(106);
+    let resumed = client
+        .resume_session(resume)
+        .await
+        .unwrap_or_else(|error| panic!("trait resume session should start paused actor: {error}"));
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    assert_eq!(client.session_count().await, 1);
+
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .unwrap_or_else(|error| panic!("trait destroy resumed session should stop actor: {error}"));
     assert!(destroyed.stopped);
     assert_eq!(client.session_count().await, 0);
 }
@@ -297,6 +317,85 @@ async fn create_session_rejects_inline_seed_mismatch_without_side_effects() {
     assert_eq!(control_plane.session_count(), 0);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_accepts_checkpoint_closure_and_paused_live_mirror() {
+    let mut control_plane = lifecycle_control_plane();
+    let request = resume_request(112);
+    let expected_checkpoint = request.checkpoint.id;
+    let expected_scenario = request.scenario.scenario_def();
+    let expected_configuration = Configuration {
+        def: expected_scenario,
+        schedule: request.schedule.clone(),
+    };
+
+    let resumed = control_plane
+        .resume_session(request)
+        .await
+        .unwrap_or_else(|error| panic!("resume session should accept closure: {error}"));
+
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    assert_eq!(resumed.checkpoint, expected_checkpoint);
+    assert_eq!(resumed.configuration, expected_configuration.id());
+    assert_eq!(resumed.session.seed, Seed::from_u64(112));
+    assert_eq!(control_plane.session_count(), 1);
+
+    let sessions = control_plane.list_sessions();
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, resumed.session);
+    assert_eq!(sessions.sessions[0].state, LiveStateKind::Paused);
+    assert_eq!(sessions.sessions[0].frontier, VirtualTime { ticks: 1 });
+
+    control_plane
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .unwrap_or_else(|error| panic!("cleanup destroy should stop resumed actor: {error}"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_rejects_mismatched_checkpoint_closure_without_side_effects() {
+    let mut control_plane = lifecycle_control_plane();
+    let mut request = resume_request(113);
+    request.schedule = request
+        .schedule
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 2 },
+            order: Vec::new(),
+        }));
+
+    let error = control_plane
+        .resume_session(request)
+        .await
+        .expect_err("tampered resume closure should reject");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("did not match configuration"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_rejects_non_baked_genesis_checkpoint_material() {
+    let mut control_plane = lifecycle_control_plane();
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
+
+    let error = control_plane
+        .resume_session(ResumeSessionRequest::new(
+            scenario,
+            Schedule::empty(),
+            checkpoint,
+            Seed::from_u64(42),
+        ))
+        .await
+        .expect_err("non-baked genesis checkpoint material should reject");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("baked genesis checkpoint"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
 fn lifecycle_control_plane()
 -> LifecycleControlPlane<NoopLoop, impl Fn(&ScenarioDef, Seed) -> NoopLoop> {
     LifecycleControlPlane::new(
@@ -334,4 +433,62 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
         &format!("seed={seed}"),
         Seed::from_u64(seed),
     )
+}
+
+fn resume_request(seed: u64) -> ResumeSessionRequest {
+    let mut scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    if scenario.seed() != Seed::from_u64(seed) {
+        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
+    }
+    let scenario_def = scenario.scenario_def();
+    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 1 },
+        order: Vec::new(),
+    }));
+    let configuration = Configuration {
+        def: scenario_def,
+        schedule: schedule.clone(),
+    };
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
+    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
+}
+
+fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
+    ScenarioDefForm::from_components_with_app_random_draw_cap(
+        scenario.world(),
+        scenario.plan(),
+        scenario.properties(),
+        seed,
+        scenario.app_random_draw_cap(),
+    )
+    .unwrap_or_else(|error| panic!("test scenario should rebuild with seed: {error}"))
+}
+
+fn checkpoint_for_configuration(
+    configuration: &Configuration,
+    frontier: VirtualTime,
+) -> Checkpoint {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .unwrap_or_else(|error| panic!("test schedule prefix should exist: {error}"));
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        frontier,
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("test checkpoint should record configuration: {error}"))
 }

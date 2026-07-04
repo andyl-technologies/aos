@@ -55,8 +55,8 @@ pub use lifecycle::{
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
-    ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef,
-    SessionSummary,
+    ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource,
+    ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
