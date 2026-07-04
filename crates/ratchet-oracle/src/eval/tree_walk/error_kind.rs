@@ -1195,6 +1195,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying representation-dispatch failure.
         source: AttrSelectError,
     },
+    /// A flat select-cache operation failed.
+    #[error("flat select cache failed at node {id:?}: {source}")]
+    FlatSelectCache {
+        /// The select node id.
+        id: IrId,
+        /// The underlying flat select-cache failure.
+        source: FlatSelectError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {

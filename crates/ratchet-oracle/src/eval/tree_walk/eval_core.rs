@@ -329,6 +329,7 @@ impl TreeWalk {
             options,
             stats: EvalStats::default(),
             attr_telemetry: AttrTelemetry::new(),
+            flat_select_caches: BTreeMap::new(),
             attr_update_node_states: BTreeMap::new(),
             trace_output: Vec::new(),
             warning_output: Vec::new(),

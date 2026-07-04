@@ -235,7 +235,7 @@ impl TreeWalk {
         let IrData::HasAttr {
             receiver,
             path: path_id,
-            ..
+            site,
         } = node.data
         else {
             return Err(self.invalid_payload(id, node, "has-attr payload"));
@@ -266,9 +266,12 @@ impl TreeWalk {
             if current.tag() != ValueTag::Attrs {
                 return Ok(Value::bool(false));
             }
-            let AttrSelectOutcome::Hit { value, .. } =
+            let outcome = if matches!(segment, IrAttrPathSegment::Static(_)) {
+                self.select_flat_attr_with_cache(id, node.span, current, key, site, index)?
+            } else {
                 self.select_slow_flat_attr(id, node.span, current, key)?
-            else {
+            };
+            let AttrSelectOutcome::Hit { value, .. } = outcome else {
                 return Ok(Value::bool(false));
             };
             if index + 1 == segments {

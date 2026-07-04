@@ -1009,12 +1009,20 @@ impl TreeWalk {
                     receiver,
                     path,
                 } => self.with_current_module(select.module(), |eval| {
-                    let span = eval.node(select.id())?.span;
+                    let node = *eval.node(select.id())?;
+                    let span = node.span;
+                    let IrData::Select { site, .. } = node.data else {
+                        return Err(eval.invalid_payload(select.id(), &node, "select payload"));
+                    };
+                    // Lowering builds select thunks from the same select node whose
+                    // site id owns the payload path. Preserve that site so forced
+                    // select thunks share the active static-segment flat IC.
                     let value = eval.eval_select_from_value(
                         select.id(),
                         span,
                         *receiver,
                         *path,
+                        Some(site),
                         None,
                         true,
                     )?;

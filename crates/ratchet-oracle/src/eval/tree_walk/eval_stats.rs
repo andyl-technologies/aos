@@ -257,6 +257,14 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn increment_inline_cache_hits(&mut self) {
+        self.stats.inline_cache_hits = self.stats.inline_cache_hits.saturating_add(1);
+    }
+
+    pub(super) fn increment_inline_cache_misses(&mut self) {
+        self.stats.inline_cache_misses = self.stats.inline_cache_misses.saturating_add(1);
+    }
+
     pub(super) fn increment_thunks_allocated(&mut self) {
         self.stats.thunks_allocated = self.stats.thunks_allocated.saturating_add(1);
     }

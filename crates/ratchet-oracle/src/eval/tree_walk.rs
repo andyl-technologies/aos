@@ -71,8 +71,12 @@ use super::thunk_payload::{
 use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
+    pic::{FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource},
     repr::{AttrSetConstruction, AttrSetReprKind, AttrSetReprPolicy},
-    select::{AttrSelectError, AttrSelectOutcome, AttrSelectTarget, select_slow},
+    select::{
+        AttrSelectError, AttrSelectOutcome, AttrSelectRepr, AttrSelectSource, AttrSelectTarget,
+        select_slow,
+    },
     telemetry::AttrTelemetry,
 };
 use crate::cache::{
@@ -960,6 +964,7 @@ pub struct TreeWalk {
     options: TreeWalkOptions,
     stats: EvalStats,
     attr_telemetry: AttrTelemetry,
+    flat_select_caches: BTreeMap<(u32, u32, usize), FlatSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,

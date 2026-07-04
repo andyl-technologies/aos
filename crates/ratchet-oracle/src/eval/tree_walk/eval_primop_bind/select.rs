@@ -104,7 +104,7 @@ impl TreeWalk {
             receiver,
             path: path_id,
             default,
-            ..
+            site,
         } = node.data
         else {
             return Err(self.invalid_payload(id, node, "select payload"));
@@ -116,7 +116,7 @@ impl TreeWalk {
             return Ok(value);
         }
         let current = self.eval_node(receiver)?;
-        self.eval_select_from_value(id, node.span, current, path_id, default, false)
+        self.eval_select_from_value(id, node.span, current, path_id, Some(site), default, false)
     }
 
     pub(in crate::eval::tree_walk) fn eval_select_from_value(
@@ -125,6 +125,7 @@ impl TreeWalk {
         span: Span,
         mut current: Value,
         path_id: IrAttrPathId,
+        site: Option<IrInlineCacheSiteId>,
         default: Option<IrId>,
         force_receiver: bool,
     ) -> Result<Value, TreeWalkError> {
@@ -162,9 +163,16 @@ impl TreeWalk {
                     )),
                 };
             }
-            let AttrSelectOutcome::Hit { value, .. } =
+            let outcome = if matches!(segment, IrAttrPathSegment::Static(_)) {
+                if let Some(site) = site {
+                    self.select_flat_attr_with_cache(id, span, current, key, site, index)?
+                } else {
+                    self.select_slow_flat_attr(id, span, current, key)?
+                }
+            } else {
                 self.select_slow_flat_attr(id, span, current, key)?
-            else {
+            };
+            let AttrSelectOutcome::Hit { value, .. } = outcome else {
                 return match default {
                     Some(default) => self.eval_node(default),
                     None => Err(TreeWalkError::new(
@@ -204,6 +212,63 @@ impl TreeWalk {
         };
         self.record_slow_select_telemetry(id, span, &outcome);
         Ok(outcome)
+    }
+
+    /// Selects from the active flat evaluator attrset through a static-site flat cache.
+    pub(in crate::eval::tree_walk) fn select_flat_attr_with_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        site: IrInlineCacheSiteId,
+        path_index: usize,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let outcome = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            let key = (self.current_module.as_u32(), site.as_u32(), path_index);
+            self.flat_select_caches
+                .entry(key)
+                .or_default()
+                .select(attrs, symbol)
+                .map_err(|source| match source {
+                    FlatSelectError::Select(source) => {
+                        TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+                    }
+                    source => {
+                        TreeWalkError::new(TreeWalkErrorKind::FlatSelectCache { id, source }, span)
+                    }
+                })?
+        };
+        let select_outcome = match outcome {
+            FlatSelectOutcome::Hit { value, source, .. } => {
+                let select_outcome = AttrSelectOutcome::Hit {
+                    value,
+                    source: AttrSelectSource::Flat,
+                };
+                match source {
+                    FlatSelectSource::Cached => {
+                        self.increment_inline_cache_hits();
+                    }
+                    FlatSelectSource::Resolved { .. } => {
+                        self.increment_inline_cache_misses();
+                        self.record_slow_select_telemetry(id, span, &select_outcome);
+                    }
+                }
+                select_outcome
+            }
+            FlatSelectOutcome::Missing => {
+                let select_outcome = AttrSelectOutcome::Missing {
+                    repr: AttrSelectRepr::Flat,
+                };
+                self.increment_inline_cache_misses();
+                self.record_slow_select_telemetry(id, span, &select_outcome);
+                select_outcome
+            }
+        };
+        Ok(select_outcome)
     }
 
     /// Selects one attr from an already-forced attrset value.

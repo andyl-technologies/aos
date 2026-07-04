@@ -731,6 +731,104 @@ fn active_flat_selects_record_slow_select_telemetry() {
 }
 
 #[test]
+fn repeated_static_select_site_uses_flat_inline_cache() {
+    let ir = lower("let f = x: x.a; in (f { a = 1; }) + (f { a = 2; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated static select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
+fn repeated_static_select_site_revalidates_stale_flat_slots() {
+    let ir = lower("let seed = { a = 0; }; f = x: x.b; in (f { b = 1; }) + (f { a = 0; b = 2; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("shifted static select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 2);
+    assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
+fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
+    let ir = lower("let f = x: x.a or 10; in (f { a = 1; }) + (f {})");
+
+    let outcome = eval_whnf_owned(&ir).expect("hit-then-miss default select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(11));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 1);
+}
+
+#[test]
+fn repeated_static_select_defaults_preserve_miss_then_hit_semantics() {
+    let ir = lower("let f = x: x.a or 10; in (f {}) + (f { a = 2; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("miss-then-hit default select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(12));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 1);
+}
+
+#[test]
+fn dynamic_select_site_stays_on_slow_select_path() {
+    let ir = lower(r#"let f = name: set: set.${name}; in (f "a" { a = 1; }) + (f "b" { b = 2; })"#);
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated dynamic select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 2);
+    assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
+fn multi_segment_static_select_caches_each_path_index_separately() {
+    let ir = lower("let f = x: x.a.b; in (f { a = { b = 1; }; }) + (f { a = { b = 2; }; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("multi-segment static select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    assert_eq!(outcome.stats().inline_cache_hits(), 2);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 2);
+    assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
+fn repeated_static_has_attr_site_uses_flat_inline_cache() {
+    let ir = lower("let f = x: x ? a; in if (f { a = 1; }) && (f { a = 2; }) then 1 else 0");
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated static hasAttr evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
 fn attr_update_telemetry_tracks_projected_hamt_left_state() {
     let ir = lower(
         "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; }).f",

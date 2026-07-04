@@ -8586,19 +8586,31 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       symbol-order slots for current `FlatAttrs`, widens across observed slots
       up to the polymorphic cap, and falls back to the megamorphic slow path
       after cap overflow. Missing keys do not add slot entries or change PIC
-      state because flat attrsets have no stable absent slot. Active tree-walk
-      PIC integration, native runtime helper dispatch, shaped/HAMT active
-      storage replacement, and `.drv` effects remain open.
+      state because flat attrsets have no stable absent slot. Native runtime
+      helper dispatch, shaped/HAMT active storage replacement, and `.drv`
+      effects remain open.
+- [x] Current active flat static-select IC bridge: the tree-walk evaluator keeps
+      per-run `FlatSelectCache` cells keyed by module, select-site id, and
+      attr-path segment index. Active flat attrset selection for static
+      `Select`/`HasAttr` path segments uses the key-validated cached-slot path
+      after the first slow resolution; builtin static-select shortcuts, dynamic
+      path segments, `with` scope probes, generic runtime keyed helpers, and
+      shaped/HAMT/native storage paths remain on the existing slow dispatcher.
+      Cached flat hits increment the mirrored inline-cache hit counter; resolved
+      flat lookups and misses increment the inline-cache miss counter and keep
+      the prior slow-select telemetry. This is a flat/tree-walk bridge only, not
+      the final shape-check/native `aos_select_ic` lowering.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
       array. Tree-walk `Select`/`HasAttr` and `WithVar` scope probes now route
       active flat attrsets through this dispatcher; scoped-global fallback
-      probes now use it for scoped-import overlays too. `ShapedSelectCache` and
-      `HamtSelectCache` also use it for shaped/HAMT slow resolution. Tree-walk
-      PIC integration, HAMT/shaped active evaluator storage, native runtime attr
-      representation, and `.drv` effects remain open.
+      probes now use it for scoped-import overlays too. `FlatSelectCache`,
+      `ShapedSelectCache`, and `HamtSelectCache` also use it for slow
+      resolution in their respective precursor paths. HAMT/shaped active
+      evaluator storage, native runtime attr representation, full shaped/native
+      PIC integration, and `.drv` effects remain open.
 - [x] Current shaped update precursor: `ratchet-value` exposes
       `ShapedUpdatePlan`, which computes a small shaped `//` result shape
       through the transition tree and instantiates a shaped value array with the
@@ -8686,9 +8698,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       outcomes, static and dynamic attrset-node representation decisions, and
       selected builtin result representation decisions, plus `//` update-merge
       samples with syntactic update-chain depth through this telemetry surface
-      and exposes them via `EvalOutcome::attr_telemetry`; this does not replace
-      runtime shape/PIC/HAMT instrumentation, full package-set measurements,
-      C++ `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
+      and exposes them via `EvalOutcome::attr_telemetry`; active static flat
+      select-cache hits use mirrored `EvalStats` inline-cache counters while
+      unresolved cache lookups keep the slow-select telemetry. This does not
+      replace runtime shape/PIC/HAMT instrumentation, full package-set
+      measurements, C++ `NIX_SHOW_STATS` comparison, or `.drv` differential
+      proof.
 
 **Conformance (hold parity).**
 

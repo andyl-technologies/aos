@@ -819,9 +819,20 @@ harness, never cut for scope.
       loading the value; stale slots, uncached slots, and megamorphic sites
       resolve through the representation-dispatching `select_slow` flat branch.
       Missing keys do not add slot entries or change PIC state because flat
-      attrsets have no stable absent slot. This does not install PICs into
-      tree-walk `Select`, replace active flat attr storage with shaped/native
-      layouts, call the native runtime helper, or affect `.drv` bytes.
+      attrsets have no stable absent slot. This does not replace active flat
+      attr storage with shaped/native layouts, call the native runtime helper,
+      or affect `.drv` bytes.
+- [x] Current active flat static-select IC bridge:
+      the tree-walk evaluator stores per-run `FlatSelectCache` cells by module,
+      select-site id, and attr-path segment index. Active flat attrset
+      selection for static `Select`/`HasAttr` segments uses the key-validated
+      cached-slot path after first resolution; builtin static-select shortcuts,
+      dynamic segments, `with` scope probes, generic runtime keyed helpers, and
+      shaped/HAMT/native storage paths remain on the shared slow dispatcher.
+      Cached hits increment mirrored inline-cache hit stats; resolved lookups
+      and misses increment miss stats and preserve slow-select telemetry. This
+      is a flat/tree-walk bridge only, not the final shape-check/native
+      `aos_select_ic` lowering.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
@@ -829,11 +840,12 @@ harness, never cut for scope.
       [25](25-intermediate-representation.md) §4, while `WithVar` probes
       active scopes in lowered with-chain order and scoped-global fallback
       probes walk scoped-import overlays innermost-first. These active flat
-      lookups use the representation-dispatching `select_slow` precursor. This
-      claims no
-      `InlineCache`, shape guard,
-      constant-offset load, `aos_select_ic`, `select_slow` runtime helper, HAMT
-      dispatch, PIC widening, or deopt/uncommon-trap edge.
+      lookups use the representation-dispatching `select_slow` precursor, with
+      static `Select`/`HasAttr` segments now routed through the flat
+      key-validated cache bridge described above. This still claims no shape
+      guard, constant-offset load, `aos_select_ic`, `select_slow` runtime
+      helper, HAMT dispatch, shaped/native PIC widening, or deopt/uncommon-trap
+      edge.
 - [ ] Future P5 `select_slow` / IC resolver: representation-dispatching
       runtime helper for `Flat` binary search and `Hamt` lookup, reached from
       the PIC miss/slow path and native `aos_select_ic` machinery
@@ -843,11 +855,11 @@ harness, never cut for scope.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
       shape slot then load the value array. Tree-walk `Select`/`HasAttr` and
       `WithVar` scope probes plus scoped-global fallback probes now route active
-      flat attrsets through this dispatcher; `ShapedSelectCache` and
-      `HamtSelectCache` also use this value-level dispatcher for shaped/HAMT
-      slow resolution. Tree-walk PIC integration, HAMT/shaped active evaluator
-      storage, native runtime attr representation, and `.drv` effects remain
-      open.
+      flat attrsets through this dispatcher; `FlatSelectCache`,
+      `ShapedSelectCache`, and `HamtSelectCache` also use this value-level
+      dispatcher for slow resolution. HAMT/shaped active evaluator storage,
+      native runtime attr representation, full shaped/native PIC integration,
+      and `.drv` effects remain open.
 
 ### The update operator `//`
 
@@ -958,7 +970,9 @@ harness, never cut for scope.
       outcomes, static and dynamic attrset-node representation decisions, and
       selected builtin result representation decisions, plus `//` update merges
       with syntactic update-chain depth, and exposes the captured samples
-      through `EvalOutcome::attr_telemetry`; runtime shape/PIC/HAMT
+      through `EvalOutcome::attr_telemetry`; active static flat select-cache
+      hits use mirrored `EvalStats` inline-cache counters while unresolved
+      cache lookups keep slow-select telemetry. Runtime shape/PIC/HAMT
       instrumentation, full AOS package-set measurements, C++ `NIX_SHOW_STATS`
       comparison, and `.drv` differential proof remain open.
 

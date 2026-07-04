@@ -6,8 +6,8 @@
 //! the flat branch for lowered `Select`/`HasAttr`, `WithVar` scope probes, and
 //! scoped-global fallback probes; the value-level shaped and HAMT select caches
 //! use the shaped/HAMT branches for slow resolution. Native runtime helpers,
-//! tree-walk PIC integration, and active HAMT/shaped evaluator storage remain
-//! future work.
+//! active HAMT/shaped evaluator storage, and full shaped/native PIC integration
+//! remain future work.
 
 use thiserror::Error;
 
