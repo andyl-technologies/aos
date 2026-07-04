@@ -927,6 +927,14 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       replacement.
 - [ ] Scalar Replacement of Aggregates: decompose a non-escaping attrset/list/thunk into SSA values (Cranelift block params as join points; unboxed multi-returns) — no heap object at all (§7.1, §7.4) — **P4** facts / **P6–P7** CLIF realization ([08](08-execution-tiers-and-cranelift.md)); reduction in [26](26-optimization-pass-catalog.md).
 - [ ] Escape-signature table for the ~120-primop surface, with the to-be-interned boundary treated as an escape (§7.3) — **P4**, `R-9`; property-test fuzzing (not just the closure diff), default-off until green.
+- [x] Current semantic escape-signature fuzz expansion:
+      `ratchet-oracle` now fuzzes tree-walk payload values for randomized
+      immediate-scalar predicate, collection, string, version, and list-search
+      primop inputs while asserting each generated root still belongs to the
+      direct immediate-scalar signature surface. This expands the semantic
+      harness beyond tag-only samples, but C++-oracle comparison, exhaustive
+      input generation for every builtin, and aggregate/result-forwarding
+      escape proofs remain open.
 
 ### Whole-program closed-world enablers (§8)
 

@@ -207,6 +207,14 @@ fn nix_int(value: i64) -> String {
     }
 }
 
+fn simple_ascii_string() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop::sample::select((b'a'..=b'z').collect::<Vec<_>>()),
+        0..16,
+    )
+    .prop_map(|bytes| String::from_utf8(bytes).expect("ascii bytes are valid utf-8"))
+}
+
 fn sample_name_set(samples: &[SemanticPrimOpSample]) -> BTreeSet<String> {
     samples
         .iter()
@@ -276,6 +284,65 @@ fn assert_immediate_scalar_semantic_sample(sample: SemanticPrimOpSample) {
     );
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ExpectedScalar {
+    Bool(bool),
+    Int(i64),
+}
+
+fn assert_immediate_scalar_value(
+    name: &[u8],
+    source: &str,
+    expected: ExpectedScalar,
+) -> Result<(), TestCaseError> {
+    prop_assert_eq!(
+        primop_escape_signature(name),
+        PrimOpEscapeSignature::ImmediateScalar,
+        "{}",
+        name_display(name)
+    );
+    let ir = lower_direct_primop_source(name, source);
+    let outcome =
+        eval_whnf_owned(&ir).map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+    let value = outcome.value();
+    match expected {
+        ExpectedScalar::Bool(expected) => {
+            prop_assert_eq!(
+                value.tag(),
+                ValueTag::Bool,
+                "{}: {}",
+                name_display(name),
+                source
+            );
+            prop_assert_eq!(
+                value.as_bool(),
+                Ok(expected),
+                "{}: {}",
+                name_display(name),
+                source
+            );
+        }
+        ExpectedScalar::Int(expected) => {
+            prop_assert_eq!(
+                value.tag(),
+                ValueTag::Int,
+                "{}: {}",
+                name_display(name),
+                source
+            );
+            prop_assert_eq!(
+                value.as_int(),
+                Ok(expected),
+                "{}: {}",
+                name_display(name),
+                source
+            );
+        }
+    }
+    prop_assert!(!value.tag().is_heap(), "{}: {}", name_display(name), source);
+    Ok(())
+}
+
 #[test]
 fn immediate_scalar_semantic_samples_cover_signature_surface() {
     let sample_names = sample_name_set(IMMEDIATE_SCALAR_SEMANTIC_SAMPLES);
@@ -328,6 +395,104 @@ fn conservative_escape_signatures_cover_heap_and_forwarding_samples() {
 }
 
 proptest! {
+    #[test]
+    fn immediate_scalar_type_predicates_survive_random_inputs(
+        selector in 0usize..=17,
+        value in -100_i64..=100,
+        text in simple_ascii_string(),
+    ) {
+        let int = nix_int(value);
+        let string = format!("{text:?}");
+        let (name, source, expected) = match selector {
+            0 => (b"isAttrs".as_slice(), "{ a = 1; }".to_owned(), true),
+            1 => (b"isAttrs".as_slice(), "[ 1 ]".to_owned(), false),
+            2 => (b"isList".as_slice(), "[ 1 ]".to_owned(), true),
+            3 => (b"isList".as_slice(), "{ a = 1; }".to_owned(), false),
+            4 => (b"isFunction".as_slice(), "(x: x)".to_owned(), true),
+            5 => (b"isFunction".as_slice(), int.clone(), false),
+            6 => (b"isString".as_slice(), string.clone(), true),
+            7 => (b"isString".as_slice(), int.clone(), false),
+            8 => (b"isInt".as_slice(), int.clone(), true),
+            9 => (b"isInt".as_slice(), "1.5".to_owned(), false),
+            10 => (b"isFloat".as_slice(), "1.5".to_owned(), true),
+            11 => (b"isFloat".as_slice(), int.clone(), false),
+            12 => (b"isBool".as_slice(), "true".to_owned(), true),
+            13 => (b"isBool".as_slice(), "null".to_owned(), false),
+            14 => (b"isNull".as_slice(), "null".to_owned(), true),
+            15 => (b"isNull".as_slice(), "false".to_owned(), false),
+            16 => (
+                b"isPath".as_slice(),
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-path".to_owned(),
+                true,
+            ),
+            _ => (b"isPath".as_slice(), string, false),
+        };
+        let source = format!("builtins.{} {source}", name_display(name));
+        assert_immediate_scalar_value(name, &source, ExpectedScalar::Bool(expected))?;
+    }
+
+    #[test]
+    fn immediate_scalar_container_string_and_version_semantics_survive_random_inputs(
+        values in prop::collection::vec(-8_i64..=8, 0..8),
+        needle in -8_i64..=8,
+        threshold in -8_i64..=8,
+        text in simple_ascii_string(),
+        left_version in 0_u8..=20,
+        right_version in 0_u8..=20,
+    ) {
+        let list_items = values.iter().map(|value| nix_int(*value)).collect::<Vec<_>>().join(" ");
+        let list = format!("[ {list_items} ]");
+        let needle_source = nix_int(needle);
+        let threshold_source = nix_int(threshold);
+        let text_source = format!("{text:?}");
+        let compare_versions_expected = match left_version.cmp(&right_version) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        };
+        let cases: [(&[u8], String, ExpectedScalar); 7] = [
+            (
+                b"length",
+                format!("builtins.length {list}"),
+                ExpectedScalar::Int(values.len() as i64),
+            ),
+            (
+                b"stringLength",
+                format!("builtins.stringLength {text_source}"),
+                ExpectedScalar::Int(text.len() as i64),
+            ),
+            (
+                b"hasContext",
+                format!("builtins.hasContext {text_source}"),
+                ExpectedScalar::Bool(false),
+            ),
+            (
+                b"compareVersions",
+                format!("builtins.compareVersions \"{left_version}\" \"{right_version}\""),
+                ExpectedScalar::Int(compare_versions_expected),
+            ),
+            (
+                b"elem",
+                format!("builtins.elem {needle_source} {list}"),
+                ExpectedScalar::Bool(values.contains(&needle)),
+            ),
+            (
+                b"all",
+                format!("builtins.all (x: x < {threshold_source}) {list}"),
+                ExpectedScalar::Bool(values.iter().all(|value| *value < threshold)),
+            ),
+            (
+                b"any",
+                format!("builtins.any (x: x < {threshold_source}) {list}"),
+                ExpectedScalar::Bool(values.iter().any(|value| *value < threshold)),
+            ),
+        ];
+
+        for (name, source, expected) in cases {
+            assert_immediate_scalar_value(name, &source, expected)?;
+        }
+    }
+
     #[test]
     fn immediate_scalar_numeric_escape_signatures_survive_random_int_inputs(
         left in -1000_i64..=1000,
