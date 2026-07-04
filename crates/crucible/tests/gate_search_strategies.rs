@@ -12,7 +12,8 @@ use crucible::{
     MaterializationPolicy, MaterializationTrigger, NodeFault, NodeId, NodeTemplate,
     OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RngDecision, RngStreamId,
     ScenarioDefForm, Schedule, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchStrategy, Seed, TemporalGraph,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchScheduleNamedPredicateKey,
+    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph,
     TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
@@ -295,6 +296,57 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(named_safety_oracle.is_empty());
 
+    let empty_named_truths = SearchScheduleNamedPredicateTruths::new();
+    let named_safety_with_missing_truth =
+        SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
+            &named_safety_scenario,
+            &named_safety_root,
+            &named_safety_run,
+            &empty_named_truths,
+        )?;
+
+    assert!(named_safety_with_missing_truth.is_empty());
+
+    let named_false_truths = SearchScheduleNamedPredicateTruths::new().with_truth(
+        SearchScheduleNamedPredicateKey::new(
+            "requires-external-host-oracle",
+            Vec::new(),
+            Vec::new(),
+        ),
+        false,
+    );
+    let named_safety_with_false_truth =
+        SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
+            &named_safety_scenario,
+            &named_safety_root,
+            &named_safety_run,
+            &named_false_truths,
+        )?;
+
+    assert!(
+        named_safety_with_false_truth
+            .failure_for(named_safety_root.id())
+            .is_some()
+    );
+
+    let named_true_truths = SearchScheduleNamedPredicateTruths::new().with_truth(
+        SearchScheduleNamedPredicateKey::new(
+            "requires-external-host-oracle",
+            Vec::new(),
+            Vec::new(),
+        ),
+        true,
+    );
+    let named_safety_with_true_truth =
+        SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
+            &named_safety_scenario,
+            &named_safety_root,
+            &named_safety_run,
+            &named_true_truths,
+        )?;
+
+    assert!(named_safety_with_true_truth.is_empty());
+
     let timed_safety_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::not(Predicate::at(time(0))),
     })?;
@@ -313,6 +365,16 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     )?;
 
     assert!(timed_safety_oracle.is_empty());
+
+    let timed_safety_with_named_truths =
+        SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
+            &timed_safety_scenario,
+            &timed_safety_root,
+            &timed_safety_run,
+            &named_false_truths,
+        )?;
+
+    assert!(timed_safety_with_named_truths.is_empty());
 
     Ok(())
 }

@@ -496,10 +496,12 @@ long-held locks.
   budgeted campaigns, engine-discovered counterexample metadata, and replayable
   CLI reproduction artifact emission with standard replay/debug footer commands;
   prefix-safe lowering of concrete schedule-derived fault-active
-  safety/unreachability assertion violations while excluding absence-based
-  liveness/existential failures, time/timer/quiescence predicates,
-  observable-event/guest-marker predicates, and named host predicates requiring
-  an external harness oracle from non-terminal search prefixes;
+  safety/unreachability assertion violations plus an engine-level data-only
+  truth-table path for prefix-safe named host predicates keyed only by
+  search-reconstructed schedule facts, while the default CLI path still excludes
+  absence-based liveness/existential failures, time/timer/quiescence predicates,
+  observable-event/guest-marker predicates, and named host predicates unless
+  explicit schedule-named truth data is supplied below the CLI;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
@@ -509,8 +511,8 @@ long-held locks.
   replay-validation counts, and explicit backend errors for missing/corrupt
   stored family objects and unsupported fuzz targets; full closure waits for
   real-QEMU coverage, retained-log backend breadth for observable/time/
-  guest-marker and non-prefix assertion classes, and named host predicate oracle
-  plumbing.
+  guest-marker and non-prefix assertion classes, and CLI-facing schedule-named
+  truth selection for named host predicates.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result

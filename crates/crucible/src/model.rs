@@ -33,10 +33,11 @@ use crate::scheduler::{
     recorded_assertion_log_from_schedule_for_search,
 };
 use crate::trigger::{
-    Action, AssertionQuantifierKind, Condition, ConditionEvaluationPass, ConditionLeaf,
-    ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionViolation, LogLevel, ObservableEventPayload,
-    OfflineAssertionChecker,
+    Action, AssertionQuantifierKind, BlackBoxHostOracle, Condition, ConditionEvaluationPass,
+    ConditionLeaf, ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy,
+    HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionViolation,
+    LogLevel, ObservableEventPayload, OfflineAssertionChecker,
+    SearchScheduleNamedPredicateHostOracle, SearchScheduleNamedPredicateTruths,
 };
 
 mod canonical;
@@ -18810,6 +18811,39 @@ impl SearchFailureOracle {
         root: &Configuration,
         run: &TemporalGraphSearchRun,
     ) -> Result<Self, EngineError> {
+        let mut oracle = BlackBoxHostOracle;
+        Self::from_search_assertion_violations_internal(
+            scenario,
+            root,
+            run,
+            &mut oracle,
+            SearchAssertionPredicateScope::ScheduleOnly,
+        )
+    }
+
+    /// Builds an oracle from prefix-safe assertion violations using named truths.
+    ///
+    /// This opt-in path admits named assertion predicates only through a
+    /// data-only [`SearchScheduleNamedPredicateTruths`] table keyed by the named
+    /// leaf and schedule-derived active fault tags. The retained log is still
+    /// reconstructed from search schedules, so this constructor lowers only
+    /// prefix-safe safety/unreachability outcomes whose predicates are composed
+    /// from fault-active schedule facts, declared named truths, and boolean
+    /// combinators.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not match `root` or a reached configuration. Returns
+    /// [`EngineError::ScenarioSerialization`] when the retained assertion log
+    /// cannot be reconstructed or checked.
+    pub fn from_search_assertion_violations_with_named_predicates(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        named_predicates: &SearchScheduleNamedPredicateTruths,
+    ) -> Result<Self, EngineError> {
+        let mut oracle = SearchScheduleNamedPredicateHostOracle::new(named_predicates);
         let scenario_def = scenario.scenario_def();
         if scenario_def.id != root.def.id {
             return Err(EngineError::ReproductionScenarioMismatch {
@@ -18818,7 +18852,7 @@ impl SearchFailureOracle {
             });
         }
 
-        let mut oracle = Self::none();
+        let mut failure_oracle = Self::none();
         for configuration in search_run_reached_configurations(root, run) {
             if configuration.def.id != scenario_def.id {
                 return Err(EngineError::ReproductionScenarioMismatch {
@@ -18826,13 +18860,53 @@ impl SearchFailureOracle {
                     actual: configuration.def.id,
                 });
             }
-            if let Some(fingerprint) =
-                search_assertion_failure_fingerprint(scenario, &configuration)?
-            {
-                oracle = oracle.with_failure(configuration.id(), fingerprint);
+            if let Some(fingerprint) = search_assertion_failure_fingerprint_with_named_truths(
+                scenario,
+                &configuration,
+                &mut oracle,
+            )? {
+                failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
             }
         }
-        Ok(oracle)
+        Ok(failure_oracle)
+    }
+
+    fn from_search_assertion_violations_internal<O>(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        oracle: &mut O,
+        predicate_scope: SearchAssertionPredicateScope,
+    ) -> Result<Self, EngineError>
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+
+        let mut failure_oracle = Self::none();
+        for configuration in search_run_reached_configurations(root, run) {
+            if configuration.def.id != scenario_def.id {
+                return Err(EngineError::ReproductionScenarioMismatch {
+                    expected: scenario_def.id,
+                    actual: configuration.def.id,
+                });
+            }
+            if let Some(fingerprint) = search_assertion_failure_fingerprint(
+                scenario,
+                &configuration,
+                oracle,
+                predicate_scope,
+            )? {
+                failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
+            }
+        }
+        Ok(failure_oracle)
     }
 
     /// Returns the configured failure fingerprint for `configuration`, if any.
@@ -23821,10 +23895,15 @@ fn search_run_reached_configurations(
     configurations.into_values().collect()
 }
 
-fn search_assertion_failure_fingerprint(
+fn search_assertion_failure_fingerprint<O>(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
-) -> Result<Option<ContentHash>, EngineError> {
+    oracle: &mut O,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> Result<Option<ContentHash>, EngineError>
+where
+    O: HostAssertionOracle + ?Sized,
+{
     let recorded = recorded_assertion_log_from_schedule_for_search(&configuration.schedule)
         .map_err(|source| {
             scenario_serialization_error(format!(
@@ -23833,60 +23912,105 @@ fn search_assertion_failure_fingerprint(
         })?;
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
-        .check_run(scenario.properties(), recorded.entries())
+        .check_run_with_oracle(scenario.properties(), &recorded, oracle)
         .map_err(|source| {
             scenario_serialization_error(format!("search assertion check failed: {source}"))
         })?;
     Ok(report
         .outcomes()
         .iter()
-        .find(|outcome| prefix_safe_search_assertion_failure(scenario.properties(), outcome))
+        .find(|outcome| {
+            prefix_safe_search_assertion_failure(scenario.properties(), outcome, predicate_scope)
+        })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
+}
+
+fn search_assertion_failure_fingerprint_with_named_truths(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    oracle: &mut SearchScheduleNamedPredicateHostOracle<'_>,
+) -> Result<Option<ContentHash>, EngineError> {
+    oracle.clear_missing_truths();
+    let fingerprint = search_assertion_failure_fingerprint(
+        scenario,
+        configuration,
+        oracle,
+        SearchAssertionPredicateScope::ScheduleAndNamedTruths,
+    )?;
+    if oracle.has_missing_truths() {
+        return Ok(None);
+    }
+    Ok(fingerprint)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchAssertionPredicateScope {
+    ScheduleOnly,
+    ScheduleAndNamedTruths,
 }
 
 fn prefix_safe_search_assertion_failure(
     properties: &Properties,
     outcome: &HostAssertionOutcome,
+    predicate_scope: SearchAssertionPredicateScope,
 ) -> bool {
     outcome.kind == HostAssertionOutcomeKind::Violated
         && matches!(
             outcome.quantifier,
             AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
         )
-        && assertion_uses_only_search_schedule_predicates(properties, &outcome.assertion)
+        && assertion_uses_only_search_schedule_predicates(
+            properties,
+            &outcome.assertion,
+            predicate_scope,
+        )
 }
 
 fn assertion_uses_only_search_schedule_predicates(
     properties: &Properties,
     assertion: &AssertionId,
+    predicate_scope: SearchAssertionPredicateScope,
 ) -> bool {
     properties
         .assertions()
         .iter()
         .find(|candidate| &candidate.id == assertion)
-        .is_some_and(|candidate| property_uses_only_search_schedule_predicates(&candidate.property))
+        .is_some_and(|candidate| {
+            property_uses_only_search_schedule_predicates(&candidate.property, predicate_scope)
+        })
 }
 
-fn property_uses_only_search_schedule_predicates(property: &Property) -> bool {
+fn property_uses_only_search_schedule_predicates(
+    property: &Property,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> bool {
     match property {
         Property::Always { predicate }
         | Property::Sometimes { predicate }
         | Property::AfterQuiescence { predicate }
         | Property::Reachable { predicate, .. } => {
-            predicate_uses_only_search_schedule_predicates(predicate)
+            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
         }
         Property::Eventually { .. } => false,
     }
 }
 
-fn predicate_uses_only_search_schedule_predicates(predicate: &Predicate) -> bool {
+fn predicate_uses_only_search_schedule_predicates(
+    predicate: &Predicate,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> bool {
     match predicate {
         Predicate::FaultActive { .. } => true,
-        Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => predicates
-            .iter()
-            .all(predicate_uses_only_search_schedule_predicates),
+        Predicate::Named { .. } => {
+            predicate_scope == SearchAssertionPredicateScope::ScheduleAndNamedTruths
+        }
+        Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => {
+            predicates.iter().all(|predicate| {
+                predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
+            })
+        }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            predicate_uses_only_search_schedule_predicates(predicate)
+            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope)
         }
         Predicate::At { .. }
         | Predicate::After { .. }
@@ -23899,7 +24023,6 @@ fn predicate_uses_only_search_schedule_predicates(predicate: &Predicate) -> bool
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
         | Predicate::Quiescent
-        | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => false,
     }
 }

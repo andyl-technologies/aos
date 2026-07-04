@@ -1145,10 +1145,12 @@ branch on the verdict without parsing output:
   reproduction artifacts, `search-run` counterexample metadata, and the standard
   replay/debug footer commands. The assertion oracle lowers concrete
   prefix-safe, schedule-derived fault-active safety/unreachability violations and
-  intentionally excludes absence-based existential/liveness failures,
+  now exposes an engine-level data-only truth-table path for prefix-safe named
+  host predicates keyed only by search-reconstructed schedule facts. The default
+  CLI path intentionally excludes absence-based existential/liveness failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,
-  and named host predicates requiring an external harness oracle from
-  non-terminal search prefixes. It also parses `fuzz <FAMILY>` / `fuzz --family
+  and named host predicates unless a lower-layer caller supplies explicit
+  schedule-named truth data. It also parses `fuzz <FAMILY>` / `fuzz --family
   <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
   campaign seed into
   `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v1`
@@ -1162,7 +1164,8 @@ branch on the verdict without parsing output:
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage, retained-log
   backend breadth for observable/time/guest-marker and non-prefix assertion
-  classes, and named host predicate oracle plumbing.
+  classes, and CLI-facing schedule-named truth selection for named host
+  predicates.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

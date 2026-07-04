@@ -2560,6 +2560,154 @@ impl HostAssertionOracle for BlackBoxHostOracle {
     }
 }
 
+/// Data-only key for a named predicate over search-reconstructed schedule facts.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SearchScheduleNamedPredicateKey {
+    name: String,
+    nodes: Vec<NodeId>,
+    active_fault_tags: Vec<FaultTag>,
+}
+
+impl SearchScheduleNamedPredicateKey {
+    /// Builds a canonical named-predicate key.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        nodes: Vec<NodeId>,
+        mut active_fault_tags: Vec<FaultTag>,
+    ) -> Self {
+        active_fault_tags.sort();
+        active_fault_tags.dedup();
+        Self {
+            name: name.into(),
+            nodes,
+            active_fault_tags,
+        }
+    }
+
+    /// Returns the named predicate identity.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the declared node references for the named predicate.
+    #[must_use]
+    pub fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+
+    /// Returns schedule-derived fault tags active at the evaluated prefix.
+    #[must_use]
+    pub fn active_fault_tags(&self) -> &[FaultTag] {
+        &self.active_fault_tags
+    }
+}
+
+/// Deterministic truth table for search-time named predicate lowering.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchScheduleNamedPredicateTruths {
+    truths: BTreeMap<SearchScheduleNamedPredicateKey, bool>,
+}
+
+impl SearchScheduleNamedPredicateTruths {
+    /// Builds an empty truth table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds one deterministic named-predicate truth entry.
+    #[must_use]
+    pub fn with_truth(mut self, key: SearchScheduleNamedPredicateKey, value: bool) -> Self {
+        self.insert_truth(key, value);
+        self
+    }
+
+    /// Inserts one deterministic named-predicate truth entry.
+    pub fn insert_truth(&mut self, key: SearchScheduleNamedPredicateKey, value: bool) {
+        self.truths.insert(key, value);
+    }
+
+    /// Returns the truth value for `key`, if the table declares one.
+    #[must_use]
+    pub fn truth_for(&self, key: &SearchScheduleNamedPredicateKey) -> Option<bool> {
+        self.truths.get(key).copied()
+    }
+
+    /// Returns whether the table has no declared named-predicate truths.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.truths.is_empty()
+    }
+}
+
+pub(crate) struct SearchScheduleNamedPredicateHostOracle<'truths> {
+    truths: &'truths SearchScheduleNamedPredicateTruths,
+    missing_truths: BTreeSet<SearchScheduleNamedPredicateKey>,
+}
+
+impl<'truths> SearchScheduleNamedPredicateHostOracle<'truths> {
+    pub(crate) const fn new(truths: &'truths SearchScheduleNamedPredicateTruths) -> Self {
+        Self {
+            truths,
+            missing_truths: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn clear_missing_truths(&mut self) {
+        self.missing_truths.clear();
+    }
+
+    pub(crate) fn has_missing_truths(&self) -> bool {
+        !self.missing_truths.is_empty()
+    }
+}
+
+impl host_assertion_oracle_sealed::Sealed for SearchScheduleNamedPredicateHostOracle<'_> {}
+
+impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
+    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+        match leaf {
+            ConditionLeaf::Named { name, nodes } => {
+                let key = SearchScheduleNamedPredicateKey::new(
+                    name.to_owned(),
+                    nodes.to_vec(),
+                    active_search_fault_tags(observed.fault_facts()),
+                );
+                match self.truths.truth_for(&key) {
+                    Some(value) => value,
+                    None => {
+                        self.missing_truths.insert(key);
+                        false
+                    }
+                }
+            }
+            ConditionLeaf::GuestMarker { .. } => false,
+        }
+    }
+}
+
+fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<FaultTag> {
+    let mut active = BTreeSet::new();
+    for fact in facts {
+        match fact {
+            ObservedFaultFact::ControlInjected { tag, .. }
+            | ObservedFaultFact::TriggerInjected { tag, .. } => {
+                active.insert(tag.clone());
+            }
+            ObservedFaultFact::ControlHealed { tag, .. }
+            | ObservedFaultFact::TriggerHealed { tag, .. } => {
+                active.remove(tag);
+            }
+            ObservedFaultFact::ScheduledActivation { .. }
+            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
+            | ObservedFaultFact::ProbabilisticOutcome { .. } => {}
+        }
+    }
+    active.into_iter().collect()
+}
+
 impl<O> host_assertion_oracle_sealed::Sealed for LintedHostAssertionOracle<O> where
     O: HostAssertionPredicate
 {
