@@ -779,6 +779,78 @@ impl TreeWalk {
             .heap
             .clone_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if let Some(parallel_cell) = thunk.parallel_payload_cell() {
+            return self.force_parallel_payload_thunk(
+                id,
+                span,
+                value,
+                forced_payload,
+                &thunk,
+                parallel_cell,
+            );
+        }
+        self.force_serial_thunk_value(id, span, value, forced_payload, &thunk)
+    }
+
+    fn force_parallel_payload_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+        forced_payload: u64,
+        thunk: &EvalThunk,
+        parallel_cell: &TreeWalkParallelThunkCell,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(value) = parallel_cell.forced_terminal_value().map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
+        })? {
+            self.unmark_lazy_identity_thunk_payload(forced_payload);
+            self.increment_thunk_cache_hits();
+            return Ok(value);
+        }
+
+        let value = self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk)?;
+        self.publish_parallel_payload_forced_value(id, span, parallel_cell, value)?;
+        Ok(value)
+    }
+
+    fn publish_parallel_payload_forced_value(
+        &self,
+        id: IrId,
+        span: Span,
+        parallel_cell: &TreeWalkParallelThunkCell,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let Some(worker) = ParallelThunkWorkerId::new(1) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ParallelThunkWorkerUnavailable { id, raw: 1 },
+                span,
+            ));
+        };
+
+        match parallel_cell
+            .claim_or_wait_for_result(worker)
+            .map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
+            })? {
+            TreeWalkParallelThunkWait::Claimed(guard) => {
+                guard.publish_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
+                })?;
+            }
+            TreeWalkParallelThunkWait::Ready(_) | TreeWalkParallelThunkWait::SelfCycle { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn force_serial_thunk_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+        forced_payload: u64,
+        thunk: &EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
         match thunk
             .cell()
             .begin_force()
@@ -790,16 +862,16 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                self.push_active_force_root(id, span, value)?;
+                self.push_active_force_root(id, span, source_thunk)?;
                 let result = self.force_memoized_claimed_thunk(
                     id,
                     span,
-                    value,
+                    source_thunk,
                     forced_payload,
-                    &thunk,
+                    thunk,
                     guard,
                 );
-                self.pop_active_force_root(value);
+                self.pop_active_force_root(source_thunk);
                 result
             }
         }

@@ -3,6 +3,7 @@
 use super::*;
 use crate::eval::heap::EvalThunkForceStorageMode;
 use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
+use crate::eval::{ParallelThunkTerminalStatus, ParallelThunkWorkerId, TreeWalkParallelThunkWait};
 use crate::heap::{HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
@@ -145,11 +146,184 @@ fn parallel_thunk_payloads_option_controls_tree_walk_thunk_allocations() {
     );
 }
 
+#[test]
+fn parallel_thunk_payload_ready_value_bypasses_serial_suspended_force() {
+    let (ir, mut evaluator, thunk_value) = attr_thunk_value(
+        "{ x = 1 + 2; }",
+        b"x",
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    );
+
+    {
+        let thunk = evaluator
+            .heap
+            .clone_thunk(thunk_value)
+            .expect("root attr value is a heap thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        let parallel_cell = thunk
+            .parallel_payload_cell()
+            .expect("parallel payload cell is attached");
+        let worker = ParallelThunkWorkerId::new(1).expect("test worker id is encodable");
+        let TreeWalkParallelThunkWait::Claimed(guard) = parallel_cell
+            .claim_or_wait_for_result(worker)
+            .expect("parallel payload cell can be claimed")
+        else {
+            panic!("fresh parallel payload cell should be claimable");
+        };
+        guard
+            .publish_value(Value::int(99))
+            .expect("forced sidecar payload publishes");
+    }
+
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("parallel payload replay succeeds");
+    assert_eq!(forced.as_int(), Ok(99));
+    assert_eq!(evaluator.stats().thunks_forced(), 0);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 1);
+
+    let thunk = evaluator
+        .heap
+        .clone_thunk(thunk_value)
+        .expect("root attr value is a heap thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    let terminal = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell remains attached")
+        .terminal_result()
+        .expect("parallel payload remains terminal")
+        .expect("parallel terminal result is successful");
+    assert_eq!(terminal.as_int(), Ok(99));
+}
+
+#[test]
+fn parallel_thunk_payload_success_replays_after_serial_force() {
+    let (ir, mut evaluator, thunk_value) = attr_thunk_value(
+        "{ x = 1 + 2; }",
+        b"x",
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    );
+
+    {
+        let thunk = evaluator
+            .heap
+            .clone_thunk(thunk_value)
+            .expect("root attr value is a heap thunk");
+        let parallel_cell = thunk
+            .parallel_payload_cell()
+            .expect("parallel payload cell is attached");
+        assert_eq!(
+            parallel_cell.state().expect("parallel state loads"),
+            ParallelThunkTerminalStatus::Suspended
+        );
+        assert!(parallel_cell.terminal_result().is_none());
+    }
+
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+
+    {
+        let thunk = evaluator
+            .heap
+            .clone_thunk(thunk_value)
+            .expect("root attr value is a heap thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Forced));
+        let parallel_cell = thunk
+            .parallel_payload_cell()
+            .expect("parallel payload cell remains attached");
+        assert_eq!(
+            parallel_cell.state().expect("parallel state loads"),
+            ParallelThunkTerminalStatus::Forced
+        );
+        let terminal = parallel_cell
+            .terminal_result()
+            .expect("parallel payload stores terminal result")
+            .expect("parallel terminal result is successful");
+        assert_eq!(terminal.as_int(), Ok(3));
+    }
+
+    let replay = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("parallel payload replay succeeds");
+    assert_eq!(replay.as_int(), Ok(3));
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 1);
+}
+
+#[test]
+fn parallel_thunk_payload_force_errors_leave_sidecar_retryable() {
+    let (ir, mut evaluator, thunk_value) = attr_thunk_value(
+        "{ x = 1 / 0; }",
+        b"x",
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    );
+
+    let first = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect_err("division by zero remains a force error");
+    assert!(matches!(
+        first.kind(),
+        TreeWalkErrorKind::DivisionByZero { .. }
+    ));
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+
+    {
+        let thunk = evaluator
+            .heap
+            .clone_thunk(thunk_value)
+            .expect("root attr value is a heap thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        let parallel_cell = thunk
+            .parallel_payload_cell()
+            .expect("parallel payload cell remains attached");
+        assert_eq!(
+            parallel_cell.state().expect("parallel state loads"),
+            ParallelThunkTerminalStatus::Suspended
+        );
+        assert!(parallel_cell.terminal_result().is_none());
+    }
+
+    let second = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect_err("division by zero is retried through serial force");
+    assert!(matches!(
+        second.kind(),
+        TreeWalkErrorKind::DivisionByZero { .. }
+    ));
+    assert_eq!(evaluator.stats().thunks_forced(), 2);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+
+    let thunk = evaluator
+        .heap
+        .clone_thunk(thunk_value)
+        .expect("root attr value is a heap thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    let parallel_cell = thunk
+        .parallel_payload_cell()
+        .expect("parallel payload cell remains attached");
+    assert_eq!(
+        parallel_cell.state().expect("parallel state loads"),
+        ParallelThunkTerminalStatus::Suspended
+    );
+    assert!(parallel_cell.terminal_result().is_none());
+}
+
 fn attr_thunk_storage_mode(
     source: &str,
     attr: &[u8],
     options: TreeWalkOptions,
 ) -> EvalThunkForceStorageMode {
+    let (_ir, evaluator, value) = attr_thunk_value(source, attr, options);
+
+    storage_mode_for_thunk_value(&evaluator, value)
+}
+
+fn attr_thunk_value(source: &str, attr: &[u8], options: TreeWalkOptions) -> (Ir, TreeWalk, Value) {
     let ir = lower(source);
     let mut evaluator = TreeWalk::with_options(&ir, options);
     let value = evaluator
@@ -163,7 +337,7 @@ fn attr_thunk_storage_mode(
         .get(attr)
         .expect("attr exists");
 
-    storage_mode_for_thunk_value(&evaluator, value)
+    (ir, evaluator, value)
 }
 
 fn list_thunk_storage_mode(

@@ -7574,10 +7574,10 @@ nurseries build on the bump arena.
       replay an inline `Value` while preserving the thunk's deferred-work
       metadata and leaving the serial cell untouched. This is only a
       storage/admission boundary: the slot is not public API, the tree-walk
-      allocator must still opt in explicitly, the serial `force_value` path
-      still uses `ThunkCell`, no scheduler executes thunk bodies through this
-      slot, and the final lock-free waiter-list and loom/Miri/TSan gates remain
-      open.
+      allocator must still opt in explicitly, the tree-walk force body still
+      runs through serial `ThunkCell`, no scheduler executes thunk bodies
+      through this slot, and the final lock-free waiter-list and loom/Miri/TSan
+      gates remain open.
 - [x] Current parallel payload precise-scan/writeback precursor:
       `EvalHeap` precise scanning now treats a successful terminal
       `TreeWalkParallelThunkCell` payload as a typed `ThunkParallelPayloadValue`
@@ -7593,8 +7593,8 @@ nurseries build on the bump arena.
       heap-slot precursor: failed `TreeWalkError` payloads do not currently own
       heap `Value`s, live claimed parallel cells are rejected by relocation, the
       tree-walk allocator must still opt in explicitly, serial `force_value`
-      still uses `ThunkCell`, no scheduler executes thunk bodies through this
-      slot, and the loom/Miri/TSan gates remain open.
+      still runs force bodies through `ThunkCell`, no scheduler executes thunk
+      bodies through this slot, and the loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload allocation-admission precursor:
       `TreeWalkOptions::parallel_thunk_payloads_enabled` now provides an
       explicit default-off switch that routes tree-walk thunk allocation through
@@ -7604,9 +7604,26 @@ nurseries build on the bump arena.
       allocation; when disabled, newly allocated thunks remain serial-only.
       Tests prove the option API and both the default-off and opt-in storage
       modes across the tree-walk allocation surfaces. This still only admits
-      storage for future scheduler wiring: the default remains off, serial
-      `force_value` still uses `ThunkCell`, no scheduler executes thunk bodies
-      through this slot, and the loom/Miri/TSan gates remain open.
+      storage for future scheduler wiring: the default remains off, the force
+      body still runs through serial `ThunkCell`, no scheduler executes thunk
+      bodies through this slot, and the loom/Miri/TSan gates remain open.
+- [x] Current tree-walk parallel payload success-replay precursor:
+      `TreeWalk::force_value` now checks an admitted
+      `TreeWalkParallelThunkCell` for a successful terminal payload before
+      entering the serial force path. A successful sidecar hit replays the
+      `Value`, performs the same lazy-identity cleanup as a serial forced-cache
+      hit, and increments `thunk_cache_hits`; a miss runs the existing serial
+      `ThunkCell` force path and only after `Ok(Value)` publishes that value
+      into the sidecar. Serial force errors deliberately do not claim or publish
+      through the sidecar, preserving the existing retryable suspended-thunk
+      behavior. Tests cover sidecar-only replay from a pre-published forced
+      payload, successful serial force publication, later replay without another
+      serial force, and division-by-zero retry with the sidecar still suspended.
+      This is still a default-off single-worker precursor:
+      failed tree-walk results are not replayed by `force_value`, the force body
+      remains serial, no scheduler executes or steals thunk bodies, and the
+      final worker identity, park-token, lock-free waiter-list, and
+      loom/Miri/TSan gates remain open.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every

@@ -63,6 +63,10 @@ use super::heap::{
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
+use super::thunk_cas::ParallelThunkWorkerId;
+use super::thunk_payload::{
+    ParallelThunkPayloadError, TreeWalkParallelThunkCell, TreeWalkParallelThunkWait,
+};
 use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
