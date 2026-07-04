@@ -4,10 +4,10 @@
 //! selected from measurements, not fixed by intuition. This module provides a
 //! byte-neutral telemetry accumulator over the current precursor types: shape
 //! instances, representation-dispatching slow-select outcomes, select-cache
-//! terminal states and lookup outcomes, update-merge sizes and override-chain
-//! depths, and order-parity check outcomes. It does not install shape/PIC/HAMT
-//! runtime hooks, mutate evaluator values, serialize counters, or change
-//! observable Nix results.
+//! terminal states and lookup outcomes, representation-policy decisions,
+//! update-merge sizes and override-chain depths, and order-parity check
+//! outcomes. It does not install shape/PIC/HAMT runtime hooks, mutate evaluator
+//! values, serialize counters, or change observable Nix results.
 
 use std::collections::HashMap;
 

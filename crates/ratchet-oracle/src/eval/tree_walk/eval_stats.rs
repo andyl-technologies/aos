@@ -186,6 +186,43 @@ impl TreeWalk {
             .insert((self.current_module.as_u32(), id.as_u32()), result_state);
     }
 
+    pub(super) fn record_attr_repr_decision_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        construction: AttrSetConstruction,
+    ) {
+        let policy = AttrSetReprPolicy::default();
+        let decision = match policy.classify(construction) {
+            Ok(decision) => decision,
+            Err(source) => {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    node = id.as_u32(),
+                    span_start = span.start,
+                    span_end = span.end,
+                    error = %source,
+                    "skipping attr representation telemetry after policy failure"
+                );
+                return;
+            }
+        };
+
+        if let Err(source) = self
+            .attr_telemetry
+            .record_repr_decision(construction, decision)
+        {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping attr representation telemetry after recording failure"
+            );
+        }
+    }
+
     pub(super) fn record_slow_select_telemetry(
         &mut self,
         id: IrId,

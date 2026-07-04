@@ -654,10 +654,11 @@ byte-neutral accumulator for shape census rows, representation-dispatching
 slow-select hit/miss outcomes by backing representation, IC terminal-state and
 lookup histograms, `//` operand-size/result-length-upper-bound/chain-depth
 histograms, HAMT merge insert/replace counts, and order-parity check outcomes.
-The active tree-walk evaluator feeds it from flat slow-select outcomes and
-successful `//` update merges with syntactic update-chain depth, but
-shape/PIC/HAMT runtime hooks remain open; it does not collect full AOS
-package-set data and does not replace the `.drv` differential acceptance gate.
+The active tree-walk evaluator feeds it from flat slow-select outcomes,
+static-literal representation decisions, and successful `//` update merges with
+syntactic update-chain depth, but shape/PIC/HAMT runtime hooks remain open; it
+does not collect full AOS package-set data and does not replace the `.drv`
+differential acceptance gate.
 
 The tuning surface exposed by this subsystem is therefore: the polymorphic cap
 `N`; the `Flat`→`Hamt` size threshold and chain-depth trigger; whether the
@@ -942,11 +943,12 @@ harness, never cut for scope.
       state histograms and lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
-      tree-walk evaluator now feeds this surface from flat slow-select outcomes
-      and `//` update merges with syntactic update-chain depth, and exposes the
-      captured samples through `EvalOutcome::attr_telemetry`; runtime
-      shape/PIC/HAMT instrumentation, full AOS package-set measurements, C++
-      `NIX_SHOW_STATS` comparison, and `.drv` differential proof remain open.
+      tree-walk evaluator now feeds this surface from flat slow-select
+      outcomes, static-literal representation decisions, and `//` update merges
+      with syntactic update-chain depth, and exposes the captured samples
+      through `EvalOutcome::attr_telemetry`; runtime shape/PIC/HAMT
+      instrumentation, full AOS package-set measurements, C++ `NIX_SHOW_STATS`
+      comparison, and `.drv` differential proof remain open.
 
 ## References
 

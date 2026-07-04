@@ -8144,10 +8144,10 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       operand-size, result-length-upper-bound, and override-chain-depth
       distributions, HAMT merge insert/replace totals, and order-parity
       outcomes. The active tree-walk evaluator now records flat slow-select
-      outcomes plus `//` update-merge samples with syntactic update-chain depth
-      through this telemetry surface and exposes them via
-      `EvalOutcome::attr_telemetry`; this does not replace runtime
-      shape/PIC/HAMT instrumentation, full package-set measurements, C++
+      outcomes, static-literal representation decisions, and `//` update-merge
+      samples with syntactic update-chain depth through this telemetry surface
+      and exposes them via `EvalOutcome::attr_telemetry`; this does not replace
+      runtime shape/PIC/HAMT instrumentation, full package-set measurements, C++
       `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**

@@ -666,7 +666,7 @@ impl TreeWalk {
             shape,
             bindings,
             recursive,
-            has_dynamic: _,
+            has_dynamic,
             frame,
         } = node.data
         else {
@@ -899,9 +899,21 @@ impl TreeWalk {
         let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
         })?;
-        self.heap
+        let len = attrs.len();
+        let result = self
+            .heap
             .alloc_attrs(shape.as_u32(), attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+            .map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+        if !has_dynamic && active_overrides_symbol.is_none() {
+            self.record_attr_repr_decision_telemetry(
+                id,
+                node.span,
+                AttrSetConstruction::StaticLiteral { len },
+            );
+        }
+        Ok(result)
     }
 
     pub(super) fn apply_recursive_attrset_overrides(

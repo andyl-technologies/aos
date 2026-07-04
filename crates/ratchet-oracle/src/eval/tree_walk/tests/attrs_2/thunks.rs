@@ -216,12 +216,13 @@ fn attr_update_records_active_merge_telemetry() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("merge telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 2);
-    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.decisions, 5);
+    assert_eq!(snapshot.flat_decisions, 5);
     assert_eq!(snapshot.hamt_decisions, 0);
     assert_eq!(snapshot.update_merges, 2);
     assert_eq!(snapshot.flat_update_merges, 2);
     assert_eq!(snapshot.hamt_update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 3);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
     assert_eq!(
         &*snapshot.left_len_distribution,
@@ -248,6 +249,93 @@ fn attr_update_records_active_merge_telemetry() {
             HistogramBucket { value: 2, count: 1 },
         ],
     );
+}
+
+#[test]
+fn static_attrset_literals_record_repr_decision_telemetry() {
+    let ir = lower(
+        "builtins.deepSeq [
+            { a = 1; }
+            { b = 2; a = 3; }
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("static attrsets evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.hamt_decisions, 0);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 2);
+    assert_eq!(snapshot.reasons.small_shape_stable, 0);
+    assert!(snapshot.result_len_upper_bound_distribution.is_empty());
+}
+
+#[test]
+fn dynamic_attrset_literals_do_not_record_static_repr_decisions() {
+    let ir = lower(r#"let name = "a"; in ({ ${name} = 1; }).a"#);
+
+    let outcome = eval_whnf_owned(&ir).expect("dynamic attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.update_merges, 0);
+}
+
+#[test]
+fn recursive_static_attrsets_record_static_repr_decisions() {
+    let ir = lower("rec { a = 1; }.a");
+
+    let outcome = eval_whnf_owned(&ir).expect("recursive static attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 1);
+}
+
+#[test]
+fn recursive_overrides_do_not_record_outer_static_repr_decision() {
+    let ir = lower(r#"let name = "a"; in rec { a = 1; __overrides = { ${name} = 2; }; }.a"#);
+
+    let outcome = eval_whnf_owned(&ir).expect("recursive override attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(2));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.update_merges, 0);
+}
+
+#[test]
+fn null_skipped_dynamic_attrsets_do_not_record_static_repr_decisions() {
+    let ir = lower("({ ${null} = 1; a = 2; }).a");
+
+    let outcome = eval_whnf_owned(&ir).expect("null-skipped dynamic attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(2));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.update_merges, 0);
 }
 
 #[test]
@@ -287,9 +375,10 @@ fn attr_update_telemetry_tracks_projected_hamt_left_state() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("merge telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 5);
-    assert_eq!(snapshot.flat_decisions, 3);
+    assert_eq!(snapshot.decisions, 11);
+    assert_eq!(snapshot.flat_decisions, 9);
     assert_eq!(snapshot.hamt_decisions, 2);
+    assert_eq!(snapshot.reasons.static_literal, 6);
     assert_eq!(snapshot.reasons.small_shape_stable, 3);
     assert_eq!(snapshot.reasons.deep_override_chain, 1);
     assert_eq!(snapshot.reasons.left_already_hamt, 1);
