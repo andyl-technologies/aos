@@ -276,6 +276,65 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn record_static_attr_shape_census_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) {
+        let mut keys = Vec::new();
+        if keys.try_reserve_exact(attrs.len()).is_err() {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                entries = attrs.len(),
+                "skipping static attr shape-census telemetry after key-buffer allocation failure"
+            );
+            return;
+        }
+        keys.extend(attrs.iter_source_order().map(|entry| entry.key));
+
+        let shape = {
+            let Some(shape_table) = self.shape_table.as_mut() else {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    node = id.as_u32(),
+                    span_start = span.start,
+                    span_end = span.end,
+                    "skipping static attr shape-census telemetry because shape table initialization failed"
+                );
+                return;
+            };
+            match StaticShapePlan::resolve(shape_table, &keys, &self.symbols) {
+                Ok(plan) => plan.shape().clone(),
+                Err(source) => {
+                    tracing::debug!(
+                        target: "aos_nix::eval::attr_telemetry",
+                        node = id.as_u32(),
+                        span_start = span.start,
+                        span_end = span.end,
+                        error = %source,
+                        "skipping static attr shape-census telemetry after shape-plan failure"
+                    );
+                    return;
+                }
+            }
+        };
+
+        if let Err(source) = self.attr_telemetry.record_shape_instance(&shape) {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping static attr shape-census telemetry after recording failure"
+            );
+        }
+    }
+
     pub(super) fn alloc_flat_attrs_with_repr_telemetry(
         &mut self,
         id: IrId,

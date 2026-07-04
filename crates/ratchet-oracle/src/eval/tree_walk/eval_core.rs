@@ -329,6 +329,7 @@ impl TreeWalk {
             options,
             stats: EvalStats::default(),
             attr_telemetry: AttrTelemetry::new(),
+            shape_table: ShapeTable::new().ok(),
             flat_select_caches: BTreeMap::new(),
             hamt_select_caches: BTreeMap::new(),
             attr_update_node_states: BTreeMap::new(),

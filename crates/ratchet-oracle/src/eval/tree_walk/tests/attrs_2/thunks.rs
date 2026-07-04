@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
-use crate::attrs::telemetry::HistogramBucket;
+use crate::attrs::telemetry::{HistogramBucket, ShapeMultiplicityBucket};
 
 #[test]
 fn shared_thunks_emit_trace_once_when_forced_repeatedly() {
@@ -275,6 +275,28 @@ fn static_attrset_literals_record_repr_decision_telemetry() {
     assert_eq!(snapshot.reasons.static_literal, 2);
     assert_eq!(snapshot.reasons.small_shape_stable, 0);
     assert!(snapshot.result_len_upper_bound_distribution.is_empty());
+
+    let census = outcome
+        .attr_telemetry()
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 2);
+    assert_eq!(census.distinct_shapes, 2);
+    assert_eq!(
+        census
+            .shapes
+            .iter()
+            .map(|entry| entry.key_count)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+    );
+    assert_eq!(
+        census.multiplicity.as_ref(),
+        &[ShapeMultiplicityBucket {
+            instances_per_shape: 1,
+            shape_count: 2,
+        }],
+    );
 }
 
 #[test]
@@ -293,6 +315,13 @@ fn dynamic_attrset_literals_record_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+
+    let census = outcome
+        .attr_telemetry()
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 0);
+    assert_eq!(census.distinct_shapes, 0);
 }
 
 #[test]

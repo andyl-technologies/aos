@@ -84,6 +84,7 @@ use crate::attrs::{
         AttrSelectError, AttrSelectOutcome, AttrSelectRepr, AttrSelectSource, AttrSelectTarget,
         select_slow,
     },
+    shape::{ShapeTable, StaticShapePlan},
     telemetry::AttrTelemetry,
 };
 use crate::cache::{
@@ -991,6 +992,7 @@ pub struct TreeWalk {
     options: TreeWalkOptions,
     stats: EvalStats,
     attr_telemetry: AttrTelemetry,
+    shape_table: Option<ShapeTable>,
     flat_select_caches: BTreeMap<(u32, u32, usize), FlatSelectCache>,
     hamt_select_caches: BTreeMap<(u32, u32, usize), HamtSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,

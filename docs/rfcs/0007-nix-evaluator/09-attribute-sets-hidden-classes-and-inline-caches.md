@@ -782,8 +782,11 @@ harness, never cut for scope.
       exposes `StaticShapePlan`, which resolves a static literal's
       construction-order keys through the process-local transition tree once,
       stores the final `ShapeHandle`, and records source-slot to symbol-slot
-      placement for filling shaped value arrays. It is not wired into IR
-      lowering, evaluator attr allocation, or `.drv`-observable behavior.
+      placement for filling shaped value arrays. The active tree-walk evaluator
+      now resolves eligible static literals through a process-local shape table
+      for shape-census telemetry only. It is not wired into IR lowering,
+      evaluator attr allocation, select/runtime storage, or `.drv`-observable
+      behavior.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
 - [x] Current shaped hash-consing precursor: `ratchet-value::attrs::shape`
       exposes `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an
@@ -982,18 +985,19 @@ harness, never cut for scope.
       terminal-state histograms, shaped/HAMT select-cache lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
-      tree-walk evaluator now feeds this surface from flat slow-select
-      outcomes, static and dynamic attrset-node representation decisions, and
-      selected builtin result representation decisions, plus `//` update merges
-      with syntactic update-chain depth, and exposes the captured samples
-      through `EvalOutcome::attr_telemetry`; HAMT-classified active update
-      samples now also carry HAMT insert/replace summaries from the
-      representation-dispatch bridge, and active static flat select-cache
-      terminal states are recorded there too. Flat cache hits use mirrored
-      `EvalStats` inline-cache counters while unresolved cache lookups keep
-      slow-select telemetry. Runtime shape/PIC/HAMT instrumentation, full AOS
-      package-set measurements, C++ `NIX_SHOW_STATS` comparison, and `.drv`
-      differential proof remain open.
+      tree-walk evaluator now feeds this surface from static-literal
+      shape-census samples, flat slow-select outcomes, static and dynamic
+      attrset-node representation decisions, and selected builtin result
+      representation decisions, plus `//` update merges with syntactic
+      update-chain depth, and exposes the captured samples through
+      `EvalOutcome::attr_telemetry`; HAMT-classified active update samples now
+      also carry HAMT insert/replace summaries from the representation-dispatch
+      bridge, and active static flat select-cache terminal states are recorded
+      there too. Flat cache hits use mirrored `EvalStats` inline-cache counters
+      while unresolved cache lookups keep slow-select telemetry. Runtime
+      shape/PIC/HAMT storage instrumentation, full AOS package-set measurements,
+      C++ `NIX_SHOW_STATS` comparison, and `.drv` differential proof remain
+      open.
 
 ## References
 

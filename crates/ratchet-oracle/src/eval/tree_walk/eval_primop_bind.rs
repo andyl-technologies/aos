@@ -900,11 +900,15 @@ impl TreeWalk {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
         })?;
         let len = attrs.len();
-        let construction = if !has_dynamic && active_overrides_symbol.is_none() {
+        let is_static_literal = !has_dynamic && active_overrides_symbol.is_none();
+        let construction = if is_static_literal {
             AttrSetConstruction::StaticLiteral { len }
         } else {
             AttrSetConstruction::Dynamic { len }
         };
+        if is_static_literal {
+            self.record_static_attr_shape_census_telemetry(id, node.span, &attrs);
+        }
         self.alloc_flat_attrs_with_repr_telemetry(
             id,
             node.span,
