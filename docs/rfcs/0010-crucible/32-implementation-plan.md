@@ -492,11 +492,16 @@ long-held locks.
   `search-run` output with `failure_oracle=none`, exhaustion metadata, 1/1
   replay-oracle sampling counts over fat search materializations, RFC §13 status
   mapping for discovered failures, stop-mode budget exhaustion, and collect-mode
-  budgeted campaigns, and explicit backend errors for unsupported search/fuzz
-  execution paths; full closure waits for
+  budgeted campaigns, file-backed `crucible.scenario-family.v1` fuzz family
+  loading, local-double `ScenarioFamily::fuzz_coverage_guided` and
+  `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
+  `LocalDagStore` corpus persistence, deterministic `fuzz-run` output with
+  generated-mutant/admission/retained-entry/store-put/replay-validation counts,
+  and explicit backend errors for stored family hashes and unsupported fuzz
+  targets; full closure waits for
   property/assertion lowering into the search failure oracle, counterexample
-  artifact emission with repro commands, non-built-in fuzz/corpus runners through
-  the selected backend, corpus persistence, and real-QEMU coverage.
+  artifact emission with repro commands, DAG-store loading for stored
+  `ScenarioFamily` references, and real-QEMU coverage.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result
