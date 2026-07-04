@@ -825,6 +825,21 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       future ready-work enqueueing, does not prove live evaluator scheduler
       exhaustion, does not replace the blocking waiter path with a lock-free
       waiter list, and does not satisfy the loom/Miri/TSan gate (§3.3/§3.6).
+- [x] Current Chase-Lev tree-walk force poll/preflight bridge:
+      `TreeWalkParallelThunkCell::force_or_chase_lev_ready_then_wait_with`
+      binds an owner-local Chase-Lev ready-work handle to the evaluator-native
+      wait-or-steal force path. It validates that the nonzero thunk worker id
+      maps to the handle's zero-based queue owner before claiming, polling, or
+      running a body; contending workers then feed exactly one local pop, peer
+      steal, or idle preflight into the existing poll/preflight bridge. Tests
+      cover claim-owner no-poll behavior, local-then-recheck behavior,
+      local-and-stolen work before replay, idle Chase-Lev preflight capture
+      before blocking waiter registration, and worker/queue mismatch rejection
+      before claiming, side effects, or queue consumption. This is still a
+      typed bridge over the blocking wait-cell precursor: it does not attach a
+      real scheduler park token, prove live scheduler exhaustion, replace
+      `EvalThunk` storage, install the final lock-free waiter list, or satisfy
+      the loom/Miri/TSan gate (§3.3/§3.6).
 - [ ] Tag-test fast path: WHNF-tagged values return by inspection with no atomic load/CAS; only a tag miss enters the protocol (§3.4) — **P3.5**, `C-12`; co-designed with the pointer-tag work (`M-4`/`S-6`).
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path

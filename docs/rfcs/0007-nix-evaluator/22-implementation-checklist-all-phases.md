@@ -7591,6 +7591,23 @@ nurseries build on the bump arena.
       registration, call the serial `TreeWalk::force_value` path, replace
       `EvalThunk` storage, install the final lock-free waiter list, or satisfy
       the loom/Miri/TSan audit.
+- [x] Current Chase-Lev tree-walk force poll/preflight bridge:
+      `TreeWalkParallelThunkCell::force_or_chase_lev_ready_then_wait_with`
+      binds the evaluator-native force wait-or-steal path to an owner-local
+      `ParallelChaseLevReadyWorkQueue`. It validates that the nonzero thunk
+      worker id maps to the queue handle's zero-based owner before claiming the
+      thunk, polling ready work, or running the body; contending workers then
+      execute at most one Chase-Lev local pop or peer steal per wait iteration
+      and preserve an idle non-locking Chase-Lev `ParallelReadyWorkParkPreflight`
+      before waiter registration. Tests cover claim-owner execution without
+      polling, terminal recheck after one local ready task, local and stolen
+      Chase-Lev ready work before terminal replay, blocking waiter registration
+      with a validated Chase-Lev preflight, and worker/queue mismatch rejection
+      before claiming, side effects, or queue consumption. This is still a
+      tree-walk bridge over owner-local ready-work handles and the blocking
+      wait-cell precursor: it does not attach a real scheduler park token, prove
+      live scheduler exhaustion, replace `EvalThunk` storage, install the final
+      lock-free waiter list, or satisfy the loom/Miri/TSan audit.
 - [x] Current fallible payload/tree-walk ready-work bridge:
       `ParallelThunkPayloadCell::claim_or_try_run_ready_then_wait_for_payload`
       and `TreeWalkParallelThunkCell::force_or_try_poll_ready_then_wait_with`
@@ -7610,21 +7627,22 @@ nurseries build on the bump arena.
       the final lock-free waiter list, or satisfy the loom/Miri/TSan audit.
 - [x] Current ready-work park-readiness validation precursor:
       `ParallelReadyWorkParkPreflight::validate_idle_for_worker` turns an idle
-      safe-queue snapshot into a typed `ParallelReadyWorkParkReadiness` only
+      ready-work snapshot into a typed `ParallelReadyWorkParkReadiness` only
       when the snapshot belongs to the worker about to park and observes zero
-      queued ready tasks. `TreeWalkParallelThunkCell` validates idle poll
+      queued ready tasks. Safe queue snapshots are same-instant mutex-backed
+      observations; Chase-Lev snapshots are non-locking deque-depth observations
+      that can stale immediately. `TreeWalkParallelThunkCell` validates idle poll
       preflights before returning `Idle` to the wait-cell hook, so invalid
       preflights return before waiter registration; the poll outcome also
       exposes a registered-wait helper for downstream consumers. Tests cover
       idle readiness acceptance, non-idle and worker-mismatch rejection, no
       readiness for terminal replay without waiter registration, invalid
       tree-walk poll preflights returning before waiter registration, and
-      validated readiness for a blocking tree-walk waiter. This is still only
-      validation over the
-      mutex-backed safe queue snapshot: it is not a live scheduler park token,
-      cannot prevent future enqueueing, does not prove final Chase-Lev
-      exhaustion, does not replace `EvalThunk` storage, and does not satisfy the
-      loom/Miri/TSan audit.
+      validated readiness for blocking safe-queue and Chase-Lev tree-walk
+      waiters. This is still only validation over preflight observations: it is
+      not a live scheduler park token, cannot prevent future enqueueing, does
+      not prove final scheduler exhaustion, does not replace `EvalThunk`
+      storage, and does not satisfy the loom/Miri/TSan audit.
 - [x] Current `EvalThunk` parallel payload storage-slot precursor:
       `EvalThunk` can now carry a crate-internal opt-in evaluator-native
       `TreeWalkParallelThunkCell` beside its existing serial `ThunkCell`.

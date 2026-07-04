@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::value::Value;
 
 use super::parallel::{
-    ParallelReadyWorkParkPreflight, ParallelReadyWorkParkReadiness,
+    ParallelChaseLevReadyWorkQueue, ParallelReadyWorkParkPreflight, ParallelReadyWorkParkReadiness,
     ParallelReadyWorkParkReadinessError, ParallelReadyWorkPoll,
 };
 use super::thunk_cas::{ParallelThunkPublish, ParallelThunkTerminalState, ParallelThunkWorkerId};
@@ -556,6 +556,18 @@ pub enum ParallelThunkPayloadError {
         /// The worker id that could not be converted to a zero-based queue id.
         worker: ParallelThunkWorkerId,
     },
+    /// The thunk worker and ready-work queue belong to different workers.
+    #[error(
+        "parallel thunk worker {worker:?} maps to ready-work queue {expected_queue_worker}, got queue {queue_worker}"
+    )]
+    ReadyWorkQueueWorkerMismatch {
+        /// The thunk worker id supplied to the force or wait call.
+        worker: ParallelThunkWorkerId,
+        /// The zero-based ready-work queue id expected for `worker`.
+        expected_queue_worker: usize,
+        /// The zero-based ready-work queue id supplied by the Chase-Lev handle.
+        queue_worker: usize,
+    },
     /// A terminal state was observed before a payload was available.
     #[error("parallel thunk reached {terminal_state:?} without a terminal payload")]
     MissingTerminalPayload {
@@ -829,6 +841,58 @@ impl TreeWalkParallelThunkCell {
             ParallelThunkPayloadReadyWorkError::Payload(error) => error,
             ParallelThunkPayloadReadyWorkError::ReadyWork(never) => match never {},
         })
+    }
+
+    /// Claims the thunk, polls one Chase-Lev ready task at a time, then forces it.
+    ///
+    /// This binds the evaluator-native poll/preflight bridge to an owner-local
+    /// Chase-Lev ready-work queue. The nonzero thunk worker id must map to the
+    /// supplied queue's zero-based owner id before any thunk claim, ready work,
+    /// or body execution occurs. Contending workers then run at most one local
+    /// pop or peer steal per wait-or-steal iteration through
+    /// [`ParallelChaseLevReadyWorkQueue::run_next_or_park_preflight`]. Idle
+    /// polls keep the queue's non-locking [`ParallelReadyWorkParkPreflight`]
+    /// observation and validate it before the blocking wait-cell path can
+    /// register a waiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelThunkPayloadError`] if the worker id cannot be mapped
+    /// to a ready-work queue id, if the supplied Chase-Lev queue belongs to a
+    /// different worker, if wait-cell synchronization fails, if terminal replay
+    /// has no matching payload, if terminal publication from the claim winner
+    /// fails, or if an idle poll carries a preflight snapshot that cannot
+    /// precede parking for this worker.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` or `run_ready_work` panics. A panic from
+    /// `run_ready_work` occurs after one ready task has been removed from its
+    /// Chase-Lev deque and leaves thunk ownership with the existing owner. If
+    /// `body` panics after this worker has won the claim, the active claim guard
+    /// is dropped during unwinding and publishes the cell's configured
+    /// dropped-claim [`TreeWalkError`] for waiters and later callers.
+    pub fn force_or_chase_lev_ready_then_wait_with<T, R>(
+        &self,
+        worker: ParallelThunkWorkerId,
+        ready_work: &ParallelChaseLevReadyWorkQueue<T>,
+        mut run_ready_work: impl FnMut(T) -> R,
+        body: impl FnOnce() -> Result<Value, TreeWalkError>,
+    ) -> Result<TreeWalkParallelThunkForcePollOutcome, ParallelThunkPayloadError> {
+        let ready_worker = ready_work_queue_worker_id(worker)?;
+        if ready_worker != ready_work.worker_id() {
+            return Err(ParallelThunkPayloadError::ReadyWorkQueueWorkerMismatch {
+                worker,
+                expected_queue_worker: ready_worker,
+                queue_worker: ready_work.worker_id(),
+            });
+        }
+
+        self.force_or_poll_ready_then_wait_with(
+            worker,
+            || ready_work.run_next_or_park_preflight(|task| run_ready_work(task)),
+            body,
+        )
     }
 
     /// Claims the thunk, tries scheduler-backed ready work, then forces it.
@@ -1208,7 +1272,9 @@ mod tests {
 
     use crate::{compile::ir::IrId, syntax::Span, value::Value};
 
-    use super::super::parallel::parallel_ready_work_queues;
+    use super::super::parallel::{
+        parallel_chase_lev_ready_work_queues, parallel_ready_work_queues,
+    };
     use super::super::tree_walk::{TreeWalkError, TreeWalkErrorKind};
     use super::*;
 
@@ -1923,6 +1989,314 @@ mod tests {
         assert_eq!(report.local_work_runs(), 1);
         assert_eq!(report.stolen_work_runs(), 1);
         assert!(!report.wait_registered());
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_claim_owner_runs_body_without_polling() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let worker_queues =
+            parallel_chase_lev_ready_work_queues([10, 20], workers(2)).into_worker_queues();
+        let mut ran = Vec::new();
+
+        let outcome = cell
+            .force_or_chase_lev_ready_then_wait_with(
+                worker(2),
+                &worker_queues[1],
+                |value| ran.push(value),
+                || Ok(Value::int(34)),
+            )
+            .expect("claim owner forces through Chase-Lev bridge");
+
+        let (result, report, preflight) = outcome.into_parts();
+        assert_eq!(
+            ready_force_outcome(result)
+                .expect("claim owner result is Ok")
+                .as_int(),
+            Ok(34)
+        );
+        assert!(ran.is_empty());
+        assert_eq!(report.local_work_runs(), 0);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(!report.wait_registered());
+        assert!(preflight.is_none());
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_runs_local_and_stolen_before_replay() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let owner_guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+        let mut owner_guard = Some(owner_guard);
+        let worker_queues =
+            parallel_chase_lev_ready_work_queues([10, 20], workers(2)).into_worker_queues();
+        let mut ran = Vec::new();
+
+        let outcome = cell
+            .force_or_chase_lev_ready_then_wait_with(
+                worker(2),
+                &worker_queues[1],
+                |value| {
+                    ran.push(value);
+                    if ran.len() == 2 {
+                        owner_guard
+                            .take()
+                            .expect("owner guard remains available")
+                            .publish_value(Value::int(55))
+                            .expect("owner publishes during stolen ready work");
+                    }
+                },
+                || {
+                    panic!("waiting worker must not evaluate the claimed thunk body");
+                },
+            )
+            .expect("Chase-Lev ready-work force path completes");
+        let (result, report, preflight) = outcome.into_parts();
+        assert_eq!(
+            ready_force_outcome(result)
+                .expect("replayed result is Ok")
+                .as_int(),
+            Ok(55)
+        );
+        assert_eq!(ran, vec![20, 10]);
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
+        assert!(preflight.is_none());
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_rechecks_after_one_local_task() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let owner_guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+        let mut owner_guard = Some(owner_guard);
+        let worker_queues =
+            parallel_chase_lev_ready_work_queues([10, 20], workers(2)).into_worker_queues();
+        let mut ran = Vec::new();
+
+        let outcome = cell
+            .force_or_chase_lev_ready_then_wait_with(
+                worker(2),
+                &worker_queues[1],
+                |value| {
+                    ran.push(value);
+                    owner_guard
+                        .take()
+                        .expect("owner guard remains available")
+                        .publish_value(Value::int(144))
+                        .expect("owner publishes during local ready work");
+                },
+                || {
+                    panic!("waiting worker must not evaluate the claimed thunk body");
+                },
+            )
+            .expect("Chase-Lev ready-work force path completes after one local task");
+        let (result, report, preflight) = outcome.into_parts();
+        assert_eq!(
+            ready_force_outcome(result)
+                .expect("replayed result is Ok")
+                .as_int(),
+            Ok(144)
+        );
+        assert_eq!(ran, vec![20]);
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(!report.wait_registered());
+        assert!(preflight.is_none());
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_captures_preflight_before_blocking_wait() {
+        let cell = Arc::new(TreeWalkParallelThunkCell::new(tree_walk_error(99)));
+        let owner_ready = Arc::new(Barrier::new(3));
+        let publish_ready = Arc::new(Barrier::new(2));
+        let (waiter_tx, waiter_rx) = mpsc::channel();
+
+        let owner_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            let publish_ready = Arc::clone(&publish_ready);
+            thread::spawn(move || {
+                let guard = claimed_guard(
+                    cell.claim_or_wait_for_result(worker(1))
+                        .expect("owner claims tree-walk thunk"),
+                );
+                owner_ready.wait();
+                publish_ready.wait();
+                guard
+                    .publish_value(Value::int(89))
+                    .expect("owner publishes tree-walk value");
+            })
+        };
+
+        let waiter_thread = {
+            let cell = Arc::clone(&cell);
+            let owner_ready = Arc::clone(&owner_ready);
+            thread::spawn(move || {
+                let worker_queues =
+                    parallel_chase_lev_ready_work_queues(std::iter::empty::<usize>(), workers(2))
+                        .into_worker_queues();
+                owner_ready.wait();
+                let outcome = cell
+                    .force_or_chase_lev_ready_then_wait_with(
+                        worker(2),
+                        &worker_queues[1],
+                        |value| value,
+                        || {
+                            panic!("waiting worker must not evaluate the claimed thunk body");
+                        },
+                    )
+                    .expect("waiter observes owner result");
+                let readiness = outcome
+                    .registered_park_readiness_for_worker(1)
+                    .expect("registered park preflight validates")
+                    .expect("waiter registration has a park readiness");
+                let (result, report, preflight) = outcome.into_parts();
+                waiter_tx
+                    .send((ready_force_outcome(result), report, preflight, readiness))
+                    .expect("waiter result send succeeds");
+            })
+        };
+
+        owner_ready.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if cell
+                .stats()
+                .expect("stats are readable")
+                .wait_registrations()
+                >= 1
+            {
+                break;
+            }
+            thread::yield_now();
+        }
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            1
+        );
+        assert!(matches!(
+            waiter_rx.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        publish_ready.wait();
+        let (result, report, preflight, readiness) = waiter_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter wakes");
+        let value = result.expect("waiter result is Ok");
+        let preflight = preflight.expect("idle preflight is captured before blocking");
+        assert_eq!(value.as_int(), Ok(89));
+        assert_eq!(readiness.preflight(), &preflight);
+        assert_eq!(readiness.observing_worker(), 1);
+        assert_eq!(readiness.ready_task_count(), 0);
+        assert_eq!(preflight.observing_worker(), 1);
+        assert_eq!(preflight.ready_task_count(), 0);
+        assert!(preflight.is_idle());
+        assert_eq!(report.local_work_runs(), 0);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(report.wait_registered());
+        owner_thread.join().expect("owner joins");
+        waiter_thread.join().expect("waiter joins");
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_rejects_queue_worker_mismatch() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let owner_guard = claimed_guard(
+            cell.claim_or_wait_for_result(worker(1))
+                .expect("owner claims tree-walk thunk"),
+        );
+        let worker_queues =
+            parallel_chase_lev_ready_work_queues([10, 20], workers(2)).into_worker_queues();
+        let before = worker_queues[0].park_preflight_snapshot();
+        let mut ready_work_ran = false;
+        let mut body_ran = false;
+
+        let error = cell
+            .force_or_chase_lev_ready_then_wait_with(
+                worker(2),
+                &worker_queues[0],
+                |value| {
+                    ready_work_ran = true;
+                    value
+                },
+                || {
+                    body_ran = true;
+                    Ok(Value::int(144))
+                },
+            )
+            .expect_err("worker/queue mismatch is rejected");
+
+        assert_eq!(
+            error,
+            ParallelThunkPayloadError::ReadyWorkQueueWorkerMismatch {
+                worker: worker(2),
+                expected_queue_worker: 1,
+                queue_worker: 0
+            }
+        );
+        assert!(!ready_work_ran);
+        assert!(!body_ran);
+        let after = worker_queues[0].park_preflight_snapshot();
+        assert_eq!(after.queue_lengths(), before.queue_lengths());
+        assert_eq!(after.ready_task_count(), before.ready_task_count());
+        let stats = cell.stats().expect("stats are readable");
+        assert_eq!(stats.wait_registrations(), 0);
+        assert_eq!(stats.notifications(), 0);
+
+        owner_guard
+            .publish_value(Value::int(233))
+            .expect("owner can publish after rejected mismatch");
+    }
+
+    #[test]
+    fn tree_walk_parallel_thunk_chase_lev_ready_path_rejects_mismatch_before_claiming_suspended() {
+        let cell = TreeWalkParallelThunkCell::new(tree_walk_error(99));
+        let worker_queues =
+            parallel_chase_lev_ready_work_queues([10, 20], workers(2)).into_worker_queues();
+        let before = worker_queues[0].park_preflight_snapshot();
+        let mut ready_work_ran = false;
+        let mut body_ran = false;
+
+        let error = cell
+            .force_or_chase_lev_ready_then_wait_with(
+                worker(2),
+                &worker_queues[0],
+                |value| {
+                    ready_work_ran = true;
+                    value
+                },
+                || {
+                    body_ran = true;
+                    Ok(Value::int(377))
+                },
+            )
+            .expect_err("worker/queue mismatch is rejected before claim");
+
+        assert_eq!(
+            error,
+            ParallelThunkPayloadError::ReadyWorkQueueWorkerMismatch {
+                worker: worker(2),
+                expected_queue_worker: 1,
+                queue_worker: 0
+            }
+        );
+        assert!(!ready_work_ran);
+        assert!(!body_ran);
+        let after = worker_queues[0].park_preflight_snapshot();
+        assert_eq!(after.queue_lengths(), before.queue_lengths());
+        assert_eq!(after.ready_task_count(), before.ready_task_count());
+        let stats = cell.stats().expect("stats are readable");
+        assert_eq!(stats.wait_registrations(), 0);
+        assert_eq!(stats.notifications(), 0);
+        assert_eq!(cell.state(), Ok(ParallelThunkTerminalStatus::Suspended));
     }
 
     #[test]
