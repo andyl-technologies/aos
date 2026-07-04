@@ -223,6 +223,22 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn alloc_flat_attrs_with_repr_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        shape: u32,
+        attrs: FlatAttrs,
+        construction: AttrSetConstruction,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self
+            .heap
+            .alloc_attrs(shape, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.record_attr_repr_decision_telemetry(id, span, construction);
+        Ok(value)
+    }
+
     pub(super) fn record_slow_select_telemetry(
         &mut self,
         id: IrId,

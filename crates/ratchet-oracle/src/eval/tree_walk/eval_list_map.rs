@@ -139,9 +139,14 @@ impl TreeWalk {
 
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_concat_lists_primop(
@@ -599,9 +604,14 @@ impl TreeWalk {
         entries.push(AttrEntry::new(column_key, Value::int(column)));
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_attr_name_primop_argument(
@@ -736,9 +746,14 @@ impl TreeWalk {
         };
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_intersect_attrs_primop(
@@ -828,9 +843,14 @@ impl TreeWalk {
         };
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_map_attrs_primop(
@@ -867,12 +887,13 @@ impl TreeWalk {
             Self::clone_attr_entries_source_order(attrs_id, attrs_span, attrs)?
         };
         if entries.is_empty() {
-            return self
-                .heap
-                .alloc_attrs(0, FlatAttrs::empty())
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_flat_attrs_with_repr_telemetry(
+                id,
+                span,
+                0,
+                FlatAttrs::empty(),
+                AttrSetConstruction::Dynamic { len: 0 },
+            );
         }
 
         let function_span = self.node(function_id)?.span;
@@ -909,12 +930,13 @@ impl TreeWalk {
             Self::clone_attr_entries_source_order(attrs.id(), attrs.span(), attrs_set)?
         };
         if entries.is_empty() {
-            return self
-                .heap
-                .alloc_attrs(0, FlatAttrs::empty())
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_flat_attrs_with_repr_telemetry(
+                id,
+                span,
+                0,
+                FlatAttrs::empty(),
+                AttrSetConstruction::Dynamic { len: 0 },
+            );
         }
 
         self.alloc_mapped_attrs(

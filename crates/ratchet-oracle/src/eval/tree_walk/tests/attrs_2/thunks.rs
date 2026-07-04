@@ -389,6 +389,121 @@ fn large_dynamic_attrsets_record_projected_hamt_repr_decisions() {
 }
 
 #[test]
+fn list_to_attrs_records_dynamic_repr_decision() {
+    let ir = lower(
+        r#"builtins.deepSeq (builtins.listToAttrs [
+            { name = "b"; value = 2; }
+            { name = "a"; value = 1; }
+        ]) 0"#,
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("listToAttrs evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 3);
+    assert_eq!(snapshot.flat_decisions, 3);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 2);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
+fn attr_filter_builtins_record_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.removeAttrs { a = 1; b = 2; } [ \"b\" ])
+            (builtins.intersectAttrs { a = 0; } { a = 1; b = 2; })
+            (let remove = builtins.removeAttrs { a = 1; b = 2; }; in remove [ \"b\" ])
+            (let intersect = builtins.intersectAttrs { a = 0; }; in intersect { a = 1; b = 2; })
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("attr filter builtins evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 10);
+    assert_eq!(snapshot.flat_decisions, 10);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 6);
+    assert_eq!(snapshot.reasons.small_shape_stable, 4);
+}
+
+#[test]
+fn map_attrs_records_dynamic_repr_decisions_for_empty_and_non_empty_results() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.mapAttrs (_name: value: value + 1) { a = 1; })
+            (builtins.mapAttrs (_name: value: value) {})
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("mapAttrs evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 4);
+    assert_eq!(snapshot.flat_decisions, 4);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 2);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
+fn zip_attrs_with_records_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.zipAttrsWith (_name: values: values) [ { a = 1; } { b = 2; } ])
+            (let zip = builtins.zipAttrsWith (_name: values: values); in zip [ { c = 3; } ])
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("zipAttrsWith evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 5);
+    assert_eq!(snapshot.flat_decisions, 5);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 3);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
+fn attr_position_builtins_record_dynamic_repr_decisions() {
+    let source = "builtins.deepSeq [
+            (builtins.unsafeGetAttrPos \"a\" { a = 1; })
+            __curPos
+        ] 0";
+
+    let outcome = eval_owned_with_source(b"/source.nix", source);
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 3);
+    assert_eq!(snapshot.flat_decisions, 3);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 1);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
 fn active_flat_selects_record_slow_select_telemetry() {
     let ir = lower(
         "builtins.deepSeq [
