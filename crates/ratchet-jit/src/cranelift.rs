@@ -9,13 +9,15 @@
 //! into an encapsulated module. The artifact-finalization scaffold finalizes one
 //! defined artifact and returns opaque code-pointer metadata. The promotion
 //! scaffold records safe slot hotness and compiles currently-supported literal
-//! and registered env-slot roots when policy requests tier 1. None of these
-//! paths transmutes code pointers or calls native code.
+//! and registered env-slot roots when policy requests tier 1. The native
+//! thunk-call scaffold casts and calls finalized no-import thunk artifacts
+//! behind a documented unsafe boundary while leaving evaluator dispatch and
+//! runtime wrapper calls outside this module.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt,
+    fmt, mem,
     ptr::{self, NonNull},
 };
 
@@ -27,8 +29,10 @@ use cranelift_codegen::{
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
 use ratchet_core::{IrArena, IrData, IrId, IrKind};
+use ratchet_value::value::{Value, ValueError};
 
 use crate::{
+    abi::JitThunkFn,
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
         JitLowerError, lower_constant_ir_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
@@ -265,8 +269,9 @@ impl JitCraneliftFinalizedFunction {
     /// Returns the opaque finalized code pointer.
     ///
     /// This is code-pointer metadata only. Callers must not cast or call this
-    /// pointer until the unsafe native-call boundary lands. The pointer's
-    /// validity is tied to the owning
+    /// pointer outside reviewed native-call paths such as
+    /// [`jit_cranelift_native_thunk_call_for_artifact`]. The pointer's validity
+    /// is tied to the owning
     /// [`JitCraneliftArtifactFinalizationPreflight`] and its encapsulated
     /// [`JITModule`]; retaining it after that owner is dropped can leave stale
     /// metadata.
@@ -614,6 +619,45 @@ impl JitCraneliftArtifactFinalizationPreflight {
     pub fn owns_encapsulated_module(&self) -> bool {
         let _module = &self.module;
         true
+    }
+}
+
+/// Result of calling one finalized thunk body through the native ABI.
+///
+/// The invocation owns the finalization preflight that keeps the backing
+/// [`JITModule`] alive while exposing the already-returned value for tests and
+/// future differential harness integration.
+pub struct JitCraneliftNativeThunkInvocation {
+    finalization: JitCraneliftArtifactFinalizationPreflight,
+    value: Value,
+}
+
+impl JitCraneliftNativeThunkInvocation {
+    fn new(finalization: JitCraneliftArtifactFinalizationPreflight, value: Value) -> Self {
+        Self {
+            finalization,
+            value,
+        }
+    }
+
+    /// Returns the finalization preflight that owns the backing JIT module.
+    pub const fn finalization(&self) -> &JitCraneliftArtifactFinalizationPreflight {
+        &self.finalization
+    }
+
+    /// Returns the finalized artifact body metadata.
+    pub const fn finalized_function(&self) -> &JitCraneliftFinalizedFunction {
+        self.finalization.finalized_function()
+    }
+
+    /// Returns the value produced by the native thunk call.
+    pub const fn value(&self) -> Value {
+        self.value
+    }
+
+    /// Returns true because this invocation owns the module backing the call target.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        self.finalization.owns_encapsulated_module()
     }
 }
 
@@ -1129,6 +1173,62 @@ pub enum JitCraneliftModuleSetupError {
     },
 }
 
+/// A failure while calling finalized native thunk code.
+#[derive(Debug)]
+pub enum JitCraneliftNativeCallError {
+    /// The artifact could not be finalized into callable code.
+    FinalizeArtifact {
+        /// The underlying Cranelift setup error.
+        source: JitCraneliftModuleSetupError,
+    },
+    /// The finalized artifact is not a compiled thunk body.
+    UnsupportedArtifactKind {
+        /// The lowered artifact kind carried by finalization metadata.
+        kind: JitClifArtifactKind,
+    },
+    /// The native call returned bits that violate the runtime value layout.
+    InvalidReturnValue {
+        /// The stable module symbol that was called.
+        symbol_name: String,
+        /// The invalid value returned by native code.
+        value: Value,
+        /// The underlying value-layout error.
+        source: ValueError,
+    },
+}
+
+impl fmt::Display for JitCraneliftNativeCallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FinalizeArtifact { source } => write!(formatter, "{source}"),
+            Self::UnsupportedArtifactKind { kind } => {
+                write!(
+                    formatter,
+                    "artifact kind {kind:?} is not callable as a thunk body"
+                )
+            }
+            Self::InvalidReturnValue {
+                symbol_name,
+                source,
+                ..
+            } => write!(
+                formatter,
+                "native thunk {symbol_name:?} returned an invalid runtime value: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for JitCraneliftNativeCallError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::FinalizeArtifact { source } => Some(source),
+            Self::UnsupportedArtifactKind { .. } => None,
+            Self::InvalidReturnValue { source, .. } => Some(source),
+        }
+    }
+}
+
 impl fmt::Display for JitCraneliftModuleSetupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1567,6 +1667,62 @@ pub fn jit_cranelift_artifact_finalization_preflight_for_artifact(
     ))
 }
 
+/// Finalizes one thunk artifact and calls it through the native thunk ABI.
+///
+/// This is the first bounded native-call path for the Cranelift tier. It is
+/// intended for currently supported no-import thunk artifacts, such as constant
+/// smoke bodies and literal Core-IR roots. The call uses null runtime-context
+/// and environment-frame pointers because those lowerers ignore both entry
+/// parameters. The returned invocation owns the finalization preflight so the
+/// backing [`JITModule`] remains alive for inspection after the call.
+///
+/// This function does not publish the code pointer into evaluator thunk state,
+/// perform an atomic thunk-state transition, call registered runtime helpers, or
+/// support artifacts that import runtime symbols.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError::FinalizeArtifact`] when the artifact
+/// cannot be finalized, including the current registered-symbol requirement for
+/// runtime-importing artifacts. Returns
+/// [`JitCraneliftNativeCallError::UnsupportedArtifactKind`] when the finalized
+/// artifact metadata is not a thunk body. Returns
+/// [`JitCraneliftNativeCallError::InvalidReturnValue`] when the native thunk
+/// returns bits that violate the runtime [`Value`] layout.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift unresolved-import and finalized-function
+/// lookup conditions as [`jit_cranelift_artifact_finalization_preflight_for_artifact`].
+pub fn jit_cranelift_native_thunk_call_for_artifact(
+    artifact: JitClifArtifact,
+) -> Result<JitCraneliftNativeThunkInvocation, JitCraneliftNativeCallError> {
+    let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)
+        .map_err(|source| JitCraneliftNativeCallError::FinalizeArtifact { source })?;
+
+    if finalization.artifact().kind() != JitClifArtifactKind::ThunkBody {
+        return Err(JitCraneliftNativeCallError::UnsupportedArtifactKind {
+            kind: finalization.artifact().kind(),
+        });
+    }
+
+    let thunk_entry = thunk_entry_from_finalized_code(finalization.finalized_function().code_ptr());
+    // SAFETY: The artifact was produced by this crate's thunk-body lowerers,
+    // verified with the frozen thunk CLIF signature, finalized by Cranelift,
+    // and kept alive by `finalization`. The current no-import lowerers used by
+    // this path do not dereference the runtime or environment pointers.
+    let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };
+    value
+        .validate_payload()
+        .map_err(|source| JitCraneliftNativeCallError::InvalidReturnValue {
+            symbol_name: finalization.finalized_function().symbol_name().to_owned(),
+            value,
+            source,
+        })?;
+
+    Ok(JitCraneliftNativeThunkInvocation::new(finalization, value))
+}
+
 /// Finalizes one artifact and installs its pointer into owned tier-1 slot metadata.
 ///
 /// The returned preflight keeps the `JITModule` owner and the safe
@@ -1590,6 +1746,15 @@ pub fn jit_cranelift_tier1_slot_preflight_for_artifact(
 ) -> Result<JitCraneliftTier1SlotPreflight, JitCraneliftModuleSetupError> {
     let finalization = jit_cranelift_artifact_finalization_preflight_for_artifact(artifact)?;
     tier1_slot_preflight_from_finalization(finalization, JitTieredCodeSlot::new())
+}
+
+fn thunk_entry_from_finalized_code(code_ptr: NonNull<u8>) -> JitThunkFn {
+    // SAFETY: Cranelift returned this pointer for a function defined with the
+    // frozen thunk signature lowered from `ratchet-core` metadata. The caller
+    // validates the artifact kind and keeps the owning `JITModule` alive while
+    // the returned entry is called.
+    let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };
+    entry
 }
 
 /// Finalizes one registered artifact and installs it into owned tier-1 metadata.
@@ -3298,6 +3463,71 @@ mod tests {
         } = error
         else {
             panic!("expected artifact runtime-import registration guard");
+        };
+
+        assert_eq!(symbol_names, ["aos_env_get".to_owned()]);
+    }
+
+    #[test]
+    fn native_thunk_call_executes_constant_smoke_artifact() {
+        let expected = Value::int(23);
+        let artifact =
+            lower_constant_thunk_body_artifact(expected).expect("constant artifact lowers");
+        let invocation = jit_cranelift_native_thunk_call_for_artifact(artifact)
+            .expect("constant artifact can be called through native thunk ABI");
+
+        assert!(invocation.value().raw_eq(expected));
+        assert_eq!(
+            invocation.finalized_function().symbol_name(),
+            "aos.jit.constant_smoke.thunk_body"
+        );
+        assert_eq!(
+            invocation
+                .finalized_function()
+                .compiled_code_ptr()
+                .as_non_null(),
+            invocation.finalized_function().code_ptr()
+        );
+        assert!(invocation.owns_encapsulated_module());
+        assert!(!invocation.finalization().is_complete());
+    }
+
+    #[test]
+    fn native_thunk_call_executes_literal_ir_artifact() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Bool,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Bool(true),
+            )],
+            Vec::new(),
+        );
+        let artifact = lower_constant_ir_thunk_body_artifact(&arena, IrId::new(0))
+            .expect("literal IR artifact lowers");
+        let invocation = jit_cranelift_native_thunk_call_for_artifact(artifact)
+            .expect("literal IR artifact can be called through native thunk ABI");
+
+        assert!(invocation.value().raw_eq(Value::bool(true)));
+        assert_eq!(
+            invocation.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert!(invocation.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn native_thunk_call_rejects_artifact_runtime_imports() {
+        let Err(error) = jit_cranelift_native_thunk_call_for_artifact(env_get_artifact(8)) else {
+            panic!("call-bearing artifact must wait for registered runtime symbols");
+        };
+
+        let JitCraneliftNativeCallError::FinalizeArtifact {
+            source:
+                JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
+        } = error
+        else {
+            panic!("expected native call to preserve runtime-import registration guard");
         };
 
         assert_eq!(symbol_names, ["aos_env_get".to_owned()]);

@@ -1124,6 +1124,19 @@ harness, never cut for scope.
       finalization path, and full native-call integration still requires real
       exported wrappers plus matching address registration for every emitted
       runtime call.
+- [x] Current no-import native thunk-call precursor:
+      `ratchet-jit::cranelift::jit_cranelift_native_thunk_call_for_artifact()`
+      finalizes a verified no-import thunk artifact, casts the finalized code
+      pointer to the inert `JitThunkFn` ABI behind a documented unsafe
+      boundary, calls it with null runtime/environment placeholders for the
+      current constant/literal lowerers, validates the returned `Value`, and
+      returns the value with the owning `JITModule` finalization kept alive.
+      Tests execute constant-smoke and literal Core-IR thunk artifacts through
+      the native ABI and preserve the runtime-import rejection for env-slot
+      artifacts. This is the first bounded executable call path only: it does
+      not publish into evaluator thunk state, perform thunk-state CAS, call
+      registered helper addresses, support runtime-importing artifacts, run the
+      differential `.drv` harness, or export runtime ABI wrappers.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs
@@ -1246,9 +1259,10 @@ harness, never cut for scope.
       `RuntimeCallSignature` metadata from `ratchet-core`, while runtime-symbol
       candidate gates remain in
       `ratchet-oracle` until a lower shared metadata layer exists. Tests prove ABI
-      metadata parity and callable-kind coverage. This adds no oracle dependency,
-      exported wrappers, raw function-pointer calls, executable addresses, or
-      `JITBuilder::symbol` registration.
+      metadata parity and callable-kind coverage. The crate-boundary slice added
+      no oracle dependency, exported wrappers, executable addresses, or
+      `JITBuilder::symbol` registration; later slices now own the bounded
+      no-import native thunk-call path described above.
 - [x] Current Cranelift crate-version pin precursor:
       `ratchet-jit::cranelift::jit_cranelift_dependency_pin()` exposes the exact
       `cranelift-codegen`, `cranelift-jit`, `cranelift-module`, and
@@ -1367,10 +1381,10 @@ harness, never cut for scope.
       requirement, and the innately unsafe code-pointer-transmute call boundary.
       Tests assert the manifest, prove the crate root declares the lint, and scan
       current JIT sources for executable unsafe-boundary tokens, allowing only
-      the inert thunk/lambda native-entry type aliases before any executable
-      unsafe code lands. This is a precursor only: no unsafe JIT blocks,
-      exported wrappers, executable code calls, CI jobs, or review automation are
-      implemented here.
+      the inert thunk/lambda native-entry type aliases and the private
+      no-import native thunk-call transmute/call boundary. This is a precursor
+      only: no exported wrappers, evaluator thunk-state dispatch, CI jobs, or
+      review automation are implemented here.
 - [x] Current copy-and-patch measurement hedge precursor:
       `ratchet-jit::warmup::CopyAndPatchHedgeGate` keeps the deferred
       copy-and-patch alternative measurable without adding a stencil backend. It

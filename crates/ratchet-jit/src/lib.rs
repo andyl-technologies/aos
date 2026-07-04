@@ -8,7 +8,8 @@
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
 //! `JITModule` declaration, artifact-definition/finalization,
 //! registered-symbol artifact-definition/finalization, unregistered/registered
-//! tier-slot, and promotion-gated preflights,
+//! tier-slot, promotion-gated preflights, and a bounded native thunk-call path
+//! for no-import artifacts,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
 //! environment-slot, and constant-thunk smoke tests,
 //! [`module`] composes artifacts with runtime-symbol declaration
@@ -24,14 +25,12 @@
 //! semantic candidate classification below both crates without making the JIT
 //! crate depend on the safe oracle stack.
 //!
-//! Actual exported `unsafe extern "C"` wrappers, raw function-pointer casts and
-//! calls, full runtime symbol tables, and executable native calls are future
-//! work inside this crate. The current `JITBuilder::symbol` precursor registers only
-//! explicit opaque address metadata with an encapsulated builder, and the
-//! current finalization precursors expose only opaque code-pointer metadata for
-//! verified artifacts. Unsafe blocks are allowed only behind the
-//! crate-level `unsafe_op_in_unsafe_fn` discipline and must carry local
-//! `// SAFETY:` invariants when those later slices land.
+//! Actual exported `unsafe extern "C"` wrappers, full runtime symbol tables, and
+//! evaluator thunk-state dispatch remain future work inside this crate. The
+//! current `JITBuilder::symbol` precursor registers only explicit opaque address
+//! metadata with an encapsulated builder, while the current native-call path is
+//! restricted to no-import thunk artifacts and keeps its code-pointer cast/call
+//! behind local `// SAFETY:` invariants.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -57,7 +56,8 @@ pub use cranelift::{
     JitCraneliftArtifactDefinitionPreflight, JitCraneliftArtifactFinalizationPreflight,
     JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
-    JitCraneliftModuleSetupError, JitCraneliftRegisteredArtifactDefinitionPreflight,
+    JitCraneliftModuleSetupError, JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation,
+    JitCraneliftRegisteredArtifactDefinitionPreflight,
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitCraneliftRegisteredSymbol,
     JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftRegisteredTier1SlotPreflight,
     JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1PromotionError,
@@ -69,6 +69,7 @@ pub use cranelift::{
     jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,
+    jit_cranelift_native_thunk_call_for_artifact,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,

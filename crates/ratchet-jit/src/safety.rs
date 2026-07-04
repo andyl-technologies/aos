@@ -3,8 +3,9 @@
 //! `ratchet-jit` is intentionally an unsafe-capable crate because executable
 //! machine-code entry requires raw function-pointer calls that Rust cannot
 //! validate. This module records the standing review controls for that future
-//! boundary while the current crate still contains only safe metadata, inert
-//! native-entry type aliases, and policy adapters.
+//! boundary while the current crate contains mostly safe metadata, inert
+//! native-entry type aliases, one bounded native thunk-call boundary, and policy
+//! adapters.
 
 /// Crate-level lint required for the JIT unsafe boundary.
 pub const JIT_UNSAFE_CRATE_LINT: &str = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -118,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn current_jit_sources_remain_free_of_executable_unsafe_boundaries() {
+    fn current_jit_sources_keep_unsafe_boundaries_allowlisted() {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut findings = Vec::new();
 
@@ -128,6 +129,9 @@ mod tests {
                 let code = code_without_line_comments_or_ordinary_strings(line);
                 for token in code_tokens(&code) {
                     if is_allowed_native_entry_alias_token(&source_path, &code, token) {
+                        continue;
+                    }
+                    if is_allowed_native_thunk_call_token(&source_path, &code, token) {
                         continue;
                     }
 
@@ -144,7 +148,7 @@ mod tests {
 
         assert!(
             findings.is_empty(),
-            "ratchet-jit has not landed executable unsafe boundaries yet:\n{}",
+            "ratchet-jit contains unreviewed unsafe-boundary tokens:\n{}",
             findings.join("\n")
         );
     }
@@ -161,6 +165,26 @@ mod tests {
         let trimmed = code.trim_start();
         trimmed.starts_with("pub type JitThunkFn = unsafe extern")
             || trimmed.starts_with("pub type JitLambdaFn = unsafe extern")
+    }
+
+    fn is_allowed_native_thunk_call_token(source_path: &Path, code: &str, token: &str) -> bool {
+        if source_path.file_name().and_then(|name| name.to_str()) != Some("cranelift.rs") {
+            return false;
+        }
+
+        let trimmed = code.trim_start();
+        match token {
+            "unsafe" => {
+                trimmed == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
+                    || trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
+            }
+            "transmute" => {
+                trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
+            }
+            _ => false,
+        }
     }
 
     fn rust_sources(root: &Path) -> Vec<PathBuf> {
