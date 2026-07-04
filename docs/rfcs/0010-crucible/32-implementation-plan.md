@@ -503,7 +503,12 @@ long-held locks.
   reproduction artifacts, while the default CLI path still excludes
   absence-based liveness/existential failures, time/timer/quiescence predicates,
   observable-event/guest-marker predicates, and named host predicates unless
-  explicit schedule-named truth data is supplied;
+  explicit schedule-named truth data is supplied; an engine trusted retained-log
+  provider path can now lower prefix-safe safety/unreachability failures over
+  event-log-backed predicates such as time/timers,
+  network/console/I/O/node/assertion-state observables, guest markers, and
+  schedule fault-active facts when the caller supplies the exact
+  `RecordedAssertionLog` for each reached configuration;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
@@ -512,8 +517,9 @@ long-held locks.
   output with generated-mutant/admission/retained-entry/store-put/
   replay-validation counts, and explicit backend errors for missing/corrupt
   stored family objects and unsupported fuzz targets; full closure waits for
-  real-QEMU coverage, retained-log backend breadth for observable/time/
-  guest-marker and non-prefix assertion classes.
+  real-QEMU coverage, backend wiring that supplies configuration-bound retained
+  logs to the retained-log provider, quiescence/memory/coverage predicate support
+  for search lowering, and non-prefix assertion classes.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result

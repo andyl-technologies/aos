@@ -36,7 +36,7 @@ use crate::trigger::{
     Action, AssertionQuantifierKind, BlackBoxHostOracle, Condition, ConditionEvaluationPass,
     ConditionLeaf, ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy,
     HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionViolation,
-    LogLevel, ObservableEventPayload, OfflineAssertionChecker,
+    LogLevel, ObservableEventPayload, OfflineAssertionChecker, RecordedAssertionLog,
     SearchScheduleNamedPredicateHostOracle, SearchScheduleNamedPredicateTruths,
 };
 
@@ -18871,6 +18871,64 @@ impl SearchFailureOracle {
         Ok(failure_oracle)
     }
 
+    /// Builds an oracle from assertion violations backed by retained logs.
+    ///
+    /// `retained_log_for` is consulted for every configuration reached by
+    /// `run`. Configurations without a retained log are skipped. This is a
+    /// trusted internal boundary: the provider must return the retained log that
+    /// belongs to the supplied configuration. Supplied logs are graded with the
+    /// offline black-box assertion checker, so this constructor can lower
+    /// prefix-safe safety/unreachability violations over retained-log predicates
+    /// whose evidence is carried by scheduler event-log entries: time/timer
+    /// facts, observable network/console/I/O/node/assertion-state facts, guest
+    /// markers, and schedule fault-active facts. Named host predicates still
+    /// require a separate explicit oracle path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not match `root` or a reached configuration. Returns
+    /// [`EngineError::ScenarioSerialization`] when a supplied retained assertion
+    /// log cannot be checked.
+    pub fn from_search_assertion_violations_with_retained_logs<F>(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        mut retained_log_for: F,
+    ) -> Result<Self, EngineError>
+    where
+        F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
+    {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+
+        let mut failure_oracle = Self::none();
+        for configuration in search_run_reached_configurations(root, run) {
+            if configuration.def.id != scenario_def.id {
+                return Err(EngineError::ReproductionScenarioMismatch {
+                    expected: scenario_def.id,
+                    actual: configuration.def.id,
+                });
+            }
+            let Some(recorded) = retained_log_for(&configuration) else {
+                continue;
+            };
+            if let Some(fingerprint) = search_assertion_failure_fingerprint_from_retained_log(
+                scenario,
+                &configuration,
+                &recorded,
+            )? {
+                failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
+            }
+        }
+        Ok(failure_oracle)
+    }
+
     fn from_search_assertion_violations_internal<O>(
         scenario: &ScenarioDefForm,
         root: &Configuration,
@@ -23910,9 +23968,28 @@ where
                 "search assertion retained log reconstruction failed: {source}"
             ))
         })?;
+    search_assertion_failure_fingerprint_from_recorded_log(
+        scenario,
+        configuration,
+        &recorded,
+        oracle,
+        predicate_scope,
+    )
+}
+
+fn search_assertion_failure_fingerprint_from_recorded_log<O>(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    recorded: &RecordedAssertionLog,
+    oracle: &mut O,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> Result<Option<ContentHash>, EngineError>
+where
+    O: HostAssertionOracle + ?Sized,
+{
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
-        .check_run_with_oracle(scenario.properties(), &recorded, oracle)
+        .check_run_with_oracle(scenario.properties(), recorded, oracle)
         .map_err(|source| {
             scenario_serialization_error(format!("search assertion check failed: {source}"))
         })?;
@@ -23921,6 +23998,32 @@ where
         .iter()
         .find(|outcome| {
             prefix_safe_search_assertion_failure(scenario.properties(), outcome, predicate_scope)
+        })
+        .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
+}
+
+fn search_assertion_failure_fingerprint_from_retained_log(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    recorded: &RecordedAssertionLog,
+) -> Result<Option<ContentHash>, EngineError> {
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run(scenario.properties(), recorded.entries())
+        .map_err(|source| {
+            scenario_serialization_error(format!(
+                "search retained assertion check failed: {source}"
+            ))
+        })?;
+    Ok(report
+        .outcomes()
+        .iter()
+        .find(|outcome| {
+            prefix_safe_search_assertion_failure(
+                scenario.properties(),
+                outcome,
+                SearchAssertionPredicateScope::RetainedLog,
+            )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
 }
@@ -23947,6 +24050,7 @@ fn search_assertion_failure_fingerprint_with_named_truths(
 enum SearchAssertionPredicateScope {
     ScheduleOnly,
     ScheduleAndNamedTruths,
+    RetainedLog,
 }
 
 fn prefix_safe_search_assertion_failure(
@@ -24017,13 +24121,15 @@ fn predicate_uses_only_search_schedule_predicates(
         | Predicate::Timer { .. }
         | Predicate::NetworkMatch { .. }
         | Predicate::ConsoleMatch { .. }
-        | Predicate::CoveragePoint { .. }
-        | Predicate::MemoryPredicate { .. }
         | Predicate::IoPattern { .. }
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
-        | Predicate::Quiescent
-        | Predicate::GuestMarker { .. } => false,
+        | Predicate::GuestMarker { .. } => {
+            predicate_scope == SearchAssertionPredicateScope::RetainedLog
+        }
+        Predicate::CoveragePoint { .. }
+        | Predicate::MemoryPredicate { .. }
+        | Predicate::Quiescent => false,
     }
 }
 
