@@ -835,13 +835,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       interpolation children, dynamic attrset keys, leading dynamic select/hasAttr
       path segments, strict binary operands, thunk bodies, and direct literal
       lambda arguments whose simple formal is unconditionally demanded by the
-      body. It deliberately leaves lazy list elements, attr values, skipped
+      body, plus direct formal-set lambda arguments after the formal symbols and
+      frame-slot shape validate because pattern matching must force the argument
+      to attrs. It deliberately leaves lazy list elements, attr values, skipped
       higher-order callbacks, `foldl'`'s empty-list initial accumulator, assert
       bodies, selected branches, option-dependent `traceVerbose` messages, and
       shadowed-frame lambda arguments conservative. `ratchet-oracle` covers the
-      producer/consumer path by annotating `(x: x + 1) (1 + 2)` and observing
-      the argument `ThunkAlloc` elided with `thunks_elided == 1`, while
-      annotated foldl-empty and unreached dynamic attr-path regressions stay
+      producer/consumer path by annotating `(x: x + 1) (1 + 2)` and `({}: 1) {}`
+      and observing the argument `ThunkAlloc` elided with `thunks_elided == 1`,
+      while annotated foldl-empty and unreached dynamic attr-path regressions stay
       lazy.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes the THUNK/EAGER/SCALAR decision lattice so conservative or

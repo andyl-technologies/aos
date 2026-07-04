@@ -293,6 +293,184 @@ fn strictness_marks_direct_lambda_argument_thunk_when_body_demands_parameter() {
 }
 
 #[test]
+fn strictness_marks_direct_formal_set_lambda_argument_for_pattern_matching() {
+    let mut ir = lowered("({ a }: 1) { a = 1 / 0; }");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(node(&ir, argument).kind, IrKind::ThunkAlloc);
+
+    annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+
+    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+}
+
+fn raw_direct_formal_set_lambda_ir(
+    formal_symbol: crate::syntax::Symbol,
+    symbols: SymbolTable,
+    frame: Option<FrameId>,
+    frames: Box<[FrameInfo]>,
+) -> (Ir, IrId, IrId, IrId) {
+    let formal_set = IrId::new(0);
+    let formal = IrId::new(1);
+    let body = IrId::new(2);
+    let lambda = IrId::new(3);
+    let argument = IrId::new(4);
+    let root = IrId::new(5);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::FormalSet,
+                Span::new(0, 6),
+                EffectClass::pure(),
+                IrData::FormalSet {
+                    formals: IrChildSlice::new(0, 1),
+                    ellipsis: false,
+                    alias: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Formal,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Formal {
+                    name: formal_symbol,
+                    default: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(8, 9),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::Lambda,
+                Span::new(0, 10),
+                EffectClass::pure(),
+                IrData::Lambda {
+                    pattern: formal_set,
+                    body,
+                    frame,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(11, 12),
+                EffectClass::pure(),
+                IrData::Int(2),
+            ),
+            IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 12),
+                EffectClass::pure(),
+                IrData::Pair {
+                    first: lambda,
+                    second: argument,
+                },
+            ),
+        ],
+        vec![formal],
+    );
+    (
+        Ir {
+            root,
+            facts: IrFacts::conservative(arena.nodes().len()),
+            arena,
+            symbols,
+            frames,
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        },
+        formal,
+        lambda,
+        argument,
+    )
+}
+
+#[test]
+fn strictness_rejects_invalid_formal_set_symbol_before_marking_argument() {
+    let invalid_symbol = crate::syntax::Symbol::new(99);
+    let (mut ir, formal, _, argument) = raw_direct_formal_set_lambda_ir(
+        invalid_symbol,
+        SymbolTable::new(),
+        Some(FrameId::new(0)),
+        Box::new([FrameInfo {
+            slot_count: 1,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+
+    let error = annotate_strictness(&mut ir).expect_err("invalid formal symbol rejects");
+
+    assert_eq!(
+        error,
+        StrictnessAnalysisError::InvalidSymbol {
+            id: formal,
+            symbol: invalid_symbol,
+        }
+    );
+    assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_keeps_formal_set_argument_unknown_on_frame_slot_mismatch() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"a").expect("test symbol interns");
+    let (mut ir, _, _, argument) = raw_direct_formal_set_lambda_ir(
+        symbol,
+        symbols,
+        Some(FrameId::new(0)),
+        Box::new([FrameInfo {
+            slot_count: 0,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+
+    annotate_strictness(&mut ir).expect("slot mismatch keeps demand conservative");
+
+    assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_rejects_invalid_formal_set_frame_before_marking_argument() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"a").expect("test symbol interns");
+    let invalid_frame = FrameId::new(1);
+    let (mut ir, _, lambda, argument) = raw_direct_formal_set_lambda_ir(
+        symbol,
+        symbols,
+        Some(invalid_frame),
+        Box::new([FrameInfo {
+            slot_count: 1,
+            captures: Box::new([]),
+            rec: false,
+            has_with: false,
+        }]),
+    );
+
+    let error = annotate_strictness(&mut ir).expect_err("invalid formal-set frame rejects");
+
+    assert_eq!(
+        error,
+        StrictnessAnalysisError::InvalidFrame {
+            id: lambda,
+            frame: invalid_frame,
+        }
+    );
+    assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
 fn strictness_marks_direct_lambda_argument_through_intervening_frame() {
     let mut ir = lowered("(x: let y = 1; in x + y) (1 + 2)");
     let IrData::Pair {

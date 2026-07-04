@@ -8135,9 +8135,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       later proof demands them; option-dependent `traceVerbose` messages also
       remain conservative. Direct literal lambda applications can mark an
       argument `ThunkAlloc` strict when a simple formal is unconditionally
-      demanded by the lambda body, and the tree-walk oracle verifies this
-      produced fact elides the argument thunk while preserving foldl-empty and
-      unreached dynamic attr-path laziness. This does not close the whole-program
+      demanded by the lambda body or when a formal-set pattern's validated
+      binding preflight must force the argument to attrs; malformed formal-set
+      symbols and frame-slot mismatches remain conservative/rejected before the
+      argument fact is refined. The tree-walk oracle verifies these produced
+      facts elide argument thunks while preserving foldl-empty and unreached
+      dynamic attr-path laziness. This does not close the whole-program
       closed-call-graph fixpoint or worker/wrapper transform.
 - [x] Current strictness fact-table validation hardening:
       `annotate_strictness` now rejects fact-table/node-count mismatches before

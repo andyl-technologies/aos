@@ -51,6 +51,14 @@ pub enum StrictnessAnalysisError {
         /// The invalid child slice.
         slice: IrChildSlice,
     },
+    /// A frame id did not resolve through the frame table.
+    #[error("invalid frame {frame:?} at IR node {id:?}")]
+    InvalidFrame {
+        /// The node that referenced the invalid frame.
+        id: IrId,
+        /// The invalid frame id.
+        frame: crate::FrameId,
+    },
     /// A node's payload did not match its node kind.
     #[error("invalid payload for {kind:?} node {id:?}: expected {expected}")]
     InvalidPayload {
@@ -104,8 +112,8 @@ pub enum StrictnessAnalysisError {
 /// # Errors
 ///
 /// Returns [`StrictnessAnalysisError`] if an arena node payload does not match
-/// its kind, or if the IR arena, child pool, binding table, attribute-path
-/// table, symbol table, or fact table is internally inconsistent.
+/// its kind, or if the IR arena, child pool, frame table, binding table,
+/// attribute-path table, symbol table, or fact table is internally inconsistent.
 pub fn annotate_strictness(
     ir: &mut Ir,
 ) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
@@ -613,18 +621,90 @@ impl<'a> StrictnessAnalyzer<'a> {
         function: IrId,
     ) -> Result<bool, StrictnessAnalysisError> {
         let node = *self.node(function)?;
-        let IrData::Lambda { pattern, body, .. } = node.data else {
+        let IrData::Lambda {
+            pattern: pattern_id,
+            body,
+            frame,
+        } = node.data
+        else {
             return Ok(false);
         };
-        let pattern = *self.node(pattern)?;
-        let IrData::Formal { default: None, .. } = pattern.data else {
-            return Ok(false);
-        };
-        if pattern.kind != IrKind::Formal {
-            return Ok(false);
+        let pattern_node = *self.node(pattern_id)?;
+        match pattern_node.kind {
+            IrKind::Formal => {
+                let IrData::Formal { default: None, .. } = pattern_node.data else {
+                    return Ok(false);
+                };
+                let mut probe = DemandProbe::new(self);
+                probe.node_demands_target(body, LocalDemandTarget::simple_lambda_argument())
+            }
+            IrKind::FormalSet => {
+                self.formal_set_pattern_forces_argument(function, pattern_id, pattern_node, frame)
+            }
+            _ => Ok(false),
         }
-        let mut probe = DemandProbe::new(self);
-        probe.node_demands_target(body, LocalDemandTarget::simple_lambda_argument())
+    }
+
+    fn formal_set_pattern_forces_argument(
+        &self,
+        lambda: IrId,
+        pattern_id: IrId,
+        pattern: crate::ir::IrNode,
+        frame: Option<crate::FrameId>,
+    ) -> Result<bool, StrictnessAnalysisError> {
+        let Some(frame) = frame else {
+            return Ok(false);
+        };
+        let IrData::FormalSet { formals, alias, .. } = pattern.data else {
+            return Err(StrictnessAnalysisError::InvalidPayload {
+                id: pattern_id,
+                kind: pattern.kind,
+                expected: expected_payload(pattern.kind),
+            });
+        };
+        let formal_ids = self.child_ids(pattern_id, formals)?;
+        let mut names = Vec::new();
+        for formal_id in formal_ids {
+            let formal = *self.node(formal_id)?;
+            if formal.kind != IrKind::Formal {
+                return Err(StrictnessAnalysisError::InvalidPayload {
+                    id: formal_id,
+                    kind: formal.kind,
+                    expected: expected_payload(IrKind::Formal),
+                });
+            }
+            let IrData::Formal { name, .. } = formal.data else {
+                return Err(StrictnessAnalysisError::InvalidPayload {
+                    id: formal_id,
+                    kind: formal.kind,
+                    expected: expected_payload(formal.kind),
+                });
+            };
+            if self.ir.symbols.resolve(name).is_none() {
+                return Err(StrictnessAnalysisError::InvalidSymbol {
+                    id: formal_id,
+                    symbol: name,
+                });
+            }
+            names.push(name);
+        }
+        if let Some(alias) = alias
+            && self.ir.symbols.resolve(alias).is_none()
+        {
+            return Err(StrictnessAnalysisError::InvalidSymbol {
+                id: lambda,
+                symbol: alias,
+            });
+        }
+        let alias_slot = alias.filter(|alias| !names.contains(alias));
+        let pattern_slots = names.len() + usize::from(alias_slot.is_some());
+        let slot_count = self
+            .ir
+            .frames
+            .get(frame.index())
+            .ok_or(StrictnessAnalysisError::InvalidFrame { id: lambda, frame })?
+            .slot_count as usize;
+        Ok(slot_count == pattern_slots)
     }
 
     fn child_ids(

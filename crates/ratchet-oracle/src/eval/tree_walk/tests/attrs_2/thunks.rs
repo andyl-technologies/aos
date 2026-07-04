@@ -195,6 +195,18 @@ fn strictness_analysis_elides_direct_lambda_argument_thunk() {
 }
 
 #[test]
+fn strictness_analysis_elides_direct_formal_set_argument_thunk() {
+    let mut ir = lower("({}: 1) {}");
+    crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+
+    let outcome = eval_whnf_owned(&ir).expect("annotated formal-set lambda evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    assert_eq!(outcome.stats().thunks_allocated(), 0);
+    assert_eq!(outcome.stats().thunks_elided(), 1);
+}
+
+#[test]
 fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
     let mut ir = lower(r#"builtins.foldl' (acc: x: acc + x) (builtins.throw "initial") []"#);
     crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");
