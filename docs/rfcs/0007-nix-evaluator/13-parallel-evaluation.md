@@ -1039,17 +1039,23 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       when unavailable). Tests cover that matrix over roots that force real
       `derivation` `.drvPath` materialization, deep `.drvPath` root contexts,
       single-output `outPath` root contexts, non-string roots with forced
-      derivation materialization but empty root context, empty roots, empty
-      worker-count rejection, oversized worker-count preflight before serial
-      evaluation, parse/eval persistent cache-root rejection, and serial root
-      failure reporting. This is an independent-root materialized
-      derivation-snapshot differential only: it does not run a full closure,
-      force every lazy derivation attrset, force non-string roots to discover
-      nested or lazy string contexts, compare store writes, prove shared-thunk
-      graph scheduling, audit all nondeterministic attrset iteration, wire
-      ready-work park tokens or CAS wait integration, or satisfy the full
-      parallel evaluator parity gate (§4.4) — **P3.5** precursor,
-      `C-12`/`S-13`.
+      derivation materialization but empty root context, unforced derivation
+      attrset roots, root lists of unforced derivation attrsets, empty roots,
+      lazy-`foldl'` surface attrs, nested root-list boundaries, fake attrsets
+      with missing/non-string `drvPath`, empty worker-count rejection, oversized
+      worker-count preflight before serial evaluation, parse/eval persistent
+      cache-root rejection, and serial root failure reporting. Before
+      snapshotting, the harness forces only root-visible derivation attrset
+      surfaces by selecting `type` and then forcing `drvPath` when present on
+      the root attrset or on immediate derivation attrset elements in the root
+      list spine. This is an independent-root materialized derivation-snapshot
+      differential only: it does not run a full closure, force derivations
+      hidden under arbitrary attrset fields, nested lists, or package
+      collections, force non-string roots to discover nested or lazy string
+      contexts, compare store writes, prove shared-thunk graph scheduling, audit
+      all nondeterministic attrset iteration, wire ready-work park tokens or CAS
+      wait integration, or satisfy the full parallel evaluator parity gate
+      (§4.4) — **P3.5** precursor, `C-12`/`S-13`.
 
 ### Concurrency runtime — rayon, fibers, tokio (§5.5)
 

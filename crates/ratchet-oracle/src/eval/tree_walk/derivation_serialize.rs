@@ -3,6 +3,86 @@
 use super::*;
 
 impl TreeWalk {
+    /// Forces root-visible derivation attrsets enough for snapshot collection.
+    pub(crate) fn force_root_derivation_surfaces(
+        &mut self,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let root = self.current_ir().root;
+        let span = self.node(root)?.span;
+        let value = self.force_derivation_surface_value(root, span, value)?;
+        match value.tag() {
+            ValueTag::Attrs => self.force_derivation_attrset_surface(root, span, value),
+            ValueTag::List => self.force_derivation_list_element_surfaces(root, span, value),
+            _ => Ok(()),
+        }
+    }
+
+    fn force_derivation_surface_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_lazy_foldl_initial_value(id, span, value)?;
+        let value = self.force_value(id, span, value)?;
+        self.force_lazy_foldl_initial_value(id, span, value)
+    }
+
+    fn force_derivation_list_element_surfaces(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            Self::clone_list_elements(id, span, list)?
+        };
+
+        for element in elements {
+            let element = self.force_derivation_surface_value(id, span, element)?;
+            if element.tag() == ValueTag::Attrs {
+                self.force_derivation_attrset_surface(id, span, element)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn force_derivation_attrset_surface(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let Some(type_value) = self.attr_value_by_name(id, value, TYPE_ATTR, span)? else {
+            return Ok(());
+        };
+        let type_value = self.force_derivation_surface_value(id, span, type_value)?;
+        if type_value.tag() != ValueTag::String {
+            return Ok(());
+        }
+        let is_derivation = {
+            let string = self.heap.get_string(type_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            string.bytes() == b"derivation"
+        };
+        if !is_derivation {
+            return Ok(());
+        }
+
+        let Some(drv_path) = self.attr_value_by_name(id, value, DRV_PATH_ATTR, span)? else {
+            return Ok(());
+        };
+        let _drv_path = self.force_derivation_surface_value(id, span, drv_path)?;
+
+        Ok(())
+    }
+
     pub(super) fn deferred_placeholder_derivation_aterm_bytes(
         &self,
         id: IrId,

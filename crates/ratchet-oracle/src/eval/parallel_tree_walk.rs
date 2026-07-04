@@ -694,6 +694,7 @@ fn eval_drv_outputs_for_root(
     };
     let value = evaluator.eval_root()?;
     let string_context = root_string_context(&evaluator, value)?;
+    evaluator.force_root_derivation_surfaces(value)?;
     let derivations = evaluator.derivation_snapshot()?;
     Ok(ParallelOutputTaskResult::new(
         string_context,
@@ -1474,6 +1475,25 @@ mod tests {
         )))
     }
 
+    fn unforced_derivation_attrset_root(name: &str) -> ParallelTreeWalkRoot {
+        ParallelTreeWalkRoot::expression(lower(&format!(
+            r#"derivation {{ name = "{name}"; system = ":"; builder = ":"; }}"#
+        )))
+    }
+
+    fn derivation_attrset_list_root(prefix: &str) -> ParallelTreeWalkRoot {
+        ParallelTreeWalkRoot::expression(lower(&format!(
+            r#"[
+                (derivation {{ name = "{prefix}-alpha"; system = ":"; builder = ":"; }})
+                (derivation {{ name = "{prefix}-beta"; system = ":"; builder = ":"; }})
+            ]"#
+        )))
+    }
+
+    fn expression_root(source: &str) -> ParallelTreeWalkRoot {
+        ParallelTreeWalkRoot::expression(lower(source))
+    }
+
     #[test]
     fn standard_parallel_tree_walk_differential_worker_counts_follow_rfc_matrix_order() {
         let counts = parallel_tree_walk_standard_differential_worker_counts()
@@ -1874,6 +1894,119 @@ mod tests {
         assert_eq!(report.worker_counts(), &[1, 3]);
         assert_eq!(report.collation().fragment_count(), 1);
         assert_eq!(report.collation().drv_output_count(), 1);
+        assert!(report.collation().string_context().is_empty());
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_forces_unforced_derivation_attrset_root() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [unforced_derivation_attrset_root(
+                "parallel-drv-unforced-attrset-root",
+            )],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential forces unforced attrset root derivations");
+
+        assert_eq!(report.task_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 1);
+        assert_eq!(report.collation().drv_output_count(), 1);
+        assert!(report.collation().string_context().is_empty());
+        assert!(
+            report.collation().drv_outputs()[0]
+                .path()
+                .ends_with(b".drv")
+        );
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_forces_derivation_attrset_list_roots() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [derivation_attrset_list_root("parallel-drv-attrset-list")],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential forces root list derivation attrsets");
+
+        assert_eq!(report.task_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 1);
+        assert_eq!(report.collation().drv_output_count(), 2);
+        assert!(report.collation().string_context().is_empty());
+        assert!(
+            report
+                .collation()
+                .drv_outputs()
+                .iter()
+                .all(|output| output.path().ends_with(b".drv"))
+        );
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_does_not_descend_into_nested_root_lists() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [expression_root(
+                r#"[[ (derivation { name = "parallel-drv-nested-list"; system = ":"; builder = ":"; }) ]]"#,
+            )],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential does not recurse into nested root lists");
+
+        assert_eq!(report.task_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 1);
+        assert_eq!(report.collation().drv_output_count(), 0);
+        assert!(report.collation().string_context().is_empty());
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_normalizes_lazy_foldl_surface_attrs() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [expression_root(
+                r#"let d = derivation { name = "parallel-drv-lazy-foldl-surface"; system = ":"; builder = ":"; }; in {
+                    type = builtins.foldl' (acc: _: acc) "derivation" [ 1 ];
+                    drvPath = builtins.foldl' (acc: _: acc) d.drvPath [ 1 ];
+                }"#,
+            )],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential normalizes lazy foldl surface attrs");
+
+        assert_eq!(report.task_count(), 1);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 1);
+        assert_eq!(report.collation().drv_output_count(), 1);
+        assert!(report.collation().string_context().is_empty());
+        assert!(
+            report.collation().drv_outputs()[0]
+                .path()
+                .ends_with(b".drv")
+        );
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_differential_ignores_missing_or_non_string_fake_drv_paths() {
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+            [
+                expression_root(
+                    r#"{ type = "derivation"; nested = builtins.throw "fake derivation attrset forced"; }"#,
+                ),
+                expression_root(
+                    r#"{ type = "derivation"; drvPath = 42; nested = builtins.throw "fake derivation attrset forced"; }"#,
+                ),
+            ],
+            [workers(1), workers(3)],
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv differential ignores missing/non-string fake drvPath roots");
+
+        assert_eq!(report.task_count(), 2);
+        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.collation().fragment_count(), 2);
+        assert_eq!(report.collation().drv_output_count(), 0);
         assert!(report.collation().string_context().is_empty());
     }
 
