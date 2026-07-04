@@ -30,17 +30,17 @@ use crate::trigger::{
     ObservableEventPayload,
 };
 use crate::{
-    AssertionId, AssertionQuantifierKind, BackendError, BackendInput, CombinedFaults,
-    CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash,
-    ControlFaultAction, ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState,
-    DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault,
-    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, FingerprintSample, GdbAttachInfo,
-    GdbListen, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
-    PartitionDirection, PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, SearchFrontierChoices, Shift, SimDuration, SimInstant, SimulationBackend,
-    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
-    WorldStaticTopology, step,
+    AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
+    CombinedFaults, CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault,
+    Configuration, ContentHash, ControlFaultAction, ControlFaultDecision, Decision,
+    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset,
+    EventSequenceState, Fault, FaultDecision, FaultId, FaultRateBasisPoints, FaultTag,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkId, MarkerId, MembershipFault,
+    NodeCounter, NodeId, NodeLifecycle, PartitionDirection, PendingFrame, PreemptionDecision,
+    PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, Shift, SimDuration,
+    SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -603,6 +603,31 @@ pub type EventClass = SchedulerEventLogClass;
 struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {
+    /// Builds a scheduler-owned assertion-state observation for deterministic
+    /// test-double loops.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// the segment they are constructing. This constructor is for trusted
+    /// scheduler loop implementations that already own event-log offset
+    /// accounting; it must not be used to rewrite replayed logs or bypass
+    /// replay-oracle validation.
+    #[must_use]
+    pub fn assertion_state_observation(
+        sequence: u64,
+        at: VirtualTime,
+        name: AssertionId,
+        state: AssertionPhase,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            at,
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
+                name,
+                state,
+            }),
+        )
+    }
+
     /// Builds an observable condition entry as if appended by scheduler EMIT.
     #[must_use]
     pub(crate) fn observable(

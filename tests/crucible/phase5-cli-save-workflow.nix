@@ -151,8 +151,32 @@
         needle = "SaveAtSelector::Marker";
       }
       {
-        label = "selector execution blocker";
-        needle = "selector-specific breakpoint proof tracked by T-CLI-9";
+        label = "selector breakpoint proof";
+        needle = "fn run_save_selector_to_boundary";
+      }
+      {
+        label = "selector firing validation";
+        needle = "fn validate_save_selector_firing";
+      }
+      {
+        label = "selector advancement wait";
+        needle = "fn wait_for_save_workflow_advanced_paused";
+      }
+      {
+        label = "fixed local-double assertion fixture";
+        needle = "SAVE_DOUBLE_ASSERTION_VIOLATION";
+      }
+      {
+        label = "non-matching property selector test";
+        needle = "wrong-property-stop";
+      }
+      {
+        label = "selector proof rejection test";
+        needle = "cli_save_selector_proof_rejects_invalid_breakpoint_evidence";
+      }
+      {
+        label = "marker selector blocker";
+        needle = "guest-marker breakpoint proof tracked by T-CLI-9";
       }
       {
         label = "save planning test";
