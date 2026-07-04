@@ -7497,6 +7497,23 @@ nurseries build on the bump arena.
       exhausted deques, hold a park token, call the serial `TreeWalk::force_value`
       path, replace `EvalThunk` storage, install the final lock-free waiter
       list, or satisfy the loom/Miri/TSan audit.
+- [x] Current tree-walk force-body poll/preflight bridge:
+      `TreeWalkParallelThunkCell::force_or_poll_ready_then_wait_with` accepts
+      scheduler-backed `ParallelReadyWorkPoll` values and preserves their idle
+      `ParallelReadyWorkParkPreflight` snapshot in the tree-walk force outcome.
+      Local/stolen polls still feed the existing wait-or-steal counters so the
+      contended thunk is rechecked after every ready task, while an idle poll
+      captures the all-queue preflight snapshot before the wait-cell path can
+      register a waiter. Tests cover claim-owner execution without polling,
+      contending local/stolen work followed by idle-preflight replay, blocking
+      waiter registration with the captured preflight snapshot, body-error
+      replay, and self-cycle classification without polling or body execution.
+      This is still an
+      evaluator-native bridge over the safe queue and blocking wait-cell
+      precursors: it does not attach a real scheduler park token to waiter
+      registration, call the serial `TreeWalk::force_value` path, replace
+      `EvalThunk` storage, install the final lock-free waiter list, or satisfy
+      the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
