@@ -82,9 +82,11 @@ fn retention_reason(
     ir: &Ir,
     binding: IrBinding,
 ) -> Result<Option<DeadBindingRetentionReason>, DeadBindingEliminationError> {
-    ir.arena
+    let value_node = ir
+        .arena
         .node(binding.value)
         .ok_or(DeadBindingEliminationError::InvalidNode { id: binding.value })?;
+    validate_payload(binding.value, *value_node)?;
     let facts = ir
         .facts
         .get(binding.value)
@@ -128,6 +130,82 @@ fn binding_values(
         .get(start..end)
         .map(<[IrBinding]>::to_vec)
         .ok_or(DeadBindingEliminationError::InvalidBindingSlice { id, slice })
+}
+
+fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), DeadBindingEliminationError> {
+    let valid = match node.kind {
+        IrKind::Int => matches!(node.data, IrData::Int(_)),
+        IrKind::Float => matches!(node.data, IrData::Float(_)),
+        IrKind::Bool => matches!(node.data, IrData::Bool(_)),
+        IrKind::Null => matches!(node.data, IrData::None),
+        IrKind::Str | IrKind::Path | IrKind::Uri | IrKind::BuiltinAttr => {
+            matches!(node.data, IrData::Symbol(_))
+        }
+        IrKind::GlobalVar => matches!(node.data, IrData::GlobalVar { .. }),
+        IrKind::LocalVar => matches!(node.data, IrData::Local { .. }),
+        IrKind::UpvalVar => matches!(node.data, IrData::Upval { .. }),
+        IrKind::SearchPath => matches!(node.data, IrData::SearchPath { .. }),
+        IrKind::List => matches!(node.data, IrData::Children(_)),
+        IrKind::AttrSet => matches!(node.data, IrData::AttrSet { .. }),
+        IrKind::Lambda => matches!(node.data, IrData::Lambda { .. }),
+        IrKind::FormalSet => matches!(node.data, IrData::FormalSet { .. }),
+        IrKind::Formal => matches!(node.data, IrData::Formal { .. }),
+        IrKind::Apply | IrKind::With | IrKind::Assert => matches!(node.data, IrData::Pair { .. }),
+        IrKind::Select => matches!(node.data, IrData::Select { .. }),
+        IrKind::HasAttr => matches!(node.data, IrData::HasAttr { .. }),
+        IrKind::Let => matches!(node.data, IrData::Let { .. }),
+        IrKind::If => matches!(node.data, IrData::Triple { .. }),
+        IrKind::BinOp => matches!(node.data, IrData::Binary { .. }),
+        IrKind::UnaryOp => matches!(node.data, IrData::Unary { .. }),
+        IrKind::Interp => matches!(
+            node.data,
+            IrData::Node(_) | IrData::Children(_) | IrData::None
+        ),
+        IrKind::ThunkAlloc => matches!(node.data, IrData::Node(_)),
+        IrKind::PrimOp => matches!(
+            node.data,
+            IrData::PrimOp { .. } | IrData::DialectNode { .. } | IrData::DialectScopeVar { .. }
+        ),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(DeadBindingEliminationError::InvalidPayload {
+            id,
+            kind: node.kind,
+            expected: expected_payload(node.kind),
+        })
+    }
+}
+
+fn expected_payload(kind: IrKind) -> &'static str {
+    match kind {
+        IrKind::Int => "integer payload",
+        IrKind::Float => "float payload",
+        IrKind::Bool => "boolean payload",
+        IrKind::Null => "empty payload",
+        IrKind::Str | IrKind::Path | IrKind::Uri => "symbol payload",
+        IrKind::LocalVar => "local slot payload",
+        IrKind::UpvalVar => "upvalue slot payload",
+        IrKind::GlobalVar => "global-var payload",
+        IrKind::BuiltinAttr => "symbol payload",
+        IrKind::SearchPath => "search-path payload",
+        IrKind::List => "children payload",
+        IrKind::AttrSet => "attrset payload",
+        IrKind::Lambda => "lambda payload",
+        IrKind::FormalSet => "formal-set payload",
+        IrKind::Formal => "formal payload",
+        IrKind::Apply | IrKind::With | IrKind::Assert => "pair payload",
+        IrKind::Select => "select payload",
+        IrKind::HasAttr => "hasAttr payload",
+        IrKind::Let => "let payload",
+        IrKind::If => "triple payload",
+        IrKind::BinOp => "binary payload",
+        IrKind::UnaryOp => "unary payload",
+        IrKind::Interp => "interpolation payload",
+        IrKind::ThunkAlloc => "thunk body",
+        IrKind::PrimOp => "primop payload",
+    }
 }
 
 /// A conservative dead-binding elimination plan.

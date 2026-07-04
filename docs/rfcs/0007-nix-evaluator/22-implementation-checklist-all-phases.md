@@ -8211,9 +8211,11 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `dead_binding_elimination_plan` now validates each `let` body reference
       before cardinality facts can license binding elimination, so malformed
       raw/imported IR cannot produce an omission plan under forged absent facts.
-      It also rejects unresolved static binding-key symbols before absent facts
-      can license key-preserving omission. This is still a planner-boundary
-      check; it does not rewrite IR or improve usage precision.
+      It also rejects unresolved static binding-key symbols and malformed
+      binding-value kind/payload pairs before absent facts can license
+      key-preserving omission. This is still a planner-boundary check; it does
+      not recursively validate all side-table references below an omitted value,
+      rewrite IR, or improve usage precision.
 - [x] Current tree-walk dead-binding consumer:
       `ratchet-oracle` builds a module-local omitted-binding index from
       `dead_binding_elimination_plan` for each loaded IR module when planning

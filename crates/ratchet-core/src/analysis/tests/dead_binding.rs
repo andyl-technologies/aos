@@ -309,6 +309,78 @@ fn dead_binding_plan_rejects_invalid_static_key_symbols() {
 }
 
 #[test]
+fn dead_binding_plan_rejects_malformed_absent_value_payloads() {
+    let value = IrId::new(0);
+    let body = IrId::new(1);
+    let root = IrId::new(2);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(4, 8),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(13, 14),
+                EffectClass::pure(),
+                IrData::Int(7),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 14),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"dead").expect("symbol interns");
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let error = dead_binding_elimination_plan(&ir).expect_err("malformed value rejects");
+
+    assert_eq!(
+        error,
+        DeadBindingEliminationError::InvalidPayload {
+            id: value,
+            kind: IrKind::ThunkAlloc,
+            expected: "thunk body",
+        }
+    );
+}
+
+#[test]
 fn dead_binding_plan_rejects_invalid_dynamic_key_value_nodes() {
     let key = IrId::new(0);
     let value = IrId::new(99);
