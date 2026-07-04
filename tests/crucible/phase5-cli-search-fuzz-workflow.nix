@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
   engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
   searchStrategiesTest = builtins.readFile ../../crates/crucible/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -74,6 +75,10 @@
         needle = "1/1 replay-oracle sampling counts over fat search materializations";
       }
       {
+        label = "T-CLI-13 local-double search counterexample artifact progress";
+        needle = "Engine\n  failures discovered by the local-double search path now attach replayable CLI\n  reproduction artifacts";
+      }
+      {
         label = "T-CLI-13 local-double fuzz runner progress";
         needle = "executes local `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
       }
@@ -110,6 +115,10 @@
       {
         label = "phase5 CLI local-double replay oracle sampling progress";
         needle = "1/1 replay-oracle\n  sampling counts over fat search materializations";
+      }
+      {
+        label = "phase5 CLI local-double counterexample artifact progress";
+        needle = "engine-discovered counterexample metadata, and replayable\n  CLI reproduction artifact emission with standard replay/debug footer commands";
       }
       {
         label = "phase5 CLI local-double fuzz runner progress";
@@ -166,6 +175,10 @@
         needle = "fn run_local_double_search_workflow_with_graph";
       }
       {
+        label = "local-double injectable failure oracle runner";
+        needle = "fn run_local_double_search_workflow_with_graph_and_failure_oracle";
+      }
+      {
         label = "local-double search output";
         needle = "search-run";
       }
@@ -184,6 +197,26 @@
       {
         label = "local-double sampled search runner";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
+      }
+      {
+        label = "local-double search counterexample artifact adapter";
+        needle = "fn search_failure_reproduction_artifact_bytes";
+      }
+      {
+        label = "local-double search root failure adapter";
+        needle = "root-failure";
+      }
+      {
+        label = "local-double search fingerprint bridge";
+        needle = "fn cli_digest_from_engine_hash";
+      }
+      {
+        label = "local-double search counterexample output";
+        needle = "counterexample_fingerprint={}";
+      }
+      {
+        label = "local-double search counterexample artifact output";
+        needle = "counterexample_artifact={}";
       }
       {
         label = "local-double search canonical log";
@@ -232,6 +265,22 @@
       {
         label = "local-double non-exhausted workflow regression";
         needle = "run_local_double_search_workflow_with_graph(\n            &plan_cli_invocation(&frontier_cli)";
+      }
+      {
+        label = "local-double counterexample artifact regression";
+        needle = "failed search must attach a counterexample artifact";
+      }
+      {
+        label = "local-double counterexample emission regression";
+        needle = "emit_backend_command_output(&failure_cli, &failure_outcome)";
+      }
+      {
+        label = "local-double root counterexample artifact regression";
+        needle = "root search failure must attach a counterexample artifact";
+      }
+      {
+        label = "local-double no-oracle output remains stable";
+        needle = "!search_line.contains(\"counterexample=\")";
       }
       {
         label = "fuzz runner blocker";
@@ -336,6 +385,12 @@
       {
         label = "local-double positive fuzz replay regression";
         needle = "replay_oracle_validations=3";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+      {
+        label = "search discovered failure re-export";
+        needle = "SearchDiscoveredFailure";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" engineModel [

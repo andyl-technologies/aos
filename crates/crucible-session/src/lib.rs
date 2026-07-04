@@ -35,14 +35,14 @@ pub mod engine {
         PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome, QuantumRequest,
         ReadyPoint, ReproductionArtifact, RngDecision, RngStreamId, SHMEM_ABI_VERSION, ScenarioDef,
         ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError, SchedulerEventLogEntry,
-        SchedulerQuiescence, SchedulingPoint, SearchBudget, SearchFailureOracle,
-        SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport, SearchStrategy, Seed,
-        SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimDuration,
-        SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphStoreError,
-        TopologyShape, TopologySizeRange, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
-        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
-        happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
-        verify_example_scenario_runs,
+        SchedulerQuiescence, SchedulingPoint, SearchBudget, SearchDiscoveredFailure,
+        SearchFailureOracle, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
+        SearchStrategy, Seed, SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend,
+        SimDuration, SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun,
+        TemporalGraphStoreError, TopologyShape, TopologySizeRange, VirtualTime, VmArchitecture,
+        WhiteBoxPolicy, World, built_in_example_corpus, crash_restart_scenario,
+        fault_campaign_family, happy_path_scenario, partition_recovery_scenario,
+        run_fault_campaign_example, try_step, verify_example_scenario_runs,
     };
 }
 
