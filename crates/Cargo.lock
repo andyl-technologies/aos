@@ -4008,6 +4008,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratchet-runtime-ffi"
+version = "0.1.0"
+dependencies = [
+ "ratchet-oracle",
+]
+
+[[package]]
 name = "ratchet-value"
 version = "0.1.0"
 dependencies = [

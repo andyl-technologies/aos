@@ -11,6 +11,7 @@ members = [
     "ratchet-dialect",
     "ratchet-cache",
     "ratchet-jit",
+    "ratchet-runtime-ffi",
     "aos-nix-dialect",
     "ratchet-value",
     "ratchet-oracle",
@@ -136,6 +137,7 @@ ratchet-core = { path = "ratchet-core" }
 ratchet-dialect = { path = "ratchet-dialect" }
 ratchet-cache = { path = "ratchet-cache" }
 ratchet-jit = { path = "ratchet-jit" }
+ratchet-runtime-ffi = { path = "ratchet-runtime-ffi" }
 aos-nix-dialect = { path = "aos-nix-dialect" }
 ratchet-value = { path = "ratchet-value" }
 ratchet-oracle = { path = "ratchet-oracle" }

@@ -1630,6 +1630,20 @@ harness, never cut for scope.
       `aos_env_get`, `aos_force`/`aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
+- [x] Current runtime FFI crate and `aos_env_get` success-path wrapper:
+      `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
+      safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
+      `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
+      symbol, decodes a live `EvalFrame` pointer inside a scoped unsafe block,
+      reads the slot through the same safe frame API used by the oracle, and
+      returns the copied `Value` by value. Metadata exposes the wrapper's typed
+      function pointer, process-local address, frozen ABI signature, and the
+      remaining `TrapTransferUnimplemented` blocker. Tests call the wrapper and
+      metadata function pointer against live frames. This is only the
+      success-path C ABI body: invalid pointers, borrow conflicts, or slot
+      errors abort until trap transfer exists, the strict native-export plan does
+      not consume the wrapper yet, and `JITBuilder::symbol` registration/native
+      calls remain gated.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT
