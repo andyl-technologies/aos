@@ -8046,17 +8046,19 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
 - [x] Current shaped-select fast-path precursor: `ratchet-value` exposes
       `ShapedSelectCache`, which guards one static key on `ShapedAttrs` by
       interned shape pointer, loads cached symbol slots on hits, resolves misses
-      through the shape descriptor, and widens through the PIC state machine.
-      Shaped/PIC tree-walk `Select` integration, final runtime `select_slow`,
-      HAMT-valued selection, and `.drv` effects remain open.
+      through the representation-dispatching `select_slow` shaped branch, and
+      widens through the PIC state machine. Shaped/PIC tree-walk `Select`
+      integration, native runtime helper dispatch, HAMT-valued selection, and
+      `.drv` effects remain open.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
       array. Tree-walk `Select`/`HasAttr` and `WithVar` scope probes now route
-      active flat attrsets through this dispatcher; the PIC miss path,
-      HAMT/shaped active evaluator storage, native runtime attr representation,
-      and `.drv` effects remain open.
+      active flat attrsets through this dispatcher; `ShapedSelectCache` and
+      `HamtSelectCache` also use it for shaped/HAMT slow resolution. Tree-walk
+      PIC integration, HAMT/shaped active evaluator storage, native runtime attr
+      representation, and `.drv` effects remain open.
 - [x] Current shaped update precursor: `ratchet-value` exposes
       `ShapedUpdatePlan`, which computes a small shaped `//` result shape
       through the transition tree and instantiates a shaped value array with the
@@ -8101,8 +8103,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       entry that keeps using keyed HAMT lookup, or fold the site into the
       megamorphic path. The HAMT attrset and select key must share one symbol
       universe, and lookups now resolve through the representation-dispatching
-      `select_slow` HAMT branch. `ShapedSelectCache`, native PIC lowering, and
-      active evaluator selection remain open.
+      `select_slow` HAMT branch. Native PIC lowering and active evaluator
+      selection remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current in-process order-parity precursor: `ratchet-value` exposes

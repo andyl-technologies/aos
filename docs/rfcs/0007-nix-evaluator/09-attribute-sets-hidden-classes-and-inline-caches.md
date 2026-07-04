@@ -804,10 +804,11 @@ harness, never cut for scope.
 - [x] Current shaped-select fast-path precursor:
       `ratchet-value::attrs::pic` exposes `ShapedSelectCache`, which guards
       one static key on `ShapedAttrs` by interned shape pointer, loads cached
-      symbol slots on hits, resolves misses through the shape descriptor, and
-      widens through the PIC state machine. It does not install shaped fast
-      paths into tree-walk `Select`, call the final runtime `select_slow`,
-      handle HAMT values, or affect `.drv` bytes.
+      symbol slots on hits, resolves uncached shaped lookups through the
+      representation-dispatching `select_slow` shaped branch, and widens
+      through the PIC state machine. It does not install shaped fast paths into
+      tree-walk `Select`, call the native runtime helper, handle HAMT values,
+      or affect `.drv` bytes.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
@@ -827,8 +828,10 @@ harness, never cut for scope.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
       shape slot then load the value array. Tree-walk `Select`/`HasAttr` and
       `WithVar` scope probes now route active flat attrsets through this
-      dispatcher; the PIC miss path, HAMT/shaped active evaluator storage,
-      native runtime attr representation, and `.drv` effects remain open.
+      dispatcher; `ShapedSelectCache` and `HamtSelectCache` also use this
+      value-level dispatcher for shaped/HAMT slow resolution. Tree-walk PIC
+      integration, HAMT/shaped active evaluator storage, native runtime attr
+      representation, and `.drv` effects remain open.
 
 ### The update operator `//`
 
@@ -882,7 +885,7 @@ harness, never cut for scope.
       site into the megamorphic path. The HAMT attrset and select key must
       share one symbol universe, and lookups now resolve through the
       representation-dispatching `select_slow` HAMT branch. It is not wired into
-      `ShapedSelectCache`, native PIC lowering, or active evaluator selection.
+      native PIC lowering or active evaluator selection.
 
 ### Iteration-order compatibility (acceptance-critical)
 

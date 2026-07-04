@@ -5,11 +5,12 @@
 //! polymorphic set, then fall back to megamorphic dispatch after the configured
 //! cap. The generic [`InlineCache`] remains a state machine over opaque shape
 //! ids; [`ShapedSelectCache`] is a safe shaped-attrset precursor that proves the
-//! shape-guard + constant-offset load contract without updating tree-walk
-//! behavior, calling the final runtime `select_slow`, or installing
-//! deoptimization edges. [`HamtSelectCache`] models the HAMT select-site policy
-//! and resolves HAMT values through the representation-dispatching
-//! [`crate::attrs::select::select_slow`] HAMT branch.
+//! shape-guard + constant-offset load contract and resolves uncached shaped
+//! lookups through [`crate::attrs::select::select_slow`] before updating PIC
+//! state, without updating tree-walk behavior, calling the final native runtime
+//! helper, or installing deoptimization edges. [`HamtSelectCache`] models the
+//! HAMT select-site policy and resolves HAMT values through the
+//! representation-dispatching [`crate::attrs::select::select_slow`] HAMT branch.
 //!
 //! Cached shape ids are opaque handles supplied by a future shape table. They
 //! are not fingerprints, not symbol ids, and not pointer provenance.
@@ -17,7 +18,9 @@
 use thiserror::Error;
 
 use super::hamt::HamtAttrs;
-use super::select::{AttrSelectError, AttrSelectOutcome, AttrSelectTarget, select_slow};
+use super::select::{
+    AttrSelectError, AttrSelectOutcome, AttrSelectSource, AttrSelectTarget, select_slow,
+};
 use super::shape::{ShapeHandle, ShapedAttrs};
 use crate::syntax::Symbol;
 use crate::value::Value;
@@ -408,16 +411,19 @@ impl ShapedSelectCache {
     ///
     /// A cached hit compares the runtime attrset's interned shape pointer to the
     /// cached shape pointer, then loads the cached symbol-sorted slot. A miss
-    /// resolves the slot through the shape descriptor, loads the value, and
-    /// records the resolution in the cache unless the key is absent.
+    /// resolves through the representation-dispatching `select_slow` shaped
+    /// branch, then records the returned shape slot in the cache unless the key
+    /// is absent.
     ///
     /// # Errors
     ///
     /// Returns [`ShapedSelectError::KeyChanged`] if the cache is reused for a
     /// different select key, [`ShapedSelectError::CachedSlotOutOfRange`] when a
     /// cached entry references a slot outside the value array,
-    /// [`ShapedSelectError::ResolvedSlotOutOfRange`] when the shape resolves a
-    /// slot outside the value array,
+    /// [`ShapedSelectError::ResolvedSlotOutOfRange`] when the shared slow
+    /// resolver reports a shaped slot outside the value array,
+    /// [`ShapedSelectError::UnexpectedSlowSelectSource`] if the shared resolver
+    /// returns a non-shaped hit source for a shaped target,
     /// [`ShapedSelectError::ShapeSlotChanged`] if a cached shape pointer
     /// resolves to a different slot, or
     /// [`ShapedSelectError::EntryAllocationFailed`] if widening the polymorphic
@@ -443,15 +449,20 @@ impl ShapedSelectCache {
             });
         }
 
-        let Some(slot) = attrs.shape().shape().slot(key) else {
-            return Ok(ShapedSelectOutcome::Missing);
+        let (value, slot) = match select_slow(AttrSelectTarget::Shaped(attrs), key)
+            .map_err(ShapedSelectError::from_slow_select)?
+        {
+            AttrSelectOutcome::Hit {
+                value,
+                source: AttrSelectSource::Shaped { slot },
+            } => (value, slot),
+            AttrSelectOutcome::Hit { source, .. } => {
+                return Err(ShapedSelectError::UnexpectedSlowSelectSource {
+                    select_source: source,
+                });
+            }
+            AttrSelectOutcome::Missing { .. } => return Ok(ShapedSelectOutcome::Missing),
         };
-        let value = attrs
-            .get_slot(slot)
-            .ok_or(ShapedSelectError::ResolvedSlotOutOfRange {
-                slot,
-                len: attrs.len(),
-            })?;
         let update =
             self.record_resolution(ShapedSelectCacheEntry::new(attrs.shape().clone(), slot))?;
         Ok(ShapedSelectOutcome::Hit {
@@ -577,7 +588,7 @@ pub enum ShapedSelectOutcome {
 pub enum ShapedSelectSource {
     /// The shape guard matched and the cached slot was loaded.
     Cached,
-    /// The slot was resolved through the shape descriptor and the cache was updated.
+    /// The slot was resolved through the shared slow resolver and the cache was updated.
     Resolved {
         /// The state-machine update produced by the slow resolution.
         update: InlineCacheUpdate,
@@ -606,13 +617,19 @@ pub enum ShapedSelectError {
         /// The shaped attrset value count.
         len: usize,
     },
-    /// A resolved shape slot did not exist in the shaped attrset's value array.
+    /// A resolved slow-path shape slot did not exist in the shaped attrset's value array.
     #[error("shaped select resolved slot {slot} is out of range for {len} values")]
     ResolvedSlotOutOfRange {
         /// The resolved slot.
         slot: u32,
         /// The shaped attrset value count.
         len: usize,
+    },
+    /// The shared slow resolver returned a non-shaped hit source for a shaped target.
+    #[error("shaped select-cache slow resolver returned unexpected source {select_source:?}")]
+    UnexpectedSlowSelectSource {
+        /// The unexpected hit source.
+        select_source: AttrSelectSource,
     },
     /// A shape pointer resolved to a different slot at the same select site.
     #[error("shaped select-cache shape changed slot from {previous_slot} to {attempted_slot}")]
@@ -628,6 +645,16 @@ pub enum ShapedSelectError {
         /// The requested entry count.
         entries: usize,
     },
+}
+
+impl ShapedSelectError {
+    fn from_slow_select(source: AttrSelectError) -> Self {
+        match source {
+            AttrSelectError::ShapedSlotOutOfRange { slot, len } => {
+                Self::ResolvedSlotOutOfRange { slot, len }
+            }
+        }
+    }
 }
 
 fn validate_same_shaped_slot(cached: u32, attempted: u32) -> Result<(), ShapedSelectError> {
