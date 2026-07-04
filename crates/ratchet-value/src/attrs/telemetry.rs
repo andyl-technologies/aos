@@ -3,10 +3,11 @@
 //! RFC-0007's hidden-class, inline-cache, and HAMT thresholds are meant to be
 //! selected from measurements, not fixed by intuition. This module provides a
 //! byte-neutral telemetry accumulator over the current precursor types: shape
-//! instances, select-cache terminal states and lookup outcomes, update-merge
-//! sizes and override-chain depths, and order-parity check outcomes. It does
-//! not install runtime hooks, mutate evaluator values, serialize counters, or
-//! change observable Nix results.
+//! instances, representation-dispatching slow-select outcomes, select-cache
+//! terminal states and lookup outcomes, update-merge sizes and override-chain
+//! depths, and order-parity check outcomes. It does not install runtime hooks,
+//! mutate evaluator values, serialize counters, or change observable Nix
+//! results.
 
 use std::collections::HashMap;
 
@@ -18,6 +19,7 @@ use super::pic::{
     ShapedSelectCacheState, ShapedSelectOutcome, ShapedSelectSource,
 };
 use super::repr::{AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprReason};
+use super::select::{AttrSelectOutcome, AttrSelectRepr, AttrSelectSource};
 use super::shape::{ShapeFingerprint, ShapeHandle, ShapeId};
 
 /// Aggregates attrset measurement samples for one in-process evaluation.
@@ -27,6 +29,7 @@ pub struct AttrTelemetry {
     inline_cache_states: InlineCacheStateCounts,
     shaped_select_states: InlineCacheStateCounts,
     hamt_select_states: HamtSelectStateCounts,
+    slow_select_lookups: SlowSelectLookupCounts,
     shaped_select_lookups: SelectLookupCounts,
     hamt_select_lookups: SelectLookupCounts,
     update_merges: UpdateMergeStats,
@@ -153,6 +156,27 @@ impl AttrTelemetry {
         state: HamtSelectCacheState,
     ) -> Result<(), AttrTelemetryError> {
         self.hamt_select_states.record(state)
+    }
+
+    /// Records one representation-dispatching slow-select outcome.
+    ///
+    /// This is a value-level measurement hook for the shared slow resolver. It
+    /// does not distinguish active tree-walk callers from select-cache miss
+    /// callers; callers that need that split should keep separate counters
+    /// around this byte-neutral aggregate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrTelemetryError::CounterOverflow`] if a lookup counter
+    /// cannot be incremented.
+    pub fn record_slow_select_lookup(
+        &mut self,
+        outcome: &AttrSelectOutcome,
+    ) -> Result<(), AttrTelemetryError> {
+        let mut counts = self.slow_select_lookups;
+        counts.record(outcome)?;
+        self.slow_select_lookups = counts;
+        Ok(())
     }
 
     /// Records one shaped select-cache lookup outcome.
@@ -324,6 +348,11 @@ impl AttrTelemetry {
         self.order_parity
     }
 
+    /// Returns representation-dispatching slow-select lookup counts.
+    pub const fn slow_select_snapshot(&self) -> SlowSelectLookupCounts {
+        self.slow_select_lookups
+    }
+
     /// Returns the update-merge measurement snapshot.
     ///
     /// # Errors
@@ -463,6 +492,50 @@ pub struct InlineCacheSnapshot {
     pub shaped_select_lookups: SelectLookupCounts,
     /// HAMT select-policy lookup outcomes.
     pub hamt_select_lookups: SelectLookupCounts,
+}
+
+/// Lookup outcome counts for representation-dispatching slow selects.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SlowSelectLookupCounts {
+    /// Successful flat attrset lookups.
+    pub flat_hits: usize,
+    /// Missing-key flat attrset lookups.
+    pub flat_misses: usize,
+    /// Successful HAMT attrset lookups.
+    pub hamt_hits: usize,
+    /// Missing-key HAMT attrset lookups.
+    pub hamt_misses: usize,
+    /// Successful shaped attrset lookups.
+    pub shaped_hits: usize,
+    /// Missing-key shaped attrset lookups.
+    pub shaped_misses: usize,
+}
+
+impl SlowSelectLookupCounts {
+    fn record(&mut self, outcome: &AttrSelectOutcome) -> Result<(), AttrTelemetryError> {
+        match outcome {
+            AttrSelectOutcome::Hit { source, .. } => self.record_hit(hit_source_repr(*source)),
+            AttrSelectOutcome::Missing { repr } => self.record_missing(*repr),
+        }
+    }
+
+    fn record_hit(&mut self, repr: AttrSelectRepr) -> Result<(), AttrTelemetryError> {
+        match repr {
+            AttrSelectRepr::Flat => increment(&mut self.flat_hits, "flat slow-select hits"),
+            AttrSelectRepr::Hamt => increment(&mut self.hamt_hits, "HAMT slow-select hits"),
+            AttrSelectRepr::Shaped => increment(&mut self.shaped_hits, "shaped slow-select hits"),
+        }
+    }
+
+    fn record_missing(&mut self, repr: AttrSelectRepr) -> Result<(), AttrTelemetryError> {
+        match repr {
+            AttrSelectRepr::Flat => increment(&mut self.flat_misses, "flat slow-select misses"),
+            AttrSelectRepr::Hamt => increment(&mut self.hamt_misses, "HAMT slow-select misses"),
+            AttrSelectRepr::Shaped => {
+                increment(&mut self.shaped_misses, "shaped slow-select misses")
+            }
+        }
+    }
 }
 
 /// Lookup outcome counts for select-cache precursors.
@@ -764,6 +837,14 @@ fn increment(counter: &mut usize, name: &'static str) -> Result<(), AttrTelemetr
         .checked_add(1)
         .ok_or(AttrTelemetryError::CounterOverflow { counter: name })?;
     Ok(())
+}
+
+const fn hit_source_repr(source: AttrSelectSource) -> AttrSelectRepr {
+    match source {
+        AttrSelectSource::Flat => AttrSelectRepr::Flat,
+        AttrSelectSource::Hamt => AttrSelectRepr::Hamt,
+        AttrSelectSource::Shaped { .. } => AttrSelectRepr::Shaped,
+    }
 }
 
 fn multiplicity_distribution(

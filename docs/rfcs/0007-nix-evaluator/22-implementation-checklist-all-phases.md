@@ -8139,14 +8139,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       (`S-13`).
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
-      generic/shaped/HAMT select-cache terminal-state histograms and lookup
-      paths, `//` operand-size, result-length-upper-bound, and
-      override-chain-depth distributions, HAMT merge insert/replace totals, and
-      order-parity outcomes. The active tree-walk evaluator now records `//`
-      update-merge samples with syntactic update-chain depth through this
-      telemetry surface and exposes them via `EvalOutcome::attr_telemetry`; this
-      does not replace runtime
-      shape/PIC/HAMT instrumentation, full package-set measurements, C++
+      slow-select hit/miss outcomes by representation, generic/shaped/HAMT
+      select-cache terminal-state histograms and lookup paths, `//`
+      operand-size, result-length-upper-bound, and override-chain-depth
+      distributions, HAMT merge insert/replace totals, and order-parity
+      outcomes. The active tree-walk evaluator now records `//` update-merge
+      samples with syntactic update-chain depth through this telemetry surface
+      and exposes them via `EvalOutcome::attr_telemetry`; this does not replace
+      runtime shape/PIC/HAMT instrumentation, full package-set measurements, C++
       `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**

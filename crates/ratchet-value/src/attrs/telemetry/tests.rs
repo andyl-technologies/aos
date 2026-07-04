@@ -7,6 +7,7 @@ use crate::attrs::pic::{
     ShapedSelectCache,
 };
 use crate::attrs::repr::AttrSetReprPolicy;
+use crate::attrs::select::{AttrSelectOutcome, AttrSelectSource, AttrSelectTarget, select_slow};
 use crate::attrs::shape::{ShapeTable, ShapedAttrs};
 use crate::attrs::{AttrEntry, FlatAttrs};
 use crate::syntax::SymbolTable;
@@ -173,6 +174,64 @@ fn hamt_select_lookup_histogram_tracks_cached_and_resolved_paths() {
     assert_eq!(snapshot.hamt_select_lookups.cached_hits, 1);
     assert_eq!(snapshot.hamt_select_lookups.resolved_hits, 1);
     assert_eq!(snapshot.hamt_select_lookups.resolved_misses, 1);
+}
+
+#[test]
+fn slow_select_histogram_tracks_representation_hits_and_misses() {
+    let (symbols, ids) = symbols(&[b"a", b"missing"]);
+    let flat = FlatAttrs::new(vec![AttrEntry::new(ids[0], Value::int(1))], &symbols)
+        .expect("flat attrs build");
+    let hamt = HamtAttrs::from_flat(&flat, &symbols).expect("HAMT attrs build");
+    let mut table = ShapeTable::new().expect("shape table initializes");
+    let shape = table
+        .intern_construction_order(&[ids[0]], &symbols)
+        .expect("shape interns");
+    let shaped =
+        ShapedAttrs::from_source_order(shape, &[Value::int(1)]).expect("shaped attrs build");
+    let mut telemetry = AttrTelemetry::new();
+
+    for outcome in [
+        select_slow(AttrSelectTarget::Flat(&flat), ids[0]).expect("flat hit records"),
+        select_slow(AttrSelectTarget::Flat(&flat), ids[1]).expect("flat miss records"),
+        select_slow(AttrSelectTarget::Hamt(&hamt), ids[0]).expect("HAMT hit records"),
+        select_slow(AttrSelectTarget::Hamt(&hamt), ids[1]).expect("HAMT miss records"),
+        select_slow(AttrSelectTarget::Shaped(&shaped), ids[0]).expect("shaped hit records"),
+        select_slow(AttrSelectTarget::Shaped(&shaped), ids[1]).expect("shaped miss records"),
+    ] {
+        telemetry
+            .record_slow_select_lookup(&outcome)
+            .expect("slow-select outcome records");
+    }
+
+    assert_eq!(
+        telemetry.slow_select_snapshot(),
+        SlowSelectLookupCounts {
+            flat_hits: 1,
+            flat_misses: 1,
+            hamt_hits: 1,
+            hamt_misses: 1,
+            shaped_hits: 1,
+            shaped_misses: 1,
+        }
+    );
+}
+
+#[test]
+fn slow_select_histogram_reports_counter_overflow() {
+    let mut counts = SlowSelectLookupCounts {
+        flat_hits: usize::MAX,
+        ..SlowSelectLookupCounts::default()
+    };
+
+    assert_eq!(
+        counts.record(&AttrSelectOutcome::Hit {
+            value: Value::int(1),
+            source: AttrSelectSource::Flat,
+        }),
+        Err(AttrTelemetryError::CounterOverflow {
+            counter: "flat slow-select hits",
+        })
+    );
 }
 
 #[test]

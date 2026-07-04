@@ -650,13 +650,14 @@ intuition. The instrumentation plan:
   [compatibility constraints](02-compatibility-constraints.md).
 
 Current precursor: `ratchet-value::attrs::telemetry` provides an in-process,
-byte-neutral accumulator for shape census rows, IC terminal-state and lookup
-histograms, `//` operand-size/result-length-upper-bound/chain-depth histograms,
-HAMT merge insert/replace counts, and order-parity check outcomes. The active
-tree-walk evaluator feeds it from successful `//` update merges with syntactic
-update-chain depth, but shape/PIC/HAMT runtime hooks remain open; it does not
-collect full AOS package-set data and does not replace the `.drv` differential
-acceptance gate.
+byte-neutral accumulator for shape census rows, representation-dispatching
+slow-select hit/miss outcomes by backing representation, IC terminal-state and
+lookup histograms, `//` operand-size/result-length-upper-bound/chain-depth
+histograms, HAMT merge insert/replace counts, and order-parity check outcomes.
+The active tree-walk evaluator feeds it from successful `//` update merges with
+syntactic update-chain depth, but shape/PIC/HAMT runtime hooks remain open; it
+does not collect full AOS package-set data and does not replace the `.drv`
+differential acceptance gate.
 
 The tuning surface exposed by this subsystem is therefore: the polymorphic cap
 `N`; the `Flat`→`Hamt` size threshold and chain-depth trigger; whether the
@@ -936,8 +937,9 @@ harness, never cut for scope.
 
 - [ ] Shape census, IC terminal-state histogram, `//` size + chain-depth distribution, order-parity harness ([§8](#8-measure-first-validation-and-tuning-surface)) — P5; tuning surface (`N`, `Flat`↔`Hamt` thresholds) cannot alter produced bytes.
 - [x] Current in-process telemetry precursor: `ratchet-value::attrs::telemetry`
-      exposes byte-neutral counters/snapshots for shape census, generic/shaped/HAMT
-      select-cache state histograms and lookup paths, `//` operand-size,
+      exposes byte-neutral counters/snapshots for shape census, slow-select
+      hit/miss outcomes by representation, generic/shaped/HAMT select-cache
+      state histograms and lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
       tree-walk evaluator now feeds this surface from `//` update merges with
