@@ -10,6 +10,8 @@
 //! ```text
 //! ratchet_runtime_ffi::env
 //!   aos_env_get success-path wrapper for the frozen `(env, slot) -> Value` ABI
+//! ratchet_runtime_ffi::safety
+//!   unsafe-boundary manifest and source-token allowlist
 //! ```
 //!
 //! The wrappers here are not yet sufficient for final JIT registration. They
@@ -20,3 +22,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod env;
+pub mod safety;
+
+pub use safety::{
+    RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,
+    RuntimeFfiInnateUnsafeOperation, RuntimeFfiUnsafeDiscipline, runtime_ffi_unsafe_discipline,
+};

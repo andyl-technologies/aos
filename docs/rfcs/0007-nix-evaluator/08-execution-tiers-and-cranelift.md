@@ -1639,7 +1639,9 @@ harness, never cut for scope.
       returns the copied `Value` by value. Metadata exposes the wrapper's typed
       function pointer, process-local address, frozen ABI signature, and the
       remaining `TrapTransferUnimplemented` blocker. Tests call the wrapper and
-      metadata function pointer against live frames. This is only the
+      metadata function pointer against live frames. The crate also records its
+      unsafe-boundary manifest and tests an allowlist/count for every current
+      `unsafe`, `extern`, and `no_mangle` source token. This is only the
       success-path C ABI body: invalid pointers, borrow conflicts, or slot
       errors abort until trap transfer exists, the strict native-export plan does
       not consume the wrapper yet, and `JITBuilder::symbol` registration/native
