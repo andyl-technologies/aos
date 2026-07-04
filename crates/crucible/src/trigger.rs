@@ -3742,6 +3742,21 @@ impl RecordedAssertionLog {
         }
     }
 
+    /// Builds a recorded log and appends one terminal quantum evaluation boundary.
+    #[must_use]
+    pub fn from_entries_with_quantum_evaluation_boundary(
+        mut entries: Vec<SchedulerEventLogEntry>,
+        sequence: u64,
+        at: VirtualTime,
+    ) -> Self {
+        entries.push(SchedulerEventLogEntry::evaluation_boundary(
+            sequence,
+            at,
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ));
+        Self::from_entries(entries)
+    }
+
     /// Builds a recorded log from retained scheduler event-log segments.
     ///
     /// Each segment is folded in order with the same canonical segment bytes and
