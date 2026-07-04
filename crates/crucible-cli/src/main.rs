@@ -33,8 +33,9 @@ use crucible_api::{
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::{
-    CommandReply, Engine, LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind,
-    QueryResult, SessionCommand, SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, Engine, LiveSnapshot,
+    LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint, MemoryDagStore,
         Schedule, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
@@ -56,6 +57,7 @@ const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
+const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
     "gate:layer0-determinism",
     "gate:content-address",
@@ -986,6 +988,7 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
                 SessionCommandKind::Start,
                 SessionCommandKind::StepQuantum,
                 SessionCommandKind::StepDuration,
+                SessionCommandKind::SetBreakpoint,
                 SessionCommandKind::CreateSavepoint,
                 SessionCommandKind::Stop,
                 SessionCommandKind::Query,
@@ -4684,11 +4687,12 @@ fn run_local_double_save_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-double-save",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| SaveRecordingLifecycleLoop::new(),
-    );
+    let control_plane = LifecycleControlPlane::new("crucible-cli-double-save", Vec::new(), {
+        let emit_property_fixture = matches!(save_plan.at, SaveAtArg::Property);
+        move |_scenario: &crucible::ScenarioDef, _seed| {
+            SaveRecordingLifecycleLoop::new(emit_property_fixture)
+        }
+    });
     let client = InProcessLifecycleClient::new(control_plane);
     let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
@@ -4696,14 +4700,57 @@ fn run_local_double_save_workflow(
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SaveRecordingLifecycleLoop {
-    inner: QuiescentLifecycleLoop,
+    emit_property_fixture: bool,
+    property_fixture_emitted: bool,
+    quanta: u64,
+    event_log_events: u64,
 }
 
 impl SaveRecordingLifecycleLoop {
-    fn new() -> Self {
+    fn new(emit_property_fixture: bool) -> Self {
         Self {
-            inner: QuiescentLifecycleLoop::new(),
+            emit_property_fixture,
+            property_fixture_emitted: false,
+            quanta: 0,
+            event_log_events: 0,
         }
+    }
+
+    fn diagnostic_entry(
+        &self,
+        frontier: crucible::VirtualTime,
+    ) -> crucible::SchedulerEventLogEntry {
+        let mut details = BTreeMap::new();
+        details.insert(
+            String::from("quantum"),
+            crucible::EventAttributeValue::U64(self.quanta),
+        );
+        crucible::SchedulerEventLogEntry::diagnostic(
+            self.event_log_events,
+            frontier,
+            crucible::EventDiagnosticPayload::new(
+                "crucible.cli.save-lifecycle",
+                crucible::EventLevel::Info,
+                details,
+            ),
+        )
+    }
+
+    fn property_fixture_entry(
+        &self,
+        frontier: crucible::VirtualTime,
+    ) -> Option<crucible::SchedulerEventLogEntry> {
+        if !self.emit_property_fixture {
+            return None;
+        }
+        Some(
+            crucible::SchedulerEventLogEntry::assertion_state_observation(
+                self.event_log_events,
+                frontier,
+                crucible::AssertionId::from_name(SAVE_DOUBLE_ASSERTION_VIOLATION),
+                crucible::AssertionPhase::Violated,
+            ),
+        )
     }
 }
 
@@ -4713,28 +4760,65 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
         request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
         let previous = request.configuration.clone();
-        let mut outcome = self.inner.drive_quantum(request)?;
+        self.quanta = self.quanta.saturating_add(1);
+        let frontier = crucible::VirtualTime { ticks: self.quanta };
+        let mut event_log_entries = vec![self.diagnostic_entry(frontier)];
+        self.event_log_events = self.event_log_events.saturating_add(1);
+        if !self.property_fixture_emitted {
+            if let Some(entry) = self.property_fixture_entry(frontier) {
+                event_log_entries.push(entry);
+                self.event_log_events = self.event_log_events.saturating_add(1);
+            }
+            self.property_fixture_emitted = true;
+        }
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-            at: outcome.frontier,
+            at: frontier,
             order: Vec::new(),
         });
-        outcome.configuration =
-            crucible::try_step(&previous, decision.clone()).map_err(|error| {
-                crucible::SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "save lifecycle double could not record virtual-time decision: {error}"
-                    ),
-                }
-            })?;
-        outcome.decisions = vec![decision];
-        Ok(outcome)
+        let configuration = crucible::try_step(&previous, decision.clone()).map_err(|error| {
+            crucible::SchedulerError::BoundaryViolation {
+                message: format!(
+                    "save lifecycle double could not record virtual-time decision: {error}"
+                ),
+            }
+        })?;
+        Ok(crucible::QuantumOutcome {
+            configuration,
+            frontier,
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: vec![decision],
+            event_log_entries,
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.event_log_events,
+            ),
+            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+        })
     }
 
     fn sample_fingerprint(
         &mut self,
         node: crucible::NodeId,
     ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
-        self.inner.sample_fingerprint(node)
+        let material = format!(
+            "node={}\nquanta={}\nevent-log-events={}\n",
+            node.name, self.quanta, self.event_log_events
+        );
+        Ok(crucible::FingerprintSample {
+            node,
+            at: crucible::VirtualTime { ticks: self.quanta },
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_canonical_material(
+                    "crucible.lifecycle.save-fingerprint.v1",
+                    &material,
+                ),
+            },
+        })
     }
 }
 
@@ -6532,6 +6616,9 @@ where
 
     let boundary = match save_plan.at {
         SaveAtArg::Quiescence => {
+            let before =
+                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
+                    .await?;
             send_save_workflow_command(
                 client,
                 created.session,
@@ -6543,7 +6630,13 @@ where
                 &mut state_updates,
             )
             .await?;
-            wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused).await?
+            wait_for_save_workflow_advanced_paused(
+                client,
+                created.session,
+                &before,
+                "paused quiescence save boundary",
+            )
+            .await?
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
@@ -6552,7 +6645,7 @@ where
             let summary =
                 wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
                     .await?;
-            if summary.frontier.ticks < budget {
+            let boundary = if summary.frontier.ticks < budget {
                 send_save_workflow_command(
                     client,
                     created.session,
@@ -6566,10 +6659,20 @@ where
                     &mut state_updates,
                 )
                 .await?;
-            }
-            let boundary =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
+                wait_for_save_workflow_summary(
+                    client,
+                    created.session,
+                    |candidate| {
+                        candidate.state == LiveStateKind::Paused
+                            && candidate.frontier.ticks >= budget
+                            && candidate.quanta_stepped > summary.quanta_stepped
+                    },
+                    "paused requested virtual-time save boundary",
+                )
+                .await?
+            } else {
+                summary
+            };
             if boundary.frontier.ticks != budget {
                 return Err(CliError::Identity(format!(
                     "save virtual-time boundary reached {}, expected {}",
@@ -6579,10 +6682,15 @@ where
             boundary
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            return Err(backend_error(format!(
-                "save --at {} selector execution requires selector-specific breakpoint proof tracked by T-CLI-9",
-                save_plan.at.label()
-            )));
+            run_save_selector_to_boundary(
+                client,
+                created.session,
+                save_plan,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+            )
+            .await?
         }
     };
 
@@ -6710,6 +6818,151 @@ where
     })
 }
 
+async fn run_save_selector_to_boundary<C>(
+    client: &C,
+    session: SessionRef,
+    save_plan: &SaveInvocationPlan,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let Some(selector) = save_plan.selector.as_ref() else {
+        return Err(save_backend_error(format!(
+            "save --at {} requires a selector proof",
+            save_plan.at.label()
+        )));
+    };
+    let spec = save_selector_breakpoint_spec(selector)?;
+    let response = send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::SetBreakpoint {
+            spec,
+            reply: CommandReply::discard(),
+        },
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let breakpoint_id = response.breakpoint_id.ok_or_else(|| {
+        save_backend_error("save selector breakpoint command returned no breakpoint id")
+    })?;
+    let before = wait_for_save_workflow_state(client, session, LiveStateKind::Paused).await?;
+    send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::Step {
+            mode: StepMode::Quantum,
+        },
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let boundary = wait_for_save_workflow_advanced_paused(
+        client,
+        session,
+        &before,
+        "paused save selector breakpoint boundary",
+    )
+    .await?;
+    let firings_response = send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::query_breakpoint_firings(),
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let firings = match firings_response.query_result {
+        Some(QueryResult::BreakpointFirings(firings)) => firings,
+        Some(other) => {
+            return Err(save_backend_error(format!(
+                "save selector proof query returned unexpected payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(save_backend_error(
+                "save selector proof query returned no breakpoint firing payload",
+            ));
+        }
+    };
+    validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)?;
+    Ok(boundary)
+}
+
+fn save_selector_breakpoint_spec(selector: &SaveAtSelector) -> Result<BreakpointSpec, CliError> {
+    match selector {
+        SaveAtSelector::PropertyViolation { assertion: _ } => Ok(BreakpointSpec::suspend_once(
+            save_selector_predicate(selector)?,
+        )),
+        SaveAtSelector::Marker { .. } => Err(backend_error(
+            "save --at marker selector execution requires guest-marker breakpoint proof tracked by T-CLI-9",
+        )),
+    }
+}
+
+fn save_selector_predicate(selector: &SaveAtSelector) -> Result<crucible::Predicate, CliError> {
+    match selector {
+        SaveAtSelector::PropertyViolation { assertion } => {
+            Ok(crucible::Predicate::assertion_state(
+                crucible::AssertionId::from_name(assertion.clone()),
+                crucible::AssertionPhase::Violated,
+            ))
+        }
+        SaveAtSelector::Marker { .. } => Err(backend_error(
+            "save --at marker selector execution requires guest-marker breakpoint proof tracked by T-CLI-9",
+        )),
+    }
+}
+
+fn validate_save_selector_firing(
+    selector: &SaveAtSelector,
+    breakpoint_id: BreakpointId,
+    boundary: &crucible_api::SessionSummary,
+    firings: &[crucible_session::BreakpointFiring],
+) -> Result<(), CliError> {
+    let expected = save_selector_predicate(selector)?;
+    let firing = firings
+        .iter()
+        .find(|firing| firing.id == breakpoint_id)
+        .ok_or_else(|| {
+            save_backend_error(format!(
+                "save selector breakpoint {breakpoint_id} did not fire before savepoint"
+            ))
+        })?;
+    if firing.predicate != expected {
+        return Err(CliError::Identity(format!(
+            "save selector breakpoint predicate {:?} did not match expected {:?}",
+            firing.predicate, expected
+        )));
+    }
+    if firing.disposition != BreakpointDisposition::Suspend {
+        return Err(CliError::Identity(format!(
+            "save selector breakpoint used {:?} disposition instead of suspend",
+            firing.disposition
+        )));
+    }
+    if firing.frontier != boundary.frontier {
+        return Err(CliError::Identity(format!(
+            "save selector breakpoint fired at {}, but boundary is {}",
+            firing.frontier.ticks, boundary.frontier.ticks
+        )));
+    }
+    if firing.quanta != boundary.quanta_stepped {
+        return Err(CliError::Identity(format!(
+            "save selector breakpoint fired at quantum {}, but boundary is {}",
+            firing.quanta, boundary.quanta_stepped
+        )));
+    }
+    Ok(())
+}
+
 async fn send_save_workflow_command<C>(
     client: &C,
     session: SessionRef,
@@ -6752,6 +7005,47 @@ async fn wait_for_save_workflow_state<C>(
 where
     C: ControlClient + Sync,
 {
+    let description = format!("{expected:?}");
+    wait_for_save_workflow_summary(
+        client,
+        session,
+        |summary| summary.state == expected,
+        &description,
+    )
+    .await
+}
+
+async fn wait_for_save_workflow_advanced_paused<C>(
+    client: &C,
+    session: SessionRef,
+    before: &crucible_api::SessionSummary,
+    description: &str,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    wait_for_save_workflow_summary(
+        client,
+        session,
+        |summary| {
+            summary.state == LiveStateKind::Paused
+                && summary.frontier.ticks > before.frontier.ticks
+                && summary.quanta_stepped > before.quanta_stepped
+        },
+        description,
+    )
+    .await
+}
+
+async fn wait_for_save_workflow_summary<C>(
+    client: &C,
+    session: SessionRef,
+    mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
+    description: &str,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
     for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
         let sessions = client
             .list_sessions()
@@ -6764,17 +7058,16 @@ where
         else {
             return Err(save_backend_error("save workflow session disappeared"));
         };
-        if summary.state == expected {
+        if accepts(summary) {
             return Ok(summary.clone());
         }
-        if expected != LiveStateKind::Stopped && summary.state == LiveStateKind::Stopped {
+        if summary.state == LiveStateKind::Stopped {
             return Err(CliError::Outcome(status_from_outcome(summary.outcome)));
         }
         tokio::task::yield_now().await;
     }
     Err(save_backend_error(format!(
-        "save workflow did not reach {:?}",
-        expected
+        "save workflow did not reach {description}"
     )))
 }
 
@@ -10779,6 +11072,36 @@ mod tests {
         Ok(path)
     }
 
+    fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let fixture = ::crucible::happy_path_scenario()?;
+        let properties = ::crucible::Properties::from_assertions_for_world(
+            fixture.scenario.world(),
+            vec![
+                property_selector_assertion(SAVE_DOUBLE_ASSERTION_VIOLATION),
+                property_selector_assertion("split-active"),
+            ],
+        )?;
+        let form = ::crucible::ScenarioDefForm::from_components(
+            fixture.scenario.world(),
+            fixture.scenario.plan(),
+            &properties,
+            fixture.scenario.seed(),
+        )?;
+        let path = temp.path().join("property-selector-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
+        ::crucible::AssertionDef {
+            id: ::crucible::AssertionId::from_name(name),
+            message: format!("{name} test selector"),
+            property: ::crucible::Property::Sometimes {
+                predicate: ::crucible::Predicate::quiescent(),
+            },
+        }
+    }
+
     fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Error>> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
@@ -12401,6 +12724,7 @@ mod tests {
         assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
         assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
 
+        let property_out = temp.path().join("property.crucible-savepoint");
         let property_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
@@ -12416,16 +12740,41 @@ mod tests {
             String::from("no-split-brain"),
             String::from("--label"),
             String::from("property-stop"),
+            String::from("--out"),
+            property_out.display().to_string(),
         ]);
-        let error = dispatch(&property_cli)
-            .expect_err("property save execution should remain blocked until selector proof lands");
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(
-            error
-                .to_string()
-                .contains("selector-specific breakpoint proof")
-        );
+        dispatch(&property_cli)?;
+        let property_handle = fs::read_to_string(property_out)?;
+        assert!(property_handle.contains("label\tproperty-stop\n"));
+        assert!(property_handle.contains("at\tproperty\n"));
+        assert!(property_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let property_selector_scenario = write_property_selector_scenario(&temp)?;
+        let wrong_property_out = temp.path().join("wrong-property.crucible-savepoint");
+        let wrong_property_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("15"),
+            String::from("save"),
+            property_selector_scenario.display().to_string(),
+            String::from("--at"),
+            String::from("property"),
+            String::from("--property"),
+            String::from("split-active"),
+            String::from("--label"),
+            String::from("wrong-property-stop"),
+            String::from("--out"),
+            wrong_property_out.display().to_string(),
+        ]);
+        let error = dispatch(&wrong_property_cli)
+            .expect_err("property save must not synthesize the requested selector");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("did not fire"));
+        assert!(!wrong_property_out.exists());
 
         let marker_cli = Cli::parse_from([
             String::from("crucible"),
@@ -12447,11 +12796,7 @@ mod tests {
             .expect_err("marker save execution should remain blocked until selector proof lands");
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
-        assert!(
-            error
-                .to_string()
-                .contains("selector-specific breakpoint proof")
-        );
+        assert!(error.to_string().contains("guest-marker breakpoint proof"));
 
         let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
         let qemu_cli = Cli::parse_from([
@@ -12504,6 +12849,128 @@ mod tests {
         assert!(error.to_string().contains("T-CLI-9"));
 
         Ok(())
+    }
+
+    #[test]
+    fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence() -> Result<(), Box<dyn Error>> {
+        let selector = SaveAtSelector::PropertyViolation {
+            assertion: String::from(SAVE_DOUBLE_ASSERTION_VIOLATION),
+        };
+        let boundary = save_selector_test_boundary(2, 2);
+        let predicate = save_selector_predicate(&selector)?;
+        let valid_firing =
+            save_selector_test_firing(7, predicate.clone(), BreakpointDisposition::Suspend, 2, 2);
+
+        validate_save_selector_firing(&selector, 7, &boundary, &[valid_firing.clone()])?;
+
+        let error = validate_save_selector_firing(&selector, 7, &boundary, &[])
+            .expect_err("missing breakpoint firing must fail");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("did not fire"));
+
+        let wrong_predicate = crucible::Predicate::assertion_state(
+            crucible::AssertionId::from_name("split-active"),
+            crucible::AssertionPhase::Violated,
+        );
+        let error = validate_save_selector_firing(
+            &selector,
+            7,
+            &boundary,
+            &[save_selector_test_firing(
+                7,
+                wrong_predicate,
+                BreakpointDisposition::Suspend,
+                2,
+                2,
+            )],
+        )
+        .expect_err("wrong predicate must fail");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("predicate"));
+
+        let error = validate_save_selector_firing(
+            &selector,
+            7,
+            &boundary,
+            &[save_selector_test_firing(
+                7,
+                predicate.clone(),
+                BreakpointDisposition::Trace,
+                2,
+                2,
+            )],
+        )
+        .expect_err("wrong breakpoint disposition must fail");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("disposition"));
+
+        let error = validate_save_selector_firing(
+            &selector,
+            7,
+            &boundary,
+            &[save_selector_test_firing(
+                7,
+                predicate.clone(),
+                BreakpointDisposition::Suspend,
+                1,
+                2,
+            )],
+        )
+        .expect_err("frontier mismatch must fail");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("boundary"));
+
+        let error = validate_save_selector_firing(
+            &selector,
+            7,
+            &boundary,
+            &[save_selector_test_firing(
+                7,
+                predicate,
+                BreakpointDisposition::Suspend,
+                2,
+                1,
+            )],
+        )
+        .expect_err("quantum mismatch must fail");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("quantum"));
+
+        Ok(())
+    }
+
+    fn save_selector_test_boundary(frontier: u64, quanta: u64) -> crucible_api::SessionSummary {
+        crucible_api::SessionSummary {
+            session: SessionRef::new(
+                crucible_api::SessionId::new(1),
+                1,
+                crucible::Seed::from_u64(1),
+            ),
+            state: LiveStateKind::Paused,
+            outcome: None,
+            terminal_savepoint: None,
+            frontier: crucible::VirtualTime { ticks: frontier },
+            event_log_len: 0,
+            quanta_stepped: quanta,
+        }
+    }
+
+    fn save_selector_test_firing(
+        id: BreakpointId,
+        predicate: crucible::Predicate,
+        disposition: BreakpointDisposition,
+        frontier: u64,
+        quanta: u64,
+    ) -> crucible_session::BreakpointFiring {
+        crucible_session::BreakpointFiring {
+            sequence: 0,
+            id,
+            predicate,
+            disposition,
+            frontier: crucible::VirtualTime { ticks: frontier },
+            quanta,
+            scheduler_controls: Vec::new(),
+        }
     }
 
     #[test]
