@@ -7625,6 +7625,26 @@ nurseries build on the bump arena.
       install the final scheduler, validate scheduler exhaustion, attach a real
       park token to waiter registration, replace `EvalThunk` storage, install
       the final lock-free waiter list, or satisfy the loom/Miri/TSan audit.
+- [x] Current generic park-readiness wait bridge:
+      `ratchet-oracle::eval::claim_or_poll_ready_then_wait` consumes
+      scheduler-backed `ParallelReadyWorkPoll` values before a contending worker
+      can enter the blocking wait-cell path. Local and stolen polls feed the
+      existing wait-or-steal loop one ready task at a time; idle polls must
+      validate their `ParallelReadyWorkParkPreflight` for the zero-based ready
+      worker before returning `Idle` to
+      `ParallelThunkWaitCell::claim_or_try_run_ready_then_wait`. The returned
+      `ParallelReadyWorkWait` exposes the validated
+      `ParallelReadyWorkParkReadiness` only when waiter registration actually
+      happened, and intentionally drops it when terminal publication wins the
+      race between idle preflight and registration. Tests cover registered
+      waiters carrying readiness, wrong-worker and non-idle preflight rejection
+      before waiter registration, ready-work hook error propagation before
+      waiter registration, and terminal publication before registration
+      producing no park-readiness handoff. This is still a typed handoff over
+      the blocking wait-cell precursor: it does not reserve a live scheduler
+      park token, prevent future ready-work enqueueing, prove live scheduler
+      exhaustion, replace the blocking waiter path with a lock-free waiter list,
+      or satisfy the loom/Miri/TSan audit.
 - [x] Current ready-work park-readiness validation precursor:
       `ParallelReadyWorkParkPreflight::validate_idle_for_worker` turns an idle
       ready-work snapshot into a typed `ParallelReadyWorkParkReadiness` only

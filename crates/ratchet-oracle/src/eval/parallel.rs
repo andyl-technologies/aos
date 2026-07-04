@@ -26,7 +26,11 @@ use thiserror::Error;
 use super::parallel_chase_lev::{
     ParallelChaseLevTaskSource, ParallelChaseLevWorkerQueue, parallel_chase_lev_worker_queues,
 };
-use super::thunk_wait::ParallelThunkReadyWork;
+use super::thunk_cas::ParallelThunkWorkerId;
+use super::thunk_wait::{
+    ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,
+    ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWorkWait,
+};
 
 /// Builds the deterministic round-robin seed plan for top-level tasks.
 ///
@@ -312,6 +316,74 @@ where
     ParallelChaseLevReadyWorkQueues {
         queues: parallel_chase_lev_worker_queues(tasks, worker_count),
     }
+}
+
+/// Claims a thunk or polls scheduler-backed ready work before waiting.
+///
+/// This bridge keeps [`ParallelThunkWaitCell`] scheduler-agnostic while letting
+/// callers preserve the idle park-preflight evidence from
+/// [`ParallelReadyWorkPoll`]. Local or stolen polls feed the wait-cell
+/// wait-or-steal loop one task at a time. An idle poll must validate its
+/// [`ParallelReadyWorkParkPreflight`] for `ready_worker_id` before the bridge
+/// reports [`ParallelThunkReadyWork::Idle`] to the wait cell, so any actual
+/// waiter registration can be associated with a checked
+/// [`ParallelReadyWorkParkReadiness`] value.
+///
+/// The readiness is returned only when the wait-cell path really registered a
+/// waiter. If the owner publishes a terminal state between the idle preflight
+/// and the waiter-registration attempt, the terminal result is returned without
+/// park readiness because no parking handoff occurred.
+///
+/// # Errors
+///
+/// Returns [`ParallelReadyWorkWaitError::Wait`] if the wait cell rejects a
+/// state transition, [`ParallelReadyWorkWaitError::ReadyWork`] if
+/// `poll_ready_work` fails, or
+/// [`ParallelReadyWorkWaitError::ParkReadiness`] if an idle poll carries a
+/// non-idle or wrong-worker preflight snapshot.
+///
+/// # Panics
+///
+/// Panics if `poll_ready_work` panics. Queue adapters may also panic if the
+/// caller-supplied ready-work runner panics after a task has been removed from
+/// its queue.
+pub fn claim_or_poll_ready_then_wait<'a, R, E>(
+    cell: &'a ParallelThunkWaitCell,
+    thunk_worker: ParallelThunkWorkerId,
+    ready_worker_id: usize,
+    mut poll_ready_work: impl FnMut() -> Result<ParallelReadyWorkPoll<R>, E>,
+) -> Result<ParallelReadyWorkWait<'a>, ParallelReadyWorkWaitError<E>> {
+    let mut park_readiness = None;
+    let work_wait = cell
+        .claim_or_try_run_ready_then_wait(thunk_worker, || {
+            let poll = poll_ready_work().map_err(ParallelReadyWorkWaitError::ReadyWork)?;
+            match &poll {
+                ParallelReadyWorkPoll::RanLocal(_) | ParallelReadyWorkPoll::StolePeer(_) => {
+                    park_readiness = None;
+                }
+                ParallelReadyWorkPoll::Idle(preflight) => {
+                    park_readiness = Some(
+                        preflight
+                            .validate_idle_for_worker(ready_worker_id)
+                            .map_err(ParallelReadyWorkWaitError::ParkReadiness)?,
+                    );
+                }
+            }
+            Ok(poll.ready_work())
+        })
+        .map_err(|error| match error {
+            ParallelThunkReadyWorkWaitError::Wait(error) => ParallelReadyWorkWaitError::Wait(error),
+            ParallelThunkReadyWorkWaitError::ReadyWork(error) => error,
+        })?;
+
+    if !work_wait.report().wait_registered() {
+        park_readiness = None;
+    }
+
+    Ok(ParallelReadyWorkWait {
+        work_wait,
+        park_readiness,
+    })
 }
 
 /// Seeded owner-local Chase-Lev ready-work queues.
@@ -714,6 +786,55 @@ impl<R> ParallelReadyWorkPoll<R> {
             Self::Idle(preflight) => Some(preflight),
         }
     }
+}
+
+/// Result of a wait-cell operation driven by scheduler-backed ready-work polls.
+#[must_use = "a claimed parallel thunk must be published as forced or failed"]
+#[derive(Debug)]
+pub struct ParallelReadyWorkWait<'a> {
+    work_wait: ParallelThunkWorkWait<'a>,
+    park_readiness: Option<ParallelReadyWorkParkReadiness>,
+}
+
+impl<'a> ParallelReadyWorkWait<'a> {
+    /// Returns the claim, terminal state, or self-cycle classification.
+    pub const fn result(&self) -> &ParallelThunkWait<'a> {
+        self.work_wait.result()
+    }
+
+    /// Returns the wait-or-steal contention counters from the wait cell.
+    pub const fn contention_report(&self) -> ParallelThunkContentionReport {
+        self.work_wait.report()
+    }
+
+    /// Returns the validated idle preflight used for waiter registration.
+    pub const fn park_readiness(&self) -> Option<&ParallelReadyWorkParkReadiness> {
+        self.park_readiness.as_ref()
+    }
+
+    /// Consumes the outcome into the wait-cell result and optional readiness.
+    pub fn into_parts(
+        self,
+    ) -> (
+        ParallelThunkWorkWait<'a>,
+        Option<ParallelReadyWorkParkReadiness>,
+    ) {
+        (self.work_wait, self.park_readiness)
+    }
+}
+
+/// A failure while bridging scheduler-backed ready-work polls into a wait cell.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ParallelReadyWorkWaitError<E> {
+    /// The underlying wait-cell operation failed.
+    #[error(transparent)]
+    Wait(#[from] ParallelThunkWaitError),
+    /// The ready-work poll failed before the wait-cell path could continue.
+    #[error("parallel ready-work poll failed")]
+    ReadyWork(E),
+    /// An idle ready-work poll did not carry a valid park-preflight snapshot.
+    #[error(transparent)]
+    ParkReadiness(#[from] ParallelReadyWorkParkReadinessError),
 }
 
 /// The result produced by one ready-work task.
@@ -1223,6 +1344,15 @@ impl fmt::Display for ParallelTopLevelSeedPlan {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            mpsc::{self, RecvTimeoutError},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
     use super::super::thunk_cas::{ParallelThunkTerminalState, ParallelThunkWorkerId};
     use super::super::thunk_wait::{ParallelThunkWait, ParallelThunkWaitCell};
     use super::*;
@@ -1233,6 +1363,22 @@ mod tests {
 
     fn worker(raw: u64) -> ParallelThunkWorkerId {
         ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+    }
+
+    fn wait_until_registered(cell: &ParallelThunkWaitCell, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if cell
+                .stats()
+                .expect("stats are readable")
+                .wait_registrations()
+                >= expected
+            {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("timed out waiting for {expected} waiter registration(s)");
     }
 
     #[test]
@@ -2025,6 +2171,209 @@ mod tests {
         assert_eq!(report.local_work_runs(), 1);
         assert_eq!(report.stolen_work_runs(), 1);
         assert!(!report.wait_registered());
+    }
+
+    #[test]
+    fn ready_work_wait_bridge_records_park_readiness_when_waiter_registers() {
+        let cell = Arc::new(ParallelThunkWaitCell::new());
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let waiter_cell = Arc::clone(&cell);
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let waiter_thread = thread::spawn(move || {
+            let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+            let outcome = claim_or_poll_ready_then_wait(&waiter_cell, worker(2), 1, || {
+                queues.run_next_or_park_preflight(1, |value| value)
+            })
+            .expect("ready-work wait bridge succeeds");
+            let terminal_state = match outcome.result() {
+                ParallelThunkWait::Terminal(terminal_state) => *terminal_state,
+                _ => panic!("waiter should observe a terminal state"),
+            };
+            result_tx
+                .send((
+                    terminal_state,
+                    outcome.contention_report(),
+                    outcome.park_readiness().cloned(),
+                ))
+                .expect("result send succeeds");
+        });
+
+        wait_until_registered(&cell, 1);
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        owner_guard
+            .publish_forced()
+            .expect("owner publishes forced");
+        let (terminal_state, report, park_readiness) = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter wakes");
+        let park_readiness = park_readiness.expect("registered waiter carries park readiness");
+
+        assert_eq!(terminal_state, ParallelThunkTerminalState::Forced);
+        assert_eq!(report.local_work_runs(), 0);
+        assert_eq!(report.stolen_work_runs(), 0);
+        assert!(report.wait_registered());
+        assert_eq!(park_readiness.observing_worker(), 1);
+        assert_eq!(park_readiness.worker_count(), 2);
+        assert_eq!(park_readiness.task_count(), 0);
+        assert_eq!(park_readiness.ready_task_count(), 0);
+        assert_eq!(park_readiness.queue_lengths(), &[0, 0]);
+        waiter_thread.join().expect("waiter joins");
+    }
+
+    #[test]
+    fn ready_work_wait_bridge_rejects_mismatched_park_preflight_before_wait_registration() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+
+        let error = claim_or_poll_ready_then_wait(&cell, worker(2), 0, || {
+            queues.run_next_or_park_preflight(1, |value| value)
+        })
+        .expect_err("wrong-worker idle preflight is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkWaitError::ParkReadiness(
+                ParallelReadyWorkParkReadinessError::ObservingWorkerMismatch {
+                    expected_worker: 0,
+                    observed_worker: 1,
+                },
+            )
+        );
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            0
+        );
+
+        owner_guard
+            .publish_forced()
+            .expect("owner remains publishable after preflight rejection");
+    }
+
+    #[test]
+    fn ready_work_wait_bridge_rejects_non_idle_preflight_before_wait_registration() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+
+        let error = claim_or_poll_ready_then_wait(&cell, worker(2), 1, || {
+            Ok::<_, ParallelReadyWorkError>(ParallelReadyWorkPoll::<()>::Idle(
+                ParallelReadyWorkParkPreflight {
+                    observing_worker: 1,
+                    worker_count: 2,
+                    task_count: 1,
+                    queue_lengths: vec![1, 0],
+                    ready_task_count: 1,
+                },
+            ))
+        })
+        .expect_err("non-idle preflight is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkWaitError::ParkReadiness(
+                ParallelReadyWorkParkReadinessError::ReadyWorkRemaining {
+                    ready_task_count: 1,
+                },
+            )
+        );
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            0
+        );
+
+        owner_guard
+            .publish_forced()
+            .expect("owner remains publishable after preflight rejection");
+    }
+
+    #[test]
+    fn ready_work_wait_bridge_ready_work_error_returns_before_wait_registration() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+
+        let error =
+            claim_or_poll_ready_then_wait::<(), _>(&cell, worker(2), 1, || Err("queue failed"))
+                .expect_err("ready-work errors are propagated");
+
+        assert_eq!(error, ParallelReadyWorkWaitError::ReadyWork("queue failed"));
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            0
+        );
+
+        owner_guard
+            .publish_forced()
+            .expect("owner remains publishable after ready-work error");
+    }
+
+    #[test]
+    fn ready_work_wait_bridge_drops_park_readiness_when_terminal_wins_race() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let mut owner_guard = Some(owner_guard);
+        let queues = parallel_ready_work_queues(std::iter::empty::<usize>(), workers(2));
+
+        let outcome = claim_or_poll_ready_then_wait(&cell, worker(2), 1, || {
+            let poll = queues
+                .run_next_or_park_preflight(1, |value| value)
+                .expect("idle preflight succeeds");
+            owner_guard
+                .take()
+                .expect("owner guard remains available")
+                .publish_forced()
+                .expect("owner publishes before wait registration");
+            Ok::<_, ParallelReadyWorkError>(poll)
+        })
+        .expect("ready-work wait bridge observes terminal");
+
+        assert!(matches!(
+            outcome.result(),
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert!(!outcome.contention_report().wait_registered());
+        assert!(outcome.park_readiness().is_none());
+        assert_eq!(
+            cell.stats()
+                .expect("stats are readable")
+                .wait_registrations(),
+            0
+        );
     }
 
     #[test]

@@ -825,6 +825,25 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       future ready-work enqueueing, does not prove live evaluator scheduler
       exhaustion, does not replace the blocking waiter path with a lock-free
       waiter list, and does not satisfy the loom/Miri/TSan gate (§3.3/§3.6).
+- [x] Current generic park-readiness wait bridge:
+      `ratchet-oracle::eval::claim_or_poll_ready_then_wait` bridges
+      scheduler-backed `ParallelReadyWorkPoll` values into
+      `ParallelThunkWaitCell::claim_or_try_run_ready_then_wait`. Local and
+      stolen polls still feed the wait-cell one task at a time; idle polls must
+      validate their `ParallelReadyWorkParkPreflight` for the zero-based ready
+      worker before the bridge reports `Idle` to the wait-cell path. The
+      returned `ParallelReadyWorkWait` carries the checked
+      `ParallelReadyWorkParkReadiness` only when a waiter was actually
+      registered, and drops it when terminal publication wins the race before
+      registration. Tests cover registered waiters carrying readiness,
+      wrong-worker and non-idle preflight rejection before waiter registration,
+      ready-work hook error propagation before waiter registration, and terminal
+      publication between idle preflight and waiter registration. This is a
+      typed handoff into the blocking wait-cell precursor only: it still does
+      not reserve a live scheduler park token, prevent future ready-work
+      enqueueing, prove live scheduler exhaustion, replace the blocking waiter
+      path with a lock-free waiter list, or satisfy the loom/Miri/TSan gate
+      (§3.3/§3.6).
 - [x] Current Chase-Lev tree-walk force poll/preflight bridge:
       `TreeWalkParallelThunkCell::force_or_chase_lev_ready_then_wait_with`
       binds an owner-local Chase-Lev ready-work handle to the evaluator-native
