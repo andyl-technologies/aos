@@ -28,7 +28,7 @@ pub mod engine {
         FailureClusterReportSet, FailureClusteringResult, FailureFindingsLedger,
         FailureSignaturePreservingMinimizationResult, FailureTriageResult,
         FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
-        FailureTriageStoredArtifact, FamilySpace, FaultDensity, FaultDensityRange,
+        FailureTriageStoredArtifact, FamilySpace, FaultDensity, FaultDensityRange, FaultTag,
         FindingDiscoveryPath, FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint,
         HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore, MarkerId, MaterializationPolicy,
         MaterializationTrigger, MemoryDagStore, NodeId, NodeTemplate, OverrideDecision,
@@ -37,12 +37,13 @@ pub mod engine {
         ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError, SchedulerEventLogEntry,
         SchedulerQuiescence, SchedulingPoint, SearchBudget, SearchDiscoveredFailure,
         SearchFailureOracle, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
-        SearchStrategy, Seed, SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend,
-        SimDuration, SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun,
-        TemporalGraphStoreError, TopologyShape, TopologySizeRange, VirtualTime, VmArchitecture,
-        WhiteBoxPolicy, World, built_in_example_corpus, crash_restart_scenario,
-        fault_campaign_family, happy_path_scenario, partition_recovery_scenario,
-        run_fault_campaign_example, try_step, verify_example_scenario_runs,
+        SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
+        SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimDuration,
+        SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphStoreError,
+        TopologyShape, TopologySizeRange, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
+        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
+        happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
+        verify_example_scenario_runs,
     };
 }
 

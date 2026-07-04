@@ -59,6 +59,10 @@
         needle = "accepts explicit `--on-violation`";
       }
       {
+        label = "T-CLI-13 schedule-named truth CLI progress";
+        needle = "now accepts `--schedule-named-truths <path>`";
+      }
+      {
         label = "T-CLI-13 local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -99,6 +103,10 @@
       {
         label = "phase5 CLI local-double search progress";
         needle = "`search-run` output with `failure_oracle=none`";
+      }
+      {
+        label = "phase5 CLI schedule-named truth progress";
+        needle = "`--schedule-named-truths`\n  loading of explicit data-only oracle inputs";
       }
       {
         label = "phase5 CLI local-double sampled API progress";
@@ -155,6 +163,26 @@
         needle = "fn plan_search_invocation";
       }
       {
+        label = "search schedule-named truths argument";
+        needle = "schedule_named_truths: Option<PathBuf>";
+      }
+      {
+        label = "search schedule-named truths loader";
+        needle = "fn load_search_schedule_named_truths_file";
+      }
+      {
+        label = "search schedule-named truths plan";
+        needle = "struct SearchScheduleNamedTruthsPlan";
+      }
+      {
+        label = "search schedule-named truths schema";
+        needle = "crucible.search-schedule-named-truths.v1";
+      }
+      {
+        label = "search schedule-named truths artifact media type";
+        needle = "application/vnd.crucible.search-schedule-named-truths+toml";
+      }
+      {
         label = "fuzz planner";
         needle = "fn plan_fuzz_invocation";
       }
@@ -191,8 +219,16 @@
         needle = "failure_oracle=scenario-assertions";
       }
       {
+        label = "local-double search named truth oracle marker";
+        needle = "scenario-assertions+schedule-named-truths";
+      }
+      {
         label = "local-double search assertion oracle derivation";
         needle = "from_search_assertion_violations";
+      }
+      {
+        label = "local-double search named truth derivation";
+        needle = "from_search_assertion_violations_with_named_predicates";
       }
       {
         label = "local-double search oracle API";
@@ -221,6 +257,18 @@
       {
         label = "local-double search counterexample output";
         needle = "counterexample_fingerprint={}";
+      }
+      {
+        label = "local-double search named truth output";
+        needle = "schedule_named_truths={}";
+      }
+      {
+        label = "local-double search named truth digest output";
+        needle = "schedule_named_truths_digest={}";
+      }
+      {
+        label = "local-double search named truth artifact component";
+        needle = "search_schedule_named_truths";
       }
       {
         label = "local-double search counterexample artifact output";
@@ -385,6 +433,14 @@
       {
         label = "search fuzz local-double execution test";
         needle = "cli_search_fuzz_workflow_executes_local_double_search";
+      }
+      {
+        label = "search fuzz schedule-named truth regression";
+        needle = "named-truth search workflow must emit a search-run line";
+      }
+      {
+        label = "search fuzz duplicate schedule-named truth regression";
+        needle = "duplicate schedule-named truth keys must fail";
       }
       {
         label = "search fuzz local-double fuzz execution test";

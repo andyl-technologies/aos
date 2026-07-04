@@ -664,6 +664,7 @@ the CLI.
     --max-depth <n>               Decision-depth bound.
     --max-states <n>              Budget on materialized states.
     --on-violation <stop|collect> Stop at the first counterexample, or collect all.
+    --schedule-named-truths <path> Load schedule-named assertion truth data.
 
   crucible fuzz <FAMILY> [FLAGS]
     --family <path|hash>          A ScenarioFamily (06 §7) to sample.
@@ -1145,12 +1146,17 @@ branch on the verdict without parsing output:
   reproduction artifacts, `search-run` counterexample metadata, and the standard
   replay/debug footer commands. The assertion oracle lowers concrete
   prefix-safe, schedule-derived fault-active safety/unreachability violations and
-  now exposes an engine-level data-only truth-table path for prefix-safe named
-  host predicates keyed only by search-reconstructed schedule facts. The default
-  CLI path intentionally excludes absence-based existential/liveness failures,
+  now accepts `--schedule-named-truths <path>` to load explicit data-only oracle
+  inputs for named host predicates keyed by search-reconstructed schedule facts.
+  The CLI validates the truth file schema, scenario node references, and
+  duplicate canonical truth entries, and records the source digest and payload in
+  `search-run` provenance and replayable reproduction artifacts; it does not
+  prove the authored predicate semantics are prefix-safe. The default CLI path
+  intentionally excludes absence-based existential/liveness failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,
-  and named host predicates unless a lower-layer caller supplies explicit
-  schedule-named truth data. It also parses `fuzz <FAMILY>` / `fuzz --family
+  and named host predicates unless explicit schedule-named truth data is
+  supplied. It also
+  parses `fuzz <FAMILY>` / `fuzz --family
   <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
   campaign seed into
   `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v1`
@@ -1164,8 +1170,7 @@ branch on the verdict without parsing output:
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage, retained-log
   backend breadth for observable/time/guest-marker and non-prefix assertion
-  classes, and CLI-facing schedule-named truth selection for named host
-  predicates.
+  classes.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

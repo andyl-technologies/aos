@@ -49,6 +49,9 @@ use tokio::sync::mpsc;
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
+const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
+    "application/vnd.crucible.search-schedule-named-truths+toml";
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
@@ -465,6 +468,9 @@ struct SearchArgs {
     /// Select first-violation handling.
     #[arg(long, value_enum, value_name = "stop|collect")]
     on_violation: Option<SearchOnViolationArg>,
+    /// Load schedule-named assertion truth data.
+    #[arg(long, value_name = "path")]
+    schedule_named_truths: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -1476,9 +1482,18 @@ struct SearchDriverPlan {
     budget: crucible::SearchBudget,
     on_violation: SearchOnViolationArg,
     explicit_on_violation: bool,
+    schedule_named_truths: Option<SearchScheduleNamedTruthsPlan>,
     delegates_policy_to_advanced_engine: bool,
     opportunistic_replay_oracle_sampling: bool,
     counterexamples_are_self_contained: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchScheduleNamedTruthsPlan {
+    path: PathBuf,
+    digest: String,
+    material: Vec<u8>,
+    truths: crucible::SearchScheduleNamedPredicateTruths,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1489,6 +1504,8 @@ struct LocalDoubleSearchReport {
     failures: usize,
     exhausted: bool,
     failure_oracle: String,
+    schedule_named_truths: String,
+    schedule_named_truths_digest: String,
     counterexample: Option<LocalDoubleSearchCounterexample>,
     replay_oracle_considered: usize,
     replay_oracle_sampled: usize,
@@ -1565,6 +1582,25 @@ struct CliScenarioFamilyToml {
     topology_size: CliTopologySizeToml,
     topology_shapes: Vec<String>,
     node_template: CliNodeTemplateToml,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliSearchScheduleNamedTruthsToml {
+    schema: String,
+    #[serde(default)]
+    truth: Vec<CliSearchScheduleNamedTruthToml>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliSearchScheduleNamedTruthToml {
+    name: String,
+    value: bool,
+    #[serde(default)]
+    nodes: Vec<String>,
+    #[serde(default)]
+    active_fault_tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -2393,6 +2429,11 @@ fn plan_search_invocation(
     let budget = crucible::SearchBudget::new(args.max_states);
     let explicit_on_violation = args.on_violation.is_some();
     let on_violation = args.on_violation.unwrap_or(SearchOnViolationArg::Stop);
+    let schedule_named_truths = args
+        .schedule_named_truths
+        .as_deref()
+        .map(|path| load_search_schedule_named_truths_file(path, scenario.scenario_form()))
+        .transpose()?;
 
     Ok(SearchDriverPlan {
         scenario,
@@ -2403,6 +2444,7 @@ fn plan_search_invocation(
         budget,
         on_violation,
         explicit_on_violation,
+        schedule_named_truths,
         delegates_policy_to_advanced_engine: true,
         opportunistic_replay_oracle_sampling: true,
         counterexamples_are_self_contained: true,
@@ -2417,6 +2459,90 @@ fn resolve_search_scenario(
         CliError::InvalidScenario(message) => backend_error(message),
         error => error,
     })
+}
+
+fn load_search_schedule_named_truths_file(
+    path: &Path,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<SearchScheduleNamedTruthsPlan, CliError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        backend_error(format!(
+            "schedule-named truths `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let truths = load_search_schedule_named_truths_toml(
+        &format!("file `{}`", path.display()),
+        &text,
+        scenario,
+    )?;
+    Ok(SearchScheduleNamedTruthsPlan {
+        path: path.to_path_buf(),
+        digest: content_address_bytes(text.as_bytes()),
+        material: text.into_bytes(),
+        truths,
+    })
+}
+
+fn load_search_schedule_named_truths_toml(
+    label: &str,
+    text: &str,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<crucible::SearchScheduleNamedPredicateTruths, CliError> {
+    let authored = toml::from_str::<CliSearchScheduleNamedTruthsToml>(text).map_err(|error| {
+        backend_error(format!(
+            "schedule-named truths {label} are not valid TOML: {error}"
+        ))
+    })?;
+    if authored.schema != SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA {
+        return Err(backend_error(format!(
+            "schedule-named truths {label} use unsupported schema `{}`; expected `{SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA}`",
+            authored.schema
+        )));
+    }
+
+    let scenario_nodes = scenario
+        .world()
+        .nodes()
+        .iter()
+        .map(|node| node.id.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut truths = crucible::SearchScheduleNamedPredicateTruths::new();
+    let mut canonical_indexes = BTreeMap::new();
+    for (index, truth) in authored.truth.into_iter().enumerate() {
+        if truth.name.is_empty() {
+            return Err(backend_error(format!(
+                "schedule-named truths {label} entry {index} has an empty name"
+            )));
+        }
+        for node in &truth.nodes {
+            if !scenario_nodes.contains(node.as_str()) {
+                return Err(backend_error(format!(
+                    "schedule-named truths {label} entry {index} references unknown node `{node}`"
+                )));
+            }
+        }
+        let key = crucible::SearchScheduleNamedPredicateKey::new(
+            truth.name,
+            truth
+                .nodes
+                .into_iter()
+                .map(|name| crucible::NodeId { name })
+                .collect(),
+            truth
+                .active_fault_tags
+                .into_iter()
+                .map(crucible::FaultTag::from_name)
+                .collect(),
+        );
+        if let Some(previous_index) = canonical_indexes.insert(key.clone(), index) {
+            return Err(backend_error(format!(
+                "schedule-named truths {label} entry {index} duplicates canonical entry {previous_index}"
+            )));
+        }
+        truths.insert_truth(key, truth.value);
+    }
+    Ok(truths)
 }
 
 fn plan_fuzz_invocation(
@@ -8898,6 +9024,24 @@ fn verify_reproduction_artifact_bytes(
     canonical_log: &[CanonicalLogEntry],
     fingerprint_samples: &[VerifyFingerprintSample],
 ) -> Result<Vec<u8>, CliError> {
+    verify_reproduction_artifact_bytes_with_components(
+        seed,
+        backend,
+        scenario,
+        canonical_log,
+        fingerprint_samples,
+        &[],
+    )
+}
+
+fn verify_reproduction_artifact_bytes_with_components(
+    seed: u64,
+    backend: Option<&ResolvedLocalBackend>,
+    scenario: &crucible::ScenarioDef,
+    canonical_log: &[CanonicalLogEntry],
+    fingerprint_samples: &[VerifyFingerprintSample],
+    extra_payloads: &[ReproductionArtifactComponentPayload],
+) -> Result<Vec<u8>, CliError> {
     let scenario_bytes = scenario_identity_bytes(scenario);
     let scenario_digest = content_address_bytes(&scenario_bytes);
     let store_uri = format!("cas:{scenario_digest}");
@@ -8910,6 +9054,17 @@ fn verify_reproduction_artifact_bytes(
             node: entry.node.clone(),
             kind: entry.kind.clone(),
             payload_digest: content_address_bytes(entry.summary.as_bytes()),
+        })
+        .collect::<Vec<_>>();
+    let extra_components = extra_payloads
+        .iter()
+        .map(|payload| CliComponent {
+            kind: payload.kind.clone(),
+            name: payload.name.clone(),
+            digest: content_address_bytes(&payload.bytes),
+            store_uri: format!("cas:{}", content_address_bytes(&payload.bytes)),
+            media_type: payload.media_type.clone(),
+            size_bytes: payload.bytes.len() as u64,
         })
         .collect::<Vec<_>>();
     let schedule_digest = schedule_digest(&decisions);
@@ -8957,6 +9112,9 @@ fn verify_reproduction_artifact_bytes(
             &scenario_bytes.len().to_string(),
         ],
     );
+    for component in &extra_components {
+        artifact_component_line(&mut text, "component", component);
+    }
     for decision in &decisions {
         let payload = canonical_log
             .get(decision.sequence as usize)
@@ -8980,6 +9138,12 @@ fn verify_reproduction_artifact_bytes(
         &mut text,
         &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
     );
+    for (component, payload) in extra_components.iter().zip(extra_payloads) {
+        artifact_line(
+            &mut text,
+            &["payload", &component.digest, &hex_bytes(&payload.bytes)],
+        );
+    }
     for decision in &decisions {
         let payload = canonical_log
             .get(decision.sequence as usize)
@@ -12173,14 +12337,26 @@ fn run_local_double_search_workflow_with_graph(
             plan.max_depth,
         )
         .map_err(|error| backend_error(format!("local-double assertion search failed: {error}")))?;
-    let failure_oracle = SearchFailureOracle::from_search_assertion_violations(
-        plan.scenario.scenario_form(),
-        root,
-        &assertion_discovery_run,
-    )
+    let failure_oracle = match &plan.schedule_named_truths {
+        Some(named_truths) => {
+            SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
+                plan.scenario.scenario_form(),
+                root,
+                &assertion_discovery_run,
+                &named_truths.truths,
+            )
+        }
+        None => SearchFailureOracle::from_search_assertion_violations(
+            plan.scenario.scenario_form(),
+            root,
+            &assertion_discovery_run,
+        ),
+    }
     .map_err(|error| backend_error(format!("local-double assertion lowering failed: {error}")))?;
     let failure_oracle_label = if failure_oracle.is_empty() {
         "none"
+    } else if plan.schedule_named_truths.is_some() {
+        "scenario-assertions+schedule-named-truths"
     } else {
         "scenario-assertions"
     };
@@ -12244,6 +12420,16 @@ fn run_local_double_search_workflow_with_graph_and_failure_oracle(
         failures: run.discovered_failures.len(),
         exhausted: run.exhausted,
         failure_oracle: failure_oracle_label.to_string(),
+        schedule_named_truths: plan
+            .schedule_named_truths
+            .as_ref()
+            .map(|source| source.path.display().to_string())
+            .unwrap_or_else(|| String::from("none")),
+        schedule_named_truths_digest: plan
+            .schedule_named_truths
+            .as_ref()
+            .map(|source| source.digest.clone())
+            .unwrap_or_else(|| String::from("none")),
         counterexample,
         replay_oracle_considered: sampled.replay_oracle_sampling.considered,
         replay_oracle_sampled: sampled.replay_oracle_sampling.sampled,
@@ -12270,7 +12456,8 @@ fn search_failure_reproduction_artifact_bytes(
     plan: &SearchDriverPlan,
     failure: &SearchDiscoveredFailure,
 ) -> Result<Vec<u8>, CliError> {
-    let canonical_log = canonical_log_entries_from_search_failure(failure);
+    let mut canonical_log = canonical_log_entries_from_search_failure(failure);
+    let extra_payloads = search_schedule_named_truths_artifact_payloads(plan, &mut canonical_log);
     let fingerprint_digest = cli_digest_from_engine_hash(failure.fingerprint);
     let fingerprint_samples = vec![VerifyFingerprintSample {
         index: 0,
@@ -12278,13 +12465,41 @@ fn search_failure_reproduction_artifact_bytes(
         node: String::from("search"),
         digest: fingerprint_digest,
     }];
-    verify_reproduction_artifact_bytes(
+    verify_reproduction_artifact_bytes_with_components(
         seed_to_u64(plan.scenario.scenario_def().seed()),
         backend_plan.resolved_backend.as_ref(),
         plan.scenario.scenario_def(),
         &canonical_log,
         &fingerprint_samples,
+        &extra_payloads,
     )
+}
+
+fn search_schedule_named_truths_artifact_payloads(
+    plan: &SearchDriverPlan,
+    canonical_log: &mut Vec<CanonicalLogEntry>,
+) -> Vec<ReproductionArtifactComponentPayload> {
+    let Some(source) = &plan.schedule_named_truths else {
+        return Vec::new();
+    };
+    canonical_log.push(CanonicalLogEntry {
+        sequence: canonical_log.len() as u64,
+        virtual_time_ticks: canonical_log.len() as u64,
+        node: String::from("search"),
+        kind: String::from("search-schedule-named-truths"),
+        summary: format!(
+            "schema={} source={} digest={}",
+            SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA,
+            source.path.display(),
+            source.digest
+        ),
+    });
+    vec![ReproductionArtifactComponentPayload {
+        kind: String::from("search_schedule_named_truths"),
+        name: String::from("schedule-named-truths.toml"),
+        media_type: String::from(SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE),
+        bytes: source.material.clone(),
+    }]
 }
 
 fn canonical_log_entries_from_search_failure(
@@ -12356,7 +12571,7 @@ fn apply_local_double_search_report(
     let (counterexample_stdout, counterexample_summary) =
         local_double_search_counterexample_fields(report.counterexample.as_ref());
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\tschedule_named_truths={}\tschedule_named_truths_digest={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
         format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
@@ -12365,6 +12580,8 @@ fn apply_local_double_search_report(
             .map(|depth| depth.to_string())
             .unwrap_or_else(|| String::from("none")),
         report.failure_oracle,
+        report.schedule_named_truths,
+        report.schedule_named_truths_digest,
         report.replay_oracle_considered,
         report.replay_oracle_sampled,
         report.replay_oracle_skipped,
@@ -12383,7 +12600,7 @@ fn apply_local_double_search_report(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle={} schedule_named_truths={} schedule_named_truths_digest={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
             format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
@@ -12391,6 +12608,8 @@ fn apply_local_double_search_report(
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| String::from("none")),
             report.failure_oracle,
+            report.schedule_named_truths,
+            report.schedule_named_truths_digest,
             report.replay_oracle_considered,
             report.replay_oracle_sampled,
             report.replay_oracle_skipped,
@@ -13411,6 +13630,14 @@ struct CliDecision {
     node: String,
     kind: String,
     payload_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReproductionArtifactComponentPayload {
+    kind: String,
+    name: String,
+    media_type: String,
+    bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -14908,6 +15135,57 @@ mod tests {
         let path = temp.path().join("search-frontier-scenario.toml");
         fs::write(&path, form.to_canonical_toml()?)?;
         Ok(path)
+    }
+
+    fn write_search_named_truth_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let form = search_named_truth_scenario_form()?;
+        let path = temp.path().join("search-named-truth-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+        let world = search_frontier_world()?;
+        let properties = ::crucible::Properties::from_assertions_for_world(
+            &world,
+            vec![::crucible::AssertionDef {
+                id: ::crucible::AssertionId::from_name("cli-search-named-truth"),
+                message: String::from("CLI search named truth must hold"),
+                property: ::crucible::Property::Always {
+                    predicate: ::crucible::Predicate::named("cli-search/named-truth"),
+                },
+            }],
+        )?;
+        Ok(::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &properties,
+            ::crucible::Seed::from_u64(0x5151),
+        )?)
+    }
+
+    fn write_search_schedule_named_truths(
+        temp: &TempDir,
+        value: bool,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp.path().join(if value {
+            "search-named-truths-true.toml"
+        } else {
+            "search-named-truths-false.toml"
+        });
+        fs::write(&path, valid_search_schedule_named_truths_toml(value))?;
+        Ok(path)
+    }
+
+    fn valid_search_schedule_named_truths_toml(value: bool) -> String {
+        format!(
+            r#"schema = "crucible.search-schedule-named-truths.v1"
+
+[[truth]]
+name = "cli-search/named-truth"
+value = {value}
+"#
+        )
     }
 
     fn valid_fuzz_family_toml() -> &'static str {
@@ -19308,6 +19586,7 @@ cmdline = "cli-fuzz-family"
                     "--max-depth <n>",
                     "--max-states <n>",
                     "--on-violation <stop|collect>",
+                    "--schedule-named-truths <path>",
                 ][..],
             ),
             (
@@ -19340,6 +19619,7 @@ cmdline = "cli-fuzz-family"
     {
         let temp = TempDir::new()?;
         let scenario = write_valid_run_scenario(&temp)?;
+        let named_truths = write_search_schedule_named_truths(&temp, true)?;
         let search_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("search"),
@@ -19352,6 +19632,8 @@ cmdline = "cli-fuzz-family"
             String::from("7"),
             String::from("--on-violation"),
             String::from("collect"),
+            String::from("--schedule-named-truths"),
+            named_truths.display().to_string(),
         ]);
         let Commands::Search(args) = &search_cli.command else {
             panic!("expected search command");
@@ -19369,6 +19651,16 @@ cmdline = "cli-fuzz-family"
         assert_eq!(search_plan.budget, crucible::SearchBudget::new(7));
         assert_eq!(search_plan.on_violation, SearchOnViolationArg::Collect);
         assert!(search_plan.explicit_on_violation);
+        let search_truths = search_plan
+            .schedule_named_truths
+            .as_ref()
+            .expect("search plan should load schedule-named truths");
+        assert_eq!(search_truths.path, named_truths);
+        assert_eq!(
+            search_truths.digest,
+            content_address_bytes(valid_search_schedule_named_truths_toml(true).as_bytes())
+        );
+        assert!(!search_truths.truths.is_empty());
         assert!(search_plan.delegates_policy_to_advanced_engine);
         assert!(search_plan.opportunistic_replay_oracle_sampling);
         assert!(search_plan.counterexamples_are_self_contained);
@@ -19406,6 +19698,56 @@ cmdline = "cli-fuzz-family"
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        let malformed_named_truths = temp.path().join("bad-search-named-truths.toml");
+        fs::write(&malformed_named_truths, "schema = \"wrong.schema\"\n")?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(scenario.display().to_string()),
+                max_states: 1,
+                schedule_named_truths: Some(malformed_named_truths),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("malformed schedule-named truths must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        let duplicate_named_truths = temp.path().join("duplicate-search-named-truths.toml");
+        fs::write(
+            &duplicate_named_truths,
+            r#"schema = "crucible.search-schedule-named-truths.v1"
+
+[[truth]]
+name = "cli-search/named-truth"
+value = true
+active_fault_tags = ["network-partition", "network-partition"]
+
+[[truth]]
+name = "cli-search/named-truth"
+value = false
+active_fault_tags = ["network-partition"]
+"#,
+        )?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(scenario.display().to_string()),
+                max_states: 1,
+                schedule_named_truths: Some(duplicate_named_truths),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("duplicate schedule-named truth keys must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("duplicates canonical entry 0"))
+        );
         assert_eq!(error.exit_code(), 4);
 
         let family_path = write_valid_fuzz_family(&temp)?;
@@ -19807,6 +20149,76 @@ cmdline = "cli-fuzz-family"
                 .map(|fingerprint| fingerprint.digest.as_str()),
             Some(cli_digest_from_engine_hash(root_failure_fingerprint).as_str())
         );
+
+        let named_scenario = write_search_named_truth_scenario(&temp)?;
+        let named_truths_false = write_search_schedule_named_truths(&temp, false)?;
+        let named_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            named_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+            String::from("--schedule-named-truths"),
+            named_truths_false.display().to_string(),
+        ]);
+        let Commands::Search(args) = &named_cli.command else {
+            panic!("expected search command");
+        };
+        let named_plan = plan_search_invocation(args, temp.path())?;
+        let named_backend =
+            plan_backend_selection(&named_cli)?.expect("named-truth search should route");
+        let named_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&named_cli),
+            &named_backend,
+            None,
+            &named_plan,
+        )?;
+        assert_eq!(named_outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(named_outcome.exit_code, 1);
+        let named_line = named_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("named-truth search workflow must emit a search-run line");
+        assert!(named_line.contains("failure_oracle=scenario-assertions+schedule-named-truths"));
+        assert!(named_line.contains(&format!(
+            "schedule_named_truths={}",
+            named_truths_false.display()
+        )));
+        let named_truths_false_material = valid_search_schedule_named_truths_toml(false);
+        let named_truths_false_digest =
+            content_address_bytes(named_truths_false_material.as_bytes());
+        assert!(named_line.contains(&format!(
+            "schedule_named_truths_digest={named_truths_false_digest}"
+        )));
+        assert!(named_line.contains("failures=1"));
+        assert!(named_line.contains("status=failed"));
+        let named_artifact = decode_reproduction_artifact(
+            named_outcome
+                .reproduction_artifact
+                .as_deref()
+                .expect("named-truth failure should emit a reproduction artifact"),
+        )?;
+        assert!(named_artifact.components.iter().any(|component| {
+            component.kind == "search_schedule_named_truths"
+                && component.name == "schedule-named-truths.toml"
+                && component.digest == named_truths_false_digest
+                && component.media_type == SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE
+        }));
+        assert!(named_artifact.payloads.iter().any(|payload| {
+            payload.digest == named_truths_false_digest
+                && payload.bytes.as_slice() == named_truths_false_material.as_bytes()
+        }));
+        assert!(named_artifact.decisions.iter().any(|decision| {
+            decision.kind == "search-schedule-named-truths"
+                && named_artifact
+                    .payloads
+                    .iter()
+                    .any(|payload| payload.digest == decision.payload_digest)
+        }));
 
         let outcome = run_local_double_search_workflow(
             &plan_cli_invocation(&search_cli),
