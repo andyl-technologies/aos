@@ -630,6 +630,83 @@ fn path_surface_attrsets_record_dynamic_repr_decisions() {
 }
 
 #[test]
+fn try_eval_records_dynamic_repr_decisions() {
+    let ir = lower(
+        "builtins.deepSeq [
+            (builtins.tryEval 1)
+            (let tryEval = builtins.tryEval; in tryEval (builtins.throw \"boom\"))
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("tryEval results evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+}
+
+#[test]
+fn get_context_records_dynamic_repr_decisions() {
+    let ir = lower("builtins.getContext \"x\"");
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("getContext argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let context = StringContext::new(vec![
+        ContextElement::opaque_path(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src".to_vec())
+            .expect("source context is valid"),
+        ContextElement::single_output(
+            b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv".to_vec(),
+            b"out".to_vec(),
+        )
+        .expect("output context is valid"),
+        ContextElement::deep_derivation(
+            b"/nix/store/cccccccccccccccccccccccccccccccc-deep.drv".to_vec(),
+        )
+        .expect("deep context is valid"),
+    ]);
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(b"x".to_vec(), context))
+        .expect("context-bearing string allocates");
+
+    let result = evaluator
+        .eval_get_context_primop(ir.root, root.span, argument, argument_span, value)
+        .expect("getContext evaluates");
+
+    let attrs = evaluator
+        .heap
+        .get_attrs(result)
+        .expect("getContext result is attrs");
+    assert_eq!(attrs.len(), 3);
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 4);
+    assert_eq!(snapshot.flat_decisions, 4);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 4);
+}
+
+#[test]
 fn active_flat_selects_record_slow_select_telemetry() {
     let ir = lower(
         "builtins.deepSeq [
