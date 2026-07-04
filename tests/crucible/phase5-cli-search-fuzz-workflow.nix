@@ -52,14 +52,18 @@
         needle = "Work in progress under `checks.crucible.phase5.cliSearchFuzzWorkflow`";
       }
       {
-        label = "T-CLI-13 runner blocker";
-        needle = "exploration-engine driver over phase-6 search/fuzz policies";
+        label = "T-CLI-13 local-double search progress";
+        needle = "executes local `--backend double search` without";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI search/fuzz progress note";
         needle = "`checks.crucible.phase5.cliSearchFuzzWorkflow`";
+      }
+      {
+        label = "phase5 CLI local-double search progress";
+        needle = "deterministic `search-run` output and `failure_oracle=none`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -96,8 +100,28 @@
         needle = "crucible::CoverageGuidedFuzzConfig::new";
       }
       {
-        label = "search runner blocker";
-        needle = "requires the exploration-engine driver over phase-6 search policies tracked by T-CLI-13";
+        label = "local-double search runner";
+        needle = "fn run_local_double_search_workflow";
+      }
+      {
+        label = "local-double search output";
+        needle = "search-run";
+      }
+      {
+        label = "local-double search no-oracle marker";
+        needle = "failure_oracle=none";
+      }
+      {
+        label = "local-double search canonical log";
+        needle = "search_strategy_run";
+      }
+      {
+        label = "local-double max-depth blocker";
+        needle = "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13";
+      }
+      {
+        label = "local-double failure oracle blocker";
+        needle = "local-double search currently runs with failure_oracle=none";
       }
       {
         label = "fuzz runner blocker";
@@ -112,8 +136,12 @@
         needle = "cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs";
       }
       {
-        label = "search fuzz execution blocker test";
-        needle = "cli_search_fuzz_workflow_rejects_execution_until_driver_exists";
+        label = "search fuzz local-double execution test";
+        needle = "cli_search_fuzz_workflow_executes_local_double_search";
+      }
+      {
+        label = "search fuzz fuzz-blocker test";
+        needle = "cli_search_fuzz_workflow_rejects_fuzz_execution_until_driver_exists";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
