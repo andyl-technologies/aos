@@ -8581,6 +8581,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       widens through the PIC state machine. Shaped/PIC tree-walk `Select`
       integration, native runtime helper dispatch, HAMT-valued selection, and
       `.drv` effects remain open.
+- [x] Current flat select-cache precursor: `ratchet-value` exposes
+      `FlatSelectCache`, which binds one static key, caches key-validated
+      symbol-order slots for current `FlatAttrs`, widens across observed slots
+      up to the polymorphic cap, and falls back to the megamorphic slow path
+      after cap overflow. Missing keys do not add slot entries or change PIC
+      state because flat attrsets have no stable absent slot. Active tree-walk
+      PIC integration, native runtime helper dispatch, shaped/HAMT active
+      storage replacement, and `.drv` effects remain open.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie

@@ -1,7 +1,7 @@
 //! Unit tests for polymorphic attr selection inline caches.
 
-use super::super::AttrEntry;
 use super::super::shape::{ShapeTable, ShapedAttrs};
+use super::super::{AttrEntry, FlatAttrs};
 use super::*;
 use crate::attrs::hamt::HamtAttrs;
 use crate::syntax::SymbolTable;
@@ -30,6 +30,38 @@ fn shaped_attrs(
         .intern_construction_order(keys, symbols)
         .expect("shape interns");
     ShapedAttrs::from_source_order(shape, values).expect("shaped attrs build")
+}
+
+fn flat_attrs(
+    symbols: &SymbolTable,
+    keys: &[crate::syntax::Symbol],
+    values: &[Value],
+) -> FlatAttrs {
+    let entries = keys
+        .iter()
+        .copied()
+        .zip(values.iter().copied())
+        .map(|(key, value)| AttrEntry::new(key, value))
+        .collect::<Vec<_>>();
+    FlatAttrs::new(entries, symbols).expect("flat attrs build")
+}
+
+fn expect_flat_hit_int(
+    outcome: FlatSelectOutcome,
+    expected_value: i64,
+    expected_slot: u32,
+) -> FlatSelectSource {
+    let FlatSelectOutcome::Hit {
+        value,
+        slot,
+        source,
+    } = outcome
+    else {
+        panic!("expected flat select hit");
+    };
+    assert_eq!(value.as_int().expect("int value"), expected_value);
+    assert_eq!(slot, expected_slot);
+    source
 }
 
 fn expect_hit_int(
@@ -63,6 +95,185 @@ fn expect_hamt_missing(outcome: HamtSelectOutcome) -> HamtSelectSource {
         panic!("expected HAMT select missing");
     };
     source
+}
+
+#[test]
+fn flat_select_cache_installs_then_uses_cached_slot() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let attrs = flat_attrs(
+        &symbols,
+        &[ids[1], ids[0]],
+        &[Value::int(20), Value::int(10)],
+    );
+    let mut cache = FlatSelectCache::new();
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&attrs, ids[0])
+                .expect("flat select resolves through slow path"),
+            10,
+            0,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 1);
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&attrs, ids[0])
+                .expect("flat select uses cached slot"),
+            10,
+            0,
+        ),
+        FlatSelectSource::Cached
+    );
+}
+
+#[test]
+fn flat_select_cache_widens_across_key_validated_slots() {
+    let (symbols, ids) = symbols(&[b"a", b"b", b"c"]);
+    let key = ids[1];
+    let first = flat_attrs(&symbols, &[key], &[Value::int(1)]);
+    let second = flat_attrs(&symbols, &[ids[0], key], &[Value::int(10), Value::int(2)]);
+    let third = flat_attrs(
+        &symbols,
+        &[ids[0], key, ids[2]],
+        &[Value::int(10), Value::int(3), Value::int(30)],
+    );
+    let mut cache = FlatSelectCache::new();
+
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&first, key).expect("first flat select"), 1, 0,),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache.select(&second, key).expect("second flat select"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::WidenedToPolymorphic { len: 2 },
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 2);
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&third, key).expect("third flat select"), 3, 1,),
+        FlatSelectSource::Cached
+    );
+}
+
+#[test]
+fn flat_select_cache_revalidates_stale_slot_keys_before_loading() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let first = flat_attrs(&symbols, &[key], &[Value::int(1)]);
+    let shifted = flat_attrs(&symbols, &[ids[0], key], &[Value::int(999), Value::int(2)]);
+    let mut cache = FlatSelectCache::new();
+
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&first, key).expect("first flat select"), 1, 0,),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&shifted, key)
+                .expect("stale cached slot falls back to slow path"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::WidenedToPolymorphic { len: 2 },
+        }
+    );
+}
+
+#[test]
+fn flat_select_cache_can_go_megamorphic_after_slot_cap() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let first = flat_attrs(&symbols, &[key], &[Value::int(1)]);
+    let second = flat_attrs(&symbols, &[ids[0], key], &[Value::int(10), Value::int(2)]);
+    let third = flat_attrs(&symbols, &[key], &[Value::int(3)]);
+    let mut cache = FlatSelectCache::with_cap(1).expect("nonzero cap");
+
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&first, key).expect("first flat select"), 1, 0,),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache.select(&second, key).expect("second flat select"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::BecameMegamorphic,
+        }
+    );
+    assert!(cache.state().is_megamorphic());
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&third, key)
+                .expect("megamorphic flat select stays on slow path"),
+            3,
+            0,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::AlreadyMegamorphic,
+        }
+    );
+}
+
+#[test]
+fn flat_select_cache_missing_key_does_not_update_cache() {
+    let (symbols, ids) = symbols(&[b"a", b"missing"]);
+    let attrs = flat_attrs(&symbols, &[ids[0]], &[Value::int(1)]);
+    let mut cache = FlatSelectCache::new();
+
+    assert!(matches!(
+        cache
+            .select(&attrs, ids[1])
+            .expect("missing flat key is not an error"),
+        FlatSelectOutcome::Missing
+    ));
+    assert_eq!(cache.state().entry_count(), 0);
+}
+
+#[test]
+fn flat_select_cache_rejects_key_changes() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let attrs = flat_attrs(
+        &symbols,
+        &[ids[0], ids[1]],
+        &[Value::int(10), Value::int(20)],
+    );
+    let mut cache = FlatSelectCache::new();
+
+    cache
+        .select(&attrs, ids[0])
+        .expect("first flat select binds key");
+    assert_eq!(
+        cache
+            .select(&attrs, ids[1])
+            .expect_err("same flat select site cannot change keys"),
+        FlatSelectError::KeyChanged {
+            previous: ids[0],
+            attempted: ids[1],
+        }
+    );
 }
 
 #[test]

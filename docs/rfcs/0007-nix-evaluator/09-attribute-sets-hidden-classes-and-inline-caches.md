@@ -812,6 +812,16 @@ harness, never cut for scope.
       through the PIC state machine. It does not install shaped fast paths into
       tree-walk `Select`, call the native runtime helper, handle HAMT values,
       or affect `.drv` bytes.
+- [x] Current flat select-cache precursor:
+      `ratchet-value::attrs::pic` exposes `FlatSelectCache`, which binds one
+      static key and caches key-validated symbol-order slots for current
+      `FlatAttrs`. Cached hits re-check the key at the stored slot before
+      loading the value; stale slots, uncached slots, and megamorphic sites
+      resolve through the representation-dispatching `select_slow` flat branch.
+      Missing keys do not add slot entries or change PIC state because flat
+      attrsets have no stable absent slot. This does not install PICs into
+      tree-walk `Select`, replace active flat attr storage with shaped/native
+      layouts, call the native runtime helper, or affect `.drv` bytes.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
