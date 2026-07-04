@@ -900,19 +900,18 @@ impl TreeWalk {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
         })?;
         let len = attrs.len();
-        let result = self
-            .heap
-            .alloc_attrs(shape.as_u32(), attrs)
-            .map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-            })?;
         let construction = if !has_dynamic && active_overrides_symbol.is_none() {
             AttrSetConstruction::StaticLiteral { len }
         } else {
             AttrSetConstruction::Dynamic { len }
         };
-        self.record_attr_repr_decision_telemetry(id, node.span, construction);
-        Ok(result)
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            node.span,
+            shape.as_u32(),
+            attrs,
+            construction,
+        )
     }
 
     pub(super) fn apply_recursive_attrset_overrides(

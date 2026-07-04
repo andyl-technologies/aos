@@ -275,6 +275,22 @@ impl CachedExpressionValue {
         self.attr_position_source_hash
     }
 
+    pub(crate) fn with_attr_repr_metadata(
+        self,
+        repr: AttrSetReprKind,
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        let attr_position_source_hash = self.attr_position_source_hash;
+        let mut value = Self::from_payload(self.payload.with_attr_repr(repr)?);
+        if let Some(source_hash) = attr_position_source_hash {
+            value = value.with_attr_position_source_hash(source_hash);
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn attr_repr_kind(&self) -> Option<AttrSetReprKind> {
+        self.payload.attr_repr_kind()
+    }
+
     /// Returns the durable value hash for this cached payload.
     ///
     /// # Errors
@@ -381,6 +397,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
             | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. }
             | InlineValuePayload::Int(_)
             | InlineValuePayload::Float(_)
             | InlineValuePayload::Bool(_)
@@ -405,6 +422,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
             | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. }
             | InlineValuePayload::Null => None,
         }
     }
@@ -426,6 +444,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
             | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. }
             | InlineValuePayload::Null => None,
         }
     }
@@ -447,6 +466,7 @@ impl CachedExpressionValue {
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
             | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. }
             | InlineValuePayload::Null => None,
         }
     }
@@ -473,7 +493,8 @@ impl CachedExpressionValue {
             | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
-            | InlineValuePayload::Attrs(_) => None,
+            | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. } => None,
         }
     }
 
@@ -503,18 +524,28 @@ impl CachedExpressionValue {
             | InlineValuePayload::SourceOrderedAttrs(_)
             | InlineValuePayload::PositionedAttrs(_)
             | InlineValuePayload::SourceOrderedPositionedAttrs(_)
-            | InlineValuePayload::Attrs(_) => None,
+            | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::AttrRepr { .. } => None,
         }
     }
 
     /// Returns whether this payload is the empty Nix attrset.
-    pub const fn is_empty_attrs(&self) -> bool {
-        matches!(&self.payload, InlineValuePayload::EmptyAttrs)
+    pub fn is_empty_attrs(&self) -> bool {
+        match &self.payload {
+            InlineValuePayload::EmptyAttrs => true,
+            InlineValuePayload::AttrRepr { payload, .. } => {
+                CachedExpressionValue::from_payload((**payload).clone()).is_empty_attrs()
+            }
+            _ => false,
+        }
     }
 
     /// Returns the cached attrset binding count, if this payload is an attrset.
     pub fn attrs_len(&self) -> Option<usize> {
         match &self.payload {
+            InlineValuePayload::AttrRepr { payload, .. } => {
+                CachedExpressionValue::from_payload((**payload).clone()).attrs_len()
+            }
             InlineValuePayload::EmptyAttrs => Some(0),
             InlineValuePayload::Attrs(entries)
             | InlineValuePayload::SourceOrderedAttrs(entries) => Some(entries.len()),
@@ -539,6 +570,9 @@ impl CachedExpressionValue {
     /// accidentally drop provenance needed by `builtins.unsafeGetAttrPos`.
     pub fn attrs_entries(&self) -> Option<Vec<(Vec<u8>, Self)>> {
         match &self.payload {
+            InlineValuePayload::AttrRepr { payload, .. } => {
+                CachedExpressionValue::from_payload((**payload).clone()).attrs_entries()
+            }
             InlineValuePayload::EmptyAttrs => Some(Vec::new()),
             InlineValuePayload::Attrs(entries)
             | InlineValuePayload::SourceOrderedAttrs(entries) => {
@@ -570,6 +604,10 @@ impl CachedExpressionValue {
     /// Returns cached attrset entries and optional binding positions, if this payload is an attrset.
     pub fn attrs_entries_with_positions(&self) -> Option<Vec<CachedAttrEntryWithPosition>> {
         match &self.payload {
+            InlineValuePayload::AttrRepr { payload, .. } => {
+                CachedExpressionValue::from_payload((**payload).clone())
+                    .attrs_entries_with_positions()
+            }
             InlineValuePayload::EmptyAttrs => Some(Vec::new()),
             InlineValuePayload::Attrs(entries)
             | InlineValuePayload::SourceOrderedAttrs(entries) => {

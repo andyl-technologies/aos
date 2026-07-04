@@ -906,9 +906,12 @@ harness, never cut for scope.
       persistent HAMT merge helper. The active tree-walk `//` path now builds
       policy-compatible flat operands and runs this dispatch after successful
       flat heap allocation so `EvalOutcome::attr_telemetry` records real HAMT
-      insert/replace summaries for HAMT-classified update samples. The runtime
-      heap result remains `FlatAttrs` to preserve the current value surface;
-      active HAMT storage, HAMT right source-order semantics, measured
+      insert/replace summaries for HAMT-classified update samples. Heap attr
+      records also persist the representation kind selected by this policy
+      beside the active `FlatAttrs` payload, and hash-consing keeps otherwise
+      equal attrsets distinct when that representation metadata differs. The
+      runtime heap payload remains `FlatAttrs` to preserve the current value
+      surface; active HAMT storage, HAMT right source-order semantics, measured
       threshold calibration, and `.drv` differential proof remain open.
 - [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
 - [x] Current HAMT select-policy precursor: `ratchet-value::attrs::pic`

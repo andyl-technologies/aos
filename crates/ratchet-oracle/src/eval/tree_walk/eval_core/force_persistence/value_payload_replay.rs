@@ -125,9 +125,14 @@ impl TreeWalk {
             return self.heap.alloc_list(NixList::new(elements)).ok();
         }
         if payload.is_empty_attrs() {
-            return self.heap.alloc_attrs(0, FlatAttrs::empty()).ok();
+            let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
+            return self
+                .heap
+                .alloc_attrs_with_repr_metadata(0, repr, FlatAttrs::empty())
+                .ok();
         }
         if let Some(attr_payloads) = payload.attrs_entries_with_positions() {
+            let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
             let mut entries = Vec::new();
             entries.try_reserve_exact(attr_payloads.len()).ok()?;
             for (name, position, value_payload) in attr_payloads {
@@ -147,7 +152,10 @@ impl TreeWalk {
                 entries.push(entry);
             }
             let attrs = FlatAttrs::new(entries, &self.symbols).ok()?;
-            return self.heap.alloc_attrs(0, attrs).ok();
+            return self
+                .heap
+                .alloc_attrs_with_repr_metadata(0, repr, attrs)
+                .ok();
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()

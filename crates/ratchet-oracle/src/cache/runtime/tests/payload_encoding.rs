@@ -45,6 +45,13 @@ fn cached_expression_payloads_round_trip_through_persistent_encoding() {
             ),
         ])
         .expect("strict attrs payload builds"),
+        CachedExpressionValue::strict_attrs(vec![(
+            b"a".to_vec(),
+            CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+        )])
+        .expect("HAMT attrs payload builds")
+        .with_attr_repr_metadata(AttrSetReprKind::Hamt)
+        .expect("HAMT attrs representation metadata attaches"),
         CachedExpressionValue::source_ordered_attrs(vec![
             (
                 b"c".to_vec(),
@@ -351,6 +358,44 @@ fn cached_expression_payload_decode_rejects_duplicate_source_ordered_attrset_nam
 }
 
 #[test]
+fn cached_expression_payload_decode_rejects_flat_attr_repr_envelope() {
+    let payload = CachedExpressionValue::empty_attrs()
+        .encode_persistent_payload()
+        .expect("empty attrs payload encodes");
+    let encoded = attr_repr_envelope_payload(0, &payload);
+
+    let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+        .expect_err("flat attr representation envelope errors");
+
+    assert_eq!(
+        error,
+        CachedExpressionValuePayloadError::NonCanonicalAttrReprEnvelope
+    );
+}
+
+#[test]
+fn cached_expression_payload_decode_rejects_nested_attr_repr_envelope() {
+    let payload = CachedExpressionValue::strict_attrs(vec![(
+        b"a".to_vec(),
+        CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+    )])
+    .expect("attrs payload builds")
+    .with_attr_repr_metadata(AttrSetReprKind::Hamt)
+    .expect("HAMT attrs representation metadata attaches")
+    .encode_persistent_payload()
+    .expect("HAMT attr repr payload encodes");
+    let encoded = attr_repr_envelope_payload(1, &payload);
+
+    let error = CachedExpressionValue::decode_persistent_payload(&encoded)
+        .expect_err("nested attr representation envelope errors");
+
+    assert_eq!(
+        error,
+        CachedExpressionValuePayloadError::NonCanonicalAttrReprEnvelope
+    );
+}
+
+#[test]
 fn cached_expression_payload_decode_rejects_invalid_attr_position_tag() {
     let mut encoded = Vec::new();
     append_payload_bytes(&mut encoded, ATTRS_VALUE_HASH_DOMAIN_VERSION).expect("domain appends");
@@ -400,4 +445,13 @@ fn cached_expression_payload_decode_rejects_positioned_attrset_without_positions
             CachedExpressionValuePayloadError::PositionlessPositionedAttrsPayload
         );
     }
+}
+
+fn attr_repr_envelope_payload(repr: u8, payload: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    append_payload_bytes(&mut encoded, ATTR_REPR_PAYLOAD_ENVELOPE_TAG).expect("tag appends");
+    append_payload_byte(&mut encoded, repr).expect("repr appends");
+    append_payload_u128(&mut encoded, payload.len() as u128).expect("payload length appends");
+    append_payload_bytes(&mut encoded, payload).expect("payload appends");
+    encoded
 }

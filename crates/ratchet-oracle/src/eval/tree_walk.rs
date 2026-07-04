@@ -55,7 +55,7 @@ use super::heap::{
     AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
     AllocationCollectorPollRootValueWritebackSlot, AllocationCollectorPollRootWritebackPlan,
     AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport,
+    AllocationCollectorPollScan, EvalHeap, EvalHeapAttrsMetadata, EvalHeapCheapMemoryAdviceReport,
     EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue, EvalHeapError,
     EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapWorkerRegionPopReport,
     EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind,
@@ -923,6 +923,9 @@ enum FetchTarballCompression {
 #[derive(Clone, Copy, Debug)]
 struct AttrUpdateTelemetryState {
     override_chain_depth: usize,
+    // Active update projection reads the left heap value metadata; this field is
+    // still used by the test-only telemetry wrapper that synthesizes chains.
+    #[allow(dead_code)]
     projected_repr: AttrSetReprKind,
 }
 

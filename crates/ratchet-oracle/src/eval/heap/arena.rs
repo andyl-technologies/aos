@@ -1345,10 +1345,33 @@ impl EvalHeap {
     /// the runtime allocator cannot reserve an attrset handle, or if the
     /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_attrs(&mut self, shape: u32, attrs: FlatAttrs) -> Result<Value, EvalHeapError> {
-        let hash = attrs_structural_hash(shape, &attrs);
+        self.alloc_attrs_with_repr_metadata(shape, AttrSetReprKind::Flat, attrs)
+    }
+
+    /// Allocates an attribute-set object with explicit representation metadata.
+    ///
+    /// The active object payload remains [`FlatAttrs`]. The `repr` argument is
+    /// persisted with the heap record so policy-aware attrset operations can
+    /// observe the representation selected for this value while existing flat
+    /// consumers keep using [`EvalHeap::get_attrs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the attrset length cannot fit the runtime slot count, if
+    /// the runtime allocator cannot reserve an attrset handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
+    pub fn alloc_attrs_with_repr_metadata(
+        &mut self,
+        shape: u32,
+        repr: AttrSetReprKind,
+        attrs: FlatAttrs,
+    ) -> Result<Value, EvalHeapError> {
+        let metadata = EvalHeapAttrsMetadata::new(shape, repr);
+        let hash = attrs_structural_hash(metadata, &attrs);
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
-        let cons_slot = match self.admit_attrs_cons(hash, shape, &attrs)? {
+        let cons_slot = match self.admit_attrs_cons(hash, metadata, &attrs)? {
             HashConsReservation::Existing(value) => {
                 self.touch_reusable_value(value)?;
                 return Ok(value);
@@ -1386,7 +1409,7 @@ impl EvalHeap {
             last_touch_epoch,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
-            object: HeapObjectValue::Attrs { shape, attrs },
+            object: HeapObjectValue::Attrs { metadata, attrs },
         });
         self.push_attrs_cons_value(cons_slot, value);
         self.poll_memory_budget_after_allocation();
@@ -1721,6 +1744,44 @@ impl EvalHeap {
         }
     }
 
+    /// Returns metadata for the attribute-set object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not an attrset value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the attrset handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-attrset record.
+    pub fn get_attrs_metadata(&self, value: Value) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
+        self.get_attrs_metadata_ptr(ptr)
+    }
+
+    /// Returns metadata for the attrset referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-attrset record.
+    pub fn get_attrs_metadata_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
+        match &record.object {
+            HeapObjectValue::Attrs { metadata, .. } => {
+                self.touch_record(record);
+                Ok(*metadata)
+            }
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Attrs,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     /// Returns the lambda closure object referenced by `value`.
     ///
     /// # Errors
@@ -1990,7 +2051,7 @@ impl EvalHeap {
     fn admit_attrs_cons(
         &mut self,
         hash: HotXxh3Hash,
-        shape: u32,
+        metadata: EvalHeapAttrsMetadata,
         attrs: &FlatAttrs,
     ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
         let existing = {
@@ -2004,9 +2065,9 @@ impl EvalHeap {
                     let same_attrs = matches!(
                         &record.object,
                         HeapObjectValue::Attrs {
-                            shape: candidate_shape,
+                            metadata: candidate_metadata,
                             attrs: candidate_attrs,
-                        } if *candidate_shape == shape && candidate_attrs.raw_eq(attrs)
+                        } if *candidate_metadata == metadata && candidate_attrs.raw_eq(attrs)
                     );
                     Ok::<bool, EvalHeapError>(same_hash && same_attrs)
                 })?
@@ -2366,10 +2427,10 @@ fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
     HotXxh3Hash::from_xxh3(hasher.finish())
 }
 
-fn attrs_structural_hash(shape: u32, attrs: &FlatAttrs) -> HotXxh3Hash {
+fn attrs_structural_hash(metadata: EvalHeapAttrsMetadata, attrs: &FlatAttrs) -> HotXxh3Hash {
     let mut hasher = Xxh3::new();
     ValueTag::Attrs.hash(&mut hasher);
-    shape.hash(&mut hasher);
+    metadata.hash(&mut hasher);
     attrs.len().hash(&mut hasher);
     attrs.source_order().hash(&mut hasher);
     attrs.iteration_order().hash(&mut hasher);

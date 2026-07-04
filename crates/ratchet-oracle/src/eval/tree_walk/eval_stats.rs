@@ -116,6 +116,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         lhs: IrId,
+        left_repr: AttrSetReprKind,
         left_len: usize,
         right_len: usize,
     ) -> Option<AttrUpdateMergeProjection> {
@@ -140,7 +141,7 @@ impl TreeWalk {
         };
         let policy = AttrSetReprPolicy::default();
         let construction = AttrSetConstruction::UpdateMerge {
-            left_repr: left_state.projected_repr,
+            left_repr,
             left_len,
             right_len,
             override_chain_depth,
@@ -161,7 +162,7 @@ impl TreeWalk {
         };
 
         Some(AttrUpdateMergeProjection {
-            left_repr: left_state.projected_repr,
+            left_repr,
             override_chain_depth,
             decision,
         })
@@ -176,7 +177,18 @@ impl TreeWalk {
         left_len: usize,
         right_len: usize,
     ) {
-        let Some(projection) = self.project_attr_update_merge(id, span, lhs, left_len, right_len)
+        let lhs_ref = (self.current_module.as_u32(), lhs.as_u32());
+        let left_repr = self
+            .attr_update_node_states
+            .get(&lhs_ref)
+            .copied()
+            .unwrap_or(AttrUpdateTelemetryState {
+                override_chain_depth: 0,
+                projected_repr: AttrSetReprKind::Flat,
+            })
+            .projected_repr;
+        let Some(projection) =
+            self.project_attr_update_merge(id, span, lhs, left_repr, left_len, right_len)
         else {
             return;
         };
@@ -220,15 +232,14 @@ impl TreeWalk {
             .insert((self.current_module.as_u32(), id.as_u32()), result_state);
     }
 
-    pub(super) fn record_attr_repr_decision_telemetry(
-        &mut self,
+    fn classify_attr_repr_decision(
+        &self,
         id: IrId,
         span: Span,
         construction: AttrSetConstruction,
-    ) {
-        let policy = AttrSetReprPolicy::default();
-        let decision = match policy.classify(construction) {
-            Ok(decision) => decision,
+    ) -> Option<AttrSetReprDecision> {
+        match AttrSetReprPolicy::default().classify(construction) {
+            Ok(decision) => Some(decision),
             Err(source) => {
                 tracing::debug!(
                     target: "aos_nix::eval::attr_telemetry",
@@ -238,10 +249,18 @@ impl TreeWalk {
                     error = %source,
                     "skipping attr representation telemetry after policy failure"
                 );
-                return;
+                None
             }
-        };
+        }
+    }
 
+    fn record_classified_attr_repr_decision_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        construction: AttrSetConstruction,
+        decision: AttrSetReprDecision,
+    ) {
         if let Err(source) = self
             .attr_telemetry
             .record_repr_decision(construction, decision)
@@ -265,11 +284,15 @@ impl TreeWalk {
         attrs: FlatAttrs,
         construction: AttrSetConstruction,
     ) -> Result<Value, TreeWalkError> {
+        let decision = self.classify_attr_repr_decision(id, span, construction);
+        let repr = decision.map_or(AttrSetReprKind::Flat, AttrSetReprDecision::kind);
         let value = self
             .heap
-            .alloc_attrs(shape, attrs)
+            .alloc_attrs_with_repr_metadata(shape, repr, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.record_attr_repr_decision_telemetry(id, span, construction);
+        if let Some(decision) = decision {
+            self.record_classified_attr_repr_decision_telemetry(id, span, construction, decision);
+        }
         Ok(value)
     }
 

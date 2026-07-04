@@ -30,6 +30,10 @@ pub(super) enum InlineValuePayload {
     SourceOrderedAttrs(Vec<AttrPayloadEntry>),
     PositionedAttrs(Vec<PositionedAttrPayloadEntry>),
     SourceOrderedPositionedAttrs(Vec<PositionedAttrPayloadEntry>),
+    AttrRepr {
+        repr: AttrSetReprKind,
+        payload: Box<InlineValuePayload>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,12 +94,14 @@ impl InlineValuePayload {
             | Self::Attrs(_)
             | Self::SourceOrderedAttrs(_)
             | Self::PositionedAttrs(_)
-            | Self::SourceOrderedPositionedAttrs(_) => None,
+            | Self::SourceOrderedPositionedAttrs(_)
+            | Self::AttrRepr { .. } => None,
         }
     }
 
     pub(super) fn retains_attr_positions(&self) -> bool {
         match self {
+            Self::AttrRepr { payload, .. } => payload.retains_attr_positions(),
             Self::PositionedAttrs(_) | Self::SourceOrderedPositionedAttrs(_) => true,
             Self::List(elements) => elements.iter().any(Self::retains_attr_positions),
             Self::Attrs(entries) | Self::SourceOrderedAttrs(entries) => entries
@@ -116,6 +122,7 @@ impl InlineValuePayload {
 
     pub(super) fn attr_positions_all_in_module(&self, module: u32) -> bool {
         match self {
+            Self::AttrRepr { payload, .. } => payload.attr_positions_all_in_module(module),
             Self::PositionedAttrs(entries) | Self::SourceOrderedPositionedAttrs(entries) => {
                 entries.iter().all(|entry| {
                     entry
@@ -146,6 +153,7 @@ impl InlineValuePayload {
 
     pub(super) fn collect_attr_position_modules(&self, modules: &mut BTreeSet<u32>) {
         match self {
+            Self::AttrRepr { payload, .. } => payload.collect_attr_position_modules(modules),
             Self::PositionedAttrs(entries) | Self::SourceOrderedPositionedAttrs(entries) => {
                 for entry in entries {
                     if let Some(position) = entry.position {
@@ -283,6 +291,12 @@ impl InlineValuePayload {
                 hasher.update(SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG);
                 update_positioned_attr_entries_preimage(hasher, entries);
             }
+            Self::AttrRepr { repr, payload } => {
+                hasher.update(ATTR_REPR_PAYLOAD_ENVELOPE_TAG);
+                hasher.update(&[attr_repr_payload_byte(*repr)]);
+                hasher.update(&payload.persistent_payload_len().to_le_bytes());
+                payload.update_persistent_payload_preimage(hasher);
+            }
         }
     }
 
@@ -369,6 +383,12 @@ impl InlineValuePayload {
                         .iter()
                         .map(positioned_attr_entry_payload_len)
                         .sum::<u128>()
+            }
+            Self::AttrRepr { payload, .. } => {
+                ATTR_REPR_PAYLOAD_ENVELOPE_TAG.len() as u128
+                    + 1
+                    + 16
+                    + payload.persistent_payload_len()
             }
         }
     }
@@ -488,6 +508,12 @@ impl InlineValuePayload {
                     append_payload_bytes(&mut out, &entry.value.encode_persistent_payload()?)?;
                 }
             }
+            Self::AttrRepr { repr, payload } => {
+                append_payload_bytes(&mut out, ATTR_REPR_PAYLOAD_ENVELOPE_TAG)?;
+                append_payload_byte(&mut out, attr_repr_payload_byte(*repr))?;
+                append_payload_u128(&mut out, payload.persistent_payload_len())?;
+                append_payload_bytes(&mut out, &payload.encode_persistent_payload()?)?;
+            }
         }
         Ok(out)
     }
@@ -508,6 +534,32 @@ impl InlineValuePayload {
                     limit: MAX_CACHED_EXPRESSION_PAYLOAD_NESTING,
                 },
             );
+        }
+        if bytes.starts_with(ATTR_REPR_PAYLOAD_ENVELOPE_TAG) {
+            let mut cursor = PayloadCursor::new(bytes);
+            cursor.take_marker(
+                ATTR_REPR_PAYLOAD_ENVELOPE_TAG,
+                "attr representation envelope",
+            )?;
+            let repr = attr_repr_from_payload_byte(cursor.take_byte()?)?;
+            if matches!(repr, AttrSetReprKind::Flat) {
+                return Err(CachedExpressionValuePayloadError::NonCanonicalAttrReprEnvelope);
+            }
+            let len = cursor.take_len()?;
+            let payload_bytes = cursor.take_bytes(len)?;
+            let payload =
+                Self::decode_persistent_payload_with_depth(payload_bytes, depth.saturating_add(1))?;
+            if matches!(payload, Self::AttrRepr { .. }) {
+                return Err(CachedExpressionValuePayloadError::NonCanonicalAttrReprEnvelope);
+            }
+            if !payload.is_attrs_payload() {
+                return Err(CachedExpressionValuePayloadError::AttrReprWithoutAttrs);
+            }
+            cursor.finish()?;
+            return Ok(Self::AttrRepr {
+                repr,
+                payload: Box::new(payload),
+            });
         }
         if bytes.starts_with(INLINE_VALUE_HASH_DOMAIN_VERSION) {
             let mut cursor = PayloadCursor::new(bytes);
@@ -713,6 +765,86 @@ impl InlineValuePayload {
             return Ok(Self::Attrs(entries));
         }
         Err(CachedExpressionValuePayloadError::UnknownDomain)
+    }
+
+    pub(super) fn attr_repr_kind(&self) -> Option<AttrSetReprKind> {
+        match self {
+            Self::AttrRepr { repr, .. } => Some(*repr),
+            Self::EmptyAttrs
+            | Self::Attrs(_)
+            | Self::SourceOrderedAttrs(_)
+            | Self::PositionedAttrs(_)
+            | Self::SourceOrderedPositionedAttrs(_) => Some(AttrSetReprKind::Flat),
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. }
+            | Self::EmptyList
+            | Self::List(_) => None,
+        }
+    }
+
+    pub(super) fn with_attr_repr(
+        self,
+        repr: AttrSetReprKind,
+    ) -> Result<Self, CachedExpressionValuePayloadError> {
+        if !self.is_attrs_payload() {
+            return Err(CachedExpressionValuePayloadError::AttrReprWithoutAttrs);
+        }
+        let payload = match self {
+            Self::AttrRepr { payload, .. } => payload,
+            payload if matches!(repr, AttrSetReprKind::Flat) => return Ok(payload),
+            payload => Box::new(payload),
+        };
+        match repr {
+            AttrSetReprKind::Flat => Ok(*payload),
+            AttrSetReprKind::Hamt => Ok(Self::AttrRepr { repr, payload }),
+        }
+    }
+
+    fn is_attrs_payload(&self) -> bool {
+        match self {
+            Self::EmptyAttrs
+            | Self::Attrs(_)
+            | Self::SourceOrderedAttrs(_)
+            | Self::PositionedAttrs(_)
+            | Self::SourceOrderedPositionedAttrs(_) => true,
+            Self::AttrRepr { payload, .. } => payload.is_attrs_payload(),
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::ContextFreeString(_)
+            | Self::ContextString { .. }
+            | Self::Path(_)
+            | Self::ContextPath { .. }
+            | Self::EmptyList
+            | Self::List(_) => false,
+        }
+    }
+}
+
+const fn attr_repr_payload_byte(repr: AttrSetReprKind) -> u8 {
+    match repr {
+        AttrSetReprKind::Flat => 0,
+        AttrSetReprKind::Hamt => 1,
+    }
+}
+
+fn attr_repr_from_payload_byte(
+    tag: u8,
+) -> Result<AttrSetReprKind, CachedExpressionValuePayloadError> {
+    match tag {
+        0 => Ok(AttrSetReprKind::Flat),
+        1 => Ok(AttrSetReprKind::Hamt),
+        tag => Err(CachedExpressionValuePayloadError::InvalidTag {
+            section: "attr representation",
+            tag,
+        }),
     }
 }
 

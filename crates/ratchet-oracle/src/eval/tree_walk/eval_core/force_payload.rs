@@ -491,8 +491,9 @@ impl TreeWalk {
                 }
             }
             ValueTag::Attrs => {
+                let metadata = self.heap.get_attrs_metadata(value).ok()?;
                 let attrs = self.heap.get_attrs(value).ok()?;
-                if attrs.is_empty() {
+                let payload = if attrs.is_empty() {
                     CachedExpressionValue::empty_attrs()
                 } else {
                     let mut entries = Vec::new();
@@ -553,7 +554,8 @@ impl TreeWalk {
                         )
                         .ok()?
                     }
-                }
+                };
+                payload.with_attr_repr_metadata(metadata.repr()).ok()?
             }
             ValueTag::Thunk => {
                 let thunk_key = value.payload_bits();

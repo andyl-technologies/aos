@@ -6039,12 +6039,12 @@ impl EvalHeap {
                     push_heap_edge(&mut edges, HeapEdgeSource::ListElement { index }, value)?;
                 }
             }
-            HeapObjectValue::Attrs { shape, attrs } => {
+            HeapObjectValue::Attrs { metadata, attrs } => {
                 for (slot, entry) in attrs.entries_by_symbol().iter().enumerate() {
                     push_heap_edge(
                         &mut edges,
                         HeapEdgeSource::AttrBinding {
-                            shape: *shape,
+                            shape: metadata.shape(),
                             slot,
                             key: entry.key,
                         },
@@ -7027,14 +7027,14 @@ fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> 
         (HeapObjectValue::List(left), HeapObjectValue::List(right)) => left.raw_eq(right),
         (
             HeapObjectValue::Attrs {
-                shape: left_shape,
+                metadata: left_metadata,
                 attrs: left_attrs,
             },
             HeapObjectValue::Attrs {
-                shape: right_shape,
+                metadata: right_metadata,
                 attrs: right_attrs,
             },
-        ) => left_shape == right_shape && left_attrs.raw_eq(right_attrs),
+        ) => left_metadata == right_metadata && left_attrs.raw_eq(right_attrs),
         (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => {
             std::rc::Rc::ptr_eq(left, right)
         }
@@ -7076,12 +7076,12 @@ fn validate_copied_heap_field_write_object_source(
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
         (
-            HeapObjectValue::Attrs { shape, .. },
+            HeapObjectValue::Attrs { metadata, .. },
             HeapEdgeSource::AttrBinding {
                 shape: expected_shape,
                 ..
             },
-        ) if shape == expected_shape => Ok(()),
+        ) if metadata.shape() == *expected_shape => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
             if *index < primop.args().len() =>
         {
@@ -7133,12 +7133,12 @@ fn validate_direct_heap_field_write_object_source(
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
         (
-            HeapObjectValue::Attrs { shape, .. },
+            HeapObjectValue::Attrs { metadata, .. },
             HeapEdgeSource::AttrBinding {
                 shape: expected_shape,
                 ..
             },
-        ) if shape == expected_shape => Ok(()),
+        ) if metadata.shape() == *expected_shape => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
             if *index < primop.args().len() =>
         {
@@ -7244,16 +7244,16 @@ fn record_owned_heap_field_write_object(
             Ok(HeapObjectValue::List(NixList::new(elements)))
         }
         (
-            HeapObjectValue::Attrs { shape, attrs },
+            HeapObjectValue::Attrs { metadata, attrs },
             HeapEdgeSource::AttrBinding {
                 shape: expected_shape,
                 slot,
                 key,
             },
-        ) if shape == expected_shape => attrs
+        ) if metadata.shape() == *expected_shape => attrs
             .with_symbol_slot_value(*slot, *key, replacement)
             .map(|attrs| HeapObjectValue::Attrs {
-                shape: *shape,
+                metadata: *metadata,
                 attrs,
             })
             .map_err(RecordOwnedHeapFieldWriteObjectError::Attr),

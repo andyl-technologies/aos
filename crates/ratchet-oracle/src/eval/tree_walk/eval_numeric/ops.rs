@@ -2,6 +2,11 @@
 
 use super::*;
 
+struct AttrUpdateOperand {
+    entries: Vec<AttrEntry>,
+    metadata: EvalHeapAttrsMetadata,
+}
+
 impl TreeWalk {
     pub(in crate::eval::tree_walk) fn eval_numeric_negation(
         &mut self,
@@ -139,13 +144,13 @@ impl TreeWalk {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
         let left = self.force_lazy_foldl_initial_value(lhs, lhs_span, left)?;
-        let left_entries = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
+        let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
 
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
         let right = self.force_lazy_foldl_initial_value(rhs, rhs_span, right)?;
-        let right_entries = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
-        self.merge_attr_update_entries(id, node.span, lhs, left_entries, right_entries)
+        let right_operand = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
+        self.merge_attr_update_entries(id, node.span, lhs, left_operand, right_operand)
     }
 
     /// Merges two already-forced attrset values using Nix `//` semantics.
@@ -175,9 +180,9 @@ impl TreeWalk {
         rhs_span: Span,
         right: Value,
     ) -> Result<Value, TreeWalkError> {
-        let left_entries = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
-        let right_entries = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
-        self.merge_attr_update_entries(id, span, lhs, left_entries, right_entries)
+        let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
+        let right_operand = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
+        self.merge_attr_update_entries(id, span, lhs, left_operand, right_operand)
     }
 
     fn attr_entries_for_update(
@@ -186,7 +191,7 @@ impl TreeWalk {
         operand_id: IrId,
         operand_span: Span,
         value: Value,
-    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+    ) -> Result<AttrUpdateOperand, TreeWalkError> {
         if value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -197,10 +202,16 @@ impl TreeWalk {
                 operand_span,
             ));
         }
+        let metadata = self.heap.get_attrs_metadata(value).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, operand_span)
+        })?;
         let attrs = self.heap.get_attrs(value).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, operand_span)
         })?;
-        Self::clone_attr_entries(id, operand_span, attrs)
+        Ok(AttrUpdateOperand {
+            entries: Self::clone_attr_entries(id, operand_span, attrs)?,
+            metadata,
+        })
     }
 
     fn merge_attr_update_entries(
@@ -208,28 +219,38 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         lhs: IrId,
-        left_entries: Vec<AttrEntry>,
-        right_entries: Vec<AttrEntry>,
+        left_operand: AttrUpdateOperand,
+        right_operand: AttrUpdateOperand,
     ) -> Result<Value, TreeWalkError> {
-        let left_len = left_entries.len();
-        let right_len = right_entries.len();
+        let left_len = left_operand.entries.len();
+        let right_len = right_operand.entries.len();
         let attrs = self.merge_flat_update_entries_for_active_heap(
             id,
             span,
-            &left_entries,
-            &right_entries,
+            &left_operand.entries,
+            &right_operand.entries,
         )?;
+        let projection = self.project_attr_update_merge(
+            id,
+            span,
+            lhs,
+            left_operand.metadata.repr(),
+            left_len,
+            right_len,
+        );
+        let repr = projection.map_or(AttrSetReprKind::Flat, |projection| {
+            projection.decision.kind()
+        });
         let result = self
             .heap
-            .alloc_attrs(0, attrs)
+            .alloc_attrs_with_repr_metadata(0, repr, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
 
-        if let Some(projection) = self.project_attr_update_merge(id, span, lhs, left_len, right_len)
-        {
+        if let Some(projection) = projection {
             match self.dispatch_attr_update_merge_for_telemetry(
                 projection,
-                &left_entries,
-                &right_entries,
+                &left_operand.entries,
+                &right_operand.entries,
             ) {
                 Ok(hamt_summary) => self.record_projected_attr_update_telemetry(
                     id,

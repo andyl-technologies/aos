@@ -1,6 +1,7 @@
 //! Basic attribute, list, and inheritance evaluator tests.
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 
 #[test]
 fn dynamic_attr_names_require_string_values() {
@@ -378,10 +379,14 @@ fn evaluates_static_attrsets_with_lazy_values() {
     let b = symbol_for(&ir, b"b");
     let outcome = eval_whnf_owned(&ir).expect("static attrset evaluates");
     let heap = outcome.heap();
+    let metadata = heap
+        .get_attrs_metadata(outcome.value())
+        .expect("attr metadata exists");
     let attrs = heap
         .get_attrs(outcome.value())
         .expect("attrset is heap-owned");
 
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
     assert_eq!(attrs.len(), 2);
     assert_eq!(attrs.get(a).expect("a exists").as_int(), Ok(1));
 

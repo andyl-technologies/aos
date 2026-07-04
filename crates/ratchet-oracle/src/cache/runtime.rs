@@ -23,7 +23,7 @@ use super::{
     NodeFreshness, PersistNodeMetadataKey, RecomputeReadyDirty, Reconsideration, UncacheableInput,
     ValueHash, ValueHashError,
 };
-use crate::attrs::AttrPosition;
+use crate::attrs::{AttrPosition, repr::AttrSetReprKind};
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
 use crate::syntax::Span;
 use crate::value::Value;
@@ -55,6 +55,7 @@ const MAX_CACHED_EXPRESSION_PAYLOAD_NESTING: usize = 64;
 const SOURCE_ORDERED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-source-order";
 const POSITIONED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-positioned";
 const SOURCE_ORDERED_POSITIONED_ATTRS_PAYLOAD_TAG: &[u8] = b"attrs-source-order-positioned";
+const ATTR_REPR_PAYLOAD_ENVELOPE_TAG: &[u8] = b"attrs-repr-v1";
 const ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG: &[u8] = b"attrs-position-source-v1";
 /// A source of evaluator-observed impure input trace entries.
 pub trait ImpureInputTraceSource {
@@ -429,6 +430,12 @@ pub enum CachedExpressionValuePayloadError {
     /// A position-source envelope wrapped a payload with no retained positions.
     #[error("cached expression attr-position source envelope has no positioned bindings")]
     PositionSourceWithoutPositions,
+    /// A representation envelope wrapped a non-attrset payload.
+    #[error("cached expression attr representation envelope has no attrset payload")]
+    AttrReprWithoutAttrs,
+    /// A representation envelope used a non-canonical wrapper form.
+    #[error("cached expression attr representation envelope is non-canonical")]
+    NonCanonicalAttrReprEnvelope,
     /// Nested payload decoding exceeded the supported recursion depth.
     #[error("cached expression payload nesting exceeded {limit} levels")]
     PayloadNestingLimitExceeded {

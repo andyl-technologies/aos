@@ -1,6 +1,7 @@
 //! Thunk and strictness tests for tree-walk attr evaluation.
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 use crate::attrs::telemetry::HistogramBucket;
 
 #[test]
@@ -386,6 +387,33 @@ fn large_dynamic_attrsets_record_projected_hamt_repr_decisions() {
     assert_eq!(snapshot.hamt_decisions, 1);
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.large_dynamic_construction, 1);
+}
+
+#[test]
+fn large_dynamic_attrset_heap_metadata_records_hamt_repr() {
+    let bindings = (0..65)
+        .map(|index| format!(r#""k{index}" = {index};"#))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!(r#"let key = "selected"; in {{ ${{key}} = 99; {bindings} }}"#);
+    let ir = lower(&source);
+    let selected = symbol_for(&ir, b"selected");
+
+    let outcome = eval_whnf_owned(&ir).expect("large dynamic attrset evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("result metadata exists");
+    let attrs = outcome
+        .heap()
+        .get_attrs(outcome.value())
+        .expect("result attrs remain flat-readable");
+
+    assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+    assert_eq!(
+        attrs.get(selected).expect("selected exists").as_int(),
+        Ok(99)
+    );
 }
 
 #[test]
@@ -866,6 +894,60 @@ fn attr_update_telemetry_tracks_projected_hamt_left_state() {
     assert_eq!(snapshot.reasons.small_shape_stable, 3);
     assert_eq!(snapshot.reasons.deep_override_chain, 1);
     assert_eq!(snapshot.reasons.left_already_hamt, 1);
+}
+
+#[test]
+fn attr_update_heap_metadata_records_projected_hamt_repr() {
+    let ir = lower(
+        "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; })",
+    );
+    let f = symbol_for(&ir, b"f");
+
+    let outcome = eval_whnf_owned(&ir).expect("deep attr update chain evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("result metadata exists");
+    let attrs = outcome
+        .heap()
+        .get_attrs(outcome.value())
+        .expect("result attrs remain flat-readable");
+
+    assert_eq!(metadata.shape(), 0);
+    assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+    assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
+}
+
+#[test]
+fn force_cache_payload_replay_preserves_attr_repr_metadata() {
+    let ir = lower(
+        "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; })",
+    );
+    let f = symbol_for(&ir, b"f");
+    let mut evaluator = TreeWalk::new(&ir);
+    let value = evaluator
+        .eval_root()
+        .expect("deep attr update chain evaluates");
+    let payload = evaluator
+        .force_cache_payload_for_value(value)
+        .expect("HAMT-projected attrs capture as a cache payload");
+
+    let mut replay = TreeWalk::new(&ir);
+    let value = replay
+        .value_for_cached_expression_payload_for_test(payload)
+        .expect("cached attr payload replays");
+    let metadata = replay
+        .heap()
+        .get_attrs_metadata(value)
+        .expect("replayed metadata exists");
+    let attrs = replay
+        .heap()
+        .get_attrs(value)
+        .expect("replayed attrs remain flat-readable");
+
+    assert_eq!(metadata.shape(), 0);
+    assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+    assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
 }
 
 #[test]
