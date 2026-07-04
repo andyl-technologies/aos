@@ -35,6 +35,7 @@ impl EvalThunk {
                 scoped_globals,
             },
             cell: ThunkCell::new(),
+            parallel_cell: None,
         }
     }
 
@@ -57,6 +58,7 @@ impl EvalThunk {
                 argument_value,
             },
             cell: ThunkCell::new(),
+            parallel_cell: None,
         }
     }
 
@@ -89,6 +91,7 @@ impl EvalThunk {
                 second_argument_value,
             },
             cell: ThunkCell::new(),
+            parallel_cell: None,
         }
     }
 
@@ -106,6 +109,7 @@ impl EvalThunk {
                 path,
             },
             cell: ThunkCell::new(),
+            parallel_cell: None,
         }
     }
 
@@ -114,6 +118,7 @@ impl EvalThunk {
         Self {
             kind: EvalThunkKind::BuiltinAttr { symbol, builtin },
             cell: ThunkCell::new(),
+            parallel_cell: None,
         }
     }
 
@@ -122,7 +127,21 @@ impl EvalThunk {
         Self {
             kind: thunk.kind.clone(),
             cell: ThunkCell::forced(value),
+            parallel_cell: None,
         }
+    }
+
+    /// Attaches an evaluator-native parallel payload cell to this thunk record.
+    ///
+    /// The current serial [`ThunkCell`] remains present for the existing
+    /// tree-walk force path. The parallel payload cell is a storage-admission
+    /// boundary for future scheduler wiring and starts in the suspended state.
+    /// It is intentionally crate-internal until precise root scanning and
+    /// writeback cover terminal payloads stored in this slot.
+    #[allow(dead_code)]
+    pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
+        self.parallel_cell = Some(TreeWalkParallelThunkCell::new(dropped_claim_error));
+        self
     }
 
     /// Returns the deferred work this thunk performs when forced.
@@ -188,5 +207,173 @@ impl EvalThunk {
     /// Returns the serial state/result cell for this thunk.
     pub const fn cell(&self) -> &ThunkCell {
         &self.cell
+    }
+
+    /// Returns the currently attached force-storage mode.
+    #[allow(dead_code)]
+    pub(crate) const fn force_storage_mode(&self) -> EvalThunkForceStorageMode {
+        match &self.parallel_cell {
+            Some(_) => EvalThunkForceStorageMode::SerialWithParallelPayload,
+            None => EvalThunkForceStorageMode::Serial,
+        }
+    }
+
+    /// Returns the evaluator-native parallel payload cell, if one is attached.
+    ///
+    /// This accessor is crate-internal because the precise heap scanner does
+    /// not yet trace or rewrite terminal payloads stored in the parallel cell.
+    #[allow(dead_code)]
+    pub(crate) const fn parallel_payload_cell(&self) -> Option<&TreeWalkParallelThunkCell> {
+        self.parallel_cell.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::compile::IrId;
+    use crate::eval::ThunkState;
+    use crate::eval::thunk_cas::ParallelThunkWorkerId;
+    use crate::eval::thunk_payload::TreeWalkParallelThunkWait;
+    use crate::eval::tree_walk::TreeWalkErrorKind;
+    use crate::syntax::Span;
+    use crate::value::Value;
+
+    use super::*;
+
+    fn worker(raw: u64) -> ParallelThunkWorkerId {
+        ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+    }
+
+    fn tree_walk_error(raw: u32) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::DivisionByZero { id: IrId::new(raw) },
+            Span::new(raw, raw.saturating_add(1)),
+        )
+    }
+
+    fn ready_result(wait: TreeWalkParallelThunkWait<'_>) -> Result<Value, TreeWalkError> {
+        match wait {
+            TreeWalkParallelThunkWait::Ready(result) => result,
+            TreeWalkParallelThunkWait::Claimed(_) => {
+                panic!("expected ready tree-walk result, found claim guard");
+            }
+            TreeWalkParallelThunkWait::SelfCycle { owner } => {
+                panic!("expected ready tree-walk result, found self-cycle owned by {owner:?}");
+            }
+        }
+    }
+
+    fn assert_serial_storage(thunk: &EvalThunk) {
+        assert_eq!(
+            thunk.force_storage_mode(),
+            EvalThunkForceStorageMode::Serial
+        );
+        assert!(thunk.parallel_payload_cell().is_none());
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    }
+
+    #[test]
+    fn eval_thunk_default_constructors_use_serial_force_storage() {
+        let thunk = EvalThunk::new(IrId::new(7));
+        assert_serial_storage(&thunk);
+        assert_eq!(thunk.body(), Some(IrId::new(7)));
+
+        let apply = EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(1),
+            Span::new(1, 2),
+            Value::int(1),
+            EvalModuleId::ROOT,
+            IrId::new(2),
+            Value::int(2),
+        );
+        assert_serial_storage(&apply);
+
+        let apply2 = EvalThunk::apply2(
+            EvalModuleId::ROOT,
+            IrId::new(1),
+            Span::new(1, 2),
+            Value::int(1),
+            EvalModuleId::ROOT,
+            IrId::new(2),
+            Span::new(2, 3),
+            Value::int(2),
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(3, 4),
+            Value::int(3),
+        );
+        assert_serial_storage(&apply2);
+
+        let select = EvalThunk::select(
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            Value::int(5),
+            IrAttrPathId::new(0),
+        );
+        assert_serial_storage(&select);
+    }
+
+    #[test]
+    fn eval_thunk_forced_cached_result_remains_serial_storage() {
+        let thunk = EvalThunk::new(IrId::new(7)).with_parallel_payload_cell(tree_walk_error(99));
+        let forced = EvalThunk::with_forced_cached_result_from(&thunk, Value::int(42));
+
+        assert_eq!(
+            forced.force_storage_mode(),
+            EvalThunkForceStorageMode::Serial
+        );
+        assert!(forced.parallel_payload_cell().is_none());
+        assert_eq!(
+            forced
+                .cell()
+                .cached_value()
+                .expect("forced serial cached value is readable")
+                .expect("forced serial cached value is stored")
+                .as_int(),
+            Ok(42)
+        );
+        assert_eq!(forced.body(), Some(IrId::new(7)));
+    }
+
+    #[test]
+    fn eval_thunk_parallel_payload_cell_preserves_metadata_and_replays_result() {
+        let thunk = EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(11), EvalEnv::default())
+            .with_parallel_payload_cell(tree_walk_error(99));
+
+        assert_eq!(
+            thunk.force_storage_mode(),
+            EvalThunkForceStorageMode::SerialWithParallelPayload
+        );
+        assert_eq!(
+            thunk.body_ref(),
+            Some(EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(11)))
+        );
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+
+        let parallel = thunk
+            .parallel_payload_cell()
+            .expect("parallel payload cell is attached");
+        let TreeWalkParallelThunkWait::Claimed(guard) = parallel
+            .claim_or_wait_for_result(worker(1))
+            .expect("parallel payload cell can be claimed")
+        else {
+            panic!("attached parallel payload cell should start suspended");
+        };
+        guard
+            .publish_value(Value::int(89))
+            .expect("parallel payload value publishes");
+
+        assert_eq!(
+            ready_result(
+                parallel
+                    .claim_or_wait_for_result(worker(2))
+                    .expect("parallel payload value replays")
+            )
+            .expect("parallel payload result is Ok")
+            .as_int(),
+            Ok(89)
+        );
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
     }
 }

@@ -16,6 +16,8 @@ use thiserror::Error;
 use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
+use super::thunk_payload::TreeWalkParallelThunkCell;
+use super::tree_walk::TreeWalkError;
 use crate::attrs::{AttrError, FlatAttrs};
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
@@ -142,11 +144,23 @@ pub(crate) enum EvalThunkKind {
 
 /// A suspended tree-walk thunk heap record.
 ///
-/// The record stores deferred tree-walk work and a serial state/result cell.
+/// The record stores deferred tree-walk work and force-state storage.
 #[derive(Debug)]
 pub struct EvalThunk {
     kind: EvalThunkKind,
     cell: ThunkCell,
+    #[allow(dead_code)]
+    parallel_cell: Option<TreeWalkParallelThunkCell>,
+}
+
+/// The force-storage cells currently attached to an [`EvalThunk`].
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EvalThunkForceStorageMode {
+    /// The thunk only has the serial tree-walk [`ThunkCell`].
+    Serial,
+    /// The thunk has the serial cell plus an evaluator-native parallel payload cell.
+    SerialWithParallelPayload,
 }
 
 /// A user lambda closure heap record.

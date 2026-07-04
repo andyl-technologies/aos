@@ -7563,6 +7563,22 @@ nurseries build on the bump arena.
       cannot prevent future enqueueing, does not prove final Chase-Lev
       exhaustion, does not replace `EvalThunk` storage, and does not satisfy the
       loom/Miri/TSan audit.
+- [x] Current `EvalThunk` parallel payload storage-slot precursor:
+      `EvalThunk` can now carry a crate-internal opt-in evaluator-native
+      `TreeWalkParallelThunkCell` beside its existing serial `ThunkCell`.
+      The internal `with_parallel_payload_cell` constructor attaches the
+      parallel payload cell before allocation, and internal accessors report
+      whether the slot is present for future scheduler wiring. Tests prove
+      default constructors remain serial, forced cached-result rebuilds stay
+      serial, and an attached parallel payload cell can claim, publish, and
+      replay an inline `Value` while preserving the thunk's deferred-work
+      metadata and leaving the serial cell untouched. This is only a
+      storage/admission boundary: the slot is not public API, the tree-walk
+      allocator does not opt in by default, the precise heap scanner/writeback
+      does not yet cover terminal payloads stored there, the serial
+      `force_value` path still uses `ThunkCell`, no scheduler executes thunk
+      bodies through this slot, and the final lock-free waiter-list and
+      loom/Miri/TSan gates remain open.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
