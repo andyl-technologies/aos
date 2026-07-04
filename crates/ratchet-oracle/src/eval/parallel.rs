@@ -227,6 +227,47 @@ impl<T> ParallelReadyWorkQueues<T> {
         self.task_count
     }
 
+    /// Captures queue depths before a worker enters the wait-cell park path.
+    ///
+    /// The snapshot is taken while holding every ready-work queue mutex in
+    /// worker-id order, so [`ParallelReadyWorkParkPreflight::is_idle`] means no
+    /// task was present in these safe queues at the observed instant. This is a
+    /// diagnostic/preflight artifact only: it does not reserve a scheduler park
+    /// token and does not prevent future ready work from being enqueued by a
+    /// later scheduler implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParallelReadyWorkError`] if `worker_id` is outside the worker
+    /// set or if any ready queue mutex was poisoned.
+    pub fn park_preflight_snapshot(
+        &self,
+        worker_id: usize,
+    ) -> Result<ParallelReadyWorkParkPreflight, ParallelReadyWorkError> {
+        if worker_id >= self.worker_count {
+            return Err(ParallelReadyWorkError::WorkerQueueMissing { worker_id });
+        }
+
+        let mut queue_guards = Vec::with_capacity(self.worker_count);
+        for queue_id in 0..self.worker_count {
+            queue_guards.push(self.lock_queue(queue_id)?);
+        }
+
+        let queue_lengths = queue_guards
+            .iter()
+            .map(|queue| queue.len())
+            .collect::<Vec<_>>();
+        let ready_task_count = queue_lengths.iter().sum();
+
+        Ok(ParallelReadyWorkParkPreflight {
+            observing_worker: worker_id,
+            worker_count: self.worker_count,
+            task_count: self.task_count,
+            queue_lengths,
+            ready_task_count,
+        })
+    }
+
     /// Runs one local or stolen ready-work item for `worker_id`.
     ///
     /// The caller supplies `run` so this queue adapter can execute arbitrary
@@ -378,6 +419,57 @@ impl<R> ParallelReadyWorkExecution<R> {
     /// Returns the ready-work result.
     pub const fn result(&self) -> &R {
         &self.result
+    }
+}
+
+/// Queue-depth snapshot captured before a worker may park on a thunk.
+///
+/// This is a safe ready-work precursor for scheduler integration. It records a
+/// same-instant view of the current mutex-backed queue adapter, not a final
+/// Chase-Lev deque park token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelReadyWorkParkPreflight {
+    observing_worker: usize,
+    worker_count: usize,
+    task_count: usize,
+    queue_lengths: Vec<usize>,
+    ready_task_count: usize,
+}
+
+impl ParallelReadyWorkParkPreflight {
+    /// Returns the worker that requested the preflight snapshot.
+    pub const fn observing_worker(&self) -> usize {
+        self.observing_worker
+    }
+
+    /// Returns the number of ready-work queues observed.
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+
+    /// Returns the number of tasks originally seeded into the queues.
+    pub const fn task_count(&self) -> usize {
+        self.task_count
+    }
+
+    /// Returns the number of queued tasks observed across all workers.
+    pub const fn ready_task_count(&self) -> usize {
+        self.ready_task_count
+    }
+
+    /// Returns whether every observed ready-work queue was empty.
+    pub const fn is_idle(&self) -> bool {
+        self.ready_task_count == 0
+    }
+
+    /// Returns queue depths in worker-id order.
+    pub fn queue_lengths(&self) -> &[usize] {
+        &self.queue_lengths
+    }
+
+    /// Returns the observed queue depth for one worker.
+    pub fn queue_length(&self, worker_id: usize) -> Option<usize> {
+        self.queue_lengths.get(worker_id).copied()
     }
 }
 
@@ -833,11 +925,117 @@ mod tests {
     }
 
     #[test]
+    fn ready_work_park_preflight_snapshot_reports_seeded_depths() {
+        let queues = parallel_ready_work_queues([10, 20, 30, 40, 50], workers(3));
+
+        let snapshot = queues
+            .park_preflight_snapshot(1)
+            .expect("preflight snapshot succeeds");
+
+        assert_eq!(snapshot.observing_worker(), 1);
+        assert_eq!(snapshot.worker_count(), 3);
+        assert_eq!(snapshot.task_count(), 5);
+        assert_eq!(snapshot.ready_task_count(), 5);
+        assert!(!snapshot.is_idle());
+        assert_eq!(snapshot.queue_lengths(), &[2, 2, 1]);
+        assert_eq!(snapshot.queue_length(0), Some(2));
+        assert_eq!(snapshot.queue_length(1), Some(2));
+        assert_eq!(snapshot.queue_length(2), Some(1));
+        assert_eq!(snapshot.queue_length(3), None);
+    }
+
+    #[test]
+    fn ready_work_park_preflight_snapshot_reports_idle_after_drain() {
+        let queues = parallel_ready_work_queues([10, 20, 30], workers(2));
+        let mut ran = Vec::new();
+
+        while queues
+            .run_next(0, |value| ran.push(value))
+            .expect("ready work run succeeds")
+            .ready_work()
+            != ParallelThunkReadyWork::Idle
+        {}
+
+        let snapshot = queues
+            .park_preflight_snapshot(0)
+            .expect("preflight snapshot succeeds");
+
+        assert_eq!(ran, vec![30, 10, 20]);
+        assert_eq!(snapshot.ready_task_count(), 0);
+        assert_eq!(snapshot.queue_lengths(), &[0, 0]);
+        assert!(snapshot.is_idle());
+    }
+
+    #[test]
+    fn ready_work_park_preflight_snapshot_feeds_wait_or_steal_idle_path() {
+        let cell = ParallelThunkWaitCell::new();
+        let ParallelThunkWait::Claimed(owner_guard) = cell
+            .claim_or_wait_for_terminal(worker(1))
+            .expect("owner claims thunk")
+        else {
+            panic!("owner should claim suspended wait cell");
+        };
+        let mut owner_guard = Some(owner_guard);
+        let queues = parallel_ready_work_queues([10, 20], workers(2));
+        let mut ran = Vec::new();
+        let mut preflight = None;
+
+        let outcome = cell
+            .claim_or_run_ready_then_wait(worker(2), || {
+                let step = queues
+                    .run_next(1, |value| ran.push(value))
+                    .expect("ready queue run succeeds");
+                if step.ready_work() == ParallelThunkReadyWork::Idle {
+                    preflight = Some(
+                        queues
+                            .park_preflight_snapshot(1)
+                            .expect("preflight snapshot succeeds"),
+                    );
+                    owner_guard
+                        .take()
+                        .expect("owner guard remains available")
+                        .publish_forced()
+                        .expect("owner publishes after idle preflight");
+                }
+                step.ready_work()
+            })
+            .expect("wait-or-steal hook completes");
+
+        let (result, report) = outcome.into_parts();
+        let snapshot = preflight.expect("idle preflight snapshot is captured");
+        assert!(matches!(
+            result,
+            ParallelThunkWait::Terminal(ParallelThunkTerminalState::Forced)
+        ));
+        assert_eq!(ran, vec![20, 10]);
+        assert_eq!(snapshot.observing_worker(), 1);
+        assert_eq!(snapshot.ready_task_count(), 0);
+        assert!(snapshot.is_idle());
+        assert_eq!(report.local_work_runs(), 1);
+        assert_eq!(report.stolen_work_runs(), 1);
+        assert!(!report.wait_registered());
+    }
+
+    #[test]
     fn ready_work_queues_reject_unknown_worker() {
         let queues = parallel_ready_work_queues([1, 2], workers(2));
 
         let error = queues
             .run_next(2, |value| value)
+            .expect_err("unknown worker is rejected");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueueMissing { worker_id: 2 }
+        );
+    }
+
+    #[test]
+    fn ready_work_park_preflight_snapshot_rejects_unknown_worker() {
+        let queues = parallel_ready_work_queues([1, 2], workers(2));
+
+        let error = queues
+            .park_preflight_snapshot(2)
             .expect_err("unknown worker is rejected");
 
         assert_eq!(
@@ -857,6 +1055,25 @@ mod tests {
 
         let error = queues
             .run_next(0, |value| value)
+            .expect_err("poisoned queue is reported");
+
+        assert_eq!(
+            error,
+            ParallelReadyWorkError::WorkerQueuePoisoned { worker_id: 0 }
+        );
+    }
+
+    #[test]
+    fn ready_work_park_preflight_snapshot_reports_poisoned_queue() {
+        let queues = parallel_ready_work_queues([1], workers(1));
+        let poison = std::panic::catch_unwind(|| {
+            let _guard = queues.queues[0].lock().expect("queue lock succeeds");
+            panic!("poison ready-work queue");
+        });
+        assert!(poison.is_err());
+
+        let error = queues
+            .park_preflight_snapshot(0)
             .expect_err("poisoned queue is reported");
 
         assert_eq!(

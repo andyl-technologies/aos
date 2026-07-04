@@ -7412,6 +7412,21 @@ nurseries build on the bump arena.
       deque, cannot prove a real worker exhausted all runnable evaluator work,
       does not hold a scheduler park token, and does not satisfy the
       loom/Miri/TSan gate.
+- [x] Current ready-work park-preflight snapshot precursor:
+      `ParallelReadyWorkQueues::park_preflight_snapshot` locks every safe
+      ready-work queue in worker-id order and records the observed queue depths,
+      total ready-task count, observing worker, worker count, and original task
+      count. An idle snapshot therefore proves that this mutex-backed queue
+      adapter had no queued ready work at one observed instant before a
+      wait-or-steal caller enters the wait-cell path. Tests cover seeded
+      non-empty depths, empty-after-drain reporting, unknown-worker and
+      poisoned-queue errors, and direct capture from the
+      `ParallelThunkWaitCell::claim_or_run_ready_then_wait` idle branch before
+      terminal replay. This is still only a park-preflight artifact for the safe
+      queue adapter: it is not the final Chase-Lev deque, does not reserve or
+      publish a scheduler park token, does not prevent future ready-work
+      enqueueing, cannot prove exhaustion of real evaluator work, and does not
+      satisfy the loom/Miri/TSan gate.
 - [x] Current parallel thunk terminal-payload precursor:
       `ParallelThunkPayloadCell` layers typed terminal payload storage over the
       safe CAS/wait-cell protocol. The claim owner stores either a forced payload

@@ -29,10 +29,11 @@ pub use internal_diff::{
 };
 pub use module::{EvalModuleId, EvalNodeRef};
 pub use parallel::{
-    ParallelReadyWorkError, ParallelReadyWorkExecution, ParallelReadyWorkQueues,
-    ParallelReadyWorkStep, ParallelTaskExecution, ParallelTaskPlacement, ParallelTopLevelError,
-    ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan, ParallelWorkerExecutionReport,
-    execute_parallel_top_level, parallel_ready_work_queues, parallel_top_level_seed_plan,
+    ParallelReadyWorkError, ParallelReadyWorkExecution, ParallelReadyWorkParkPreflight,
+    ParallelReadyWorkQueues, ParallelReadyWorkStep, ParallelTaskExecution, ParallelTaskPlacement,
+    ParallelTopLevelError, ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan,
+    ParallelWorkerExecutionReport, execute_parallel_top_level, parallel_ready_work_queues,
+    parallel_top_level_seed_plan,
 };
 pub use parallel_failure::{
     ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTopLevelError,
