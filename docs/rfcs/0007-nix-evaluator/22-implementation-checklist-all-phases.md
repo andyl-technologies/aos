@@ -8402,7 +8402,7 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       the `ratchet-oracle` semantic escape-signature harness now checks actual
       inline scalar payloads, not only tags, for randomized type predicates,
       `length`, `stringLength`, `hasContext`, `compareVersions`, `elem`, `all`,
-      `any`, integer arithmetic, bitwise operations, `lessThan`, and
+      `any`, `hasAttr`, integer arithmetic, bitwise operations, `lessThan`, and
       `ceil`/`floor` inputs. It keeps every generated root tied to the direct
       immediate-scalar primop signature before evaluation, so randomized
       semantic cases fail for that generated subset if the tree-walk result is

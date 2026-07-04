@@ -229,6 +229,14 @@ fn simple_ascii_string() -> impl Strategy<Value = String> {
     .prop_map(|bytes| String::from_utf8(bytes).expect("ascii bytes are valid utf-8"))
 }
 
+fn simple_attr_name() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop::sample::select((b'a'..=b'y').collect::<Vec<_>>()),
+        1..12,
+    )
+    .prop_map(|bytes| String::from_utf8(bytes).expect("ascii bytes are valid utf-8"))
+}
+
 fn sample_name_set(samples: &[SemanticPrimOpSample]) -> BTreeSet<String> {
     samples
         .iter()
@@ -505,6 +513,27 @@ proptest! {
         for (name, source, expected) in cases {
             assert_immediate_scalar_value(name, &source, expected)?;
         }
+    }
+
+    #[test]
+    fn immediate_scalar_has_attr_semantics_survive_random_names(
+        attr_name in simple_attr_name(),
+        present in any::<bool>(),
+    ) {
+        let needle = if present {
+            attr_name.clone()
+        } else {
+            format!("z{attr_name}")
+        };
+        let attr_name_source = format!("{attr_name:?}");
+        let needle_source = format!("{needle:?}");
+        let source = format!("builtins.hasAttr {needle_source} {{ {attr_name_source} = 1 / 0; }}");
+
+        assert_immediate_scalar_value(
+            b"hasAttr",
+            &source,
+            ExpectedScalar::Bool(present),
+        )?;
     }
 
     #[test]
