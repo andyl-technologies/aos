@@ -513,7 +513,8 @@ long-held locks.
   configuration-bound retained-log evidence bundles that pair logs with
   host-resolution tables and an explicit resolution context for symbolic
   coverage and virtual/symbolic memory leaves, plus terminal quiescence evidence
-  for retained after-quiescence, `sometimes`, and `eventually` violations;
+  for retained after-quiescence, `sometimes`, `eventually`, and
+  expected-reachable failures;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable

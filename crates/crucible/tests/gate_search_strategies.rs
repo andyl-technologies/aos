@@ -12,9 +12,9 @@ use crucible::{
     FrontierChild, FrontierReductionReport, GenesisCheckpoint, Icount, MarkerId,
     MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault,
     NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
-    ReachabilityExpectation, ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
-    RngDecision, RngStreamId, RuntimeState, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
+    ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, RuntimeState, ScenarioDefForm,
+    Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
     SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
     SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
     SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
@@ -1219,6 +1219,132 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
         )?;
 
     assert!(eventually_quiescence_trigger_with_terminal_quiescence_oracle.is_empty());
+
+    let retained_reachable_marker = MarkerId::from_name("never-reachable-marker");
+    let retained_reachable_scenario = assertion_lowering_scenario_with_world(
+        Property::Reachable {
+            predicate: Predicate::guest_marker(retained_reachable_marker),
+            expectation: ReachabilityExpectation::Reachable {
+                on_unreached: ReachableDisposition::Fail,
+            },
+        },
+        single_node_world_with_white_box(
+            "retained-log-reachable-lowering",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let retained_reachable_root =
+        Configuration::genesis(retained_reachable_scenario.scenario_def());
+    let retained_reachable_run = empty_search_run_for_root(&retained_reachable_root);
+    let retained_reachable_log = retained_boundary_log(time(100))?;
+    let retained_reachable_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_reachable_scenario,
+            &retained_reachable_root,
+            &retained_reachable_run,
+            |configuration| {
+                (configuration.id() == retained_reachable_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_reachable_log.clone())
+                })
+            },
+        )?;
+
+    assert!(retained_reachable_without_terminal_quiescence_oracle.is_empty());
+
+    let retained_reachable_with_blocked_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_reachable_scenario,
+            &retained_reachable_root,
+            &retained_reachable_run,
+            |configuration| {
+                (configuration.id() == retained_reachable_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_reachable_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence {
+                            blockers: vec![SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                                target: node_id("search-node"),
+                            }],
+                        })
+                })
+            },
+        )?;
+
+    assert!(retained_reachable_with_blocked_terminal_quiescence_oracle.is_empty());
+
+    let retained_reachable_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_reachable_scenario,
+            &retained_reachable_root,
+            &retained_reachable_run,
+            |configuration| {
+                (configuration.id() == retained_reachable_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_reachable_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        retained_reachable_with_terminal_quiescence_oracle
+            .failure_for(retained_reachable_root.id())
+            .is_some()
+    );
+
+    let retained_reachable_warn_marker = MarkerId::from_name("never-reachable-warn-marker");
+    let retained_reachable_warn_scenario = assertion_lowering_scenario_with_world(
+        Property::Reachable {
+            predicate: Predicate::guest_marker(retained_reachable_warn_marker),
+            expectation: ReachabilityExpectation::Reachable {
+                on_unreached: ReachableDisposition::Warn,
+            },
+        },
+        single_node_world_with_white_box(
+            "retained-log-reachable-warn-guard",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let retained_reachable_warn_root =
+        Configuration::genesis(retained_reachable_warn_scenario.scenario_def());
+    let retained_reachable_warn_run = empty_search_run_for_root(&retained_reachable_warn_root);
+    let retained_reachable_warn_log = retained_boundary_log(time(105))?;
+    let retained_reachable_warn_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_reachable_warn_scenario,
+            &retained_reachable_warn_root,
+            &retained_reachable_warn_run,
+            |configuration| {
+                (configuration.id() == retained_reachable_warn_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_reachable_warn_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(retained_reachable_warn_with_terminal_quiescence_oracle.is_empty());
+
+    let reachable_quiescence_scenario = assertion_lowering_scenario(Property::Reachable {
+        predicate: Predicate::Quiescent,
+        expectation: ReachabilityExpectation::Reachable {
+            on_unreached: ReachableDisposition::Fail,
+        },
+    })?;
+    let reachable_quiescence_root =
+        Configuration::genesis(reachable_quiescence_scenario.scenario_def());
+    let reachable_quiescence_run = empty_search_run_for_root(&reachable_quiescence_root);
+    let reachable_quiescence_log = retained_boundary_log(time(110))?;
+    let reachable_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &reachable_quiescence_scenario,
+            &reachable_quiescence_root,
+            &reachable_quiescence_run,
+            |configuration| {
+                (configuration.id() == reachable_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(reachable_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(reachable_quiescence_with_terminal_quiescence_oracle.is_empty());
 
     Ok(())
 }

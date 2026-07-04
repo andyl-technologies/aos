@@ -571,6 +571,10 @@
         needle = "terminal_complete_retained_quantifier";
       }
       {
+        label = "search assertion retained-log terminal reachability failure allowlist";
+        needle = "terminal_complete_retained_reachability_failure = predicate_scope\n        == SearchAssertionPredicateScope::RetainedLog\n        && terminal_quiescent\n        && outcome.quantifier == AssertionQuantifierKind::Reachable\n        && outcome.kind == HostAssertionOutcomeKind::NeverReachedFail";
+      }
+      {
         label = "search assertion retained-log terminal quiescent guard";
         needle = "SchedulerQuiescence::is_quiescent";
       }
@@ -767,6 +771,26 @@
       {
         label = "search assertion retained-log terminal eventually trigger guard";
         needle = "eventually_quiescence_trigger_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal reachable regression";
+        needle = "retained_reachable_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal reachable warn guard";
+        needle = "retained_reachable_warn_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal reachable regression";
+        needle = "retained_reachable_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log blocked terminal reachable guard";
+        needle = "retained_reachable_with_blocked_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence reachable guard";
+        needle = "reachable_quiescence_with_terminal_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

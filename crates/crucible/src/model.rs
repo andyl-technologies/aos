@@ -19064,9 +19064,10 @@ impl SearchFailureOracle {
     /// must contain the exact retained log for that configuration and any
     /// host-resolution facts that were valid when the log was captured.
     /// Terminal scheduler-quiescence evidence is used for retained
-    /// `after-quiescence` assertions and terminal retained `sometimes`/
-    /// `eventually` violations only when it proves quiescence; it does not make
-    /// quiescence predicates admissible for prefix, reachability, or terminal
+    /// `after-quiescence` assertions, terminal retained `sometimes`/
+    /// `eventually` violations, and terminal retained expected-reachable
+    /// failures only when it proves quiescence; it does not make quiescence
+    /// predicates admissible for prefix, reachability, or terminal
     /// `sometimes`/`eventually` properties.
     ///
     /// # Errors
@@ -24286,11 +24287,18 @@ fn prefix_safe_search_assertion_failure(
         outcome.quantifier,
         AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
     ) || terminal_complete_retained_quantifier;
+    let terminal_complete_retained_reachability_failure = predicate_scope
+        == SearchAssertionPredicateScope::RetainedLog
+        && terminal_quiescent
+        && outcome.quantifier == AssertionQuantifierKind::Reachable
+        && outcome.kind == HostAssertionOutcomeKind::NeverReachedFail;
+    let supported_failure_kind = outcome.kind == HostAssertionOutcomeKind::Violated
+        || terminal_complete_retained_reachability_failure;
     let allow_terminal_quiescence_predicates = predicate_scope
         == SearchAssertionPredicateScope::RetainedLog
         && terminal_quiescent
         && outcome.quantifier == AssertionQuantifierKind::AfterQuiescence;
-    outcome.kind == HostAssertionOutcomeKind::Violated
+    supported_failure_kind
         && supported_quantifier
         && assertion_uses_only_search_schedule_predicates(
             properties,
