@@ -216,8 +216,16 @@
         needle = "cli_save_workflow_executes_local_double_and_exports_handle";
       }
       {
-        label = "qemu save blocker";
-        needle = "real-QEMU savepoint export runner tracked by T-CLI-9";
+        label = "qemu-selected save runner identity";
+        needle = "save-qemu-runner";
+      }
+      {
+        label = "qemu-selected save test";
+        needle = "qemu-save";
+      }
+      {
+        label = "qemu-selected dispatch save test";
+        needle = "qemu-dispatch-save";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [

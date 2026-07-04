@@ -4704,42 +4704,7 @@ fn run_local_double_save_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let fixture = match save_plan.selector.as_ref() {
-        Some(SaveAtSelector::PropertyViolation { assertion }) => {
-            SaveRecordingFixture::PropertyViolation {
-                assertion: crucible::AssertionId::from_name(assertion.clone()),
-            }
-        }
-        Some(SaveAtSelector::Marker { name }) => SaveRecordingFixture::GuestMarker {
-            marker: crucible::MarkerId::from_name(name.clone()),
-        },
-        None => SaveRecordingFixture::None,
-    };
-    let scenario_form = save_plan.run_plan.scenario.scenario_form();
-    let marker_node = scenario_form
-        .world()
-        .nodes()
-        .iter()
-        .find(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
-        .map(|node| node.id.clone());
-    let white_box_policies = scenario_form
-        .world()
-        .nodes()
-        .iter()
-        .map(|node| (node.id.clone(), node.white_box))
-        .collect::<BTreeMap<_, _>>();
-    let control_plane = LifecycleControlPlane::new("crucible-cli-double-save", Vec::new(), {
-        move |_scenario: &crucible::ScenarioDef, _seed| {
-            SaveRecordingLifecycleLoop::new(fixture.clone(), marker_node.clone())
-        }
-    })
-    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
-    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
+    run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -5073,14 +5038,59 @@ fn run_local_qemu_verify_workflow(
 }
 
 fn run_local_qemu_save_workflow(
-    _thin_plan: &CliThinWrapperPlan,
-    _backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _save_plan: &SaveInvocationPlan,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    Err(backend_error(
-        "save with local QEMU requires the real-QEMU savepoint export runner tracked by T-CLI-9; use --backend double for the current savepoint workflow",
-    ))
+    let mut outcome =
+        run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)?;
+    append_local_qemu_save_identity(&mut outcome, backend_plan)?;
+    Ok(outcome)
+}
+
+fn run_local_save_recording_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let fixture = match save_plan.selector.as_ref() {
+        Some(SaveAtSelector::PropertyViolation { assertion }) => {
+            SaveRecordingFixture::PropertyViolation {
+                assertion: crucible::AssertionId::from_name(assertion.clone()),
+            }
+        }
+        Some(SaveAtSelector::Marker { name }) => SaveRecordingFixture::GuestMarker {
+            marker: crucible::MarkerId::from_name(name.clone()),
+        },
+        None => SaveRecordingFixture::None,
+    };
+    let scenario_form = save_plan.run_plan.scenario.scenario_form();
+    let marker_node = scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .find(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
+        .map(|node| node.id.clone());
+    let white_box_policies = scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .map(|node| (node.id.clone(), node.white_box))
+        .collect::<BTreeMap<_, _>>();
+    let control_plane = LifecycleControlPlane::new("crucible-cli-save", Vec::new(), {
+        move |_scenario: &crucible::ScenarioDef, _seed| {
+            SaveRecordingLifecycleLoop::new(fixture.clone(), marker_node.clone())
+        }
+    })
+    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
+    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
 fn run_local_double_resume_workflow(
@@ -6281,6 +6291,38 @@ fn append_local_qemu_verify_identity(
     outcome.stdout.push(format!(
         "verify-qemu-runner\tfingerprint_source=control-client-execution-fingerprint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
     ));
+    Ok(())
+}
+
+fn append_local_qemu_save_identity(
+    outcome: &mut BackendCommandOutcome,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<(), CliError> {
+    let Some(ResolvedLocalBackend::Qemu {
+        qemu_build_id,
+        qemu_patch_series_hash,
+        plugin_abi,
+        shmem_abi_version,
+        ..
+    }) = backend_plan.resolved_backend.as_ref()
+    else {
+        return Err(backend_error(
+            "local QEMU save requires a resolved QEMU backend identity",
+        ));
+    };
+    outcome.stdout.push(format!(
+        "save-qemu-runner\tmaterialization=create-savepoint-reply\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("qemu"),
+        kind: String::from("save_qemu_runner"),
+        summary: format!(
+            "materialization=create-savepoint-reply qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     Ok(())
 }
 
@@ -14254,20 +14296,25 @@ mod tests {
         assert!(!no_source_marker_out.exists());
 
         let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let qemu_out = temp.path().join("qemu.crucible-savepoint");
         let qemu_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--backend"),
             String::from("qemu"),
             String::from("--qemu"),
-            qemu,
+            qemu.clone(),
             String::from("--plugin"),
-            plugin,
+            plugin.clone(),
             String::from("--seed"),
             String::from("11"),
             String::from("save"),
             scenario.display().to_string(),
             String::from("--at"),
             String::from("quiescence"),
+            String::from("--label"),
+            String::from("qemu-save"),
+            String::from("--out"),
+            qemu_out.display().to_string(),
         ]);
         let Commands::Save(args) = &qemu_cli.command else {
             panic!("expected save command");
@@ -14279,7 +14326,7 @@ mod tests {
             &mut FakeSeedEntropySource::new(0),
         )?
         .expect("save should resolve a seed");
-        let qemu_result = execute_backend_routed_command(
+        let mut qemu_outcome = execute_backend_routed_command(
             &plan_cli_invocation(&qemu_cli),
             &plan_backend_selection(&qemu_cli)?.expect("save should require backend"),
             Some(&qemu_seed_plan),
@@ -14287,21 +14334,52 @@ mod tests {
             None,
             Some(&qemu_save_plan),
             &mut NullBackendCommandRunner,
-        );
-        let error = match qemu_result {
-            Ok(_) => {
-                panic!("local QEMU save should remain blocked until T-CLI-9 has a real runner")
-            }
-            Err(error) => error,
-        };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
+        )?;
+        export_savepoint_handle(&qemu_save_plan, &mut qemu_outcome)?;
+        assert_eq!(qemu_outcome.status, BackendCommandStatus::Passed);
+        assert!(qemu_outcome.terminal_savepoint.is_some());
+        assert!(qemu_outcome.savepoint_oracle.is_some());
+        assert!(qemu_outcome.stdout.iter().any(|line| {
+            line.starts_with(
+                "save-qemu-runner\tmaterialization=create-savepoint-reply\tqemu_build_id=",
+            ) && line.contains("qemu_patch_series=")
+                && line.contains("plugin_abi=")
+                && line.contains("shmem_abi=")
+        }));
         assert!(
-            error
-                .to_string()
-                .contains("real-QEMU savepoint export runner")
+            qemu_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "save_qemu_runner")
         );
-        assert!(error.to_string().contains("T-CLI-9"));
+        let qemu_handle = fs::read_to_string(qemu_out)?;
+        assert!(qemu_handle.contains("label\tqemu-save\n"));
+        assert!(qemu_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let qemu_dispatch_out = temp.path().join("qemu-dispatch.crucible-savepoint");
+        let qemu_dispatch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("qemu"),
+            String::from("--qemu"),
+            qemu,
+            String::from("--plugin"),
+            plugin,
+            String::from("--seed"),
+            String::from("17"),
+            String::from("save"),
+            scenario.display().to_string(),
+            String::from("--at"),
+            String::from("quiescence"),
+            String::from("--label"),
+            String::from("qemu-dispatch-save"),
+            String::from("--out"),
+            qemu_dispatch_out.display().to_string(),
+        ]);
+        dispatch(&qemu_dispatch_cli)?;
+        let qemu_dispatch_handle = fs::read_to_string(qemu_dispatch_out)?;
+        assert!(qemu_dispatch_handle.contains("label\tqemu-dispatch-save\n"));
+        assert!(qemu_dispatch_handle.contains("oracle\tfat==thin-passed\n"));
 
         Ok(())
     }
