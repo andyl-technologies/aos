@@ -1022,9 +1022,11 @@ impl HamtSelectCacheState {
 ///
 /// This cache binds one static select key, then applies the selected
 /// [`HamtSelectPolicy`] whenever a HAMT-backed attrset reaches the site. It
-/// does not install a shape slot, does not interact with [`ShapedSelectCache`],
-/// and is not wired into the active tree-walk evaluator. The HAMT attrset and
-/// select key must come from the same symbol universe.
+/// does not install a shape slot and does not interact with
+/// [`ShapedSelectCache`]. The active tree-walk evaluator uses this cache for
+/// heap attrsets whose metadata projects a HAMT representation, while active
+/// heap storage remains flat. The HAMT attrset and select key must come from
+/// the same symbol universe.
 #[derive(Clone, Debug)]
 pub struct HamtSelectCache {
     key: Option<Symbol>,

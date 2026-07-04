@@ -775,6 +775,31 @@ fn repeated_static_select_site_uses_flat_inline_cache() {
 }
 
 #[test]
+fn repeated_static_select_site_uses_hamt_inline_cache_for_projected_hamt_receivers() {
+    let ir = lower(
+        "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });
+             select = x: x.f;
+         in (select base) + (select base)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated projected-HAMT static select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(12));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.hamt_select_sites.distinguished_hamt, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.hamt_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.cached_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.hamt_hits, 2);
+    assert_eq!(counts.hamt_misses, 0);
+}
+
+#[test]
 fn repeated_static_select_site_revalidates_stale_flat_slots() {
     let ir = lower("let seed = { a = 0; }; f = x: x.b; in (f { b = 1; }) + (f { a = 0; b = 2; })");
 
@@ -823,6 +848,31 @@ fn repeated_static_select_defaults_preserve_miss_then_hit_semantics() {
 }
 
 #[test]
+fn repeated_static_select_defaults_use_hamt_inline_cache_for_projected_hamt_misses() {
+    let ir = lower(
+        "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });
+             select = x: x.missing or 10;
+         in (select base) + (select base)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated projected-HAMT static select misses");
+
+    assert_eq!(outcome.value().as_int(), Ok(20));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.hamt_select_sites.distinguished_hamt, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.hamt_select_lookups.resolved_misses, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.cached_misses, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.hamt_hits, 0);
+    assert_eq!(counts.hamt_misses, 2);
+}
+
+#[test]
 fn dynamic_select_site_stays_on_slow_select_path() {
     let ir = lower(r#"let f = name: set: set.${name}; in (f "a" { a = 1; }) + (f "b" { b = 2; })"#);
 
@@ -867,6 +917,56 @@ fn repeated_static_has_attr_site_uses_flat_inline_cache() {
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 1);
     assert_eq!(counts.flat_misses, 0);
+}
+
+#[test]
+fn repeated_static_has_attr_site_uses_hamt_inline_cache_for_projected_hamt_receivers() {
+    let ir = lower(
+        "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });
+             has = x: x ? f;
+         in if (has base) && (has base) then 1 else 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated projected-HAMT hasAttr evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.hamt_select_sites.distinguished_hamt, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.hamt_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.cached_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.hamt_hits, 2);
+    assert_eq!(counts.hamt_misses, 0);
+}
+
+#[test]
+fn repeated_static_has_attr_site_uses_hamt_inline_cache_for_projected_hamt_misses() {
+    let ir = lower(
+        "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });
+             has = x: x ? missing;
+         in if (has base) || (has base) then 1 else 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated projected-HAMT hasAttr misses");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.hamt_select_sites.distinguished_hamt, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.hamt_select_lookups.resolved_misses, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.cached_misses, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.hamt_hits, 0);
+    assert_eq!(counts.hamt_misses, 2);
 }
 
 #[test]

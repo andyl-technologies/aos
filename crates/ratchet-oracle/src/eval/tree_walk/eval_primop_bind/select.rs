@@ -165,7 +165,7 @@ impl TreeWalk {
             }
             let outcome = if matches!(segment, IrAttrPathSegment::Static(_)) {
                 if let Some(site) = site {
-                    self.select_flat_attr_with_cache(id, span, current, key, site, index)?
+                    self.select_static_attr_with_cache(id, span, current, key, site, index)?
                 } else {
                     self.select_slow_flat_attr(id, span, current, key)?
                 }
@@ -192,6 +192,30 @@ impl TreeWalk {
             TreeWalkErrorKind::InvalidAttrPath { id, path: path_id },
             span,
         ))
+    }
+
+    /// Selects from an active evaluator attrset through the static-site cache for its representation.
+    pub(in crate::eval::tree_walk) fn select_static_attr_with_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        site: IrInlineCacheSiteId,
+        path_index: usize,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let metadata = self
+            .heap
+            .get_attrs_metadata(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        match metadata.repr() {
+            AttrSetReprKind::Flat => {
+                self.select_flat_attr_with_cache(id, span, attrs_value, symbol, site, path_index)
+            }
+            AttrSetReprKind::Hamt => {
+                self.select_hamt_attr_with_cache(id, span, attrs_value, symbol, site, path_index)
+            }
+        }
     }
 
     /// Selects from the active flat evaluator attrset through the representation dispatcher.
@@ -268,6 +292,72 @@ impl TreeWalk {
                 select_outcome
             }
         };
+        Ok(select_outcome)
+    }
+
+    /// Selects from a projected-HAMT evaluator attrset through a static-site HAMT cache.
+    pub(in crate::eval::tree_walk) fn select_hamt_attr_with_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        site: IrInlineCacheSiteId,
+        path_index: usize,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let hamt = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            HamtAttrs::from_flat(attrs, &self.symbols).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::HamtAttr { id, source }, span)
+            })?
+        };
+        let key = (self.current_module.as_u32(), site.as_u32(), path_index);
+        let outcome = self
+            .hamt_select_caches
+            .entry(key)
+            .or_insert_with(|| HamtSelectCache::new(HamtSelectPolicy::DistinguishedEntry))
+            .select(&hamt, symbol)
+            .map_err(|source| match source {
+                HamtSelectError::Select(source) => {
+                    TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+                }
+                source => {
+                    TreeWalkError::new(TreeWalkErrorKind::HamtSelectCache { id, source }, span)
+                }
+            })?;
+        self.record_hamt_select_cache_lookup_telemetry(id, span, &outcome);
+        let select_outcome = match outcome {
+            HamtSelectOutcome::Hit { value, source } => {
+                match source {
+                    HamtSelectSource::CachedDistinguishedHamt => {
+                        self.increment_inline_cache_hits();
+                    }
+                    HamtSelectSource::Resolved { .. } => {
+                        self.increment_inline_cache_misses();
+                    }
+                }
+                AttrSelectOutcome::Hit {
+                    value,
+                    source: AttrSelectSource::Hamt,
+                }
+            }
+            HamtSelectOutcome::Missing { source } => {
+                match source {
+                    HamtSelectSource::CachedDistinguishedHamt => {
+                        self.increment_inline_cache_hits();
+                    }
+                    HamtSelectSource::Resolved { .. } => {
+                        self.increment_inline_cache_misses();
+                    }
+                }
+                AttrSelectOutcome::Missing {
+                    repr: AttrSelectRepr::Hamt,
+                }
+            }
+        };
+        self.record_slow_select_telemetry(id, span, &select_outcome);
         Ok(select_outcome)
     }
 

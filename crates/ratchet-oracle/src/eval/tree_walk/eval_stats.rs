@@ -314,13 +314,40 @@ impl TreeWalk {
         }
     }
 
-    pub(super) fn record_flat_select_cache_site_telemetry(&mut self) {
+    pub(super) fn record_hamt_select_cache_lookup_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        outcome: &HamtSelectOutcome,
+    ) {
+        if let Err(source) = self.attr_telemetry.record_hamt_select_lookup(outcome) {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping HAMT select-cache lookup telemetry after recording failure"
+            );
+        }
+    }
+
+    pub(super) fn record_attr_select_cache_site_telemetry(&mut self) {
         for cache in self.flat_select_caches.values() {
             if let Err(source) = self.attr_telemetry.record_flat_select_site(cache.state()) {
                 tracing::debug!(
                     target: "aos_nix::eval::attr_telemetry",
                     error = %source,
                     "skipping flat select-cache terminal-state telemetry after recording failure"
+                );
+            }
+        }
+        for cache in self.hamt_select_caches.values() {
+            if let Err(source) = self.attr_telemetry.record_hamt_select_site(cache.state()) {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    error = %source,
+                    "skipping HAMT select-cache terminal-state telemetry after recording failure"
                 );
             }
         }

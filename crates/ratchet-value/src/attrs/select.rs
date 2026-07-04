@@ -3,11 +3,12 @@
 //! This module is the safe value-level substrate for RFC-0007 §09's slow
 //! resolver: selection dispatches over flat, HAMT, and shaped attrset storage
 //! and returns the selected runtime value. The active tree-walk evaluator uses
-//! the flat branch for lowered `Select`/`HasAttr`, `WithVar` scope probes, and
-//! scoped-global fallback probes; the value-level shaped and HAMT select caches
-//! use the shaped/HAMT branches for slow resolution. Native runtime helpers,
-//! active HAMT/shaped evaluator storage, and full shaped/native PIC integration
-//! remain future work.
+//! the flat branch for active flat heap attrsets, `WithVar` scope probes, and
+//! scoped-global fallback probes; lowered static `Select`/`HasAttr` over heap
+//! values with projected HAMT metadata build a transient HAMT view and use the
+//! HAMT branch through [`crate::attrs::pic::HamtSelectCache`]. Native runtime
+//! helpers, active HAMT/shaped evaluator storage, and full shaped/native PIC
+//! integration remain future work.
 
 use thiserror::Error;
 

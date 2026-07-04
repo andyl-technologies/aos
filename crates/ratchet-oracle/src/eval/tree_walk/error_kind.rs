@@ -1203,6 +1203,22 @@ pub enum TreeWalkErrorKind {
         /// The underlying flat select-cache failure.
         source: FlatSelectError,
     },
+    /// A HAMT attribute-set operation failed.
+    #[error("HAMT attribute-set operation failed at node {id:?}: {source}")]
+    HamtAttr {
+        /// The node id associated with the HAMT attrset operation.
+        id: IrId,
+        /// The underlying HAMT failure.
+        source: HamtError,
+    },
+    /// A HAMT select-cache operation failed.
+    #[error("HAMT select cache failed at node {id:?}: {source}")]
+    HamtSelectCache {
+        /// The select node id.
+        id: IrId,
+        /// The underlying HAMT select-cache failure.
+        source: HamtSelectError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {

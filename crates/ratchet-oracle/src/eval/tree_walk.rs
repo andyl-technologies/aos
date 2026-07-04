@@ -72,7 +72,10 @@ use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
     hamt::{HamtAttrs, HamtError, HamtMergeSummary},
-    pic::{FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource},
+    pic::{
+        FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource, HamtSelectCache,
+        HamtSelectError, HamtSelectOutcome, HamtSelectPolicy, HamtSelectSource,
+    },
     repr::{
         AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprPolicy,
         AttrSetReprValue, AttrSetReprValueError,
@@ -989,6 +992,7 @@ pub struct TreeWalk {
     stats: EvalStats,
     attr_telemetry: AttrTelemetry,
     flat_select_caches: BTreeMap<(u32, u32, usize), FlatSelectCache>,
+    hamt_select_caches: BTreeMap<(u32, u32, usize), HamtSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,

@@ -8664,8 +8664,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       entry that keeps using keyed HAMT lookup, or fold the site into the
       megamorphic path. The HAMT attrset and select key must share one symbol
       universe, and lookups now resolve through the representation-dispatching
-      `select_slow` HAMT branch. Native PIC lowering and active evaluator
-      selection remain open.
+      `select_slow` HAMT branch. The active tree-walk static select/hasAttr
+      bridge now routes heap values carrying projected `Hamt` metadata through
+      `HamtSelectCache` using a transient HAMT view over the current flat
+      payload, so HAMT select-site telemetry observes resolved and cached
+      distinguished-HAMT outcomes. Native PIC lowering, active HAMT heap
+      payloads, and megamorphic fallback policy tuning remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current in-process order-parity precursor: `ratchet-value` exposes

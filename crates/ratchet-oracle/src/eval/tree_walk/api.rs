@@ -29,7 +29,7 @@ pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
 pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value, TreeWalkError> {
     let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
-    evaluator.record_flat_select_cache_site_telemetry();
+    evaluator.record_attr_select_cache_site_telemetry();
     evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
@@ -117,7 +117,7 @@ fn eval_whnf_owned_with_evaluator(
         evaluator.set_ifd_realizer(realizer);
     }
     let value = evaluator.eval_root()?;
-    evaluator.record_flat_select_cache_site_telemetry();
+    evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
@@ -249,7 +249,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     let root = evaluator.eval_root()?;
     let span = evaluator.node(ir.root)?.span;
     let value = evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)?;
-    evaluator.record_flat_select_cache_site_telemetry();
+    evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();

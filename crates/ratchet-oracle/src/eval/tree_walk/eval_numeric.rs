@@ -267,7 +267,7 @@ impl TreeWalk {
                 return Ok(Value::bool(false));
             }
             let outcome = if matches!(segment, IrAttrPathSegment::Static(_)) {
-                self.select_flat_attr_with_cache(id, node.span, current, key, site, index)?
+                self.select_static_attr_with_cache(id, node.span, current, key, site, index)?
             } else {
                 self.select_slow_flat_attr(id, node.span, current, key)?
             };
