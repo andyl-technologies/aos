@@ -12,9 +12,10 @@ use std::sync::Arc;
 use crucible::{
     Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
     EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
-    ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel, MembershipFault,
+    ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
     PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest, RestartPolicy, ScenarioDef,
     SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
@@ -811,6 +812,8 @@ pub struct LifecycleControlPlane<L, F> {
     next_session_id: u64,
     next_epoch: u64,
     loop_factory: F,
+    white_box_policy_provider:
+        Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
     max_sessions: Option<usize>,
@@ -840,11 +843,26 @@ where
             next_session_id: 1,
             next_epoch: 1,
             loop_factory,
+            white_box_policy_provider: Box::new(|_| BTreeMap::new()),
             mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
             startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,
             max_sessions: None,
             _loop: PhantomData,
         }
+    }
+
+    /// Installs a trusted guest-marker white-box policy provider for new sessions.
+    ///
+    /// The lifecycle plane calls this provider inside the same process as the
+    /// session actor. It must derive policies from authoritative scenario
+    /// material, not from client-supplied breakpoint requests.
+    #[must_use]
+    pub fn with_white_box_policy_provider(
+        mut self,
+        provider: impl Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync + 'static,
+    ) -> Self {
+        self.white_box_policy_provider = Box::new(provider);
+        self
     }
 
     /// Overrides the session actor mailbox capacity for subsequently-created sessions.
@@ -927,7 +945,9 @@ where
         let configuration = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario)?;
         let loop_instance = (self.loop_factory)(&scenario, request.seed);
-        let engine = Engine::new(configuration, graph, loop_instance);
+        let white_box_policies = (self.white_box_policy_provider)(&scenario);
+        let engine = Engine::new(configuration, graph, loop_instance)
+            .with_white_box_policies(white_box_policies);
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();

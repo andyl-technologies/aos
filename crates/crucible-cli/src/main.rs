@@ -58,6 +58,7 @@ const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
+const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
 const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
     "gate:layer0-determinism",
     "gate:content-address",
@@ -4687,30 +4688,58 @@ fn run_local_double_save_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let fixture = match save_plan.at {
+        SaveAtArg::Property => SaveRecordingFixture::PropertyViolation,
+        SaveAtArg::Marker => SaveRecordingFixture::GuestMarker,
+        SaveAtArg::Quiescence | SaveAtArg::VirtualTime => SaveRecordingFixture::None,
+    };
+    let scenario_form = save_plan.run_plan.scenario.scenario_form();
+    let marker_node = scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .find(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
+        .map(|node| node.id.clone());
+    let white_box_policies = scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .map(|node| (node.id.clone(), node.white_box))
+        .collect::<BTreeMap<_, _>>();
     let control_plane = LifecycleControlPlane::new("crucible-cli-double-save", Vec::new(), {
-        let emit_property_fixture = matches!(save_plan.at, SaveAtArg::Property);
         move |_scenario: &crucible::ScenarioDef, _seed| {
-            SaveRecordingLifecycleLoop::new(emit_property_fixture)
+            SaveRecordingLifecycleLoop::new(fixture, marker_node.clone())
         }
-    });
+    })
+    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
     let client = InProcessLifecycleClient::new(control_plane);
     let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SaveRecordingFixture {
+    #[default]
+    None,
+    PropertyViolation,
+    GuestMarker,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SaveRecordingLifecycleLoop {
-    emit_property_fixture: bool,
-    property_fixture_emitted: bool,
+    fixture: SaveRecordingFixture,
+    marker_node: Option<crucible::NodeId>,
+    fixture_emitted: bool,
     quanta: u64,
     event_log_events: u64,
 }
 
 impl SaveRecordingLifecycleLoop {
-    fn new(emit_property_fixture: bool) -> Self {
+    fn new(fixture: SaveRecordingFixture, marker_node: Option<crucible::NodeId>) -> Self {
         Self {
-            emit_property_fixture,
-            property_fixture_emitted: false,
+            fixture,
+            marker_node,
+            fixture_emitted: false,
             quanta: 0,
             event_log_events: 0,
         }
@@ -4736,21 +4765,32 @@ impl SaveRecordingLifecycleLoop {
         )
     }
 
-    fn property_fixture_entry(
+    fn selector_fixture_entry(
         &self,
         frontier: crucible::VirtualTime,
     ) -> Option<crucible::SchedulerEventLogEntry> {
-        if !self.emit_property_fixture {
-            return None;
-        }
-        Some(
-            crucible::SchedulerEventLogEntry::assertion_state_observation(
-                self.event_log_events,
-                frontier,
-                crucible::AssertionId::from_name(SAVE_DOUBLE_ASSERTION_VIOLATION),
-                crucible::AssertionPhase::Violated,
+        match self.fixture {
+            SaveRecordingFixture::None => None,
+            SaveRecordingFixture::PropertyViolation => Some(
+                crucible::SchedulerEventLogEntry::assertion_state_observation(
+                    self.event_log_events,
+                    frontier,
+                    crucible::AssertionId::from_name(SAVE_DOUBLE_ASSERTION_VIOLATION),
+                    crucible::AssertionPhase::Violated,
+                ),
             ),
-        )
+            SaveRecordingFixture::GuestMarker => {
+                let node = self.marker_node.clone()?;
+                Some(crucible::SchedulerEventLogEntry::guest_marker_observation(
+                    self.event_log_events,
+                    crucible::Icount {
+                        retired: frontier.ticks,
+                    },
+                    node,
+                    crucible::MarkerId::from_name(SAVE_DOUBLE_GUEST_MARKER),
+                ))
+            }
+        }
     }
 }
 
@@ -4764,12 +4804,12 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
         let frontier = crucible::VirtualTime { ticks: self.quanta };
         let mut event_log_entries = vec![self.diagnostic_entry(frontier)];
         self.event_log_events = self.event_log_events.saturating_add(1);
-        if !self.property_fixture_emitted {
-            if let Some(entry) = self.property_fixture_entry(frontier) {
+        if !self.fixture_emitted {
+            if let Some(entry) = self.selector_fixture_entry(frontier) {
                 event_log_entries.push(entry);
                 self.event_log_events = self.event_log_events.saturating_add(1);
             }
-            self.property_fixture_emitted = true;
+            self.fixture_emitted = true;
         }
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: frontier,
@@ -6898,12 +6938,9 @@ where
 
 fn save_selector_breakpoint_spec(selector: &SaveAtSelector) -> Result<BreakpointSpec, CliError> {
     match selector {
-        SaveAtSelector::PropertyViolation { assertion: _ } => Ok(BreakpointSpec::suspend_once(
-            save_selector_predicate(selector)?,
-        )),
-        SaveAtSelector::Marker { .. } => Err(backend_error(
-            "save --at marker selector execution requires guest-marker breakpoint proof tracked by T-CLI-9",
-        )),
+        SaveAtSelector::PropertyViolation { assertion: _ } | SaveAtSelector::Marker { .. } => Ok(
+            BreakpointSpec::suspend_once(save_selector_predicate(selector)?),
+        ),
     }
 }
 
@@ -6915,8 +6952,8 @@ fn save_selector_predicate(selector: &SaveAtSelector) -> Result<crucible::Predic
                 crucible::AssertionPhase::Violated,
             ))
         }
-        SaveAtSelector::Marker { .. } => Err(backend_error(
-            "save --at marker selector execution requires guest-marker breakpoint proof tracked by T-CLI-9",
+        SaveAtSelector::Marker { name } => Ok(crucible::Predicate::guest_marker(
+            crucible::MarkerId::from_name(name.clone()),
         )),
     }
 }
@@ -11092,6 +11129,35 @@ mod tests {
         Ok(path)
     }
 
+    fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let world = ::crucible::World::from_nodes(vec![::crucible::WorldNode {
+            id: ::crucible::NodeId {
+                name: String::from("marker-node"),
+            },
+            arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
+            memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::from("crucible-marker-selector=1"),
+            ready_point: ::crucible::ReadyPoint::FixedIcount {
+                icount: ::crucible::Icount { retired: 1 },
+            },
+            white_box: ::crucible::WhiteBoxPolicy::Enabled,
+            smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }])?;
+        let form = ::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &::crucible::Properties::empty(),
+            ::crucible::Seed::from_u64(14),
+        )?;
+        let path = temp.path().join("marker-selector-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
     fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
         ::crucible::AssertionDef {
             id: ::crucible::AssertionId::from_name(name),
@@ -12776,6 +12842,8 @@ mod tests {
         assert!(error.to_string().contains("did not fire"));
         assert!(!wrong_property_out.exists());
 
+        let marker_selector_scenario = write_marker_selector_scenario(&temp)?;
+        let marker_out = temp.path().join("marker.crucible-savepoint");
         let marker_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
@@ -12784,19 +12852,47 @@ mod tests {
             String::from("--seed"),
             String::from("14"),
             String::from("save"),
-            String::from("builtin:fault-campaign"),
+            marker_selector_scenario.display().to_string(),
             String::from("--at"),
             String::from("marker"),
             String::from("--marker"),
             String::from("compaction-started"),
             String::from("--label"),
             String::from("marker-stop"),
+            String::from("--out"),
+            marker_out.display().to_string(),
         ]);
-        let error = dispatch(&marker_cli)
-            .expect_err("marker save execution should remain blocked until selector proof lands");
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("guest-marker breakpoint proof"));
+        dispatch(&marker_cli)?;
+        let marker_handle = fs::read_to_string(marker_out)?;
+        assert!(marker_handle.contains("label\tmarker-stop\n"));
+        assert!(marker_handle.contains("at\tmarker\n"));
+        assert!(marker_handle.contains("oracle\tfat==thin-passed\n"));
+
+        let wrong_marker_out = temp.path().join("wrong-marker.crucible-savepoint");
+        let wrong_marker_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("16"),
+            String::from("save"),
+            marker_selector_scenario.display().to_string(),
+            String::from("--at"),
+            String::from("marker"),
+            String::from("--marker"),
+            String::from("other-marker"),
+            String::from("--label"),
+            String::from("wrong-marker-stop"),
+            String::from("--out"),
+            wrong_marker_out.display().to_string(),
+        ]);
+        let error = dispatch(&wrong_marker_cli)
+            .expect_err("marker save must not synthesize the requested selector");
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("did not fire"));
+        assert!(!wrong_marker_out.exists());
 
         let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
         let qemu_cli = Cli::parse_from([
@@ -12856,6 +12952,15 @@ mod tests {
         let selector = SaveAtSelector::PropertyViolation {
             assertion: String::from(SAVE_DOUBLE_ASSERTION_VIOLATION),
         };
+        let marker_selector = SaveAtSelector::Marker {
+            name: String::from(SAVE_DOUBLE_GUEST_MARKER),
+        };
+        assert_eq!(
+            save_selector_predicate(&marker_selector)?,
+            crucible::Predicate::guest_marker(crucible::MarkerId::from_name(
+                SAVE_DOUBLE_GUEST_MARKER
+            ))
+        );
         let boundary = save_selector_test_boundary(2, 2);
         let predicate = save_selector_predicate(&selector)?;
         let valid_firing =

@@ -16,6 +16,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -167,16 +168,32 @@
         needle = "SAVE_DOUBLE_ASSERTION_VIOLATION";
       }
       {
+        label = "fixed local-double marker fixture";
+        needle = "SAVE_DOUBLE_GUEST_MARKER";
+      }
+      {
+        label = "local-double marker fixture enum";
+        needle = "SaveRecordingFixture::GuestMarker";
+      }
+      {
+        label = "marker selector predicate";
+        needle = "Predicate::guest_marker";
+      }
+      {
+        label = "marker selector event-log fixture";
+        needle = "guest_marker_observation";
+      }
+      {
         label = "non-matching property selector test";
         needle = "wrong-property-stop";
       }
       {
-        label = "selector proof rejection test";
-        needle = "cli_save_selector_proof_rejects_invalid_breakpoint_evidence";
+        label = "non-matching marker selector test";
+        needle = "wrong-marker-stop";
       }
       {
-        label = "marker selector blocker";
-        needle = "guest-marker breakpoint proof tracked by T-CLI-9";
+        label = "selector proof rejection test";
+        needle = "cli_save_selector_proof_rejects_invalid_breakpoint_evidence";
       }
       {
         label = "save planning test";
@@ -197,10 +214,20 @@
         needle = "breakpoint_id";
       }
     ]
+    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" apiLifecycle [
+      {
+        label = "lifecycle white-box policy hook";
+        needle = "with_white_box_policy_provider";
+      }
+    ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
         label = "breakpoint firing query plumbing";
         needle = "BreakpointFirings";
+      }
+      {
+        label = "guest marker breakpoint policy coverage";
+        needle = "breakpoint_conditions_cover_guest_marker_white_box_leaves";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
@@ -285,6 +312,13 @@ in
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
               cli_save \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
+              -p crucible-session \
+              breakpoint_conditions_cover_guest_marker_white_box_leaves \
               -- --test-threads=1
           '';
         }

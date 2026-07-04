@@ -1048,11 +1048,12 @@ branch on the verdict without parsing output:
   `.crucible-savepoint` handle, parses property and marker selector syntax,
   validates property selector names against declared assertions, exercises the
   local-double property selector path against a fixed `no-split-brain`
-  assertion-state event through a suspending breakpoint plus breakpoint-firing
-  proof, and fails non-matching property selectors, marker selector execution,
+  assertion-state event and the marker selector path against a fixed
+  `compaction-started` guest-marker event through suspending breakpoints plus
+  breakpoint-firing proof, and fails non-matching property and marker selectors
   and local QEMU saves clearly until their proof paths land. Full closure
-  remains blocked on production assertion-event sources across property
-  selectors, guest-marker selector proof, and real-QEMU savepoint coverage.
+  remains blocked on production assertion-event/guest-marker sources across
+  selector saves and real-QEMU savepoint coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
