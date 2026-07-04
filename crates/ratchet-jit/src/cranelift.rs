@@ -28,15 +28,15 @@ use cranelift_codegen::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
-use ratchet_core::{IrArena, IrData, IrId, IrKind};
+use ratchet_core::{IrArena, IrId};
 use ratchet_value::value::{Value, ValueError};
 
 use crate::{
     abi::{JitEnvFramePtr, JitRuntimeContextPtr, JitThunkFn},
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
-        JitLowerError, lower_constant_ir_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
-        lower_forced_env_get_ir_thunk_body_artifact,
+        JitLowerError, lower_constant_ir_thunk_body_artifact,
+        lower_force_aware_tier1_ir_thunk_body_artifact, lower_tier1_ir_thunk_body_artifact,
     },
     module::{
         JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleReadinessError,
@@ -2148,7 +2148,7 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
         return Ok(JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier { slot, decision });
     }
 
-    let artifact = match lower_registered_tier1_ir_thunk_body_artifact(arena, root) {
+    let artifact = match lower_tier1_ir_thunk_body_artifact(arena, root) {
         Ok(artifact) => artifact,
         Err(source) => {
             return Err(JitCraneliftTier1PromotionError::new(
@@ -2216,7 +2216,7 @@ pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_roo
         return Ok(JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier { slot, decision });
     }
 
-    let artifact = match lower_force_aware_registered_tier1_ir_thunk_body_artifact(arena, root) {
+    let artifact = match lower_force_aware_tier1_ir_thunk_body_artifact(arena, root) {
         Ok(artifact) => artifact,
         Err(source) => {
             return Err(JitCraneliftTier1PromotionError::new(
@@ -2302,8 +2302,8 @@ pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_prefl
         return Ok(JitCraneliftRegisteredTier1NativeCallPreflight::StayedInTier { slot, decision });
     }
 
-    let artifact = lower_force_aware_registered_tier1_ir_thunk_body_artifact(arena, root).map_err(
-        |source| {
+    let artifact =
+        lower_force_aware_tier1_ir_thunk_body_artifact(arena, root).map_err(|source| {
             JitCraneliftRegisteredTier1NativeCallError::new(
                 slot.clone(),
                 decision,
@@ -2311,8 +2311,7 @@ pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_prefl
                     source: JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
                 },
             )
-        },
-    )?;
+        })?;
     // SAFETY: This function forwards its caller's native-address, runtime,
     // environment, host-ABI, non-unwinding, and valid returned-tag obligations
     // to the registered native thunk-call boundary.
@@ -2402,78 +2401,6 @@ pub fn jit_cranelift_module_setup_for_plan(
         imported_symbols,
         module,
     ))
-}
-
-fn lower_registered_tier1_ir_thunk_body_artifact(
-    arena: &IrArena,
-    root: IrId,
-) -> Result<JitClifArtifact, JitLowerError> {
-    let node = arena
-        .node(root)
-        .copied()
-        .ok_or(JitLowerError::MissingIrNode { root })?;
-
-    match (node.kind, node.data) {
-        (IrKind::ThunkAlloc, IrData::Node(body)) => {
-            let body_node = arena
-                .node(body)
-                .copied()
-                .ok_or(JitLowerError::MissingIrBody { body })?;
-            match body_node.kind {
-                IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null => {
-                    lower_constant_ir_thunk_body_artifact(arena, root)
-                }
-                IrKind::LocalVar => lower_env_get_ir_thunk_body_artifact(arena, root),
-                kind => Err(JitLowerError::UnsupportedIrBody { kind }),
-            }
-        }
-        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
-            kind: IrKind::ThunkAlloc,
-            data,
-            expected: "body node",
-        }),
-        (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null, _) => {
-            lower_constant_ir_thunk_body_artifact(arena, root)
-        }
-        (IrKind::LocalVar, _) => lower_env_get_ir_thunk_body_artifact(arena, root),
-        (kind, _) => Err(JitLowerError::UnsupportedIrRoot { kind }),
-    }
-}
-
-fn lower_force_aware_registered_tier1_ir_thunk_body_artifact(
-    arena: &IrArena,
-    root: IrId,
-) -> Result<JitClifArtifact, JitLowerError> {
-    let node = arena
-        .node(root)
-        .copied()
-        .ok_or(JitLowerError::MissingIrNode { root })?;
-
-    match (node.kind, node.data) {
-        (IrKind::ThunkAlloc, IrData::Node(body)) => {
-            let body_node = arena
-                .node(body)
-                .copied()
-                .ok_or(JitLowerError::MissingIrBody { body })?;
-            match body_node.kind {
-                IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null => {
-                    lower_constant_ir_thunk_body_artifact(arena, root)
-                }
-                IrKind::LocalVar => lower_forced_env_get_ir_thunk_body_artifact(arena, root),
-                kind => Err(JitLowerError::UnsupportedIrBody { kind }),
-            }
-        }
-        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
-            kind: IrKind::ThunkAlloc,
-            data,
-            expected: "body node",
-        }),
-        (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null, _) => {
-            lower_constant_ir_thunk_body_artifact(arena, root)
-        }
-        (IrKind::LocalVar, _) => lower_forced_env_get_ir_thunk_body_artifact(arena, root),
-        (kind, _) => Err(JitLowerError::UnsupportedIrRoot { kind }),
-    }
 }
 
 fn require_definition_ready_artifact_imports(

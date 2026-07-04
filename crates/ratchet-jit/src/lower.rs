@@ -4,9 +4,10 @@
 //! build verified Cranelift [`Function`] values for compiled thunk bodies that
 //! return constant runtime [`Value`] words, perform one bounded local
 //! environment-slot read through the `aos_env_get` helper, or force that loaded
-//! value through `aos_force`. These bodies use the same two-word `Value` ABI as
-//! [`crate::abi`], but they are not placed in a `JITModule`, finalized, or
-//! called.
+//! value through `aos_force`. Shape-directed tier-1 selector entrypoints choose
+//! among those bounded paths before Cranelift module setup. These bodies use the
+//! same two-word `Value` ABI as [`crate::abi`], but they are not placed in a
+//! `JITModule`, finalized, or called.
 
 use std::{error::Error, fmt};
 
@@ -359,6 +360,80 @@ pub fn lower_forced_env_get_ir_root_thunk_body_artifact(
     lower_forced_env_get_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
+/// Lowers a currently supported tier-1 IR thunk body.
+///
+/// This shape-directed selector accepts literal roots and local-slot roots,
+/// plus one direct [`IrKind::ThunkAlloc`] wrapper around either shape. Literal
+/// roots lower through [`lower_constant_ir_thunk_body`], while local-slot roots
+/// lower through [`lower_env_get_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as the selected bounded lowerer, including
+/// [`JitLowerError::UnsupportedIrRoot`] or [`JitLowerError::UnsupportedIrBody`]
+/// for roots outside the current tier-1 subset.
+pub fn lower_tier1_ir_thunk_body(arena: &IrArena, root: IrId) -> Result<Function, JitLowerError> {
+    let artifact = lower_tier1_ir_thunk_body_artifact(arena, root)?;
+    Ok(artifact.into_function())
+}
+
+/// Lowers a currently supported tier-1 IR thunk body into artifact metadata.
+///
+/// The returned artifact records the Core IR root id and contains the same
+/// verified CLIF function returned by [`lower_tier1_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_tier1_ir_thunk_body`].
+pub fn lower_tier1_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_tier1_ir_thunk_body_artifact_with_local_slot_lowering(
+        arena,
+        root,
+        Tier1LocalSlotLowering::EnvGet,
+    )
+}
+
+/// Lowers a currently supported force-aware tier-1 IR thunk body.
+///
+/// This selector preserves the literal-root lowering path, but lowers local-slot
+/// roots through [`lower_forced_env_get_ir_thunk_body`] so the loaded value is
+/// forced by `aos_force` before returning.
+///
+/// # Errors
+///
+/// Returns the same errors as the selected bounded lowerer, including
+/// [`JitLowerError::UnsupportedIrRoot`] or [`JitLowerError::UnsupportedIrBody`]
+/// for roots outside the current tier-1 subset.
+pub fn lower_force_aware_tier1_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let artifact = lower_force_aware_tier1_ir_thunk_body_artifact(arena, root)?;
+    Ok(artifact.into_function())
+}
+
+/// Lowers a currently supported force-aware tier-1 IR thunk body into artifact metadata.
+///
+/// The returned artifact records the Core IR root id and contains the same
+/// verified CLIF function returned by [`lower_force_aware_tier1_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_force_aware_tier1_ir_thunk_body`].
+pub fn lower_force_aware_tier1_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_tier1_ir_thunk_body_artifact_with_local_slot_lowering(
+        arena,
+        root,
+        Tier1LocalSlotLowering::ForceEnvGet,
+    )
+}
+
 /// A failure while lowering safe metadata into CLIF.
 #[derive(Debug)]
 pub enum JitLowerError {
@@ -395,12 +470,12 @@ pub enum JitLowerError {
         /// The missing IR body id.
         body: IrId,
     },
-    /// The requested IR root is not a literal this precursor can lower.
+    /// The requested IR root is outside this precursor's supported subset.
     UnsupportedIrRoot {
         /// The unsupported root node kind.
         kind: IrKind,
     },
-    /// The direct thunk-allocation body is not a literal this precursor can lower.
+    /// The direct thunk-allocation body is outside this precursor's supported subset.
     UnsupportedIrBody {
         /// The unsupported body node kind.
         kind: IrKind,
@@ -475,13 +550,13 @@ impl fmt::Display for JitLowerError {
             Self::UnsupportedIrRoot { kind } => {
                 write!(
                     formatter,
-                    "IR root kind {kind:?} is not supported by the constant lowerer"
+                    "IR root kind {kind:?} is not supported by this lowerer"
                 )
             }
             Self::UnsupportedIrBody { kind } => {
                 write!(
                     formatter,
-                    "IR thunk body kind {kind:?} is not supported by the constant lowerer"
+                    "IR thunk body kind {kind:?} is not supported by this lowerer"
                 )
             }
             Self::UnsupportedEnvRoot { kind } => {
@@ -636,6 +711,73 @@ fn env_slot_for_node(node: IrNode) -> Result<u32, JitLowerError> {
             expected: "local slot payload",
         }),
         (kind, _) => Err(JitLowerError::UnsupportedEnvRoot { kind }),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Tier1LocalSlotLowering {
+    EnvGet,
+    ForceEnvGet,
+}
+
+fn lower_tier1_ir_thunk_body_artifact_with_local_slot_lowering(
+    arena: &IrArena,
+    root: IrId,
+    local_slot_lowering: Tier1LocalSlotLowering,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body_node = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            lower_tier1_ir_thunk_body_artifact_for_kind(
+                arena,
+                root,
+                body_node.kind,
+                local_slot_lowering,
+                true,
+            )
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        (kind, _) => lower_tier1_ir_thunk_body_artifact_for_kind(
+            arena,
+            root,
+            kind,
+            local_slot_lowering,
+            false,
+        ),
+    }
+}
+
+fn lower_tier1_ir_thunk_body_artifact_for_kind(
+    arena: &IrArena,
+    root: IrId,
+    kind: IrKind,
+    local_slot_lowering: Tier1LocalSlotLowering,
+    is_thunk_body: bool,
+) -> Result<JitClifArtifact, JitLowerError> {
+    match kind {
+        IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null => {
+            lower_constant_ir_thunk_body_artifact(arena, root)
+        }
+        IrKind::LocalVar => match local_slot_lowering {
+            Tier1LocalSlotLowering::EnvGet => lower_env_get_ir_thunk_body_artifact(arena, root),
+            Tier1LocalSlotLowering::ForceEnvGet => {
+                lower_forced_env_get_ir_thunk_body_artifact(arena, root)
+            }
+        },
+        kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
+        kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }
 }
 
@@ -1634,6 +1776,303 @@ mod tests {
             2,
             "forced env-get artifacts import env-get and force"
         );
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_artifact_selects_literal_and_env_get_paths() {
+        let literal_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Bool,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::Bool(true),
+            )],
+            Vec::new(),
+        );
+        let literal_artifact = lower_tier1_ir_thunk_body_artifact(&literal_arena, IrId::new(0))
+            .expect("tier-1 selector lowers literal root");
+
+        assert_eq!(
+            iconst_words(literal_artifact.function()),
+            vec![ValueTag::Bool as u64, Value::bool(true).payload_bits()]
+        );
+        assert!(literal_artifact.function().dfg.ext_funcs.is_empty());
+
+        let local_arena = IrArena::from_raw_parts(vec![local_var_node(19)], Vec::new());
+        let local_artifact = lower_tier1_ir_thunk_body_artifact(&local_arena, IrId::new(0))
+            .expect("tier-1 selector lowers local root through env-get");
+
+        assert_eq!(local_artifact.function().dfg.ext_funcs.len(), 1);
+        imported_function_by_user_external_name(
+            local_artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        assert_eq!(iconst_words(local_artifact.function()), vec![19]);
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_lowers_wrapped_local_body() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(23),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let function = lower_tier1_ir_thunk_body(&arena, IrId::new(1))
+            .expect("tier-1 selector lowers wrapped local root");
+
+        assert_eq!(function.name, clif_name_for_ir_root(IrId::new(1)));
+        assert_eq!(function.dfg.ext_funcs.len(), 1);
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+        assert_eq!(iconst_words(&function), vec![23]);
+    }
+
+    #[test]
+    fn force_aware_tier1_ir_thunk_body_artifact_preserves_literals_and_forces_local_slots() {
+        let literal_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Int(29),
+            )],
+            Vec::new(),
+        );
+        let literal_artifact =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&literal_arena, IrId::new(0))
+                .expect("force-aware selector preserves literal lowering");
+
+        assert_eq!(
+            iconst_words(literal_artifact.function()),
+            vec![ValueTag::Int as u64, Value::int(29).payload_bits()]
+        );
+        assert!(literal_artifact.function().dfg.ext_funcs.is_empty());
+
+        let local_arena = IrArena::from_raw_parts(vec![local_var_node(31)], Vec::new());
+        let local_artifact =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&local_arena, IrId::new(0))
+                .expect("force-aware selector lowers local root through env-get and force");
+
+        assert_eq!(local_artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            local_artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            local_artifact.function(),
+            clif_external_name_for_aos_force(),
+        );
+        assert_eq!(iconst_words(local_artifact.function()), vec![31]);
+    }
+
+    #[test]
+    fn force_aware_tier1_ir_thunk_body_lowers_wrapped_local_body() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(37),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let function = lower_force_aware_tier1_ir_thunk_body(&arena, IrId::new(1))
+            .expect("force-aware selector lowers wrapped local root");
+
+        assert_eq!(function.name, clif_name_for_ir_root(IrId::new(1)));
+        assert_eq!(function.dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+        assert_eq!(iconst_words(&function), vec![37]);
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_artifact_reports_unsupported_selector_shapes() {
+        let root_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let body_arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Str,
+                    Span::new(1, 6),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 6),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let Err(root_error) = lower_tier1_ir_thunk_body_artifact(&root_arena, IrId::new(0)) else {
+            panic!("unsupported direct root is rejected");
+        };
+        let Err(body_error) =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&body_arena, IrId::new(1))
+        else {
+            panic!("unsupported wrapped body is rejected");
+        };
+
+        assert!(
+            matches!(root_error, JitLowerError::UnsupportedIrRoot { kind } if kind == IrKind::Str)
+        );
+        assert!(
+            matches!(body_error, JitLowerError::UnsupportedIrBody { kind } if kind == IrKind::Str)
+        );
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_artifact_reports_selector_shape_malformed_roots() {
+        let missing_root_arena = IrArena::new();
+        let missing_body_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Node(IrId::new(9)),
+            )],
+            Vec::new(),
+        );
+        let malformed_wrapper_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+
+        let Err(missing_root_error) =
+            lower_tier1_ir_thunk_body_artifact(&missing_root_arena, IrId::new(7))
+        else {
+            panic!("missing selector root is rejected");
+        };
+        let Err(missing_body_error) =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&missing_body_arena, IrId::new(0))
+        else {
+            panic!("missing selector body is rejected");
+        };
+        let Err(malformed_wrapper_error) =
+            lower_tier1_ir_thunk_body_artifact(&malformed_wrapper_arena, IrId::new(0))
+        else {
+            panic!("malformed selector wrapper is rejected");
+        };
+
+        assert!(
+            matches!(missing_root_error, JitLowerError::MissingIrNode { root } if root == IrId::new(7))
+        );
+        assert!(
+            matches!(missing_body_error, JitLowerError::MissingIrBody { body } if body == IrId::new(9))
+        );
+        assert!(matches!(
+            malformed_wrapper_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::ThunkAlloc,
+                data: IrData::None,
+                expected: "body node",
+            }
+        ));
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_artifact_reports_selector_payload_mismatches() {
+        let mismatched_literal_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let mismatched_local_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let mismatched_body_arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Bool,
+                    Span::new(1, 5),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 5),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let Err(literal_error) =
+            lower_tier1_ir_thunk_body_artifact(&mismatched_literal_arena, IrId::new(0))
+        else {
+            panic!("mismatched selector literal is rejected");
+        };
+        let Err(local_error) =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&mismatched_local_arena, IrId::new(0))
+        else {
+            panic!("mismatched selector local slot is rejected");
+        };
+        let Err(body_error) =
+            lower_tier1_ir_thunk_body_artifact(&mismatched_body_arena, IrId::new(1))
+        else {
+            panic!("mismatched selector thunk body is rejected");
+        };
+
+        assert!(matches!(
+            literal_error,
+            JitLowerError::MismatchedConstantData {
+                kind: IrKind::Int,
+                data: IrData::None,
+            }
+        ));
+        assert!(matches!(
+            local_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::LocalVar,
+                data: IrData::None,
+                expected: "local slot payload",
+            }
+        ));
+        assert!(matches!(
+            body_error,
+            JitLowerError::MismatchedBodyConstantData {
+                kind: IrKind::Bool,
+                data: IrData::None,
+            }
+        ));
     }
 
     fn lowered_ir(source: &str) -> Ir {

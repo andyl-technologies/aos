@@ -8912,6 +8912,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       function pointer,
       symbol registration, compiled artifact cache, persistence format, or
       native call is implemented.
+- [x] Current shape-directed tier-1 lowerer selector precursor:
+      `ratchet-jit::lower::lower_tier1_ir_thunk_body_artifact()` and
+      `lower_force_aware_tier1_ir_thunk_body_artifact()` now own the bounded
+      tier-1 root selection used by registered Cranelift promotion paths. The selector
+      accepts literal roots, local-slot roots, and one direct `ThunkAlloc`
+      wrapper around either shape; the force-aware variant preserves literal
+      lowering but lowers local slots through `aos_env_get` plus `aos_force`.
+      Tests pin literal no-import selection, env-get-only local selection,
+      forced local selection with both helper imports, wrapped local bodies, and
+      unsupported direct/wrapped shape errors. This is still selector plumbing
+      over bounded lowerers only: no generic IR traversal, applications,
+      selects, attrsets, branches, exported helper wrappers, executable buffer,
+      or native call is implemented by the lowerer itself.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

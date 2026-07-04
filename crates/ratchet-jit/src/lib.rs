@@ -13,7 +13,8 @@
 //! for caller-supplied host-ABI-matched runtime candidates, and a
 //! promotion-gated registered native-call composition precursor,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
-//! environment-slot, and constant-thunk smoke tests,
+//! environment-slot, constant-thunk smoke tests, and bounded shape-directed
+//! tier-1 lowerer selectors,
 //! [`module`] composes artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
@@ -94,9 +95,11 @@ pub use lower::{
     lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,
     lower_constant_thunk_body_artifact, lower_env_get_ir_root_thunk_body,
     lower_env_get_ir_root_thunk_body_artifact, lower_env_get_ir_thunk_body,
-    lower_env_get_ir_thunk_body_artifact, lower_forced_env_get_ir_root_thunk_body,
+    lower_env_get_ir_thunk_body_artifact, lower_force_aware_tier1_ir_thunk_body,
+    lower_force_aware_tier1_ir_thunk_body_artifact, lower_forced_env_get_ir_root_thunk_body,
     lower_forced_env_get_ir_root_thunk_body_artifact, lower_forced_env_get_ir_thunk_body,
-    lower_forced_env_get_ir_thunk_body_artifact,
+    lower_forced_env_get_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
+    lower_tier1_ir_thunk_body_artifact,
 };
 pub use module::{
     JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleArtifactRuntimeImportGap,

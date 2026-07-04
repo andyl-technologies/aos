@@ -1714,6 +1714,19 @@ harness, never cut for scope.
       no `JITModule`, executable buffer, function pointer, runtime-symbol
       registration, compiled artifact cache, persistence format, or native call
       is implemented.
+- [x] Current shape-directed tier-1 lowerer selector precursor:
+      `ratchet-jit::lower::lower_tier1_ir_thunk_body_artifact()` and
+      `lower_force_aware_tier1_ir_thunk_body_artifact()` now own the bounded
+      tier-1 root selection used by registered Cranelift promotion paths. The selector
+      accepts literal roots, local-slot roots, and one direct `ThunkAlloc`
+      wrapper around either shape; the force-aware variant preserves literal
+      lowering but lowers local slots through `aos_env_get` plus `aos_force`.
+      Tests pin literal no-import selection, env-get-only local selection,
+      forced local selection with both helper imports, wrapped local bodies, and
+      unsupported direct/wrapped shape errors. This is still selector plumbing
+      over bounded lowerers only: no generic IR traversal, applications,
+      selects, attrsets, branches, exported helper wrappers, executable buffer,
+      or native call is implemented by the lowerer itself.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:
