@@ -20,14 +20,14 @@ use crate::device::{
     block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
     ninep_faults_from_combined_ninep,
 };
-use crate::model::{DagStore, MemoryDagStore};
+use crate::model::{DagStore, MemoryDagStore, Schedule};
 use crate::node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
 };
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
     EventFirings, EventGraph, EventGraphState, HostAssertionReport, LogLevel, ObservableEvent,
-    ObservableEventPayload,
+    ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
@@ -5226,6 +5226,60 @@ fn scheduler_event_log_sequence(base: u64, offset: usize) -> Result<u64, Schedul
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("scheduler event-log sequence overflow"),
         })
+}
+
+/// Builds a retained assertion log from a search configuration schedule.
+pub(crate) fn recorded_assertion_log_from_schedule_for_search(
+    schedule: &Schedule,
+) -> Result<RecordedAssertionLog, OfflineAssertionCheckError> {
+    let mut entries = Vec::with_capacity(schedule.len().saturating_add(1));
+    let mut terminal_ticks = 0_u64;
+    for (index, decision) in schedule.decisions().iter().enumerate() {
+        let sequence = u64::try_from(index)
+            .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len: index })?;
+        let at = search_schedule_decision_event_time(decision, sequence);
+        terminal_ticks = terminal_ticks.max(at.ticks);
+        entries.push(scheduler_event_log_entry(
+            sequence,
+            at,
+            SchedulerEventLogPayload::Decision(decision.clone()),
+        ));
+    }
+
+    let boundary_index = entries.len();
+    let boundary_sequence = u64::try_from(boundary_index).map_err(|_| {
+        OfflineAssertionCheckError::PrefixLengthOverflow {
+            prefix_len: boundary_index,
+        }
+    })?;
+    let boundary_ticks = if entries.is_empty() {
+        terminal_ticks
+    } else {
+        terminal_ticks.saturating_add(1)
+    };
+    entries.push(scheduler_event_log_entry(
+        boundary_sequence,
+        VirtualTime {
+            ticks: boundary_ticks,
+        },
+        SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
+    ));
+
+    RecordedAssertionLog::from_segments(vec![entries])
+}
+
+fn search_schedule_decision_event_time(decision: &Decision, fallback_sequence: u64) -> VirtualTime {
+    match decision {
+        Decision::DeliveryOrder(order) => order.at,
+        Decision::FaultFires(fault) => fault.at,
+        Decision::ControlFault(control) => control.at,
+        Decision::Preemption(preemption) => VirtualTime {
+            ticks: preemption.at.retired,
+        },
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => VirtualTime {
+            ticks: fallback_sequence,
+        },
+    }
 }
 
 fn scheduler_event_log_entry(

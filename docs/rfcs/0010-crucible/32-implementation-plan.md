@@ -487,13 +487,19 @@ long-held locks.
   search strategy/budget/violation-mode validation, seeded coverage-guided fuzz
   config construction, local-double search execution through
   `TemporalGraph::search_with_strategy_and_failure_oracle_bounded_depth_sampled`
-  with the default empty search failure oracle, bounded decision-depth execution
-  for `--max-depth`, explicit `--on-violation` acceptance, deterministic
-  `search-run` output with `failure_oracle=none`, exhaustion metadata, 1/1
+  after deriving a prefix-safe scenario-assertion search failure oracle, bounded
+  decision-depth execution for `--max-depth`, explicit `--on-violation`
+  acceptance, deterministic `search-run` output with `failure_oracle=none` or
+  `failure_oracle=scenario-assertions`, exhaustion metadata, 1/1
   replay-oracle sampling counts over fat search materializations, RFC §13 status
   mapping for discovered failures, stop-mode budget exhaustion, collect-mode
   budgeted campaigns, engine-discovered counterexample metadata, and replayable
   CLI reproduction artifact emission with standard replay/debug footer commands;
+  prefix-safe lowering of concrete schedule-derived fault-active
+  safety/unreachability assertion violations while excluding absence-based
+  liveness/existential failures, time/timer/quiescence predicates,
+  observable-event/guest-marker predicates, and named host predicates requiring
+  an external harness oracle from non-terminal search prefixes;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
@@ -502,8 +508,9 @@ long-held locks.
   output with generated-mutant/admission/retained-entry/store-put/
   replay-validation counts, and explicit backend errors for missing/corrupt
   stored family objects and unsupported fuzz targets; full closure waits for
-  property/assertion lowering into the search failure oracle and real-QEMU
-  coverage.
+  real-QEMU coverage, retained-log backend breadth for observable/time/
+  guest-marker and non-prefix assertion classes, and named host predicate oracle
+  plumbing.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result

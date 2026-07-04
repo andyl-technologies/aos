@@ -30,11 +30,13 @@ use crate::scheduler::{
     EventLogCoverageFeedbackConsumer, EventLogIcountStamp, EventSource, ScheduledEventPayload,
     SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
     coverage_fingerprint_from_event_log, event_log_causal_projection,
+    recorded_assertion_log_from_schedule_for_search,
 };
 use crate::trigger::{
     Action, AssertionQuantifierKind, Condition, ConditionEvaluationPass, ConditionLeaf,
-    ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy, HostAssertionViolation,
-    LogLevel, ObservableEventPayload,
+    ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionViolation, LogLevel, ObservableEventPayload,
+    OfflineAssertionChecker,
 };
 
 mod canonical;
@@ -18785,10 +18787,64 @@ impl SearchFailureOracle {
         self
     }
 
+    /// Builds an oracle from prefix-safe assertion violations found by a search run.
+    ///
+    /// This constructor grades each reached configuration schedule against
+    /// `scenario` with the offline assertion checker and lowers only assertion
+    /// outcomes that are safe to treat as prefix failures from schedule-only
+    /// evidence: host `always` and unreachable violations whose predicates are
+    /// composed only from fault-active facts and boolean combinators. It
+    /// deliberately does not lower absence-based existential/liveness failures,
+    /// time/timer/quiescence predicates, observable-event predicates, guest
+    /// marker predicates, or named host predicates, because this path does not
+    /// replay a backend-retained event log or a harness oracle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not match `root` or a reached configuration. Returns
+    /// [`EngineError::ScenarioSerialization`] when the retained assertion log
+    /// cannot be reconstructed or checked.
+    pub fn from_search_assertion_violations(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+    ) -> Result<Self, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+
+        let mut oracle = Self::none();
+        for configuration in search_run_reached_configurations(root, run) {
+            if configuration.def.id != scenario_def.id {
+                return Err(EngineError::ReproductionScenarioMismatch {
+                    expected: scenario_def.id,
+                    actual: configuration.def.id,
+                });
+            }
+            if let Some(fingerprint) =
+                search_assertion_failure_fingerprint(scenario, &configuration)?
+            {
+                oracle = oracle.with_failure(configuration.id(), fingerprint);
+            }
+        }
+        Ok(oracle)
+    }
+
     /// Returns the configured failure fingerprint for `configuration`, if any.
     #[must_use]
     pub fn failure_for(&self, configuration: ContentHash) -> Option<ContentHash> {
         self.failures.get(&configuration).copied()
+    }
+
+    /// Returns whether this oracle contains no failure entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.failures.is_empty()
     }
 }
 
@@ -23743,6 +23799,136 @@ fn search_candidate_coverage_fingerprint(
         .or_else(|| graph.checkpoint_nodes.get(&configuration.id()))
         .map(|checkpoint| checkpoint.coverage_fingerprint)
         .unwrap_or_default()
+}
+
+fn search_run_reached_configurations(
+    root: &Configuration,
+    run: &TemporalGraphSearchRun,
+) -> Vec<Configuration> {
+    let mut configurations = BTreeMap::from([(root.id(), root.clone())]);
+    for expansion in &run.expansions {
+        for child in &expansion.search.frontier_report.explored {
+            configurations
+                .entry(child.configuration.id())
+                .or_insert_with(|| child.configuration.clone());
+        }
+        for covered in &expansion.search.frontier_report.covered {
+            configurations
+                .entry(covered.configuration.id())
+                .or_insert_with(|| covered.configuration.clone());
+        }
+    }
+    configurations.into_values().collect()
+}
+
+fn search_assertion_failure_fingerprint(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+) -> Result<Option<ContentHash>, EngineError> {
+    let recorded = recorded_assertion_log_from_schedule_for_search(&configuration.schedule)
+        .map_err(|source| {
+            scenario_serialization_error(format!(
+                "search assertion retained log reconstruction failed: {source}"
+            ))
+        })?;
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run(scenario.properties(), recorded.entries())
+        .map_err(|source| {
+            scenario_serialization_error(format!("search assertion check failed: {source}"))
+        })?;
+    Ok(report
+        .outcomes()
+        .iter()
+        .find(|outcome| prefix_safe_search_assertion_failure(scenario.properties(), outcome))
+        .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
+}
+
+fn prefix_safe_search_assertion_failure(
+    properties: &Properties,
+    outcome: &HostAssertionOutcome,
+) -> bool {
+    outcome.kind == HostAssertionOutcomeKind::Violated
+        && matches!(
+            outcome.quantifier,
+            AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
+        )
+        && assertion_uses_only_search_schedule_predicates(properties, &outcome.assertion)
+}
+
+fn assertion_uses_only_search_schedule_predicates(
+    properties: &Properties,
+    assertion: &AssertionId,
+) -> bool {
+    properties
+        .assertions()
+        .iter()
+        .find(|candidate| &candidate.id == assertion)
+        .is_some_and(|candidate| property_uses_only_search_schedule_predicates(&candidate.property))
+}
+
+fn property_uses_only_search_schedule_predicates(property: &Property) -> bool {
+    match property {
+        Property::Always { predicate }
+        | Property::Sometimes { predicate }
+        | Property::AfterQuiescence { predicate }
+        | Property::Reachable { predicate, .. } => {
+            predicate_uses_only_search_schedule_predicates(predicate)
+        }
+        Property::Eventually { .. } => false,
+    }
+}
+
+fn predicate_uses_only_search_schedule_predicates(predicate: &Predicate) -> bool {
+    match predicate {
+        Predicate::FaultActive { .. } => true,
+        Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => predicates
+            .iter()
+            .all(predicate_uses_only_search_schedule_predicates),
+        Predicate::Once { predicate } | Predicate::Not { predicate } => {
+            predicate_uses_only_search_schedule_predicates(predicate)
+        }
+        Predicate::At { .. }
+        | Predicate::After { .. }
+        | Predicate::Timer { .. }
+        | Predicate::NetworkMatch { .. }
+        | Predicate::ConsoleMatch { .. }
+        | Predicate::CoveragePoint { .. }
+        | Predicate::MemoryPredicate { .. }
+        | Predicate::IoPattern { .. }
+        | Predicate::NodeState { .. }
+        | Predicate::AssertionState { .. }
+        | Predicate::Quiescent
+        | Predicate::Named { .. }
+        | Predicate::GuestMarker { .. } => false,
+    }
+}
+
+fn search_assertion_outcome_fingerprint(
+    configuration: ContentHash,
+    outcome: &HostAssertionOutcome,
+) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.search.assertion-failure.v1",
+        &search_assertion_outcome_fingerprint_material(configuration, outcome),
+    )
+}
+
+fn search_assertion_outcome_fingerprint_material(
+    configuration: ContentHash,
+    outcome: &HostAssertionOutcome,
+) -> String {
+    format!(
+        "configuration={}\nassertion={}\nquantifier={}\nkind={:?}\nlifecycle={:?}\nat={}\nmessage={}\nreason={}",
+        content_hash_hex(configuration),
+        outcome.assertion.name,
+        failure_assertion_quantifier_label(outcome.quantifier),
+        outcome.kind,
+        outcome.lifecycle,
+        outcome.at.ticks,
+        outcome.message,
+        outcome.reason
+    )
 }
 
 fn record_search_discovered_failure(

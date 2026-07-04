@@ -1134,15 +1134,21 @@ branch on the verdict without parsing output:
   concrete `ScenarioDef` resolver used by `run`, maps strategy and budget to the
   phase-6 advanced search API, executes local `--backend double search` through
   `TemporalGraph::search_with_strategy_and_failure_oracle_bounded_depth_sampled`
-  with the current empty search failure oracle, honors `--max-depth` as a
-  bounded decision-depth search run, accepts explicit `--on-violation`, and
-  reports deterministic `search-run` output with `failure_oracle=none`,
+  after deriving a prefix-safe scenario-assertion failure oracle from the same
+  search budget, honors `--max-depth` as a bounded decision-depth search run,
+  accepts explicit `--on-violation`, and reports deterministic `search-run`
+  output with `failure_oracle=none` or `failure_oracle=scenario-assertions`,
   exhaustion metadata, 1/1 replay-oracle sampling counts over fat search
   materializations, and the RFC §13 status mapping for discovered failures,
   stop-mode budget exhaustion, and collect-mode budgeted campaigns. Engine
   failures discovered by the local-double search path now attach replayable CLI
   reproduction artifacts, `search-run` counterexample metadata, and the standard
-  replay/debug footer commands. It also parses `fuzz <FAMILY>` / `fuzz --family
+  replay/debug footer commands. The assertion oracle lowers concrete
+  prefix-safe, schedule-derived fault-active safety/unreachability violations and
+  intentionally excludes absence-based existential/liveness failures,
+  time/timer/quiescence predicates, observable-event/guest-marker predicates,
+  and named host predicates requiring an external harness oracle from
+  non-terminal search prefixes. It also parses `fuzz <FAMILY>` / `fuzz --family
   <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
   campaign seed into
   `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v1`
@@ -1154,8 +1160,9 @@ branch on the verdict without parsing output:
   `fuzz-run` output with generated-mutant, admission, retained-entry, store-put,
   and replay-oracle validation counts. Missing/corrupt stored family objects and
   unsupported backend targets fail explicitly until the remaining policy runners
-  are wired. Full closure remains blocked on property/assertion lowering into
-  the search failure oracle and real-QEMU coverage.
+  are wired. Full closure remains blocked on real-QEMU coverage, retained-log
+  backend breadth for observable/time/guest-marker and non-prefix assertion
+  classes, and named host predicate oracle plumbing.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

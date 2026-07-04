@@ -12160,7 +12160,30 @@ fn run_local_double_search_workflow_with_graph(
     root: &crucible::Configuration,
     graph: &mut TemporalGraph,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let failure_oracle = SearchFailureOracle::none();
+    let empty_failure_oracle = SearchFailureOracle::none();
+    let assertion_discovery_run = graph
+        .search_with_strategy_and_failure_oracle_bounded_depth(
+            plan.scenario.scenario_form(),
+            root,
+            plan.engine_strategy,
+            plan.budget,
+            MaterializationPolicy::with_budget(search_materialization_budget(plan.max_states)),
+            MaterializationTrigger::RepeatedForkSource,
+            &empty_failure_oracle,
+            plan.max_depth,
+        )
+        .map_err(|error| backend_error(format!("local-double assertion search failed: {error}")))?;
+    let failure_oracle = SearchFailureOracle::from_search_assertion_violations(
+        plan.scenario.scenario_form(),
+        root,
+        &assertion_discovery_run,
+    )
+    .map_err(|error| backend_error(format!("local-double assertion lowering failed: {error}")))?;
+    let failure_oracle_label = if failure_oracle.is_empty() {
+        "none"
+    } else {
+        "scenario-assertions"
+    };
     run_local_double_search_workflow_with_graph_and_failure_oracle(
         thin_plan,
         backend_plan,
@@ -12169,7 +12192,7 @@ fn run_local_double_search_workflow_with_graph(
         root,
         graph,
         &failure_oracle,
-        "none",
+        failure_oracle_label,
     )
 }
 
