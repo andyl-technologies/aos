@@ -6,16 +6,17 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use crucible::{
-    AssertionDef, AssertionId, ChoiceTag, Configuration, ContentHash, ControlFaultAction,
-    ControlFaultDecision, Decision, EngineError, Fault, FaultDecision, FaultId,
+    AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash,
+    ControlFaultAction, ControlFaultDecision, Decision, EngineError, Fault, FaultDecision, FaultId,
     FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath, GenesisCheckpoint, Icount,
-    MarkerId, MaterializationPolicy, MaterializationTrigger, NodeFault, NodeId, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
-    RecordedAssertionLog, RngDecision, RngStreamId, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchScheduleNamedPredicateKey,
-    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph,
-    TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    MarkerId, MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth,
+    NodeFault, NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, RecordedAssertionLog, ResolvedMemPlace, RngDecision,
+    RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulingPoint,
+    SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
+    TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake,
+    try_step,
 };
 
 #[test]
@@ -424,6 +425,211 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
             .is_some()
     );
 
+    let raw_coverage_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::coverage_point(
+            node_id("search-node"),
+            CodePoint::guest_address(0x4010),
+        )),
+    })?;
+    let raw_coverage_root = Configuration::genesis(raw_coverage_scenario.scenario_def());
+    let raw_coverage_run = empty_search_run_for_root(&raw_coverage_root);
+    let schedule_only_raw_coverage_oracle = SearchFailureOracle::from_search_assertion_violations(
+        &raw_coverage_scenario,
+        &raw_coverage_root,
+        &raw_coverage_run,
+    )?;
+
+    assert!(schedule_only_raw_coverage_oracle.is_empty());
+
+    let retained_raw_coverage_log = retained_observable_log(ObservableEvent::coverage_block(
+        icount(11),
+        node_id("search-node"),
+        0x4000,
+        0x20,
+    ))?;
+    let retained_raw_coverage_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &raw_coverage_scenario,
+            &raw_coverage_root,
+            &raw_coverage_run,
+            |configuration| {
+                (configuration.id() == raw_coverage_root.id())
+                    .then(|| retained_raw_coverage_log.clone())
+            },
+        )?;
+
+    assert!(
+        retained_raw_coverage_oracle
+            .failure_for(raw_coverage_root.id())
+            .is_some()
+    );
+
+    let unsupported_symbol_coverage_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::coverage_point(
+            node_id("search-node"),
+            CodePoint::symbol("needs-symbol-resolution"),
+        )),
+    })?;
+    let unsupported_symbol_coverage_root =
+        Configuration::genesis(unsupported_symbol_coverage_scenario.scenario_def());
+    let unsupported_symbol_coverage_run =
+        empty_search_run_for_root(&unsupported_symbol_coverage_root);
+    let unsupported_symbol_coverage_log = retained_observable_log(
+        ObservableEvent::coverage_block(icount(12), node_id("search-node"), 0x4000, 0x20),
+    )?;
+    let unsupported_symbol_coverage_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &unsupported_symbol_coverage_scenario,
+            &unsupported_symbol_coverage_root,
+            &unsupported_symbol_coverage_run,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_coverage_root.id())
+                    .then(|| unsupported_symbol_coverage_log.clone())
+            },
+        )?;
+
+    assert!(unsupported_symbol_coverage_oracle.is_empty());
+
+    let physical_memory_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::memory_predicate(
+            node_id("search-node"),
+            MemPlace::physical_address(0x1000, MemoryWidth::U32),
+            MemoryCmp::Eq,
+            0xfeed,
+        )),
+    })?;
+    let physical_memory_root = Configuration::genesis(physical_memory_scenario.scenario_def());
+    let physical_memory_run = empty_search_run_for_root(&physical_memory_root);
+    let schedule_only_physical_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations(
+            &physical_memory_scenario,
+            &physical_memory_root,
+            &physical_memory_run,
+        )?;
+
+    assert!(schedule_only_physical_memory_oracle.is_empty());
+
+    let retained_physical_memory_log = retained_observable_log(ObservableEvent::memory_sample(
+        time(21),
+        icount(21),
+        node_id("search-node"),
+        ResolvedMemPlace::physical_address(0x1000, 4),
+        0xfeed,
+    ))?;
+    let retained_physical_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &physical_memory_scenario,
+            &physical_memory_root,
+            &physical_memory_run,
+            |configuration| {
+                (configuration.id() == physical_memory_root.id())
+                    .then(|| retained_physical_memory_log.clone())
+            },
+        )?;
+
+    assert!(
+        retained_physical_memory_oracle
+            .failure_for(physical_memory_root.id())
+            .is_some()
+    );
+
+    let register_memory_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::memory_predicate(
+            node_id("search-node"),
+            MemPlace::register("rax", MemoryWidth::U64),
+            MemoryCmp::Ge,
+            10,
+        )),
+    })?;
+    let register_memory_root = Configuration::genesis(register_memory_scenario.scenario_def());
+    let register_memory_run = empty_search_run_for_root(&register_memory_root);
+    let retained_register_memory_log = retained_observable_log(ObservableEvent::memory_sample(
+        time(22),
+        icount(22),
+        node_id("search-node"),
+        ResolvedMemPlace::register("rax", 8),
+        10,
+    ))?;
+    let retained_register_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &register_memory_scenario,
+            &register_memory_root,
+            &register_memory_run,
+            |configuration| {
+                (configuration.id() == register_memory_root.id())
+                    .then(|| retained_register_memory_log.clone())
+            },
+        )?;
+
+    assert!(
+        retained_register_memory_oracle
+            .failure_for(register_memory_root.id())
+            .is_some()
+    );
+
+    let unsupported_symbol_memory_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::memory_predicate(
+            node_id("search-node"),
+            MemPlace::symbol("needs-memory-resolution", MemoryWidth::U8),
+            MemoryCmp::Eq,
+            2,
+        )),
+    })?;
+    let unsupported_symbol_memory_root =
+        Configuration::genesis(unsupported_symbol_memory_scenario.scenario_def());
+    let unsupported_symbol_memory_run = empty_search_run_for_root(&unsupported_symbol_memory_root);
+    let unsupported_symbol_memory_log = retained_observable_log(ObservableEvent::memory_sample(
+        time(33),
+        icount(33),
+        node_id("search-node"),
+        ResolvedMemPlace::virtual_address(0x7000, 1),
+        2,
+    ))?;
+    let unsupported_symbol_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &unsupported_symbol_memory_scenario,
+            &unsupported_symbol_memory_root,
+            &unsupported_symbol_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_memory_root.id())
+                    .then(|| unsupported_symbol_memory_log.clone())
+            },
+        )?;
+
+    assert!(unsupported_symbol_memory_oracle.is_empty());
+
+    let unsupported_virtual_memory_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::memory_predicate(
+            node_id("search-node"),
+            MemPlace::virtual_address(0x7000, MemoryWidth::U8),
+            MemoryCmp::Eq,
+            2,
+        )),
+    })?;
+    let unsupported_virtual_memory_root =
+        Configuration::genesis(unsupported_virtual_memory_scenario.scenario_def());
+    let unsupported_virtual_memory_run =
+        empty_search_run_for_root(&unsupported_virtual_memory_root);
+    let unsupported_virtual_memory_log = retained_observable_log(ObservableEvent::memory_sample(
+        time(34),
+        icount(34),
+        node_id("search-node"),
+        ResolvedMemPlace::virtual_address(0x7000, 1),
+        2,
+    ))?;
+    let unsupported_virtual_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &unsupported_virtual_memory_scenario,
+            &unsupported_virtual_memory_root,
+            &unsupported_virtual_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_virtual_memory_root.id())
+                    .then(|| unsupported_virtual_memory_log.clone())
+            },
+        )?;
+
+    assert!(unsupported_virtual_memory_oracle.is_empty());
+
     let unsupported_quiescence_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::Quiescent,
     })?;
@@ -693,14 +899,20 @@ fn assertion_lowering_scenario_with_world(
 }
 
 fn retained_guest_marker_log(marker: MarkerId) -> Result<RecordedAssertionLog, EngineError> {
+    retained_observable_log(ObservableEvent::guest_marker(
+        icount(7),
+        node_id("search-node"),
+        marker,
+    ))
+}
+
+fn retained_observable_log(event: ObservableEvent) -> Result<RecordedAssertionLog, EngineError> {
+    let boundary_at = time(event.at().ticks.saturating_add(1));
     let segment = vec![
-        crucible::test_support::condition_observation_entry_for_test(
-            0,
-            &ObservableEvent::guest_marker(icount(7), node_id("search-node"), marker),
-        ),
+        crucible::test_support::condition_observation_entry_for_test(0, &event),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
-            time(9),
+            boundary_at,
             SchedulerEvaluationBoundaryKind::Quantum,
         ),
     ];

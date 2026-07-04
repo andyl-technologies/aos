@@ -18880,9 +18880,11 @@ impl SearchFailureOracle {
     /// offline black-box assertion checker, so this constructor can lower
     /// prefix-safe safety/unreachability violations over retained-log predicates
     /// whose evidence is carried by scheduler event-log entries: time/timer
-    /// facts, observable network/console/I/O/node/assertion-state facts, guest
-    /// markers, and schedule fault-active facts. Named host predicates still
-    /// require a separate explicit oracle path.
+    /// facts, observable network/console/I/O/node/assertion-state facts, raw
+    /// guest-address coverage, physical-address/register memory samples, guest
+    /// markers, and schedule fault-active facts. Named host predicates and
+    /// host-resolution-dependent coverage or memory predicates still require a
+    /// separate explicit oracle path.
     ///
     /// # Errors
     ///
@@ -24127,9 +24129,16 @@ fn predicate_uses_only_search_schedule_predicates(
         | Predicate::GuestMarker { .. } => {
             predicate_scope == SearchAssertionPredicateScope::RetainedLog
         }
-        Predicate::CoveragePoint { .. }
-        | Predicate::MemoryPredicate { .. }
-        | Predicate::Quiescent => false,
+        Predicate::CoveragePoint {
+            point: CodePoint::GuestAddress { .. },
+            ..
+        } => predicate_scope == SearchAssertionPredicateScope::RetainedLog,
+        Predicate::CoveragePoint { .. } => false,
+        Predicate::MemoryPredicate {
+            place: MemPlace::PhysicalAddress { .. } | MemPlace::Register { .. },
+            ..
+        } => predicate_scope == SearchAssertionPredicateScope::RetainedLog,
+        Predicate::MemoryPredicate { .. } | Predicate::Quiescent => false,
     }
 }
 
