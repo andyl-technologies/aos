@@ -1052,10 +1052,12 @@ branch on the verdict without parsing output:
   validates property selector names against declared assertions, exercises
   selector-driven local-double property and marker saves by emitting the
   requested assertion/marker identities through suspending breakpoints plus
-  breakpoint-firing proof, and fails undeclared property selectors, marker
-  selectors without a white-box source, and local QEMU saves clearly until their
-  proof paths land. Full closure remains blocked on production assertion-event/
-  guest-marker sources across selector saves and real-QEMU savepoint coverage.
+  breakpoint-firing proof, routes explicitly selected local-QEMU saves through
+  the same create-savepoint/export/oracle workflow with resolved QEMU/plugin
+  identity metadata, and fails undeclared property selectors and marker selectors
+  without a white-box source. Full closure remains blocked on production
+  assertion-event/guest-marker sources across selector saves and process-backed
+  real-QEMU savepoint coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
