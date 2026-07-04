@@ -53,7 +53,7 @@
       }
       {
         label = "T-CLI-17 signature-evidence blocker";
-        needle = "discovery-time signature evidence";
+        needle = "missing discovery-time signature evidence";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -92,6 +92,10 @@
         needle = "fn proves_t_tri_7";
       }
       {
+        label = "CLI sidecar signature blocker";
+        needle = "engine-owned discovery artifacts";
+      }
+      {
         label = "artifact-only ledger blocker";
         needle = "discovery-time signature evidence is not available in this ledger format";
       }
@@ -102,6 +106,10 @@
       {
         label = "triage pipeline test";
         needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
+      }
+      {
+        label = "triage sidecar blocker test";
+        needle = "cli_triage_rejects_cli_sidecar_signature_evidence";
       }
       {
         label = "triage artifact-only blocker test";

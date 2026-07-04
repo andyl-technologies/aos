@@ -1164,12 +1164,13 @@ branch on the verdict without parsing output:
   findings ledgers through the local DagStore, writes deterministic reports,
   stores triage result artifacts, supports `--policy`, `--minimize`, `--report`,
   global `--format`, `--recompute-signatures`, and `--compare`, rejects live
-  daemon routing, and fails non-empty artifact-only ledgers with an artifact
-  error instead of fabricating missing discovery-time signature evidence. Full
-  closure remains blocked on a representable non-empty findings ledger carrying
-  discovery-time signatures and replayable/minimizable representatives so the
-  CLI can drive clustering, representative election, minimization, and
-  per-cluster replay/debug artifacts end to end.
+  daemon routing, rejects CLI-local `finding.*` signature sidecars, and fails
+  non-empty artifact-only ledgers with an artifact error instead of fabricating
+  missing discovery-time signature evidence. Full closure remains blocked on a
+  representable non-empty findings ledger carrying discovery-time signatures and
+  replayable/minimizable representatives so the CLI can drive clustering,
+  representative election, minimization, and per-cluster replay/debug artifacts
+  end to end.
 - [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate

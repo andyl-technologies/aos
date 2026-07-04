@@ -479,11 +479,12 @@ long-held locks.
   path findings ledgers through the local DagStore, deterministic report/result
   artifact storage, `--policy`, `--minimize`, `--report`, global `--format`,
   `--recompute-signatures`, and `--compare`, plus explicit artifact failure for
-  non-empty artifact-only ledgers whose discovery-time signature evidence is not
-  representable yet; full closure waits for a non-empty findings ledger carrying
-  discovery signatures and replayable/minimizable representatives so the CLI can
-  drive clustering, representative election, minimization, and per-cluster
-  replay/debug artifacts end to end.
+  CLI-local `finding.*` signature sidecars and non-empty artifact-only ledgers
+  whose discovery-time signature evidence is not representable yet; full closure
+  waits for a non-empty findings ledger carrying discovery signatures and
+  replayable/minimizable representatives so the CLI can drive clustering,
+  representative election, minimization, and per-cluster replay/debug artifacts
+  end to end.
   `T-CLI-14` is complete under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and
