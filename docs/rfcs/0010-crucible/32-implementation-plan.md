@@ -523,7 +523,13 @@ long-held locks.
   for retained after-quiescence, `sometimes`, `eventually`, and
   expected-reachable failures, terminal `sometimes` and required `reachable`
   guest assertion marker failures, and event-backed `always` false or
-  `unreachable` true guest marker failures;
+  `unreachable` true guest marker failures; hidden local-double
+  `crucible.search-retained-evidence.v1` retained-evidence fixture loading for
+  guest-marker events on root or explicitly hashed configurations, validation
+  of retained guest-marker evidence against scenario nodes and white-box policy,
+  trusted retained-log provider wiring through configuration-bound
+  `SearchRetainedLogAssertionEvidence`, and retained evidence source
+  digest/payload provenance in `search-run` output and reproduction artifacts;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
@@ -532,9 +538,8 @@ long-held locks.
   output with generated-mutant/admission/retained-entry/store-put/
   replay-validation counts, and explicit backend errors for missing/corrupt
   stored family objects and unsupported fuzz targets; full closure waits for
-  real-QEMU coverage, backend wiring that feeds backend-retained evidence
-  bundles to the retained-log provider, and remaining non-prefix assertion
-  classes.
+  real-QEMU coverage that produces backend-retained evidence bundles beyond the
+  local-double fixture path and remaining non-prefix assertion classes.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine

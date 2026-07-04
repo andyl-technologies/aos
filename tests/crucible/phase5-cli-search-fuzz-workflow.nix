@@ -63,6 +63,10 @@
         needle = "now accepts `--schedule-named-truths <path>`";
       }
       {
+        label = "T-CLI-13 retained evidence CLI progress";
+        needle = "hidden retained-evidence fixture input";
+      }
+      {
         label = "T-CLI-13 local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -123,6 +127,14 @@
       {
         label = "phase5 CLI retained-log evidence-bundle progress";
         needle = "configuration-bound retained-log evidence bundles";
+      }
+      {
+        label = "phase5 CLI retained evidence fixture progress";
+        needle = "hidden local-double\n  `crucible.search-retained-evidence.v1` retained-evidence fixture loading";
+      }
+      {
+        label = "phase5 CLI retained evidence white-box validation progress";
+        needle = "white-box policy";
       }
       {
         label = "phase5 CLI retained-log terminal quiescence progress";
@@ -195,6 +207,26 @@
         needle = "struct SearchScheduleNamedTruthsPlan";
       }
       {
+        label = "search retained evidence argument";
+        needle = "retained_evidence: Option<PathBuf>";
+      }
+      {
+        label = "search retained evidence plan";
+        needle = "struct SearchRetainedEvidencePlan";
+      }
+      {
+        label = "search retained evidence schema";
+        needle = "crucible.search-retained-evidence.v1";
+      }
+      {
+        label = "search retained evidence artifact media type";
+        needle = "application/vnd.crucible.search-retained-evidence+toml";
+      }
+      {
+        label = "search retained evidence loader";
+        needle = "fn load_search_retained_evidence_file";
+      }
+      {
         label = "search schedule-named truths schema";
         needle = "crucible.search-schedule-named-truths.v1";
       }
@@ -243,12 +275,28 @@
         needle = "scenario-assertions+schedule-named-truths";
       }
       {
+        label = "local-double search retained evidence oracle marker";
+        needle = "scenario-assertions+retained-evidence";
+      }
+      {
         label = "local-double search assertion oracle derivation";
         needle = "from_search_assertion_violations";
       }
       {
         label = "local-double search named truth derivation";
         needle = "from_search_assertion_violations_with_named_predicates";
+      }
+      {
+        label = "local-double search retained evidence derivation";
+        needle = "from_search_assertion_violations_with_retained_log_evidence";
+      }
+      {
+        label = "local-double search retained evidence merge";
+        needle = "fn merge_search_failure_oracles";
+      }
+      {
+        label = "local-double search retained evidence white-box validation";
+        needle = "not white-box enabled";
       }
       {
         label = "local-double search oracle API";
@@ -287,8 +335,20 @@
         needle = "schedule_named_truths_digest={}";
       }
       {
+        label = "local-double search retained evidence output";
+        needle = "retained_evidence={}";
+      }
+      {
+        label = "local-double search retained evidence digest output";
+        needle = "retained_evidence_digest={}";
+      }
+      {
         label = "local-double search named truth artifact component";
         needle = "search_schedule_named_truths";
+      }
+      {
+        label = "local-double search retained evidence artifact component";
+        needle = "search_retained_evidence";
       }
       {
         label = "local-double search counterexample artifact output";
@@ -459,8 +519,24 @@
         needle = "named-truth search workflow must emit a search-run line";
       }
       {
+        label = "search fuzz retained evidence regression";
+        needle = "retained-evidence search workflow must emit a search-run line";
+      }
+      {
+        label = "search fuzz retained evidence preserves schedule oracle regression";
+        needle = "retained evidence must not suppress schedule-only failures";
+      }
+      {
         label = "search fuzz duplicate schedule-named truth regression";
         needle = "duplicate schedule-named truth keys must fail";
+      }
+      {
+        label = "search fuzz retained evidence white-box regression";
+        needle = "guest-marker retained evidence must require white-box nodes";
+      }
+      {
+        label = "search fuzz malformed retained evidence regression";
+        needle = "malformed retained evidence must fail";
       }
       {
         label = "search fuzz local-double fuzz execution test";

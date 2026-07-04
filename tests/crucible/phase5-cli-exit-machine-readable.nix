@@ -155,6 +155,10 @@
         needle = "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome";
       }
       {
+        label = "retained evidence failure process stdout regression";
+        needle = "cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_final_outcome";
+      }
+      {
         label = "real crucible binary execution";
         needle = "CARGO_BIN_EXE_crucible";
       }
@@ -173,6 +177,14 @@
       {
         label = "search canonical jsonl assertion";
         needle = "\"search_strategy_run\"";
+      }
+      {
+        label = "failure final outcome assertion";
+        needle = "exit_code={expected_exit_code}";
+      }
+      {
+        label = "retained evidence failure exit assertion";
+        needle = "retained-evidence search --format jsonl should exit 1";
       }
       {
         label = "fuzz canonical jsonl assertion";
