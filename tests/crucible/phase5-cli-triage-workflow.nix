@@ -44,22 +44,22 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-17 remains open";
-        needle = "- [ ] **T-CLI-17** Implement `triage`";
+        label = "T-CLI-17 complete";
+        needle = "- [x] **T-CLI-17** Implement `triage`";
       }
       {
-        label = "T-CLI-17 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliTriageWorkflow`";
+        label = "T-CLI-17 completion note";
+        needle = "Completed under `checks.crucible.phase5.cliTriageWorkflow`";
       }
       {
-        label = "T-CLI-17 signature-evidence blocker";
-        needle = "missing discovery-time signature evidence";
+        label = "T-CLI-17 signed findings";
+        needle = "property findings ledgers";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI triage progress note";
-        needle = "`T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`";
+        label = "phase5 CLI triage completion note";
+        needle = "`T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -82,6 +82,26 @@
       {
         label = "findings ledger loader";
         needle = "fn load_triage_findings_ledger";
+      }
+      {
+        label = "signed findings schema";
+        needle = "crucible.failure-triage.findings-ledger.v2";
+      }
+      {
+        label = "signed findings parser";
+        needle = "fn parse_failure_findings_ledger_v2_bytes";
+      }
+      {
+        label = "triage minimization";
+        needle = "fn build_triage_minimization";
+      }
+      {
+        label = "triage report set";
+        needle = "fn build_triage_report_set";
+      }
+      {
+        label = "triage signature self-check";
+        needle = "fn build_triage_signature_self_check";
       }
       {
         label = "triage compare support";
@@ -113,7 +133,11 @@
       }
       {
         label = "triage artifact-only blocker test";
-        needle = "cli_triage_rejects_artifact_only_findings_until_signatures_exist";
+        needle = "cli_triage_rejects_artifact_only_findings_without_engine_evidence";
+      }
+      {
+        label = "triage signature mismatch test";
+        needle = "cli_triage_rejects_mismatched_engine_owned_signature_evidence";
       }
       {
         label = "triage exit-code test";
@@ -201,7 +225,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             component=crucible-cli
-            contract=triage-workflow-progress
+            contract=triage-workflow-complete
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

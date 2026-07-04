@@ -528,17 +528,14 @@ long-held locks.
   real-QEMU coverage, backend wiring that feeds backend-retained evidence
   bundles to the retained-log provider, and remaining non-prefix assertion
   classes.
-  `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
-  currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
-  path findings ledgers through the local DagStore, deterministic report/result
-  artifact storage, `--policy`, `--minimize`, `--report`, global `--format`,
-  `--recompute-signatures`, and `--compare`, plus explicit artifact failure for
-  CLI-local `finding.*` signature sidecars and non-empty artifact-only ledgers
-  whose discovery-time signature evidence is not representable yet; full closure
-  waits for a non-empty findings ledger carrying discovery signatures and
-  replayable/minimizable representatives so the CLI can drive clustering,
-  representative election, minimization, and per-cluster replay/debug artifacts
-  end to end.
+  `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
+  thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
+  property findings ledgers through the local DagStore, drives triage-engine
+  clustering, representative election, signature-preserving minimization,
+  deterministic report/result artifact storage, `--policy`, `--minimize`,
+  `--report`, global `--format`, `--recompute-signatures`, and `--compare`,
+  and explicitly rejects CLI-local `finding.*` sidecars plus artifact-only
+  ledgers whose discovery-time signature evidence is not available.
   `T-CLI-14` is complete under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and

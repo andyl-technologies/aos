@@ -4437,13 +4437,17 @@ impl FailureTriageResultIdentity {
 
 /// A content-addressed set of finding reproduction artifacts.
 ///
-/// The ledger is intentionally only an ordered set of reproduction-artifact
-/// content hashes. The artifacts themselves stay ordinary `DagStore` objects,
-/// and the finding identity remains the artifact hash.
+/// Artifact-only ledgers retain only reproduction-artifact content hashes and
+/// require an external engine-owned evidence bundle before they can be triaged.
+/// Signed ledgers additionally carry the discovery-time failure signature for
+/// each finding, letting offline triage cluster by recorded evidence without
+/// inventing signatures in the CLI.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FailureFindingsLedger {
-    /// Reproduction artifact hashes in content-address order.
+    /// Artifact-only reproduction hashes in content-address order.
     pub artifacts: Vec<ContentHash>,
+    /// Findings with discovery-time signatures in content-address order.
+    pub findings: Vec<FailureClusterFinding>,
 }
 
 impl FailureFindingsLedger {
@@ -4456,13 +4460,52 @@ impl FailureFindingsLedger {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect(),
+            findings: Vec::new(),
         }
+    }
+
+    /// Builds a signed findings ledger from discovery-time signatures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if the same
+    /// reproduction artifact is supplied with conflicting signature evidence.
+    pub fn from_signed_findings(
+        findings: impl IntoIterator<Item = FailureClusterFinding>,
+    ) -> Result<Self, EngineError> {
+        let mut ordered = BTreeMap::new();
+        for finding in findings {
+            match ordered.entry(finding.reproduction_artifact) {
+                Entry::Vacant(entry) => {
+                    entry.insert(finding);
+                }
+                Entry::Occupied(entry)
+                    if entry.get().signature.report_material()
+                        == finding.signature.report_material() => {}
+                Entry::Occupied(_) => {
+                    return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                        operation: "failure-findings-ledger",
+                        reason: "same reproduction artifact has conflicting discovery signatures",
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            artifacts: Vec::new(),
+            findings: ordered.into_values().collect(),
+        })
     }
 
     /// Returns the number of unique findings in this ledger.
     #[must_use]
     pub fn artifact_count(&self) -> usize {
-        self.artifacts.len()
+        self.artifacts.len() + self.findings.len()
+    }
+
+    /// Returns signed findings consumable by the clustering engine.
+    #[must_use]
+    pub fn signed_findings(&self) -> &[FailureClusterFinding] {
+        &self.findings
     }
 
     /// Returns canonical ledger material.
@@ -6801,9 +6844,21 @@ fn failure_signature_policy_material(policy: SignaturePolicy) -> String {
 }
 
 fn failure_findings_ledger_material(ledger: &FailureFindingsLedger) -> String {
-    let mut lines = vec![format!("artifact_count={}", ledger.artifacts.len())];
+    let mut lines = vec![
+        format!("artifact_count={}", ledger.artifacts.len()),
+        format!("signed_finding_count={}", ledger.findings.len()),
+    ];
     for (index, artifact) in ledger.artifacts.iter().enumerate() {
         lines.push(format!("artifact.{index}={}", content_hash_hex(*artifact)));
+    }
+    for (index, finding) in ledger.findings.iter().enumerate() {
+        lines.push(format!(
+            "finding.{index}.reproduction_artifact={}",
+            content_hash_hex(finding.reproduction_artifact)
+        ));
+        lines.push(format!("finding.{index}.signature_BEGIN"));
+        lines.push(finding.signature.report_material());
+        lines.push(format!("finding.{index}.signature_END"));
     }
     lines.join("\n")
 }
@@ -36066,6 +36121,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failure_findings_ledger_orders_signed_findings_and_rejects_conflicts()
+    -> Result<(), EngineError> {
+        let artifact_a = ContentHash::from_bytes(b"signed-finding-artifact-a");
+        let artifact_b = ContentHash::from_bytes(b"signed-finding-artifact-b");
+        let signature_a = failure_signature_for_test("signed-ledger/property-a");
+        let signature_b = failure_signature_for_test("signed-ledger/property-b");
+        let ledger = FailureFindingsLedger::from_signed_findings([
+            FailureClusterFinding::new(artifact_b, signature_b),
+            FailureClusterFinding::new(artifact_a, signature_a.clone()),
+            FailureClusterFinding::new(artifact_a, signature_a.clone()),
+        ])?;
+
+        let mut expected = vec![artifact_a, artifact_b];
+        expected.sort();
+        assert_eq!(ledger.artifact_count(), 2);
+        assert!(ledger.artifacts.is_empty());
+        assert_eq!(
+            ledger
+                .signed_findings()
+                .iter()
+                .map(|finding| finding.reproduction_artifact)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            ledger
+                .canonical_material()
+                .contains("signed_finding_count=2")
+        );
+        assert!(
+            ledger
+                .canonical_material()
+                .contains("finding.0.signature_BEGIN")
+        );
+
+        let error = FailureFindingsLedger::from_signed_findings([
+            FailureClusterFinding::new(artifact_a, signature_a),
+            FailureClusterFinding::new(
+                artifact_a,
+                failure_signature_for_test("signed-ledger/conflicting-property"),
+            ),
+        ])
+        .expect_err("conflicting signed findings must be rejected");
+        assert!(matches!(
+            error,
+            EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-findings-ledger",
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn sampled_search_offset_localizes_bisection_sequence() -> Result<(), EngineError> {
         let node = NodeId {
             name: String::from("sampled-offset-node"),
@@ -36142,6 +36251,25 @@ mod tests {
             "sampled fat checkpoint differs from thin reconstruction"
         );
         Ok(())
+    }
+
+    fn failure_signature_for_test(property: &str) -> FailureSignature {
+        let coverage = ContentHash::from_bytes(property.as_bytes());
+        FailureSignature {
+            failure_kind: FailureKind::PropertyViolation,
+            property: Some(FailurePropertyKey {
+                id: AssertionId::from_name(property),
+                quantifier: AssertionQuantifierKind::Always,
+            }),
+            first_failing_point: FailureFirstFailingPoint {
+                event_kind: String::from("assertion_state_changed"),
+                faulting_node: None,
+            },
+            coverage_class: FailureCoverageClass::from_coverage_fingerprint(coverage),
+            causal_slice_hash: Some(coverage),
+            causal_cone: Some(FailureCausalCone::from_canonical_material(property)),
+            at_icount_report_only: None,
+        }
     }
 
     fn baked_genesis_with_search_frontier(

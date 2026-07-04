@@ -12,7 +12,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -32,6 +32,7 @@ use crucible_api::{
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
+use crucible_session::engine as crucible_model;
 use crucible_session::{
     BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply, Engine,
     LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
@@ -53,6 +54,8 @@ const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-name
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-schedule-named-truths+toml";
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
+const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
+const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
@@ -622,7 +625,7 @@ enum TriageMinimizeArg {
     /// Minimize the content-address-least representative per cluster.
     #[default]
     Representative,
-    /// Minimize every finding in every cluster.
+    /// Minimize the selected representative for every cluster.
     All,
 }
 
@@ -13049,35 +13052,37 @@ fn plan_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageInvocati
 fn run_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageRunReport, CliError> {
     let plan = plan_triage_invocation(cli, args)?;
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
-    let ledger = load_triage_findings_ledger(&store, &plan.findings)?;
-    let stored_ledger = ledger.store(&store).map_err(CliError::Store)?;
-    if ledger.artifact_count() != 0 {
+    let loaded_findings = load_triage_findings_ledger(&store, &plan.findings)?;
+    let stored_ledger = store_loaded_findings_ledger(&store, &loaded_findings)?;
+    let ledger = loaded_findings.ledger;
+    if ledger.artifact_count() != 0 && ledger.signed_findings().is_empty() {
         return Err(CliError::Artifact(format!(
             "triage findings ledger contains {} artifact(s), but discovery-time signature evidence is not available in this ledger format",
             ledger.artifact_count()
         )));
     }
 
-    let findings = Vec::<crucible::FailureClusterFinding>::new();
-    let clustering = crucible::FailureClusteringResult::from_findings(plan.policy, findings)
-        .map_err(|_| {
-            CliError::Triage("triage clustering failed for the findings ledger".to_string())
-        })?;
-    let minimization = crucible::FailureSignaturePreservingMinimizationResult {
-        policy: plan.policy,
-        runs: Vec::new(),
-    };
-    let report_set = crucible::FailureClusterReportSet::from_reports(plan.policy, Vec::new())
-        .map_err(|_| CliError::Triage("triage report set assembly failed".to_string()))?;
+    let clustering = crucible::FailureClusteringResult::from_findings(
+        plan.policy,
+        ledger.signed_findings().iter().cloned(),
+    )
+    .map_err(|_| {
+        CliError::Triage("triage clustering failed for the findings ledger".to_string())
+    })?;
+    let minimization = build_triage_minimization(&plan, &clustering, &loaded_findings.evidence)?;
+    let report_set = build_triage_report_set(
+        plan.policy,
+        &clustering,
+        &minimization,
+        &loaded_findings.evidence,
+    )?;
     let signature_self_check = if plan.recompute_signatures {
-        crucible::FailureTriageSignatureSelfCheck::from_signature_pairs(Vec::<
-            crucible::FailureTriageSignatureSelfCheckInput,
-        >::new())
+        build_triage_signature_self_check(&loaded_findings.evidence)?
     } else {
         crucible::FailureTriageSignatureSelfCheck::skipped()
     };
     let result = crucible::FailureTriageResult::from_parts(
-        ledger.content_hash(),
+        stored_ledger.key,
         clustering,
         minimization,
         report_set,
@@ -13103,14 +13108,304 @@ fn run_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageRunReport
     })
 }
 
+fn store_loaded_findings_ledger(
+    store: &crucible::LocalDagStore,
+    findings: &LoadedTriageFindings,
+) -> Result<crucible::FailureTriageStoredArtifact, CliError> {
+    let bytes = if findings.evidence.is_empty() {
+        findings.ledger.artifact_bytes()
+    } else {
+        findings.artifact_bytes.clone()
+    };
+    let key = crucible::ContentHash::from_bytes(&bytes);
+    let cache_hit = store.exists(&key).map_err(CliError::Store)?;
+    let stored = store.put(&bytes).map_err(CliError::Store)?;
+    if stored != key {
+        return Err(artifact_error(
+            "stored findings ledger key did not match content hash",
+        ));
+    }
+    Ok(crucible::FailureTriageStoredArtifact {
+        key,
+        cache_hit,
+        size_bytes: bytes.len(),
+    })
+}
+
+fn build_triage_minimization(
+    plan: &TriageInvocationPlan,
+    clustering: &crucible::FailureClusteringResult,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+) -> Result<crucible::FailureSignaturePreservingMinimizationResult, CliError> {
+    if clustering.cluster_count() == 0 {
+        return Ok(crucible::FailureSignaturePreservingMinimizationResult {
+            policy: plan.policy,
+            runs: Vec::new(),
+        });
+    }
+
+    match plan.minimize {
+        TriageMinimizeArg::None => {
+            let mut runs = Vec::new();
+            for cluster in &clustering.clusters {
+                let representative = cluster.representative_member().ok_or_else(|| {
+                    CliError::Triage("triage cluster has no representative".to_string())
+                })?;
+                let representative_evidence = evidence
+                    .get(&representative.reproduction_artifact)
+                    .ok_or_else(|| {
+                    artifact_error("missing representative evidence in findings ledger")
+                })?;
+                let target_signature_key = representative
+                    .signature
+                    .signature_key(plan.policy)
+                    .map_err(|_| {
+                        CliError::Triage(
+                            "triage representative signature does not project under policy"
+                                .to_string(),
+                        )
+                    })?;
+                runs.push(crucible_model::FailureSignaturePreservingMinimizationRun {
+                    cluster_id: cluster.id,
+                    representative_artifact: representative.reproduction_artifact,
+                    target_signature_key: target_signature_key.clone(),
+                    minimized_signature_key: target_signature_key,
+                    minimization: crucible_model::MinimizationRun {
+                        seed: crucible::Seed::default(),
+                        target_fingerprint: representative_evidence.finding.finding_fingerprint,
+                        original: representative_evidence.finding.clone(),
+                        minimized: representative_evidence.finding.clone(),
+                        attempts: Vec::new(),
+                    },
+                });
+            }
+            Ok(crucible::FailureSignaturePreservingMinimizationResult {
+                policy: plan.policy,
+                runs,
+            })
+        }
+        TriageMinimizeArg::Representative | TriageMinimizeArg::All => {
+            let templates = triage_signature_templates_by_fingerprint(clustering, evidence)?;
+            clustering
+                .minimize_representatives(
+                    crucible_model::MinimizationConfig::new(crucible::Seed::default()),
+                    |artifact| {
+                        evidence
+                            .get(&artifact)
+                            .map(|item| item.finding.clone())
+                            .ok_or(
+                                crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                                    operation: "triage-minimization",
+                                    reason: "representative evidence missing from findings ledger",
+                                },
+                            )
+                    },
+                    |candidate| {
+                        if let Some(item) = evidence.get(&candidate.artifact.id()) {
+                            return Ok(Some(item.discovery_signature.clone()));
+                        }
+                        let template = templates.get(&candidate.finding_fingerprint).ok_or(
+                            crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                                operation: "triage-minimization",
+                                reason: "candidate evidence template missing from findings ledger",
+                            },
+                        )?;
+                        triage_evidence_for_finding(candidate.clone(), template)
+                            .map(|item| Some(item.discovery_signature))
+                    },
+                )
+                .map_err(|_| {
+                    CliError::Triage("triage signature-preserving minimization failed".to_string())
+                })
+        }
+    }
+}
+
+fn triage_signature_templates_by_fingerprint(
+    clustering: &crucible::FailureClusteringResult,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+) -> Result<BTreeMap<crucible::ContentHash, TriageFindingEvidence>, CliError> {
+    let mut templates = BTreeMap::new();
+    for cluster in &clustering.clusters {
+        let representative = cluster
+            .representative_member()
+            .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
+        let item = evidence
+            .get(&representative.reproduction_artifact)
+            .ok_or_else(|| artifact_error("missing representative evidence in findings ledger"))?;
+        match templates.entry(item.finding.finding_fingerprint) {
+            Entry::Vacant(entry) => {
+                entry.insert(item.clone());
+            }
+            Entry::Occupied(entry)
+                if entry.get().discovery_signature.report_material()
+                    == item.discovery_signature.report_material() => {}
+            Entry::Occupied(_) => {
+                return Err(CliError::Triage(
+                    "triage findings reuse a fingerprint with conflicting signatures".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(templates)
+}
+
+fn build_triage_report_set(
+    policy: crucible::SignaturePolicy,
+    clustering: &crucible::FailureClusteringResult,
+    minimization: &crucible::FailureSignaturePreservingMinimizationResult,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+) -> Result<crucible::FailureClusterReportSet, CliError> {
+    let runs_by_cluster = minimization
+        .runs
+        .iter()
+        .map(|run| (run.cluster_id, run))
+        .collect::<BTreeMap<_, _>>();
+    let mut reports = Vec::new();
+    for cluster in &clustering.clusters {
+        let run = runs_by_cluster
+            .get(&cluster.id)
+            .copied()
+            .ok_or_else(|| CliError::Triage("missing triage minimization run".to_string()))?;
+        let item = triage_report_evidence_for_minimization_run(run, evidence)?;
+        let report = crucible_model::FailureClusterReport::from_cluster(
+            policy,
+            cluster,
+            run,
+            item.failure.clone(),
+            &item.recorded_event_log,
+            &crucible_model::FailureSignatureNormalization::identity(),
+            8,
+        )
+        .map_err(|_| CliError::Triage("triage report construction failed".to_string()))?;
+        reports.push(report);
+    }
+    crucible::FailureClusterReportSet::from_reports(policy, reports)
+        .map_err(|_| CliError::Triage("triage report set assembly failed".to_string()))
+}
+
+fn triage_report_evidence_for_minimization_run(
+    run: &crucible_model::FailureSignaturePreservingMinimizationRun,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+) -> Result<TriageFindingEvidence, CliError> {
+    if let Some(item) = evidence.get(&run.minimized_artifact()) {
+        return Ok(item.clone());
+    }
+    let template = evidence.get(&run.representative_artifact).ok_or_else(|| {
+        artifact_error("missing minimized representative evidence in findings ledger")
+    })?;
+    triage_evidence_for_finding(run.minimization.minimized.clone(), template)
+        .map_err(|_| CliError::Triage("triage report evidence reconstruction failed".to_string()))
+}
+
+fn build_triage_signature_self_check(
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+) -> Result<crucible::FailureTriageSignatureSelfCheck, CliError> {
+    let mut checks = Vec::new();
+    for (artifact, item) in evidence {
+        let recomputed = recompute_triage_evidence_signature(item)?;
+        checks.push(crucible::FailureTriageSignatureSelfCheckInput::new(
+            *artifact,
+            item.discovery_signature.clone(),
+            recomputed,
+        ));
+    }
+    Ok(crucible::FailureTriageSignatureSelfCheck::from_signature_pairs(checks))
+}
+
+fn recompute_triage_evidence_signature(
+    item: &TriageFindingEvidence,
+) -> Result<crucible_model::FailureSignature, CliError> {
+    match &item.failure {
+        crucible_model::FailureClusterReportFailure::Property(record) => {
+            crucible_model::FailureSignature::from_recorded_property_violation(
+                &item.finding,
+                &item.recorded_event_log,
+                record,
+            )
+        }
+        crucible_model::FailureClusterReportFailure::Divergence(divergence) => {
+            let _ = divergence;
+            return Err(CliError::Triage(
+                "triage divergence evidence is not supported by this ledger parser".to_string(),
+            ));
+        }
+    }
+    .map_err(|_| CliError::Triage("triage signature recomputation failed".to_string()))
+}
+
+fn triage_evidence_for_finding(
+    finding: crucible::FindingReproductionArtifact,
+    template: &TriageFindingEvidence,
+) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
+    match &template.failure {
+        crucible_model::FailureClusterReportFailure::Property(record) => {
+            let mut violation = record.violation.clone();
+            violation.reproduction_artifact = finding.artifact.id();
+            triage_property_evidence_for_violation(finding, violation)
+        }
+        crucible_model::FailureClusterReportFailure::Divergence(_) => Err(
+            crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "triage-evidence",
+                reason: "divergence evidence is not supported by this ledger parser",
+            },
+        ),
+    }
+}
+
+fn triage_property_evidence_for_violation(
+    finding: crucible::FindingReproductionArtifact,
+    violation: crucible_model::HostAssertionViolation,
+) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
+    let entries = vec![
+        crucible::SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            violation.at_virtual_time,
+            violation.assertion.clone(),
+            crucible::AssertionPhase::Violated,
+        ),
+    ];
+    let event_log_artifact = finding.artifact.event_log_debug_artifact(
+        crucible::EventLogOffset::new(crucible::ContentHash::default(), 0, 0),
+        &entries,
+    );
+    let recorded_event_log = crucible_model::FailureRecordedEventLog::from_recorded_artifact(
+        &finding,
+        &event_log_artifact,
+        &entries,
+    )?;
+    let failure = crucible_model::FailureClusterReportFailure::property(
+        crucible_model::FailurePropertyViolationRecord::new(violation),
+    );
+    let crucible_model::FailureClusterReportFailure::Property(record) = &failure else {
+        return Err(
+            crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "triage-evidence",
+                reason: "property evidence did not construct a property failure",
+            },
+        );
+    };
+    let discovery_signature = crucible_model::FailureSignature::from_recorded_property_violation(
+        &finding,
+        &recorded_event_log,
+        record,
+    )?;
+    Ok(TriageFindingEvidence {
+        finding,
+        recorded_event_log,
+        failure,
+        discovery_signature,
+    })
+}
+
 fn load_triage_findings_ledger(
     store: &crucible::LocalDagStore,
     source: &TriageFindingsSource,
-) -> Result<crucible::FailureFindingsLedger, CliError> {
+) -> Result<LoadedTriageFindings, CliError> {
     match source {
         TriageFindingsSource::StoredLedger(hash) => {
             let bytes = store.get(hash).map_err(CliError::Store)?;
-            parse_failure_findings_ledger_bytes(&bytes)
+            parse_failure_findings_ledger_bytes(store, &bytes)
         }
         TriageFindingsSource::Path(path) if path.is_dir() => {
             let mut entries = fs::read_dir(path)?
@@ -13130,18 +13425,32 @@ fn load_triage_findings_ledger(
                 let bytes = fs::read(&entry)?;
                 artifacts.push(store.put(&bytes).map_err(CliError::Store)?);
             }
-            Ok(crucible::FailureFindingsLedger::from_artifacts(artifacts))
+            Ok(loaded_artifact_only_findings(
+                crucible::FailureFindingsLedger::from_artifacts(artifacts),
+            ))
         }
         TriageFindingsSource::Path(path) => {
             let bytes = fs::read(path)?;
             if looks_like_failure_findings_ledger(&bytes) {
-                return parse_failure_findings_ledger_bytes(&bytes);
+                return parse_failure_findings_ledger_bytes(store, &bytes);
             }
             store
                 .put(&bytes)
-                .map(|hash| crucible::FailureFindingsLedger::from_artifacts([hash]))
+                .map(|hash| {
+                    loaded_artifact_only_findings(crucible::FailureFindingsLedger::from_artifacts(
+                        [hash],
+                    ))
+                })
                 .map_err(CliError::Store)
         }
+    }
+}
+
+fn loaded_artifact_only_findings(ledger: crucible::FailureFindingsLedger) -> LoadedTriageFindings {
+    LoadedTriageFindings {
+        artifact_bytes: ledger.artifact_bytes(),
+        ledger,
+        evidence: BTreeMap::new(),
     }
 }
 
@@ -13149,19 +13458,35 @@ fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes)
         .ok()
         .and_then(|text| text.lines().next())
-        == Some("crucible.failure-triage.findings-ledger.v1")
+        .is_some_and(|schema| {
+            schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1
+                || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2
+        })
 }
 
 fn parse_failure_findings_ledger_bytes(
+    store: &crucible::LocalDagStore,
     bytes: &[u8],
-) -> Result<crucible::FailureFindingsLedger, CliError> {
+) -> Result<LoadedTriageFindings, CliError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| artifact_error(format!("findings ledger is not UTF-8: {error}")))?;
-    if text.lines().next() != Some("crucible.failure-triage.findings-ledger.v1") {
-        return Err(artifact_error(
+    match text.lines().next() {
+        Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1) => {
+            parse_failure_findings_ledger_v1_bytes(bytes, text)
+        }
+        Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2) => {
+            parse_failure_findings_ledger_v2_bytes(store, bytes, text)
+        }
+        _ => Err(artifact_error(
             "unsupported findings ledger artifact schema",
-        ));
+        )),
     }
+}
+
+fn parse_failure_findings_ledger_v1_bytes(
+    bytes: &[u8],
+    text: &str,
+) -> Result<LoadedTriageFindings, CliError> {
     let mut artifacts = Vec::new();
     for line in text.lines() {
         if let Some(hex) = line.strip_prefix("artifact.") {
@@ -13176,7 +13501,190 @@ fn parse_failure_findings_ledger_bytes(
             ));
         }
     }
-    Ok(crucible::FailureFindingsLedger::from_artifacts(artifacts))
+    Ok(LoadedTriageFindings {
+        ledger: crucible::FailureFindingsLedger::from_artifacts(artifacts),
+        evidence: BTreeMap::new(),
+        artifact_bytes: bytes.to_vec(),
+    })
+}
+
+fn parse_failure_findings_ledger_v2_bytes(
+    store: &crucible::LocalDagStore,
+    bytes: &[u8],
+    text: &str,
+) -> Result<LoadedTriageFindings, CliError> {
+    let mut by_index = BTreeMap::<usize, BTreeMap<String, String>>::new();
+    for line in text.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("finding.") else {
+            return Err(artifact_error("malformed signed findings ledger line"));
+        };
+        let Some((index, field_value)) = rest.split_once('.') else {
+            return Err(artifact_error("malformed signed findings ledger field"));
+        };
+        let index = index
+            .parse::<usize>()
+            .map_err(|_| artifact_error("malformed signed findings ledger index"))?;
+        let Some((field, value)) = field_value.split_once('=') else {
+            return Err(artifact_error("malformed signed findings ledger value"));
+        };
+        let previous = by_index
+            .entry(index)
+            .or_default()
+            .insert(field.to_owned(), value.to_owned());
+        if previous.is_some() {
+            return Err(artifact_error("duplicate signed findings ledger field"));
+        }
+    }
+
+    let mut findings = Vec::new();
+    let mut evidence = BTreeMap::new();
+    for (index, fields) in by_index {
+        let item = parse_triage_property_finding_evidence(store, index, &fields)?;
+        findings.push(crucible::FailureClusterFinding::new(
+            item.finding.artifact.id(),
+            item.discovery_signature.clone(),
+        ));
+        evidence.insert(item.finding.artifact.id(), item);
+    }
+    let ledger = crucible::FailureFindingsLedger::from_signed_findings(findings)
+        .map_err(|_| artifact_error("signed findings ledger contains conflicting signatures"))?;
+    Ok(LoadedTriageFindings {
+        ledger,
+        evidence,
+        artifact_bytes: bytes.to_vec(),
+    })
+}
+
+fn parse_triage_property_finding_evidence(
+    store: &crucible::LocalDagStore,
+    index: usize,
+    fields: &BTreeMap<String, String>,
+) -> Result<TriageFindingEvidence, CliError> {
+    let artifact = parse_required_hash_field(fields, "artifact")?;
+    let discovery_path = parse_triage_discovery_path(required_field(fields, "discovery_path")?)?;
+    let finding_fingerprint = parse_required_hash_field(fields, "finding_fingerprint")?;
+    let assertion = crucible::AssertionId::from_name(required_field(fields, "assertion")?);
+    let discovery_signature_assertion = fields
+        .get("discovery_signature.assertion")
+        .map(|value| crucible::AssertionId::from_name(value));
+    let message = required_field(fields, "message")?.to_owned();
+    let quantifier = parse_assertion_quantifier(required_field(fields, "quantifier")?)?;
+    let event_kind = required_field(fields, "event_kind")?.to_owned();
+    if event_kind != "assertion_state_changed" {
+        return Err(artifact_error(format!(
+            "finding {index} event_kind `{event_kind}` is not supported by this ledger parser"
+        )));
+    }
+    let at_icount = parse_u64_field(fields, "at_icount")?;
+    let at_virtual_time = fields
+        .get("at_virtual_time")
+        .map(|value| parse_triage_u64("at_virtual_time", value))
+        .transpose()?
+        .unwrap_or(at_icount);
+    let node = fields
+        .get("node")
+        .filter(|value| value.as_str() != "none")
+        .map(|value| crucible::NodeId {
+            name: value.to_owned(),
+        });
+    let detail = required_field(fields, "detail")?.to_owned();
+
+    let finding = crucible::FindingReproductionArtifact::load_from_store(
+        discovery_path,
+        finding_fingerprint,
+        store,
+        artifact,
+    )
+    .map_err(|error| artifact_error(format!("finding {index} artifact is invalid: {error}")))?;
+    let violation = crucible_model::HostAssertionViolation {
+        assertion: assertion.clone(),
+        message,
+        quantifier,
+        event_kind,
+        at_icount: Some(crucible::Icount { retired: at_icount }),
+        at_virtual_time: crucible::VirtualTime {
+            ticks: at_virtual_time,
+        },
+        node,
+        detail,
+        reproduction_artifact: finding.artifact.id(),
+    };
+    let mut item = triage_property_evidence_for_violation(finding, violation)
+        .map_err(|_| artifact_error(format!("finding {index} signature evidence is invalid")))?;
+    if let Some(assertion) = discovery_signature_assertion {
+        let property = item.discovery_signature.property.as_mut().ok_or_else(|| {
+            artifact_error(format!(
+                "finding {index} discovery signature cannot carry a property override"
+            ))
+        })?;
+        property.id = assertion;
+    }
+
+    Ok(item)
+}
+
+fn required_field<'a>(
+    fields: &'a BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<&'a str, CliError> {
+    fields
+        .get(field)
+        .map(String::as_str)
+        .ok_or_else(|| artifact_error(format!("signed findings ledger is missing `{field}`")))
+}
+
+fn parse_required_hash_field(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<crucible::ContentHash, CliError> {
+    parse_hex_content_hash(field, required_field(fields, field)?)
+}
+
+fn parse_u64_field(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<u64, CliError> {
+    parse_triage_u64(field, required_field(fields, field)?)
+}
+
+fn parse_triage_u64(field: &'static str, value: &str) -> Result<u64, CliError> {
+    value
+        .parse::<u64>()
+        .map_err(|_| artifact_error(format!("malformed signed findings ledger `{field}`")))
+}
+
+fn parse_triage_discovery_path(value: &str) -> Result<crucible::FindingDiscoveryPath, CliError> {
+    match value {
+        "interactive-fork" => Ok(crucible::FindingDiscoveryPath::InteractiveFork),
+        "state-space-search" => Ok(crucible::FindingDiscoveryPath::StateSpaceSearch),
+        "coverage-guided-fuzzing" => Ok(crucible::FindingDiscoveryPath::CoverageGuidedFuzzing),
+        "retained-corpus-entry" => Ok(crucible::FindingDiscoveryPath::RetainedCorpusEntry),
+        _ => Err(artifact_error(
+            "malformed signed findings ledger discovery_path",
+        )),
+    }
+}
+
+fn parse_assertion_quantifier(
+    value: &str,
+) -> Result<crucible_model::AssertionQuantifierKind, CliError> {
+    match value {
+        "always" => Ok(crucible_model::AssertionQuantifierKind::Always),
+        "sometimes" => Ok(crucible_model::AssertionQuantifierKind::Sometimes),
+        "eventually" => Ok(crucible_model::AssertionQuantifierKind::Eventually),
+        "reachable" => Ok(crucible_model::AssertionQuantifierKind::Reachable),
+        "after-quiescence" => Ok(crucible_model::AssertionQuantifierKind::AfterQuiescence),
+        "guest-always" => Ok(crucible_model::AssertionQuantifierKind::GuestAlways),
+        "guest-sometimes" => Ok(crucible_model::AssertionQuantifierKind::GuestSometimes),
+        "guest-reachable" => Ok(crucible_model::AssertionQuantifierKind::GuestReachable),
+        "guest-unreachable" => Ok(crucible_model::AssertionQuantifierKind::GuestUnreachable),
+        _ => Err(artifact_error(
+            "malformed signed findings ledger assertion quantifier",
+        )),
+    }
 }
 
 fn write_triage_report(
@@ -14419,6 +14927,21 @@ struct TriageRunReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct LoadedTriageFindings {
+    ledger: crucible::FailureFindingsLedger,
+    evidence: BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    artifact_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TriageFindingEvidence {
+    finding: crucible::FindingReproductionArtifact,
+    recorded_event_log: crucible_model::FailureRecordedEventLog,
+    failure: crucible_model::FailureClusterReportFailure,
+    discovery_signature: crucible_model::FailureSignature,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TriageInvocationPlan {
     findings: TriageFindingsSource,
     policy: crucible::SignaturePolicy,
@@ -15215,6 +15738,61 @@ cmdline = "cli-fuzz-family"
         let path = temp.path().join("family.toml");
         fs::write(&path, valid_fuzz_family_toml())?;
         Ok(path)
+    }
+
+    fn write_signed_triage_findings_ledger(
+        dir: &Path,
+        store_root: &Path,
+        file_name: &str,
+        discovery_signature_assertion: Option<&str>,
+    ) -> Result<(PathBuf, ::crucible::FindingReproductionArtifact), Box<dyn Error>> {
+        fs::create_dir_all(dir)?;
+        let form = search_frontier_scenario_form()?;
+        let configuration = ::crucible::try_step(
+            &::crucible::Configuration::genesis(form.scenario_def()),
+            search_frontier_decisions()
+                .into_iter()
+                .nth(1)
+                .ok_or_else(|| std::io::Error::other("missing triage fixture decision"))?,
+        )?;
+        let finding_fingerprint = ::crucible::ContentHash::from_bytes(b"cli triage signed finding");
+        let finding = ::crucible::FindingReproductionArtifact::capture(
+            ::crucible::FindingDiscoveryPath::StateSpaceSearch,
+            finding_fingerprint,
+            &form,
+            &configuration,
+        )?;
+        let store = ::crucible::LocalDagStore::new(store_root.to_path_buf());
+        let artifact = finding.store_artifact(&store)?;
+        assert_eq!(artifact, finding.artifact.id());
+
+        let assertion = "cli-triage-signed-finding";
+        let mut ledger = format!(
+            "\
+{FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2}
+finding.0.artifact={artifact}
+finding.0.discovery_path=state-space-search
+finding.0.finding_fingerprint={finding_fingerprint}
+finding.0.assertion={assertion}
+finding.0.message=CLI triage signed finding violated
+finding.0.quantifier=always
+finding.0.event_kind=assertion_state_changed
+finding.0.at_icount=8
+finding.0.at_virtual_time=8
+finding.0.node=triage-node
+finding.0.detail=synthetic signed finding evidence
+",
+            artifact = artifact.to_hex(),
+            finding_fingerprint = finding_fingerprint.to_hex()
+        );
+        if let Some(discovery_signature_assertion) = discovery_signature_assertion {
+            ledger.push_str(&format!(
+                "finding.0.discovery_signature.assertion={discovery_signature_assertion}\n"
+            ));
+        }
+        let path = dir.join(file_name);
+        fs::write(&path, ledger)?;
+        Ok((path, finding))
     }
 
     fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
@@ -22959,6 +23537,13 @@ active_fault_tags = ["network-partition"]
         assert_eq!(stored_report.ledger.artifact_count(), 0);
         assert!(stored_report.stored_ledger.cache_hit);
 
+        let signed_findings = temp.path().join("signed-findings");
+        let (signed_ledger, finding) = write_signed_triage_findings_ledger(
+            &signed_findings,
+            &store,
+            "engine-owned.findings-ledger",
+            None,
+        )?;
         let prior = format_content_hash_ref(baseline.stored_result.key);
 
         let cli = Cli::parse_from([
@@ -22968,7 +23553,7 @@ active_fault_tags = ["network-partition"]
             "--artifact-dir",
             temp.path().join("artifacts").to_str().unwrap_or("."),
             "triage",
-            findings.to_str().unwrap_or("."),
+            signed_ledger.to_str().unwrap_or("."),
             "--policy",
             "fine",
             "--minimize",
@@ -22985,7 +23570,7 @@ active_fault_tags = ["network-partition"]
             panic!("expected triage command");
         };
 
-        assert_eq!(args.findings, findings.to_string_lossy());
+        assert_eq!(args.findings, signed_ledger.to_string_lossy());
         assert_eq!(args.policy, TriagePolicyArg::Fine);
         assert_eq!(args.minimize, TriageMinimizeArg::Representative);
         assert_eq!(args.report.as_deref(), Some(reports.as_path()));
@@ -23020,17 +23605,69 @@ active_fault_tags = ["network-partition"]
         );
         assert!(plan.proves_t_tri_7());
         let report = run_triage_invocation(&cli, args)?;
-        assert!(report.stored_ledger.cache_hit);
+        assert_eq!(report.ledger.artifact_count(), 1);
+        assert_eq!(report.ledger.signed_findings().len(), 1);
+        assert_eq!(
+            report.ledger.signed_findings()[0].reproduction_artifact,
+            finding.artifact.id()
+        );
+        assert_eq!(report.result.clustering.cluster_count(), 1);
+        assert_eq!(report.result.minimization.cluster_count(), 1);
+        assert_eq!(
+            report.result.identity.findings_ledger,
+            report.stored_ledger.key
+        );
+        let minimization_run = &report.result.minimization.runs[0];
+        assert_ne!(
+            minimization_run.minimization.original.artifact.id(),
+            minimization_run.minimized_artifact()
+        );
+        assert!(
+            minimization_run
+                .minimization
+                .attempts
+                .iter()
+                .any(|attempt| attempt.accepted)
+        );
+        assert_eq!(report.result.report_set.reports.len(), 1);
+        assert_eq!(report.result.signature_self_check.checked_count, 1);
+        assert!(report.result.signature_self_check.is_clean());
+        assert!(report.report_path.exists());
+        let rendered_report = fs::read_to_string(&report.report_path)?;
+        assert!(rendered_report.contains("cli-triage-signed-finding"));
         assert!(report.compare.as_ref().is_some_and(|diff| {
             diff.status_label() == "changed" && diff.content_diff().contains("baseline\t")
         }));
         dispatch(&cli)?;
 
+        let stored_signed_findings = format_content_hash_ref(report.stored_ledger.key);
+        let stored_signed_cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store.to_str().unwrap_or("."),
+            "triage",
+            &stored_signed_findings,
+            "--recompute-signatures",
+            "--report",
+            reports.to_str().unwrap_or("."),
+        ]);
+        let Commands::Triage(stored_signed_args) = &stored_signed_cli.command else {
+            panic!("expected triage command");
+        };
+        let stored_signed_report = run_triage_invocation(&stored_signed_cli, stored_signed_args)?;
+        assert_eq!(stored_signed_report.ledger.artifact_count(), 1);
+        assert!(stored_signed_report.stored_ledger.cache_hit);
+        assert_eq!(
+            stored_signed_report.result.identity.findings_ledger,
+            stored_signed_report.stored_ledger.key
+        );
+        assert!(stored_signed_report.result.signature_self_check.is_clean());
+
         Ok(())
     }
 
     #[test]
-    fn cli_triage_rejects_artifact_only_findings_until_signatures_exist() {
+    fn cli_triage_rejects_artifact_only_findings_without_engine_evidence() {
         let temp = TempDir::new().expect("tempdir must be created");
         let findings = temp.path().join("findings");
         fs::create_dir_all(&findings).expect("findings dir must be created");
@@ -23130,6 +23767,42 @@ finding.0.kind=property
                 .to_string()
                 .contains("engine-owned discovery artifacts")
         );
+    }
+
+    #[test]
+    fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
+        let temp = TempDir::new().expect("tempdir must be created");
+        let store_root = temp.path().join("store");
+        let findings_dir = temp.path().join("findings");
+        let (findings, _) = write_signed_triage_findings_ledger(
+            &findings_dir,
+            &store_root,
+            "mismatched.findings-ledger",
+            Some("cli-triage-different-discovery-signature"),
+        )
+        .expect("signed findings ledger must be written");
+        for extra_args in [Vec::<&str>::new(), vec!["--recompute-signatures"]] {
+            let mut argv = vec![
+                "crucible",
+                "--store",
+                store_root.to_str().unwrap_or("."),
+                "triage",
+                findings.to_str().unwrap_or("."),
+            ];
+            argv.extend(extra_args);
+            let cli = Cli::parse_from(argv);
+            let Commands::Triage(args) = &cli.command else {
+                panic!("expected triage command");
+            };
+
+            let error = match run_triage_invocation(&cli, args) {
+                Ok(_) => panic!("mismatched signed findings ledgers must not be silently triaged"),
+                Err(error) => error,
+            };
+
+            assert!(matches!(error, CliError::Triage(_)));
+            assert_eq!(error.exit_code(), 1);
+        }
     }
 
     #[test]
