@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 ratchet-oracle = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }

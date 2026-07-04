@@ -742,6 +742,12 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
     assert!(
         preflight
             .address_candidate_preflight()
+            .address_candidate_for("aos_apply")
+            .is_some()
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
             .address_candidate_for("aos_blackhole_check")
             .is_some()
     );
@@ -772,6 +778,17 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
         preflight
             .address_candidate_preflight()
             .address_provenance_for_symbol("aos_env_get")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
+        preflight
+            .address_provenance_gap_for_symbol("aos_apply")
+            .is_none()
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_apply")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(

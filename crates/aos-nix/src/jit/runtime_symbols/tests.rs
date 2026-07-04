@@ -2,7 +2,10 @@ use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind};
 use ratchet_jit::{
     JitRuntimeSymbolRegistrationGap, jit_runtime_symbol_registration_preflight_with_candidates,
 };
-use ratchet_oracle::runtime::helpers::runtime_symbol_rust_callable_preflight;
+use ratchet_oracle::runtime::{
+    apply::RuntimeApplyEntryPoint, helpers::runtime_symbol_rust_callable_preflight,
+};
+use ratchet_runtime_ffi::apply::runtime_apply_native_wrapper_bindings;
 use ratchet_runtime_ffi::barrier::runtime_write_barrier_native_wrapper_bindings;
 use ratchet_runtime_ffi::env::runtime_env_access_native_wrapper_bindings;
 use ratchet_runtime_ffi::force::runtime_forcing_native_wrapper_bindings;
@@ -21,6 +24,7 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
+const EXPECTED_RUNTIME_FFI_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic", "aos_update"];
 const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force", "aos_force_deep"];
 const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] =
@@ -62,16 +66,27 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
     assert!(preflight.missing_binding_for("aos_env_get").is_none());
     let apply = preflight
         .address_candidate_for("aos_apply")
-        .expect("apply helper has a Rust-callable address candidate");
+        .expect("apply helper has a native-wrapper address candidate");
     assert_eq!(
         apply.kind(),
         RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
     );
-    assert_ne!(apply.address().as_nonzero_usize().get(), 0);
+    assert_eq!(
+        apply.address().as_nonzero_usize().get(),
+        apply_native_wrapper_address()
+    );
+    assert_ne!(
+        apply.address().as_nonzero_usize().get(),
+        apply_rust_callable_address()
+    );
     assert!(
         preflight
             .address_provenance_for_symbol("aos_apply")
-            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_rust_callable_helper)
+            .is_some_and(|provenance| {
+                provenance.is_runtime_ffi_native_wrapper()
+                    && provenance.kind()
+                        == RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
+            })
     );
     assert!(preflight.missing_binding_for("aos_apply").is_none());
     let blackhole = preflight
@@ -191,6 +206,7 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
     assert_eq!(
         runtime_ffi_symbols,
         [
+            "aos_apply",
             "aos_blackhole_check",
             "aos_env_get",
             "aos_force",
@@ -526,6 +542,11 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
     );
     assert!(
         candidates
+            .address_provenance_for_symbol("aos_apply")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
+        candidates
             .address_provenance_for_symbol("aos_force")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
@@ -549,6 +570,13 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
             .address_provenance_gap_for_symbol("aos_env_get")
             .is_none()
     );
+    for symbol_name in EXPECTED_RUNTIME_FFI_CALL_CONTROL_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
     for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
         assert!(
             registration
@@ -569,15 +597,6 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
                 .address_provenance_gap_for_symbol(symbol_name)
                 .is_some_and(|gap| gap.kind()
                     == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl))
-        );
-    }
-    for symbol_name in EXPECTED_CALL_CONTROL_SYMBOLS {
-        assert!(
-            registration
-                .address_provenance_gap_for_symbol(symbol_name)
-                .is_some_and(
-                    |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
-                )
         );
     }
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
@@ -619,7 +638,10 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
                         == Some(RuntimeHelperRole::CallControl)
                         && gap
                             .missing_exported_call_control_blockers()
-                            .is_some_and(|blockers| !blockers.is_empty())
+                            .is_some_and(|blockers| {
+                                blockers
+                                    == RuntimeApplyEntryPoint::AosApply.native_export_blockers()
+                            })
                 })
         );
     }
@@ -724,6 +746,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     assert!(
         preflight
             .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_apply")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
+        preflight
+            .address_candidate_preflight()
             .address_provenance_for_symbol("aos_force")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
@@ -770,6 +798,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
                 .is_none()
         );
     }
+    for symbol_name in EXPECTED_RUNTIME_FFI_CALL_CONTROL_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
     for symbol_name in EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS {
         assert!(
             preflight
@@ -799,15 +834,16 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
         assert!(
             preflight
                 .native_export_gap_for_symbol(symbol_name)
-                .is_some_and(|gap| gap.missing_exported_c_abi_wrapper_role()
-                    == Some(RuntimeHelperRole::CallControl))
-        );
-        assert!(
-            preflight
-                .address_provenance_gap_for_symbol(symbol_name)
-                .is_some_and(
-                    |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl)
-                )
+                .is_some_and(|gap| {
+                    gap.missing_exported_c_abi_wrapper_role()
+                        == Some(RuntimeHelperRole::CallControl)
+                        && gap
+                            .missing_exported_call_control_blockers()
+                            .is_some_and(|blockers| {
+                                blockers
+                                    == RuntimeApplyEntryPoint::AosApply.native_export_blockers()
+                            })
+                })
         );
     }
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
@@ -853,6 +889,15 @@ fn env_native_wrapper_address() -> usize {
         .into_iter()
         .find(|binding| binding.symbol_name() == "aos_env_get")
         .expect("runtime FFI env wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
+fn apply_native_wrapper_address() -> usize {
+    runtime_apply_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == "aos_apply")
+        .expect("runtime FFI apply wrapper exists")
         .address()
         .as_ptr() as usize
 }
@@ -907,6 +952,23 @@ fn env_rust_callable_address() -> usize {
             binding.address().as_ptr() as usize
         }
         _ => panic!("aos_env_get is an environment-access helper"),
+    }
+}
+
+fn apply_rust_callable_address() -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_apply")
+        .expect("oracle apply Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::CallControl(binding) => {
+            binding.address().as_ptr() as usize
+        }
+        _ => panic!("aos_apply is a call-control helper"),
     }
 }
 
