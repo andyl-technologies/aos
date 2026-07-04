@@ -6,7 +6,9 @@ use ratchet_core::{
 };
 use ratchet_jit::{
     JitCraneliftModuleSetupError, JitCraneliftNativeCallError, JitEnvFramePtr,
-    JitRuntimeContextPtr, JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate,
+    JitRuntimeContextPtr, JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, JitTier,
+    JitTieredCodeSlot, TierUpDemandHint, TierUpPolicy,
+    jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates,
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
     lower_env_get_ir_thunk_body_artifact, lower_forced_env_get_ir_thunk_body_artifact,
 };
@@ -183,4 +185,136 @@ fn registered_native_thunk_call_requires_candidates_for_artifact_imports() {
         panic!("expected missing artifact-import candidate error, got {error}");
     };
     assert_eq!(symbol_names, ["aos_force".to_owned()]);
+}
+
+#[test]
+fn promotion_gated_registered_native_thunk_call_keeps_cold_slot_without_candidates() {
+    let arena = local_var_arena(9);
+
+    // SAFETY: Policy stays in tier 0, so this call must not lower, finalize,
+    // register candidates, or enter native code.
+    let preflight = unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &arena,
+            IrId::new(0),
+            &[],
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }
+    .expect("cold promotion-gated native call preflight stays cold");
+
+    assert!(!preflight.did_call_native_code());
+    assert_eq!(preflight.slot().current_tier(), JitTier::Tier0Oracle);
+    assert_eq!(preflight.slot().invocation_counter().invocations(), 1);
+    assert!(preflight.native_invocation().is_none());
+    assert!(preflight.native_value().is_none());
+    assert!(!preflight.owns_encapsulated_module());
+}
+
+#[test]
+fn promotion_gated_registered_native_thunk_call_executes_forced_env_get_on_promotion() {
+    let arena = local_var_arena(9);
+    let candidates = [env_get_candidate(), force_candidate()];
+
+    // SAFETY: The current test host is accepted by the native Value ABI gate.
+    // The promoted artifact imports `aos_env_get` and `aos_force`, whose
+    // candidates are live `extern "C"` test functions with the frozen helper
+    // ABIs. The helpers tolerate the null runtime/environment pointers used by
+    // this synthetic test and return valid-tag Values.
+    let preflight = unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &arena,
+            IrId::new(0),
+            &candidates,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }
+    .expect("promotion-gated forced env-get native call succeeds");
+
+    assert!(preflight.did_call_native_code());
+    assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+    assert_eq!(preflight.slot().invocation_counter().invocations(), 1);
+    assert!(
+        preflight
+            .native_value()
+            .is_some_and(|value| value.raw_eq(Value::int(38)))
+    );
+    let invocation = preflight
+        .native_invocation()
+        .expect("promoted preflight owns native invocation");
+    assert_eq!(
+        preflight.slot().tier1_code_ptr(),
+        Some(invocation.finalized_function().compiled_code_ptr())
+    );
+    assert!(
+        invocation
+            .finalization()
+            .imported_symbol_for("aos_env_get")
+            .is_some()
+    );
+    assert!(
+        invocation
+            .finalization()
+            .imported_symbol_for("aos_force")
+            .is_some()
+    );
+    assert!(
+        invocation
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some()
+    );
+    assert!(
+        invocation
+            .finalization()
+            .registered_symbol_for("aos_force")
+            .is_some()
+    );
+    assert!(preflight.owns_encapsulated_module());
+}
+
+#[test]
+fn promotion_gated_registered_native_thunk_call_reports_missing_force_candidate() {
+    let arena = local_var_arena(9);
+    let candidates = [env_get_candidate()];
+
+    // SAFETY: The supplied `aos_env_get` candidate is host-ABI-matched, but the
+    // promoted forced artifact also imports `aos_force`; finalization must fail
+    // before native invocation.
+    let Err(error) = (unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &arena,
+            IrId::new(0),
+            &candidates,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }) else {
+        panic!("missing force candidate must reject before native invocation");
+    };
+
+    assert_eq!(error.slot().invocation_counter().invocations(), 1);
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+    let JitCraneliftNativeCallError::FinalizeArtifact {
+        source:
+            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
+    } = error.native_call_error()
+    else {
+        panic!(
+            "expected missing artifact-import candidate error, got {}",
+            error.native_call_error()
+        );
+    };
+    assert_eq!(symbol_names, &["aos_force".to_owned()]);
 }

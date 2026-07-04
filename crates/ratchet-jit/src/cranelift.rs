@@ -910,6 +910,76 @@ impl JitCraneliftRegisteredTier1PromotionPreflight {
     }
 }
 
+/// Result of one registered-symbol promotion-gated tier-1 native call attempt.
+pub enum JitCraneliftRegisteredTier1NativeCallPreflight {
+    /// The invocation was recorded, but policy did not request compilation or a native call.
+    StayedInTier {
+        /// The updated safe tiered-code slot.
+        slot: JitTieredCodeSlot,
+        /// The policy decision made after recording the invocation.
+        decision: TierUpDecision,
+    },
+    /// Policy requested promotion, tier-1 metadata was installed, and native code was called.
+    PromotedAndCalled {
+        /// The updated safe tiered-code slot with tier-1 pointer metadata.
+        slot: JitTieredCodeSlot,
+        /// The owned registered native invocation that keeps the module alive.
+        invocation: JitCraneliftRegisteredNativeThunkInvocation,
+        /// The policy decision that requested promotion.
+        decision: TierUpDecision,
+    },
+}
+
+impl JitCraneliftRegisteredTier1NativeCallPreflight {
+    /// Returns the policy decision made for this native-call attempt.
+    pub const fn decision(&self) -> TierUpDecision {
+        match self {
+            Self::StayedInTier { decision, .. } | Self::PromotedAndCalled { decision, .. } => {
+                *decision
+            }
+        }
+    }
+
+    /// Returns true when this attempt compiled and called tier-1 code.
+    pub const fn did_call_native_code(&self) -> bool {
+        matches!(self, Self::PromotedAndCalled { .. })
+    }
+
+    /// Returns the updated tiered-code slot.
+    ///
+    /// For promoted results, the returned slot is backed by the native
+    /// invocation held in the same enum value.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        match self {
+            Self::StayedInTier { slot, .. } | Self::PromotedAndCalled { slot, .. } => slot,
+        }
+    }
+
+    /// Returns the owned registered native invocation when native code was called.
+    pub const fn native_invocation(&self) -> Option<&JitCraneliftRegisteredNativeThunkInvocation> {
+        match self {
+            Self::StayedInTier { .. } => None,
+            Self::PromotedAndCalled { invocation, .. } => Some(invocation),
+        }
+    }
+
+    /// Returns the native value when native code was called.
+    pub const fn native_value(&self) -> Option<Value> {
+        match self {
+            Self::StayedInTier { .. } => None,
+            Self::PromotedAndCalled { invocation, .. } => Some(invocation.value()),
+        }
+    }
+
+    /// Returns true when this value owns a `JITModule` backing the slot pointer.
+    pub fn owns_encapsulated_module(&self) -> bool {
+        match self {
+            Self::StayedInTier { .. } => false,
+            Self::PromotedAndCalled { invocation, .. } => invocation.owns_encapsulated_module(),
+        }
+    }
+}
+
 /// A failure from a promotion-gated tier-1 compile attempt.
 #[derive(Debug)]
 pub struct JitCraneliftTier1PromotionError {
@@ -1148,6 +1218,64 @@ impl JitCraneliftModuleSetup {
     }
 }
 
+/// A failure from a promotion-gated registered tier-1 native call attempt.
+#[derive(Debug)]
+pub struct JitCraneliftRegisteredTier1NativeCallError {
+    slot: JitTieredCodeSlot,
+    decision: TierUpDecision,
+    source: JitCraneliftNativeCallError,
+}
+
+impl JitCraneliftRegisteredTier1NativeCallError {
+    fn new(
+        slot: JitTieredCodeSlot,
+        decision: TierUpDecision,
+        source: JitCraneliftNativeCallError,
+    ) -> Self {
+        Self {
+            slot,
+            decision,
+            source,
+        }
+    }
+
+    /// Returns the invocation-updated slot from the failed native-call attempt.
+    pub const fn slot(&self) -> &JitTieredCodeSlot {
+        &self.slot
+    }
+
+    /// Returns the policy decision that requested native execution.
+    pub const fn decision(&self) -> TierUpDecision {
+        self.decision
+    }
+
+    /// Returns the underlying native-call, lowering, finalization, or install error.
+    pub const fn native_call_error(&self) -> &JitCraneliftNativeCallError {
+        &self.source
+    }
+
+    /// Consumes the error and returns the invocation-updated slot.
+    pub fn into_slot(self) -> JitTieredCodeSlot {
+        self.slot
+    }
+}
+
+impl fmt::Display for JitCraneliftRegisteredTier1NativeCallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "registered tier-1 native thunk call failed after decision {:?}: {}",
+            self.decision, self.source
+        )
+    }
+}
+
+impl Error for JitCraneliftRegisteredTier1NativeCallError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// A failure while constructing a safe Cranelift JIT-module scaffold.
 #[derive(Debug)]
 pub enum JitCraneliftModuleSetupError {
@@ -1226,7 +1354,7 @@ pub enum JitCraneliftNativeCallError {
         /// Human-readable reason this host is not enabled for native thunk calls.
         message: &'static str,
     },
-    /// The artifact could not be finalized into callable code.
+    /// The artifact could not be lowered, finalized, or installed into callable code metadata.
     FinalizeArtifact {
         /// The underlying Cranelift setup error.
         source: JitCraneliftModuleSetupError,
@@ -2117,6 +2245,112 @@ pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_roo
         preflight,
         decision,
     })
+}
+
+/// Records one invocation, compiles a force-aware registered IR root, and calls it on promotion.
+///
+/// This is the first promotion-gated native execution composition point. It
+/// records one invocation in `slot`, asks `policy` whether tier 1 should be
+/// selected, and only when promotion is requested lowers a currently supported
+/// force-aware registered IR root, finalizes it with explicit native-address
+/// candidates, calls the resulting thunk entry, and installs the finalized code
+/// pointer into the updated slot metadata.
+///
+/// Non-promoted results return the updated slot without lowering, requiring
+/// candidates, constructing a module, finalizing code, or crossing the native
+/// call boundary. This function does not publish into evaluator thunk state or
+/// perform atomic thunk-state transitions.
+///
+/// # Safety
+///
+/// The caller must either prove this attempt cannot promote, or uphold the same
+/// candidate, runtime/environment pointer, host ABI, non-unwinding, and valid
+/// returned-tag requirements as
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`]
+/// for any path that may promote and enter native code.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftRegisteredTier1NativeCallError`] if policy requests
+/// promotion but the current force-aware lowerer cannot lower `root`, required
+/// artifact runtime imports lack matching candidates, the host native `Value`
+/// ABI is not supported, finalization or native invocation fails, the returned
+/// valid-tag value has an invalid payload, or tier-slot metadata installation
+/// fails. The error preserves the invocation-updated slot and the policy
+/// decision alongside the underlying native-call error.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
+    mut slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    arena: &IrArena,
+    root: IrId,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+    rt: JitRuntimeContextPtr,
+    env: JitEnvFramePtr,
+) -> Result<
+    JitCraneliftRegisteredTier1NativeCallPreflight,
+    JitCraneliftRegisteredTier1NativeCallError,
+> {
+    let decision = slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(JitCraneliftRegisteredTier1NativeCallPreflight::StayedInTier { slot, decision });
+    }
+
+    let artifact = lower_force_aware_registered_tier1_ir_thunk_body_artifact(arena, root).map_err(
+        |source| {
+            JitCraneliftRegisteredTier1NativeCallError::new(
+                slot.clone(),
+                decision,
+                JitCraneliftNativeCallError::FinalizeArtifact {
+                    source: JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
+                },
+            )
+        },
+    )?;
+    // SAFETY: This function forwards its caller's native-address, runtime,
+    // environment, host-ABI, non-unwinding, and valid returned-tag obligations
+    // to the registered native thunk-call boundary.
+    let promotion_gated_registered_native_thunk_invocation = unsafe {
+        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
+            artifact, candidates, rt, env,
+        )
+    }
+    .map_err(|source| {
+        JitCraneliftRegisteredTier1NativeCallError::new(slot.clone(), decision, source)
+    })?;
+
+    let code_ptr = promotion_gated_registered_native_thunk_invocation
+        .finalized_function()
+        .compiled_code_ptr();
+    if let Err(source) = slot.install_tier1_code(code_ptr) {
+        return Err(JitCraneliftRegisteredTier1NativeCallError::new(
+            slot,
+            decision,
+            JitCraneliftNativeCallError::FinalizeArtifact {
+                source: JitCraneliftModuleSetupError::InstallTier1Code {
+                    symbol_name: promotion_gated_registered_native_thunk_invocation
+                        .finalized_function()
+                        .symbol_name()
+                        .to_owned(),
+                    source,
+                },
+            },
+        ));
+    }
+
+    Ok(
+        JitCraneliftRegisteredTier1NativeCallPreflight::PromotedAndCalled {
+            slot,
+            invocation: promotion_gated_registered_native_thunk_invocation,
+            decision,
+        },
+    )
 }
 
 /// Builds a complete JIT module setup for `artifact`.

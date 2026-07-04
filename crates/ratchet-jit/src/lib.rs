@@ -8,9 +8,10 @@
 //! [`cranelift`] records exact Cranelift crate pins and constructs encapsulated
 //! `JITModule` declaration, artifact-definition/finalization,
 //! registered-symbol artifact-definition/finalization, unregistered/registered
-//! tier-slot, promotion-gated preflights, and a bounded native thunk-call path
-//! for no-import artifacts plus an explicit unsafe registered native-call path
-//! for caller-supplied host-ABI-matched runtime candidates,
+//! tier-slot, promotion-gated preflights, a bounded native thunk-call path
+//! for no-import artifacts, an explicit unsafe registered native-call path
+//! for caller-supplied host-ABI-matched runtime candidates, and a
+//! promotion-gated registered native-call composition precursor,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
 //! environment-slot, and constant-thunk smoke tests,
 //! [`module`] composes artifacts with runtime-symbol declaration
@@ -63,6 +64,7 @@ pub use cranelift::{
     JitCraneliftRegisteredArtifactDefinitionPreflight,
     JitCraneliftRegisteredArtifactFinalizationPreflight,
     JitCraneliftRegisteredNativeThunkInvocation, JitCraneliftRegisteredSymbol,
+    JitCraneliftRegisteredTier1NativeCallError, JitCraneliftRegisteredTier1NativeCallPreflight,
     JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftRegisteredTier1SlotPreflight,
     JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1PromotionError,
     JitCraneliftTier1PromotionPreflight, JitCraneliftTier1SlotPreflight,
@@ -70,6 +72,7 @@ pub use cranelift::{
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact, jit_cranelift_dependency_pin,
+    jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates,
     jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
     jit_cranelift_module_declaration_preflight_for_artifact,
     jit_cranelift_module_setup_for_artifact, jit_cranelift_module_setup_for_plan,

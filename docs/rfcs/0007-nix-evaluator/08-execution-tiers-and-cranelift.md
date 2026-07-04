@@ -1224,6 +1224,20 @@ harness, never cut for scope.
       no evaluator heap thunk is mutated, no atomic thunk-state CAS runs, no
       native code pointer is cast or called, and no `aos_force` wrapper is
       exported or invoked.
+- [x] Current promotion-gated registered native thunk-call precursor:
+      `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates()`
+      records one tier-up invocation, preserves cold no-lowering/no-candidate
+      behavior, and when policy promotes lowers a force-aware registered root,
+      calls through the reviewed unsafe registered native thunk-call boundary
+      with host-ABI-matched candidates, installs opaque tier-1 pointer metadata
+      in the updated slot, and keeps the module-owning invocation beside the
+      returned value. Tests pin cold no-call behavior, promoted forced env-slot
+      execution with synthetic `aos_env_get`/`aos_force` candidates, slot pointer
+      equality, helper import/registration metadata, module ownership, and
+      missing-`aos_force` candidate rejection with the invocation-updated slot
+      preserved. This still does not publish evaluator thunks, perform atomic
+      thunk-state CAS, use real exported oracle wrappers, run trap transfer, or
+      prove `.drv` parity.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability
