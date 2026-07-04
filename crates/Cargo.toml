@@ -111,6 +111,7 @@ target-lexicon = "=0.13.5"
 # Dev
 tempfile = "3"
 libc = "0.2"
+loom = "0.7"
 
 # ConnectRPC
 connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }

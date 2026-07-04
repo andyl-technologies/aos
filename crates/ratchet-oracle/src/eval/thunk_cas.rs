@@ -1106,3 +1106,398 @@ mod tests {
         guard.publish_forced().expect("real owner publishes");
     }
 }
+
+#[cfg(test)]
+mod loom_model_tests {
+    use loom::{
+        sync::{
+            Arc, Condvar, Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering as LoomOrdering},
+        },
+        thread,
+    };
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum LoomClaim {
+        Claimed,
+        AlreadyForced,
+        AlreadyFailed,
+        SelfCycle,
+        Foreign,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum LoomAwait {
+        AlreadyForced,
+        AlreadyFailed,
+        SelfCycle,
+        Awaited,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum LoomForceError {
+        Failed,
+        SelfCycle,
+    }
+
+    #[derive(Debug, Default)]
+    struct LoomWaiters {
+        wait_registrations: usize,
+        notifications: usize,
+    }
+
+    /// A minimal loom-only model of the RFC-0007 L2 thunk protocol.
+    ///
+    /// The model deliberately mirrors the production state-word encoding and
+    /// ordering constants while keeping the payload as a relaxed side slot. Any
+    /// reader that observes `Forced` must rely on the state acquire load to see
+    /// the relaxed payload write that happened before the owner's release
+    /// publish.
+    struct LoomThunk {
+        state: AtomicU64,
+        waiters: Mutex<LoomWaiters>,
+        terminal_ready: Condvar,
+        forced_payload: AtomicU64,
+        body_runs: AtomicUsize,
+    }
+
+    impl LoomThunk {
+        fn new() -> Self {
+            Self {
+                state: AtomicU64::new(SUSPENDED_TAG),
+                waiters: Mutex::new(LoomWaiters::default()),
+                terminal_ready: Condvar::new(),
+                forced_payload: AtomicU64::new(0),
+                body_runs: AtomicUsize::new(0),
+            }
+        }
+
+        fn state(&self) -> ParallelThunkState {
+            ParallelThunkState::from_raw(self.state.load(PARALLEL_THUNK_STATE_LOAD_ORDERING))
+                .expect("loom model never observes torn or invalid state words")
+        }
+
+        fn try_claim(&self, worker: ParallelThunkWorkerId) -> LoomClaim {
+            loop {
+                match self.state() {
+                    ParallelThunkState::Suspended => {
+                        let pending = ParallelThunkState::Pending { owner: worker }.as_raw();
+                        if self
+                            .state
+                            .compare_exchange(
+                                SUSPENDED_TAG,
+                                pending,
+                                PARALLEL_THUNK_CLAIM_SUCCESS_ORDERING,
+                                PARALLEL_THUNK_CLAIM_FAILURE_ORDERING,
+                            )
+                            .is_ok()
+                        {
+                            return LoomClaim::Claimed;
+                        }
+                    }
+                    ParallelThunkState::Pending { owner }
+                    | ParallelThunkState::Awaited { owner }
+                        if owner == worker =>
+                    {
+                        return LoomClaim::SelfCycle;
+                    }
+                    ParallelThunkState::Pending { .. } | ParallelThunkState::Awaited { .. } => {
+                        return LoomClaim::Foreign;
+                    }
+                    ParallelThunkState::Forced => return LoomClaim::AlreadyForced,
+                    ParallelThunkState::Failed => return LoomClaim::AlreadyFailed,
+                }
+            }
+        }
+
+        fn mark_awaited(&self, waiter: ParallelThunkWorkerId) -> LoomAwait {
+            loop {
+                match self.state() {
+                    ParallelThunkState::Suspended => {
+                        panic!("foreign waiter saw an unclaimed thunk")
+                    }
+                    ParallelThunkState::Pending { owner } if owner == waiter => {
+                        return LoomAwait::SelfCycle;
+                    }
+                    ParallelThunkState::Pending { owner } => {
+                        let pending = ParallelThunkState::Pending { owner }.as_raw();
+                        let awaited = ParallelThunkState::Awaited { owner }.as_raw();
+                        if self
+                            .state
+                            .compare_exchange(
+                                pending,
+                                awaited,
+                                PARALLEL_THUNK_AWAIT_MARK_SUCCESS_ORDERING,
+                                PARALLEL_THUNK_AWAIT_MARK_FAILURE_ORDERING,
+                            )
+                            .is_ok()
+                        {
+                            return LoomAwait::Awaited;
+                        }
+                    }
+                    ParallelThunkState::Awaited { owner } if owner == waiter => {
+                        return LoomAwait::SelfCycle;
+                    }
+                    ParallelThunkState::Awaited { .. } => return LoomAwait::Awaited,
+                    ParallelThunkState::Forced => return LoomAwait::AlreadyForced,
+                    ParallelThunkState::Failed => return LoomAwait::AlreadyFailed,
+                }
+            }
+        }
+
+        fn force_success(
+            &self,
+            worker: ParallelThunkWorkerId,
+            value: u64,
+        ) -> Result<u64, LoomForceError> {
+            match self.try_claim(worker) {
+                LoomClaim::Claimed => {
+                    self.run_body_once();
+                    self.write_forced_payload(value);
+                    self.publish_terminal(worker, ParallelThunkTerminalState::Forced);
+                    Ok(value)
+                }
+                LoomClaim::AlreadyForced => Ok(self.read_forced_payload()),
+                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomClaim::SelfCycle => Err(LoomForceError::SelfCycle),
+                LoomClaim::Foreign => self.wait_for_terminal(worker),
+            }
+        }
+
+        fn force_failure(&self, worker: ParallelThunkWorkerId) -> Result<u64, LoomForceError> {
+            match self.try_claim(worker) {
+                LoomClaim::Claimed => {
+                    self.run_body_once();
+                    self.publish_terminal(worker, ParallelThunkTerminalState::Failed);
+                    Err(LoomForceError::Failed)
+                }
+                LoomClaim::AlreadyForced => Ok(self.read_forced_payload()),
+                LoomClaim::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomClaim::SelfCycle => Err(LoomForceError::SelfCycle),
+                LoomClaim::Foreign => self.wait_for_terminal(worker),
+            }
+        }
+
+        fn wait_for_terminal(&self, worker: ParallelThunkWorkerId) -> Result<u64, LoomForceError> {
+            let mut waiters = self.waiters.lock().expect("waiter mutex is not poisoned");
+            match self.mark_awaited(worker) {
+                LoomAwait::AlreadyForced => Ok(self.read_forced_payload()),
+                LoomAwait::AlreadyFailed => Err(LoomForceError::Failed),
+                LoomAwait::SelfCycle => Err(LoomForceError::SelfCycle),
+                LoomAwait::Awaited => {
+                    waiters.wait_registrations = waiters.wait_registrations.saturating_add(1);
+                    loop {
+                        match self.state() {
+                            ParallelThunkState::Forced => return Ok(self.read_forced_payload()),
+                            ParallelThunkState::Failed => return Err(LoomForceError::Failed),
+                            ParallelThunkState::Pending { owner }
+                            | ParallelThunkState::Awaited { owner }
+                                if owner == worker =>
+                            {
+                                return Err(LoomForceError::SelfCycle);
+                            }
+                            ParallelThunkState::Pending { .. }
+                            | ParallelThunkState::Awaited { .. } => {
+                                waiters = self
+                                    .terminal_ready
+                                    .wait(waiters)
+                                    .expect("waiter mutex is not poisoned");
+                            }
+                            ParallelThunkState::Suspended => {
+                                panic!("waiter observed suspended after marking awaited")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        fn publish_success(&self, owner: ParallelThunkWorkerId, value: u64) {
+            self.write_forced_payload(value);
+            self.publish_terminal(owner, ParallelThunkTerminalState::Forced);
+        }
+
+        fn publish_terminal(
+            &self,
+            owner: ParallelThunkWorkerId,
+            terminal_state: ParallelThunkTerminalState,
+        ) {
+            loop {
+                let actual = self.state();
+                let had_waiters = match actual {
+                    ParallelThunkState::Pending {
+                        owner: actual_owner,
+                    } if actual_owner == owner => false,
+                    ParallelThunkState::Awaited {
+                        owner: actual_owner,
+                    } if actual_owner == owner => true,
+                    _ => panic!("owner attempted to publish from unexpected state: {actual:?}"),
+                };
+
+                if self
+                    .state
+                    .compare_exchange(
+                        actual.as_raw(),
+                        terminal_state.as_state().as_raw(),
+                        PARALLEL_THUNK_TERMINAL_PUBLISH_SUCCESS_ORDERING,
+                        PARALLEL_THUNK_TERMINAL_PUBLISH_FAILURE_ORDERING,
+                    )
+                    .is_ok()
+                {
+                    if had_waiters {
+                        let mut waiters =
+                            self.waiters.lock().expect("waiter mutex is not poisoned");
+                        waiters.notifications = waiters.notifications.saturating_add(1);
+                        self.terminal_ready.notify_all();
+                    }
+                    return;
+                }
+            }
+        }
+
+        fn run_body_once(&self) {
+            let previous = self.body_runs.fetch_add(1, LoomOrdering::SeqCst);
+            assert_eq!(previous, 0, "loom model ran the thunk body more than once");
+        }
+
+        fn body_runs(&self) -> usize {
+            self.body_runs.load(LoomOrdering::SeqCst)
+        }
+
+        fn waiter_stats(&self) -> (usize, usize) {
+            let waiters = self.waiters.lock().expect("waiter mutex is not poisoned");
+            (waiters.wait_registrations, waiters.notifications)
+        }
+
+        fn write_forced_payload(&self, value: u64) {
+            assert_ne!(value, 0, "zero is the uninitialized payload sentinel");
+            self.forced_payload.store(value, LoomOrdering::Relaxed);
+        }
+
+        fn read_forced_payload(&self) -> u64 {
+            let value = self.forced_payload.load(LoomOrdering::Relaxed);
+            assert_ne!(value, 0, "forced state exposed an uninitialized payload");
+            value
+        }
+    }
+
+    fn worker(raw: u64) -> ParallelThunkWorkerId {
+        ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
+    }
+
+    fn assert_waiters_were_not_stranded(thunk: &LoomThunk) {
+        let (registrations, notifications) = thunk.waiter_stats();
+        if registrations > 0 {
+            assert!(
+                notifications > 0,
+                "waiter registered but no terminal wakeup notification was observed"
+            );
+        }
+    }
+
+    #[test]
+    fn loom_two_racing_workers_force_once_and_replay_published_value() {
+        loom::model(|| {
+            let thunk = Arc::new(LoomThunk::new());
+            let first = {
+                let thunk = Arc::clone(&thunk);
+                thread::spawn(move || thunk.force_success(worker(1), 11))
+            };
+            let second = {
+                let thunk = Arc::clone(&thunk);
+                thread::spawn(move || thunk.force_success(worker(2), 22))
+            };
+
+            let first = first.join().expect("first worker joins");
+            let second = second.join().expect("second worker joins");
+
+            assert!(first.is_ok());
+            assert_eq!(first, second);
+            assert!(matches!(first, Ok(11 | 22)));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Forced);
+            assert_waiters_were_not_stranded(&thunk);
+        });
+    }
+
+    #[test]
+    fn loom_bounded_three_racing_claimants_have_one_body_owner() {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.max_permutations = Some(2048);
+        builder.check(|| {
+            let thunk = Arc::new(LoomThunk::new());
+            let mut handles = Vec::new();
+
+            for raw_worker in 1..=3 {
+                let thunk = Arc::clone(&thunk);
+                handles.push(thread::spawn(move || {
+                    match thunk.try_claim(worker(raw_worker)) {
+                        LoomClaim::Claimed => {
+                            thunk.run_body_once();
+                            thunk.publish_success(worker(raw_worker), raw_worker * 10);
+                            true
+                        }
+                        LoomClaim::AlreadyForced | LoomClaim::Foreign => false,
+                        unexpected => panic!("unexpected 3-worker claim outcome: {unexpected:?}"),
+                    }
+                }));
+            }
+
+            let mut claimed = 0;
+            for handle in handles {
+                if handle.join().expect("worker joins") {
+                    claimed += 1;
+                }
+            }
+
+            assert_eq!(claimed, 1);
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Forced);
+            assert!(matches!(thunk.read_forced_payload(), 10 | 20 | 30));
+        });
+    }
+
+    #[test]
+    fn loom_same_worker_reentry_reports_cycle_without_body_run() {
+        loom::model(|| {
+            let thunk = LoomThunk::new();
+            assert_eq!(thunk.try_claim(worker(1)), LoomClaim::Claimed);
+
+            let recursive = thunk.force_success(worker(1), 99);
+
+            assert_eq!(recursive, Err(LoomForceError::SelfCycle));
+            assert_eq!(thunk.body_runs(), 0);
+            thunk.publish_success(worker(1), 7);
+            assert_eq!(thunk.force_success(worker(2), 22), Ok(7));
+            assert_eq!(thunk.body_runs(), 0);
+            assert_eq!(thunk.state(), ParallelThunkState::Forced);
+        });
+    }
+
+    #[test]
+    fn loom_failed_terminal_state_wakes_and_replays_to_waiters() {
+        loom::model(|| {
+            let thunk = Arc::new(LoomThunk::new());
+            let first = {
+                let thunk = Arc::clone(&thunk);
+                thread::spawn(move || thunk.force_failure(worker(1)))
+            };
+            let second = {
+                let thunk = Arc::clone(&thunk);
+                thread::spawn(move || thunk.force_failure(worker(2)))
+            };
+
+            let first = first.join().expect("first worker joins");
+            let second = second.join().expect("second worker joins");
+
+            assert_eq!(first, Err(LoomForceError::Failed));
+            assert_eq!(second, Err(LoomForceError::Failed));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Failed);
+            assert_waiters_were_not_stranded(&thunk);
+        });
+    }
+}
