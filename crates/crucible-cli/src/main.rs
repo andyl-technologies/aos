@@ -33,9 +33,9 @@ use crucible_api::{
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, Engine, LiveSnapshot,
-    LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
-    SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply, Engine,
+    LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
+    SessionCommand, SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint, MemoryDagStore,
         Schedule, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
@@ -1441,6 +1441,7 @@ struct ForkInvocationPlan {
     source: ResumeSavepointRef,
     label: String,
     decision_overrides: Vec<ForkDecisionOverride>,
+    explicit_seed_requested: bool,
     terminal_condition: RunTerminalCondition,
     max_virtual_time: Option<String>,
     max_virtual_time_ticks: Option<u64>,
@@ -2209,6 +2210,7 @@ fn plan_fork_invocation(
         source,
         label,
         decision_overrides,
+        explicit_seed_requested,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
         max_virtual_time_ticks: args
@@ -4579,6 +4581,17 @@ struct ResumeWorkflowReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ForkWorkflowReport {
+    run: RunWorkflowReport,
+    source_checkpoint: crucible::ContentHash,
+    branch_checkpoint: crucible::ContentHash,
+    branch_configuration: crucible::ContentHash,
+    scenario_label: String,
+    label: String,
+    terminal_oracle: SavepointOracleProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ResumeHandleEvidence {
     scenario_form: crucible::ScenarioDefForm,
     scenario: crucible::ScenarioDef,
@@ -5118,11 +5131,96 @@ fn run_local_double_resume_workflow_with_interactive_commands(
     )
 }
 
+fn run_local_double_fork_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    if fork_plan.explicit_seed_requested {
+        return Err(backend_error(
+            "fork --seed execution remains tracked by T-CLI-11; omit --seed for the current no-divergence local-double fork runner",
+        ));
+    }
+    if !fork_plan.decision_overrides.is_empty() {
+        return Err(backend_error(
+            "fork --override execution remains tracked by T-CLI-11; omit --override for the current no-divergence local-double fork runner",
+        ));
+    }
+    let evidence = fork_handle_evidence(fork_plan)?;
+    let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    };
+    run_local_double_fork_workflow_with_driver(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        fork_plan,
+        evidence,
+        interactive_driver,
+    )
+}
+
+fn run_local_double_fork_workflow_with_driver(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
+    evidence: ResumeHandleEvidence,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+) -> Result<BackendCommandOutcome, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_forked_savepoint_actor_with_driver_async(
+        fork_plan,
+        evidence,
+        interactive_driver,
+    ))?;
+    finish_fork_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, fork_plan, report)
+}
+
+#[cfg(test)]
+fn run_local_double_fork_workflow_with_interactive_commands(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
+    commands: &[SessionCommandKind],
+) -> Result<BackendCommandOutcome, CliError> {
+    if fork_plan.explicit_seed_requested || !fork_plan.decision_overrides.is_empty() {
+        return run_local_double_fork_workflow(thin_plan, backend_plan, ergonomics_plan, fork_plan);
+    }
+    let evidence = fork_handle_evidence(fork_plan)?;
+    run_local_double_fork_workflow_with_driver(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        fork_plan,
+        evidence,
+        ResumeInteractiveCommandDriver::Preparsed(commands),
+    )
+}
+
 fn resume_handle_evidence(plan: &ResumeInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
-    let ResumeSavepointRef::Handle { handle, .. } = &plan.savepoint else {
+    savepoint_handle_evidence("resume", &plan.savepoint, "T-CLI-10")
+}
+
+fn fork_handle_evidence(plan: &ForkInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
+    savepoint_handle_evidence("fork", &plan.source, "T-CLI-11")
+}
+
+fn savepoint_handle_evidence(
+    command_name: &'static str,
+    savepoint: &ResumeSavepointRef,
+    task_id: &'static str,
+) -> Result<ResumeHandleEvidence, CliError> {
+    let ResumeSavepointRef::Handle { handle, .. } = savepoint else {
         return Err(backend_error(format!(
-            "resume from bare checkpoint {} requires a savepoint handle carrying scenario and schedule evidence; DAG-store checkpoint closure loading remains tracked by T-CLI-10",
-            format_content_hash_ref(plan.savepoint.checkpoint())
+            "{command_name} from bare checkpoint {} requires a savepoint handle carrying scenario and schedule evidence; DAG-store checkpoint closure loading remains tracked by {task_id}",
+            format_content_hash_ref(savepoint.checkpoint())
         )));
     };
     if handle.materialization != "create-savepoint:reply" {
@@ -5225,6 +5323,22 @@ fn checkpoint_for_resume_configuration(
 
 fn resume_recording_loop_for_plan(
     plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<ResumeRecordingLifecycleLoop, CliError> {
+    if plan.terminal_condition == RunTerminalCondition::Property {
+        let assertion = resume_property_fixture_assertion(&evidence.scenario_form)?;
+        return Ok(ResumeRecordingLifecycleLoop::with_property_violation(
+            evidence.checkpoint.virtual_time,
+            assertion,
+        ));
+    }
+    Ok(ResumeRecordingLifecycleLoop::new(
+        evidence.checkpoint.virtual_time,
+    ))
+}
+
+fn fork_recording_loop_for_plan(
+    plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ResumeRecordingLifecycleLoop, CliError> {
     if plan.terminal_condition == RunTerminalCondition::Property {
@@ -5486,6 +5600,220 @@ async fn run_resumed_savepoint_actor_with_driver_async(
         source_checkpoint,
         resumed_configuration,
         scenario_label: plan.savepoint.label(),
+        terminal_oracle,
+    })
+}
+
+async fn run_forked_savepoint_actor_with_driver_async(
+    plan: &ForkInvocationPlan,
+    evidence: ResumeHandleEvidence,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+) -> Result<ForkWorkflowReport, CliError> {
+    let child_loop = fork_recording_loop_for_plan(plan, &evidence)?;
+    let mut graph = save_validation_graph(&evidence.scenario)?;
+    if !evidence.configuration.is_genesis() {
+        graph
+            .cache_snapshot(&evidence.configuration, evidence.checkpoint.clone())
+            .map_err(|error| {
+                CliError::Identity(format!("fork checkpoint cache admission failed: {error}"))
+            })?;
+    }
+    let genesis = crucible::Configuration::genesis(evidence.scenario.clone());
+    let mut parent = Engine::new(
+        genesis,
+        graph,
+        ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
+    );
+    parent
+        .apply_command(SessionCommand::Start)
+        .map_err(|error| backend_error(format!("fork parent instantiation failed: {error}")))?;
+    let fork = parent
+        .fork_child_from_checkpoint(
+            CheckpointRef::Checkpoint(evidence.checkpoint.id),
+            child_loop,
+        )
+        .map_err(|error| {
+            backend_error(format!(
+                "fork child checkpoint instantiation failed: {error}"
+            ))
+        })?;
+    let source_checkpoint = fork.record.from_checkpoint;
+    let branch_checkpoint = fork.record.branch_checkpoint;
+    let branch_configuration = fork.branch_configuration.id();
+    let live = fork.child_actor.live_snapshot();
+    let sender = fork.child_sender.clone();
+    let actor_task = tokio::spawn(async move { fork.child_actor.run().await });
+    let mut acknowledged_commands = Vec::new();
+    let mut state_updates = vec![format!("{:?}", live.read().state_kind).to_ascii_lowercase()];
+    let mut watch_statuses = Vec::new();
+    let mut property_violation_reached = false;
+
+    if matches!(plan.execution_mode, RunExecutionMode::Interactive) {
+        drive_resumed_actor_interactive_commands(
+            &sender,
+            &live,
+            interactive_driver,
+            &mut acknowledged_commands,
+            &mut watch_statuses,
+            plan.watch_streams_live_status,
+        )
+        .await?;
+        let boundary = live.read();
+        state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+        if plan.watch_streams_live_status {
+            watch_statuses.push(resume_watch_status(boundary));
+        }
+    } else {
+        match plan.terminal_condition {
+            RunTerminalCondition::Quiescence => {
+                send_resumed_actor_command(
+                    &sender,
+                    SessionCommand::Step {
+                        mode: StepMode::Quantum,
+                    },
+                    &mut acknowledged_commands,
+                )
+                .await?;
+                let boundary =
+                    wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                        view.quanta_stepped > 0
+                    })
+                    .await?;
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
+            }
+            RunTerminalCondition::VirtualTime => {
+                let budget = plan.max_virtual_time_ticks.ok_or_else(|| {
+                    usage_error("--until virtual-time requires --max-virtual-time")
+                })?;
+                let initial = live.read();
+                if initial.virtual_time.ticks < budget {
+                    let delta = budget.saturating_sub(initial.virtual_time.ticks);
+                    send_resumed_actor_command(
+                        &sender,
+                        SessionCommand::Step {
+                            mode: StepMode::Duration(SimDuration { nanos: delta }),
+                        },
+                        &mut acknowledged_commands,
+                    )
+                    .await?;
+                }
+                let boundary = wait_resumed_actor_boundary(
+                    &live,
+                    resume_actor_boundary_yield_budget(initial.virtual_time.ticks, budget),
+                    |view| {
+                        view.virtual_time.ticks >= budget
+                            && matches!(
+                                view.state_kind,
+                                LiveStateKind::Paused | LiveStateKind::Stopped
+                            )
+                    },
+                )
+                .await?;
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
+            }
+            RunTerminalCondition::Stopped => {}
+            RunTerminalCondition::Property => {
+                let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
+                let breakpoint_id = set_resumed_actor_breakpoint(
+                    &sender,
+                    BreakpointSpec::suspend_once(predicate.clone()),
+                    &mut acknowledged_commands,
+                )
+                .await?;
+                let before = live.read();
+                send_resumed_actor_command(
+                    &sender,
+                    SessionCommand::Step {
+                        mode: StepMode::Quantum,
+                    },
+                    &mut acknowledged_commands,
+                )
+                .await?;
+                let boundary =
+                    wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                        view.state_kind == LiveStateKind::Paused
+                            && view.quanta_stepped > before.quanta_stepped
+                    })
+                    .await?;
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
+                let firings =
+                    query_resumed_actor_breakpoint_firings(&sender, &mut acknowledged_commands)
+                        .await?;
+                validate_resume_property_firing(breakpoint_id, &predicate, boundary, &firings)?;
+                property_violation_reached = true;
+            }
+        }
+    }
+
+    if live.read().state_kind != LiveStateKind::Stopped {
+        send_resumed_actor_command(&sender, SessionCommand::Stop, &mut acknowledged_commands)
+            .await?;
+    }
+    let actor_report = actor_task
+        .await
+        .map_err(|error| backend_error(format!("fork child actor task failed to join: {error}")))?
+        .map_err(|error| backend_error(format!("fork child actor failed: {error}")))?;
+    let terminal_oracle =
+        validate_resume_terminal_savepoint(&evidence, &actor_report.final_snapshot)?;
+    let final_view = live.read();
+    state_updates.push(format!("{:?}", final_view.state_kind).to_ascii_lowercase());
+    let final_state = if matches!(plan.execution_mode, RunExecutionMode::Interactive) {
+        String::from("interactive")
+    } else {
+        match plan.terminal_condition {
+            RunTerminalCondition::Quiescence => String::from("quiescent"),
+            RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+            RunTerminalCondition::Stopped => String::from("stopped"),
+            RunTerminalCondition::Property => String::from("property-failed"),
+        }
+    };
+    if plan.watch_streams_live_status {
+        watch_statuses.push(resume_watch_status(final_view));
+    }
+
+    Ok(ForkWorkflowReport {
+        run: RunWorkflowReport {
+            status: if property_violation_reached {
+                BackendCommandStatus::Failed
+            } else {
+                BackendCommandStatus::Passed
+            },
+            created_state: String::from("paused"),
+            final_state,
+            outcome: Some(if property_violation_reached {
+                OutcomeKind::Failed
+            } else {
+                OutcomeKind::Passed
+            }),
+            terminal_savepoint: actor_report
+                .final_snapshot
+                .terminal_savepoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.id),
+            final_frontier_ticks: actor_report.final_snapshot.frontier.ticks,
+            final_quanta: actor_report.quanta,
+            budget_timed_out: false,
+            state_updates,
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands,
+            watch_statuses,
+        },
+        source_checkpoint,
+        branch_checkpoint,
+        branch_configuration,
+        scenario_label: plan.source.label(),
+        label: plan.label.clone(),
         terminal_oracle,
     })
 }
@@ -5839,6 +6167,73 @@ fn finish_resume_workflow_outcome(
         virtual_time_ticks: outcome.canonical_log.len() as u64,
         node: String::from("replay-oracle"),
         kind: String::from("resume_oracle_validation"),
+        summary: format!(
+            "status={} configuration={} fat={} thin={}",
+            oracle.status_label(),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint),
+            format_content_hash_ref(oracle.thin_checkpoint)
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    outcome.savepoint_oracle = Some(oracle);
+    Ok(outcome)
+}
+
+fn finish_fork_workflow_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
+    report: ForkWorkflowReport,
+) -> Result<BackendCommandOutcome, CliError> {
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    let oracle = report.terminal_oracle.clone();
+    outcome.status = report.run.status;
+    outcome.exit_code = report.run.status.exit_code();
+    outcome.terminal_savepoint = report.run.terminal_savepoint;
+    outcome.stdout.push(format!(
+        "fork-session\tcheckpoint={}\tbranch={}\tconfiguration={}\tscenario={}\tlabel={}\tfinal={}\toutcome={}\tfrontier_ticks={}\tquanta={}\tacks={}",
+        format_content_hash_ref(report.source_checkpoint),
+        format_content_hash_ref(report.branch_checkpoint),
+        format_content_hash_ref(report.branch_configuration),
+        report.scenario_label,
+        report.label,
+        report.run.final_state,
+        terminal_outcome_label(report.run.outcome),
+        report.run.final_frontier_ticks,
+        report.run.final_quanta,
+        report.run.acknowledged_commands.len()
+    ));
+    for status in &report.run.watch_statuses {
+        outcome.stdout.push(format!("run-watch\t{status}"));
+    }
+    outcome.stdout.push(format!(
+        "fork-oracle\tstatus={}\tconfiguration={}\tfat={}\tthin={}",
+        oracle.status_label(),
+        format_content_hash_ref(oracle.configuration),
+        format_content_hash_ref(oracle.fat_checkpoint),
+        format_content_hash_ref(oracle.thin_checkpoint)
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("session"),
+        kind: String::from("fork_checkpoint"),
+        summary: format!(
+            "checkpoint={} branch={} configuration={} label={} until={}",
+            format_content_hash_ref(report.source_checkpoint),
+            format_content_hash_ref(report.branch_checkpoint),
+            format_content_hash_ref(report.branch_configuration),
+            report.label,
+            fork_plan.terminal_condition.label()
+        ),
+    });
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("replay-oracle"),
+        kind: String::from("fork_oracle_validation"),
         summary: format!(
             "status={} configuration={} fat={} thin={}",
             oracle.status_label(),
@@ -8894,6 +9289,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_resume_backend_error(resume_plan));
         }
         if let Some(fork_plan) = &fork_plan {
+            if backend_plan.target == BackendExecutionTarget::Local
+                && matches!(
+                    backend_plan.resolved_backend,
+                    Some(ResolvedLocalBackend::Double)
+                )
+            {
+                let outcome = run_local_double_fork_workflow(
+                    &thin_plan,
+                    &backend_plan,
+                    ergonomics_plan.as_ref(),
+                    fork_plan,
+                )?;
+                if emit_human && backend_plan.should_announce(cli.quiet) {
+                    println!("{}", backend_plan.announcement());
+                }
+                emit_backend_command_output(cli, &outcome)?;
+                if outcome.status.is_non_passing() {
+                    return Err(CliError::Outcome(outcome.status));
+                }
+                return Ok(());
+            }
             return Err(unsupported_fork_backend_error(fork_plan));
         }
         if let Some(search_plan) = &search_plan {
@@ -14459,6 +14875,7 @@ mod tests {
                 },
             ]
         );
+        assert!(!plan.explicit_seed_requested);
         assert_eq!(plan.terminal_condition, RunTerminalCondition::VirtualTime);
         assert_eq!(plan.max_virtual_time.as_deref(), Some("2ticks"));
         assert_eq!(plan.max_virtual_time_ticks, Some(2));
@@ -14488,10 +14905,18 @@ mod tests {
         let hash_plan = plan_fork_invocation(args, false)?;
         assert_eq!(hash_plan.source.checkpoint(), checkpoint);
         assert_eq!(hash_plan.label, "hash-child");
+        assert!(!hash_plan.explicit_seed_requested);
         assert_eq!(
             hash_plan.startup_commands,
             vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
         );
+
+        let seed_cli = Cli::parse_from(["crucible", "--seed", "2", "fork", &reference]);
+        let Commands::Fork(args) = &seed_cli.command else {
+            panic!("expected fork command");
+        };
+        let seed_plan = plan_fork_invocation(args, true)?;
+        assert!(seed_plan.explicit_seed_requested);
 
         let missing = ForkArgs::default();
         let error = match plan_fork_invocation(&missing, false) {
@@ -14569,8 +14994,8 @@ mod tests {
     }
 
     #[test]
-    fn cli_fork_workflow_rejects_execution_until_child_runner_exists() -> Result<(), Box<dyn Error>>
-    {
+    fn cli_fork_workflow_rejects_bare_hash_until_closure_loader_exists()
+    -> Result<(), Box<dyn Error>> {
         let checkpoint = crucible::ContentHash::from_bytes(b"fork-execution");
         let cli = Cli::parse_from([
             String::from("crucible"),
@@ -14583,18 +15008,264 @@ mod tests {
             String::from("branch-a"),
         ]);
         let error = match dispatch(&cli) {
-            Ok(_) => panic!("fork must not silently pass before child instantiation exists"),
+            Ok(_) => panic!("fork from a bare hash must not silently pass without closure data"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
         assert!(error.to_string().contains("T-CLI-11"));
-        assert!(error.to_string().contains("branch-a"));
+        assert!(error.to_string().contains("savepoint handle"));
         assert!(
             error
                 .to_string()
                 .contains(&format_content_hash_ref(checkpoint))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "fork-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"fork-log"),
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("child-a"),
+        ]);
+        let Commands::Fork(args) = &cli.command else {
+            panic!("expected fork command");
+        };
+        let fork_plan = plan_fork_invocation(args, false)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
+        let outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &fork_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
+        let expected_checkpoint = format_content_hash_ref(checkpoint);
+        let fork_line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fork-session\t"))
+            .expect("fork workflow must emit a fork-session line");
+        assert!(fork_line.contains(&format!("checkpoint={expected_checkpoint}")));
+        assert!(fork_line.contains(&format!("branch={expected_checkpoint}")));
+        assert!(fork_line.contains(&format!("configuration={expected_checkpoint}")));
+        assert!(fork_line.contains("label=child-a"));
+        assert!(fork_line.contains("final=virtual-time"));
+        assert!(fork_line.contains("frontier_ticks=2"));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-oracle\t")
+                && line.contains("status=fat==thin-passed")
+                && line.contains("fat=blake3:")
+                && line.contains("thin=blake3:")
+        }));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "fork_checkpoint")
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "fork_oracle_validation")
+        );
+
+        let quiescence_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--label"),
+            String::from("child-quiescent"),
+        ]);
+        let Commands::Fork(args) = &quiescence_cli.command else {
+            panic!("expected fork command");
+        };
+        let quiescence_plan = plan_fork_invocation(args, false)?;
+        let backend_plan =
+            plan_backend_selection(&quiescence_cli)?.expect("fork should route to backend");
+        let quiescence_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&quiescence_cli),
+            &backend_plan,
+            None,
+            &quiescence_plan,
+        )?;
+        assert_eq!(quiescence_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(quiescence_outcome.exit_code, 0);
+        assert!(quiescence_outcome.terminal_savepoint.is_some());
+        assert!(quiescence_outcome.savepoint_oracle.is_some());
+        assert!(quiescence_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains("label=child-quiescent")
+                && line.contains("final=quiescent")
+        }));
+        assert!(
+            quiescence_outcome
+                .stdout
+                .iter()
+                .any(|line| line.starts_with("fork-oracle\t"))
+        );
+
+        let interactive_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--interactive"),
+            String::from("--watch"),
+            String::from("--label"),
+            String::from("child-interactive"),
+        ]);
+        let Commands::Fork(args) = &interactive_cli.command else {
+            panic!("expected fork command");
+        };
+        let interactive_plan = plan_fork_invocation(args, false)?;
+        let backend_plan =
+            plan_backend_selection(&interactive_cli)?.expect("fork should route to backend");
+        let interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
+            &plan_cli_invocation(&interactive_cli),
+            &backend_plan,
+            None,
+            &interactive_plan,
+            &[SessionCommandKind::StepQuantum, SessionCommandKind::Query],
+        )?;
+        assert_eq!(interactive_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(interactive_outcome.exit_code, 0);
+        assert!(interactive_outcome.terminal_savepoint.is_some());
+        assert!(interactive_outcome.savepoint_oracle.is_some());
+        assert!(interactive_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains("label=child-interactive")
+                && line.contains("final=interactive")
+        }));
+
+        let seed_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("7"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+        ]);
+        let error = match dispatch(&seed_cli) {
+            Ok(_) => panic!("fork --seed execution must remain blocked"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert!(error.to_string().contains("--seed"));
+
+        let override_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--override"),
+            String::from("decision=value"),
+        ]);
+        let error = match dispatch(&override_cli) {
+            Ok(_) => panic!("fork --override execution must remain blocked"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert!(error.to_string().contains("--override"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "fork-source",
+            &form,
+            &schedule,
+            configuration.id(),
+            1,
+            &content_address_bytes(b"fork-log"),
+        )?;
+        let tampered_path = temp.path().join("bad-fork-frontier.crucible-savepoint");
+        fs::write(
+            &tampered_path,
+            fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            tampered_path.display().to_string(),
+        ]);
+        let error = match dispatch(&cli) {
+            Ok(_) => panic!("fork must reject a tampered savepoint frontier"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("schedule-derived frontier"));
 
         Ok(())
     }

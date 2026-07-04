@@ -1080,12 +1080,12 @@ branch on the verdict without parsing output:
   and `--watch`; resolves `.crucible-savepoint` handles and direct
   `blake3:<hash>` checkpoint references through the shared savepoint decoder;
   validates override pairs, virtual-time budgets, malformed handles, and
-  conflicting explicit `--seed` plus `--override`; and fails execution
-  explicitly until the independent child checkpoint-instantiation runner is
-  wired. Full closure remains blocked on temporal-graph prefix instantiation
-  into an independent child session, final post-fork seed/override application,
-  replay-oracle validation, child reproduction artifacts, and real-QEMU
-  coverage.
+  conflicting explicit `--seed` plus `--override`; executes handle-backed
+  no-divergence local-double forks through an independent child session to
+  quiescence, virtual-time, or interactive command boundaries; and validates the
+  terminal child savepoint with the replay oracle. Full closure remains blocked
+  on bare-hash checkpoint closure loading, final post-fork seed/override
+  application, child reproduction artifacts, and real-QEMU coverage.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
