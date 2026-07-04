@@ -207,6 +207,20 @@ fn nix_int(value: i64) -> String {
     }
 }
 
+fn nix_decimal_tenths(value: i64) -> String {
+    let absolute = value.abs();
+    let body = if absolute % 10 == 0 {
+        (absolute / 10).to_string()
+    } else {
+        format!("{}.{}", absolute / 10, absolute % 10)
+    };
+    if value < 0 {
+        format!("(-{body})")
+    } else {
+        body
+    }
+}
+
 fn simple_ascii_string() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop::sample::select((b'a'..=b'z').collect::<Vec<_>>()),
@@ -498,37 +512,71 @@ proptest! {
         left in -1000_i64..=1000,
         right in 1_i64..=1000,
     ) {
-        let left = nix_int(left);
-        let right = nix_int(right);
-        let cases: [(&[u8], String, ValueTag); 7] = [
-            (b"sub", format!("builtins.sub {left} {right}"), ValueTag::Int),
-            (b"mul", format!("builtins.mul {left} {right}"), ValueTag::Int),
-            (b"div", format!("builtins.div {left} {right}"), ValueTag::Int),
-            (b"bitAnd", format!("builtins.bitAnd {left} {right}"), ValueTag::Int),
-            (b"bitOr", format!("builtins.bitOr {left} {right}"), ValueTag::Int),
-            (b"bitXor", format!("builtins.bitXor {left} {right}"), ValueTag::Int),
-            (b"lessThan", format!("builtins.lessThan {left} {right}"), ValueTag::Bool),
+        let left_source = nix_int(left);
+        let right_source = nix_int(right);
+        let cases: [(&[u8], String, ExpectedScalar); 7] = [
+            (
+                b"sub",
+                format!("builtins.sub {left_source} {right_source}"),
+                ExpectedScalar::Int(left - right),
+            ),
+            (
+                b"mul",
+                format!("builtins.mul {left_source} {right_source}"),
+                ExpectedScalar::Int(left * right),
+            ),
+            (
+                b"div",
+                format!("builtins.div {left_source} {right_source}"),
+                ExpectedScalar::Int(left / right),
+            ),
+            (
+                b"bitAnd",
+                format!("builtins.bitAnd {left_source} {right_source}"),
+                ExpectedScalar::Int(left & right),
+            ),
+            (
+                b"bitOr",
+                format!("builtins.bitOr {left_source} {right_source}"),
+                ExpectedScalar::Int(left | right),
+            ),
+            (
+                b"bitXor",
+                format!("builtins.bitXor {left_source} {right_source}"),
+                ExpectedScalar::Int(left ^ right),
+            ),
+            (
+                b"lessThan",
+                format!("builtins.lessThan {left_source} {right_source}"),
+                ExpectedScalar::Bool(left < right),
+            ),
         ];
 
-        for (name, source, expected_tag) in cases {
-            prop_assert_eq!(
-                primop_escape_signature(name),
-                PrimOpEscapeSignature::ImmediateScalar,
-                "{}",
-                name_display(name)
-            );
-            let ir = lower_direct_primop_source(name, &source);
-            let outcome = eval_whnf_owned(&ir)
-                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
-            let value = outcome.value();
-            prop_assert_eq!(
-                value.tag(),
-                expected_tag,
-                "{}: {}",
-                name_display(name),
-                source
-            );
-            prop_assert!(!expected_tag.is_heap(), "{}", name_display(name));
+        for (name, source, expected) in cases {
+            assert_immediate_scalar_value(name, &source, expected)?;
+        }
+    }
+
+    #[test]
+    fn immediate_scalar_rounding_escape_signatures_survive_random_tenths(
+        tenths in -10_000_i64..=10_000,
+    ) {
+        let value = nix_decimal_tenths(tenths);
+        let cases: [(&[u8], String, ExpectedScalar); 2] = [
+            (
+                b"ceil",
+                format!("builtins.ceil {value}"),
+                ExpectedScalar::Int(-((-tenths).div_euclid(10))),
+            ),
+            (
+                b"floor",
+                format!("builtins.floor {value}"),
+                ExpectedScalar::Int(tenths.div_euclid(10)),
+            ),
+        ];
+
+        for (name, source, expected) in cases {
+            assert_immediate_scalar_value(name, &source, expected)?;
         }
     }
 }
