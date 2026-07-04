@@ -209,9 +209,25 @@ impl TreeWalk {
             .get_attrs_metadata(attrs_value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         match metadata.repr() {
-            AttrSetReprKind::Flat => {
-                self.select_flat_attr_with_cache(id, span, attrs_value, symbol, site, path_index)
-            }
+            AttrSetReprKind::Flat => match metadata.projected_shape() {
+                Some(projected_shape) => self.select_projected_shaped_attr_with_cache(
+                    id,
+                    span,
+                    attrs_value,
+                    symbol,
+                    projected_shape,
+                    site,
+                    path_index,
+                ),
+                None => self.select_flat_attr_with_cache(
+                    id,
+                    span,
+                    attrs_value,
+                    symbol,
+                    site,
+                    path_index,
+                ),
+            },
             AttrSetReprKind::Hamt => {
                 self.select_hamt_attr_with_cache(id, span, attrs_value, symbol, site, path_index)
             }
@@ -293,6 +309,113 @@ impl TreeWalk {
             }
         };
         Ok(select_outcome)
+    }
+
+    /// Selects from a flat payload through a transient shaped view and static-site shaped cache.
+    pub(in crate::eval::tree_walk) fn select_projected_shaped_attr_with_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        projected_shape: ShapeId,
+        site: IrInlineCacheSiteId,
+        path_index: usize,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let shaped = self.transient_shaped_attrs_for_projected_shape(
+            id,
+            span,
+            attrs_value,
+            projected_shape,
+        )?;
+        let key = (self.current_module.as_u32(), site.as_u32(), path_index);
+        let (state, outcome) = {
+            let cache = self.shaped_select_caches.entry(key).or_default();
+            let state = cache.state().clone();
+            let outcome = cache.select(&shaped, symbol).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::ShapedSelectCache { id, source }, span)
+            })?;
+            (state, outcome)
+        };
+        self.record_shaped_select_cache_lookup_telemetry(id, span, &state, &outcome);
+        let select_outcome = match outcome {
+            ShapedSelectOutcome::Hit {
+                value,
+                slot,
+                source,
+            } => {
+                match source {
+                    ShapedSelectSource::Cached => {
+                        self.increment_inline_cache_hits();
+                    }
+                    ShapedSelectSource::Resolved { .. } => {
+                        self.increment_inline_cache_misses();
+                    }
+                }
+                let select_outcome = AttrSelectOutcome::Hit {
+                    value,
+                    source: AttrSelectSource::Shaped { slot },
+                };
+                if matches!(source, ShapedSelectSource::Resolved { .. }) {
+                    self.record_slow_select_telemetry(id, span, &select_outcome);
+                }
+                select_outcome
+            }
+            ShapedSelectOutcome::Missing => {
+                self.increment_inline_cache_misses();
+                let select_outcome = AttrSelectOutcome::Missing {
+                    repr: AttrSelectRepr::Shaped,
+                };
+                self.record_slow_select_telemetry(id, span, &select_outcome);
+                select_outcome
+            }
+        };
+        Ok(select_outcome)
+    }
+
+    fn transient_shaped_attrs_for_projected_shape(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        projected_shape: ShapeId,
+    ) -> Result<ShapedAttrs, TreeWalkError> {
+        let shape = self
+            .shape_table
+            .as_ref()
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Shape {
+                        id,
+                        source: ShapeError::UnknownShapeId {
+                            id: projected_shape,
+                        },
+                    },
+                    span,
+                )
+            })?
+            .handle(projected_shape)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Shape { id, source }, span))?;
+        let attrs = self
+            .heap
+            .get_attrs(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ShapedAttr {
+                    id,
+                    source: ShapedAttrsError::AllocationFailed {
+                        values: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        values.extend(attrs.entries_by_symbol().iter().map(|entry| entry.value));
+        ShapedAttrs::from_symbol_order(shape, &values).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::ShapedAttr { id, source }, span)
+        })
     }
 
     /// Selects from a projected-HAMT evaluator attrset through a static-site HAMT cache.

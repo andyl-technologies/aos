@@ -74,7 +74,8 @@ use crate::attrs::{
     hamt::{HamtAttrs, HamtError, HamtMergeSummary},
     pic::{
         FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource, HamtSelectCache,
-        HamtSelectError, HamtSelectOutcome, HamtSelectPolicy, HamtSelectSource,
+        HamtSelectError, HamtSelectOutcome, HamtSelectPolicy, HamtSelectSource, ShapedSelectCache,
+        ShapedSelectCacheState, ShapedSelectError, ShapedSelectOutcome, ShapedSelectSource,
     },
     repr::{
         AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprPolicy,
@@ -84,7 +85,10 @@ use crate::attrs::{
         AttrSelectError, AttrSelectOutcome, AttrSelectRepr, AttrSelectSource, AttrSelectTarget,
         select_slow,
     },
-    shape::{ShapeHandle, ShapeTable, ShapeTableTransition},
+    shape::{
+        ShapeError, ShapeHandle, ShapeId, ShapeTable, ShapeTableTransition, ShapedAttrs,
+        ShapedAttrsError,
+    },
     telemetry::AttrTelemetry,
 };
 use crate::cache::{
@@ -994,6 +998,7 @@ pub struct TreeWalk {
     attr_telemetry: AttrTelemetry,
     shape_table: Option<ShapeTable>,
     flat_select_caches: BTreeMap<(u32, u32, usize), FlatSelectCache>,
+    shaped_select_caches: BTreeMap<(u32, u32, usize), ShapedSelectCache>,
     hamt_select_caches: BTreeMap<(u32, u32, usize), HamtSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     trace_output: Vec<EvalTraceOutput>,

@@ -819,16 +819,16 @@ fn active_flat_selects_record_slow_select_telemetry() {
 
     assert_eq!(outcome.value().as_int(), Ok(0));
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 3);
-    assert_eq!(counts.flat_misses, 2);
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 0);
     assert_eq!(counts.hamt_hits, 0);
     assert_eq!(counts.hamt_misses, 0);
-    assert_eq!(counts.shaped_hits, 0);
-    assert_eq!(counts.shaped_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 2);
 }
 
 #[test]
-fn repeated_static_select_site_uses_flat_inline_cache() {
+fn repeated_static_select_site_uses_shaped_inline_cache_for_projected_flat_receivers() {
     let ir = lower("let f = x: x.a; in (f { a = 1; }) + (f { a = 2; })");
 
     let outcome = eval_whnf_owned(&ir).expect("repeated static select evaluates");
@@ -837,10 +837,17 @@ fn repeated_static_select_site_uses_flat_inline_cache() {
     assert_eq!(outcome.stats().inline_cache_hits(), 1);
     assert_eq!(outcome.stats().inline_cache_misses(), 1);
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 0);
 }
 
 #[test]
@@ -869,7 +876,7 @@ fn repeated_static_select_site_uses_hamt_inline_cache_for_projected_hamt_receive
 }
 
 #[test]
-fn repeated_static_select_site_revalidates_stale_flat_slots() {
+fn repeated_static_select_site_separates_projected_shapes_with_different_slots() {
     let ir = lower("let seed = { a = 0; }; f = x: x.b; in (f { b = 1; }) + (f { a = 0; b = 2; })");
 
     let outcome = eval_whnf_owned(&ir).expect("shifted static select evaluates");
@@ -878,10 +885,13 @@ fn repeated_static_select_site_revalidates_stale_flat_slots() {
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 1);
+    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.polymorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 2);
+    assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 0);
 }
 
 #[test]
@@ -894,10 +904,13 @@ fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 1);
-    assert_eq!(counts.flat_misses, 1);
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 1);
 }
 
 #[test]
@@ -910,10 +923,13 @@ fn repeated_static_select_defaults_preserve_miss_then_hit_semantics() {
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 1);
-    assert_eq!(counts.flat_misses, 1);
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 1);
 }
 
 #[test]
@@ -968,14 +984,17 @@ fn multi_segment_static_select_caches_each_path_index_separately() {
     assert_eq!(outcome.stats().inline_cache_hits(), 2);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
     let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 2);
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 2);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 2);
+    assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 0);
 }
 
 #[test]
-fn repeated_static_has_attr_site_uses_flat_inline_cache() {
+fn repeated_static_has_attr_site_uses_shaped_inline_cache_for_projected_flat_receivers() {
     let ir = lower("let f = x: x ? a; in if (f { a = 1; }) && (f { a = 2; }) then 1 else 0");
 
     let outcome = eval_whnf_owned(&ir).expect("repeated static hasAttr evaluates");
@@ -983,9 +1002,17 @@ fn repeated_static_has_attr_site_uses_flat_inline_cache() {
     assert_eq!(outcome.value().as_int(), Ok(1));
     assert_eq!(outcome.stats().inline_cache_hits(), 1);
     assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
-    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_hits, 0);
     assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 0);
 }
 
 #[test]

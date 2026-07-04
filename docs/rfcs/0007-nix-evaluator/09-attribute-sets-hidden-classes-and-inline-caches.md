@@ -814,9 +814,12 @@ harness, never cut for scope.
       one static key on `ShapedAttrs` by interned shape pointer, loads cached
       symbol slots on hits, resolves uncached shaped lookups through the
       representation-dispatching `select_slow` shaped branch, and widens
-      through the PIC state machine. It does not install shaped fast paths into
-      tree-walk `Select`, call the native runtime helper, handle HAMT values,
-      or affect `.drv` bytes.
+      through the PIC state machine. The active tree-walk static
+      `Select`/`HasAttr` bridge now uses this cache for flat heap values that
+      carry projected shape metadata by building a transient `ShapedAttrs` view
+      over the existing flat payload. It does not replace active heap storage
+      with shaped values, call the native runtime helper, handle HAMT values, or
+      affect `.drv` bytes.
 - [x] Current flat select-cache precursor:
       `ratchet-value::attrs::pic` exposes `FlatSelectCache`, which binds one
       static key and caches key-validated symbol-order slots for current
@@ -827,18 +830,21 @@ harness, never cut for scope.
       attrsets have no stable absent slot. This does not replace active flat
       attr storage with shaped/native layouts, call the native runtime helper,
       or affect `.drv` bytes.
-- [x] Current active flat static-select IC bridge:
-      the tree-walk evaluator stores per-run `FlatSelectCache` cells by module,
-      select-site id, and attr-path segment index. Active flat attrset
-      selection for static `Select`/`HasAttr` segments uses the key-validated
-      cached-slot path after first resolution; builtin static-select shortcuts,
-      dynamic segments, `with` scope probes, generic runtime keyed helpers, and
-      shaped/HAMT/native storage paths remain on the shared slow dispatcher.
-      Cached hits increment mirrored inline-cache hit stats; resolved lookups
-      and misses increment miss stats and preserve slow-select telemetry;
-      successful `EvalOutcome` exits also record terminal flat select-cache
-      site states in `attr_telemetry`. This is a flat/tree-walk bridge only,
-      not the final shape-check/native `aos_select_ic` lowering.
+- [x] Current active projected-shape static-select IC bridge:
+      the tree-walk evaluator stores per-run flat, shaped, and HAMT select-cache
+      cells by module, select-site id, and attr-path segment index. Active flat
+      heap values carrying projected shape metadata use a transient
+      `ShapedAttrs` view and `ShapedSelectCache` for static `Select`/`HasAttr`
+      segments; unprojected flat values keep the key-validated `FlatSelectCache`
+      fallback; projected-HAMT values use the HAMT policy cache described
+      below. Builtin static-select shortcuts, dynamic segments, `with` scope
+      probes, generic runtime keyed helpers, and native storage paths remain on
+      the shared slow dispatcher. Cached hits increment mirrored inline-cache
+      hit stats; resolved lookups and misses increment miss stats and preserve
+      representation-specific slow-select telemetry; successful `EvalOutcome`
+      exits also record terminal shaped/flat/HAMT select-cache site states in
+      `attr_telemetry`. This is a tree-walk bridge over flat payloads, not the
+      final native `aos_select_ic` lowering.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
@@ -994,9 +1000,10 @@ harness, never cut for scope.
       update-chain depth, and exposes the captured samples through
       `EvalOutcome::attr_telemetry`; HAMT-classified active update samples now
       also carry HAMT insert/replace summaries from the representation-dispatch
-      bridge, and active static flat select-cache terminal states are recorded
-      there too. Flat cache hits use mirrored `EvalStats` inline-cache counters
-      while unresolved cache lookups keep slow-select telemetry; the same
+      bridge, and active static shaped/flat/HAMT select-cache terminal states
+      plus shaped/HAMT lookup outcomes are recorded there too. Cache hits use
+      mirrored `EvalStats` inline-cache counters while unresolved cache lookups
+      keep representation-specific slow-select telemetry; the same
       successful flat-allocation shape projection separately increments
       `EvalStats::shape_transitions` for uncached process-local transition
       edges. Runtime shape/PIC/HAMT storage instrumentation, full AOS

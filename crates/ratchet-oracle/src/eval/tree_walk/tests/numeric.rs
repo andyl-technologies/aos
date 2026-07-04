@@ -69,7 +69,7 @@ fn attr_path_auto_call_records_empty_arg_repr_decision() {
 }
 
 #[test]
-fn attr_path_outcome_records_flat_select_cache_terminal_states() {
+fn attr_path_outcome_records_projected_shaped_select_cache_terminal_states() {
     let ir = lower("{ selected = let f = x: x.a; in (f { a = 1; }) + (f { a = 2; }); }");
     let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
         &ir,
@@ -81,7 +81,8 @@ fn attr_path_outcome_records_flat_select_cache_terminal_states() {
 
     assert_eq!(outcome.value().as_int(), Ok(3));
     let snapshot = outcome.attr_telemetry().inline_cache_snapshot();
-    assert_eq!(snapshot.flat_select_sites.monomorphic, 1);
+    assert_eq!(snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(snapshot.shaped_select_sites.monomorphic, 1);
 }
 
 #[test]

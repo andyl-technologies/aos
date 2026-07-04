@@ -425,6 +425,28 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn record_shaped_select_cache_lookup_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        state: &ShapedSelectCacheState,
+        outcome: &ShapedSelectOutcome,
+    ) {
+        if let Err(source) = self
+            .attr_telemetry
+            .record_shaped_select_lookup(state, outcome)
+        {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping shaped select-cache lookup telemetry after recording failure"
+            );
+        }
+    }
+
     pub(super) fn record_attr_select_cache_site_telemetry(&mut self) {
         for cache in self.flat_select_caches.values() {
             if let Err(source) = self.attr_telemetry.record_flat_select_site(cache.state()) {
@@ -432,6 +454,15 @@ impl TreeWalk {
                     target: "aos_nix::eval::attr_telemetry",
                     error = %source,
                     "skipping flat select-cache terminal-state telemetry after recording failure"
+                );
+            }
+        }
+        for cache in self.shaped_select_caches.values() {
+            if let Err(source) = self.attr_telemetry.record_shaped_select_site(cache.state()) {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    error = %source,
+                    "skipping shaped select-cache terminal-state telemetry after recording failure"
                 );
             }
         }

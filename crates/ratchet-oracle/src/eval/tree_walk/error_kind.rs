@@ -1203,6 +1203,30 @@ pub enum TreeWalkErrorKind {
         /// The underlying flat select-cache failure.
         source: FlatSelectError,
     },
+    /// A hidden-class shape operation failed.
+    #[error("shape operation failed at node {id:?}: {source}")]
+    Shape {
+        /// The node id associated with the shape operation.
+        id: IrId,
+        /// The underlying shape failure.
+        source: ShapeError,
+    },
+    /// A shaped attribute-set operation failed.
+    #[error("shaped attribute-set operation failed at node {id:?}: {source}")]
+    ShapedAttr {
+        /// The node id associated with the shaped attrset operation.
+        id: IrId,
+        /// The underlying shaped attrset failure.
+        source: ShapedAttrsError,
+    },
+    /// A shaped select-cache operation failed.
+    #[error("shaped select cache failed at node {id:?}: {source}")]
+    ShapedSelectCache {
+        /// The select node id.
+        id: IrId,
+        /// The underlying shaped select-cache failure.
+        source: ShapedSelectError,
+    },
     /// A HAMT attribute-set operation failed.
     #[error("HAMT attribute-set operation failed at node {id:?}: {source}")]
     HamtAttr {

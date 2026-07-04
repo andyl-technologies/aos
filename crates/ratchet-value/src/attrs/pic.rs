@@ -7,9 +7,10 @@
 //! ids; [`ShapedSelectCache`] is a safe shaped-attrset precursor that proves the
 //! shape-guard + constant-offset load contract and resolves uncached shaped
 //! lookups through [`crate::attrs::select::select_slow`] before updating PIC
-//! state, without updating tree-walk behavior, calling the final native runtime
-//! helper, or installing deoptimization edges. [`FlatSelectCache`] models a
-//! safe precursor for the active flat representation by caching key-validated
+//! state. The active tree-walk evaluator uses it through a projected-shape
+//! bridge over flat heap payloads; the final native runtime helper and
+//! deoptimization edges remain future work. [`FlatSelectCache`] models a safe
+//! precursor for the active flat representation by caching key-validated
 //! symbol-order slots. [`HamtSelectCache`] models the HAMT select-site policy
 //! and resolves HAMT values through the representation-dispatching
 //! [`crate::attrs::select::select_slow`] HAMT branch.
