@@ -10043,11 +10043,15 @@ fn replay_reproduction_artifact(
         let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
         let original = fs::read(path)?;
         if original != canonical_log_bytes {
+            let first_diff = bisect_first_different_byte(&original, &canonical_log_bytes);
             return Err(CliError::ReplayCheck(format!(
-                "replay --check mismatch for `{}`: expected {}, replayed {}",
+                "replay --check mismatch for `{}`: expected {}, replayed {}, first_diff_byte={}, original_len={}, replayed_len={}",
                 path.display(),
                 content_address_bytes(&original),
-                content_address_bytes(&canonical_log_bytes)
+                content_address_bytes(&canonical_log_bytes),
+                first_diff,
+                original.len(),
+                canonical_log_bytes.len()
             )));
         }
         Some(ReplayCheckReport {
@@ -18328,6 +18332,37 @@ mod tests {
         assert!(matches!(error, CliError::ReplayCheck(_)));
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("replay --check mismatch"));
+        assert!(error.to_string().contains("first_diff_byte=0"));
+        assert!(error.to_string().contains("original_len="));
+        assert!(error.to_string().contains("replayed_len="));
+
+        let decoded_artifact =
+            validate_replayable_reproduction_artifact(&replay_cli, &artifact.encode()?)?;
+        let canonical_log = canonical_log_entries_from_artifact(&decoded_artifact)?;
+        let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
+        assert!(
+            !canonical_log_bytes.is_empty(),
+            "replay mismatch fixture must have canonical log bytes"
+        );
+        let mut shifted_original = canonical_log_bytes.clone();
+        let first_diff = shifted_original.len().saturating_sub(1).min(7);
+        assert!(
+            first_diff > 0,
+            "replay mismatch fixture must exercise a nonzero first difference"
+        );
+        let replacement = shifted_original[first_diff].wrapping_add(1);
+        shifted_original[first_diff] = replacement;
+        fs::write(&check_path, &shifted_original)?;
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("replay --check must localize nonzero byte mismatches"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::ReplayCheck(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("first_diff_byte={first_diff}"))
+        );
 
         Ok(())
     }
