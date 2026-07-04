@@ -10347,14 +10347,22 @@ fn load_triage_findings_ledger(
         }
         TriageFindingsSource::Path(path) => {
             let bytes = fs::read(path)?;
-            parse_failure_findings_ledger_bytes(&bytes).or_else(|_| {
-                store
-                    .put(&bytes)
-                    .map(|hash| crucible::FailureFindingsLedger::from_artifacts([hash]))
-                    .map_err(CliError::Store)
-            })
+            if looks_like_failure_findings_ledger(&bytes) {
+                return parse_failure_findings_ledger_bytes(&bytes);
+            }
+            store
+                .put(&bytes)
+                .map(|hash| crucible::FailureFindingsLedger::from_artifacts([hash]))
+                .map_err(CliError::Store)
         }
     }
+}
+
+fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| text.lines().next())
+        == Some("crucible.failure-triage.findings-ledger.v1")
 }
 
 fn parse_failure_findings_ledger_bytes(
@@ -10374,6 +10382,11 @@ fn parse_failure_findings_ledger_bytes(
                 return Err(artifact_error("malformed findings ledger artifact line"));
             };
             artifacts.push(parse_hex_content_hash("findings ledger artifact", value)?);
+        }
+        if line.starts_with("finding.") {
+            return Err(artifact_error(
+                "findings ledger signature evidence must come from engine-owned discovery artifacts",
+            ));
         }
     }
     Ok(crucible::FailureFindingsLedger::from_artifacts(artifacts))
@@ -18210,6 +18223,74 @@ mod tests {
             error
                 .to_string()
                 .contains("discovery-time signature evidence")
+        );
+    }
+
+    #[test]
+    fn cli_triage_rejects_cli_sidecar_signature_evidence() {
+        let temp = TempDir::new().expect("tempdir must be created");
+        let findings = temp.path().join("sidecar.findings-ledger");
+        let store_root = temp.path().join("store");
+        let artifact = crucible::ContentHash::from_bytes(b"sidecar-artifact").to_hex();
+        let ledger_bytes = format!(
+            "\
+crucible.failure-triage.findings-ledger.v1
+artifact.0={artifact}
+finding.0.kind=property
+",
+        )
+        .into_bytes();
+        fs::write(&findings, &ledger_bytes).expect("sidecar ledger must be written");
+        let cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store_root.to_str().unwrap_or("."),
+            "triage",
+            findings.to_str().unwrap_or("."),
+        ]);
+        let Commands::Triage(args) = &cli.command else {
+            panic!("expected triage command");
+        };
+
+        let error = match run_triage_invocation(&cli, args) {
+            Ok(_) => panic!("CLI-local sidecar signature evidence must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert_eq!(error.exit_code(), 5);
+        assert!(
+            error
+                .to_string()
+                .contains("engine-owned discovery artifacts")
+        );
+
+        let store = crucible::LocalDagStore::new(store_root.clone());
+        let stored_hash = store
+            .put(&ledger_bytes)
+            .expect("sidecar ledger must be stored");
+        let stored_cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            store_root.to_str().unwrap_or("."),
+            "triage",
+            &format_content_hash_ref(stored_hash),
+        ]);
+        let Commands::Triage(stored_args) = &stored_cli.command else {
+            panic!("expected triage command");
+        };
+
+        let stored_error = match run_triage_invocation(&stored_cli, stored_args) {
+            Ok(_) => panic!("stored sidecar signature evidence must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(stored_error, CliError::Artifact(_)));
+        assert_eq!(stored_error.exit_code(), 5);
+        assert!(
+            stored_error
+                .to_string()
+                .contains("engine-owned discovery artifacts")
         );
     }
 
