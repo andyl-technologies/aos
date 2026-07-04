@@ -6036,15 +6036,6 @@ where
         boundary
     };
 
-    if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive)
-        && boundary.state == LiveStateKind::Stopped
-    {
-        destroy_remote_resume_session_best_effort(client, resumed.session).await;
-        return Err(backend_error(
-            "remote interactive resume reached terminal state before terminal savepoint materialization; terminal remote interactive finalization remains tracked by T-CLI-10",
-        ));
-    }
-
     let snapshot_response = send_resume_workflow_command(
         client,
         resumed.session,
@@ -19243,22 +19234,30 @@ finding.0.detail=synthetic signed finding evidence
                 .any(|line| { line.starts_with("run-watch\tstate=stopped\tfrontier_ticks=1") })
         );
 
-        let terminal_interactive = match run_remote_resume_workflow_with_interactive_commands(
+        let terminal_interactive = run_remote_resume_workflow_with_interactive_commands(
             &daemon,
             &plan_cli_invocation(&interactive_cli),
             &backend_plan,
             None,
             &interactive_plan,
             &[SessionCommandKind::Continue],
-        ) {
-            Ok(_) => panic!("remote interactive terminal continue must fail explicitly"),
-            Err(error) => error,
-        };
-        assert!(matches!(terminal_interactive, CliError::Backend(_)));
+        )?;
+        assert_eq!(terminal_interactive.status, BackendCommandStatus::Passed);
+        assert!(terminal_interactive.terminal_savepoint.is_some());
+        let remote_interactive_terminal_final = terminal_interactive.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains("final=interactive")
+                && line.contains("frontier_ticks=2")
+        });
+        assert!(remote_interactive_terminal_final);
+        assert!(terminal_interactive.stdout.iter().any(|line| {
+            line.starts_with("resume-oracle\t") && line.contains("status=fat==thin-passed")
+        }));
         assert!(
             terminal_interactive
-                .to_string()
-                .contains("terminal state before terminal savepoint materialization")
+                .stdout
+                .iter()
+                .any(|line| { line.starts_with("run-watch\tstate=stopped\tfrontier_ticks=2") })
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -19267,7 +19266,7 @@ finding.0.detail=synthetic signed finding evidence
         let sessions = runtime.block_on(client.list_sessions())?;
         assert!(
             sessions.sessions.is_empty(),
-            "terminal remote interactive error should remove the dead session: {:?}",
+            "terminal remote interactive finalization should remove the stopped session: {:?}",
             sessions.sessions
         );
 

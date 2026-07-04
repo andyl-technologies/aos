@@ -451,11 +451,11 @@ long-held locks.
   property stop and replay-oracle validation for terminal savepoints, plus
   remote-daemon handle-backed virtual-time resume over `ResumeSession` RPC,
   remote interactive command driving, `--watch` status streaming at observed
-  remote boundaries, terminal savepoint replay-oracle validation, and explicit
-  failure for terminal remote interactive command sequences before racing
-  post-terminal snapshot collection; full closure waits for terminal remote
-  interactive finalization, real-QEMU coverage, and full replay-oracle coverage
-  across those runners.
+  remote boundaries, terminal savepoint replay-oracle validation, and terminal
+  remote interactive finalization through stopped snapshot query, actor-owned
+  terminal savepoint validation, replay-oracle proof, and stopped-session
+  cleanup; full closure waits for real-QEMU coverage and full replay-oracle
+  coverage across those runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,

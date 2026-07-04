@@ -236,12 +236,12 @@
         needle = "remote_interactive_stop_final";
       }
       {
-        label = "resume terminal remote interactive error";
-        needle = "terminal state before terminal savepoint materialization";
+        label = "resume terminal remote interactive final state";
+        needle = "remote_interactive_terminal_final";
       }
       {
         label = "resume terminal remote interactive cleanup";
-        needle = "terminal remote interactive error should remove the dead session";
+        needle = "terminal remote interactive finalization should remove the stopped session";
       }
       {
         label = "resume unverified evidence test";

@@ -4628,6 +4628,8 @@ pub struct SessionActor<L> {
     yielded_after_quanta: u64,
     control_acknowledgements: u64,
     state_transition_sequence: u64,
+    terminal_command_keepalive: bool,
+    terminal_shutdown_requested: bool,
 }
 
 impl<L> SessionActor<L> {
@@ -4675,7 +4677,20 @@ impl<L> SessionActor<L> {
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
             state_transition_sequence: 0,
+            terminal_command_keepalive: false,
+            terminal_shutdown_requested: false,
         }
+    }
+
+    /// Keeps a terminal actor alive to accept terminal observation commands.
+    ///
+    /// When enabled, [`SessionActor::run`] waits for an acknowledged `Stop`
+    /// command after reaching `Stopped` instead of returning as soon as the
+    /// already-queued terminal commands have been drained.
+    #[must_use]
+    pub const fn with_terminal_command_keepalive(mut self, enabled: bool) -> Self {
+        self.terminal_command_keepalive = enabled;
+        self
     }
 
     /// Returns the actor-owned engine.
@@ -4804,6 +4819,13 @@ fn split_acknowledged_command(
     }
 }
 
+fn acknowledged_stop_command(command: &SessionCommand) -> bool {
+    matches!(
+        command,
+        SessionCommand::Acknowledge { command, .. } if matches!(command.as_ref(), SessionCommand::Stop)
+    )
+}
+
 fn complete_acknowledgement(
     acknowledgement: Option<CommandReply<()>>,
     result: &Result<(), SessionError>,
@@ -4821,7 +4843,13 @@ impl<L> SessionActor<L>
 where
     L: QuantumLoop + Send + 'static,
 {
-    /// Runs the actor until it reaches [`EngineState::Stopped`].
+    /// Runs the actor until its terminal drain policy completes.
+    ///
+    /// By default, the actor returns after reaching [`EngineState::Stopped`]
+    /// and draining commands that were already queued. Actors configured with
+    /// [`SessionActor::with_terminal_command_keepalive`] keep serving terminal
+    /// observation commands until an acknowledged `Stop` shutdown command
+    /// arrives.
     ///
     /// # Errors
     ///
@@ -4831,7 +4859,11 @@ where
     pub async fn run(mut self) -> Result<SessionRunReport, SessionError> {
         loop {
             if matches!(self.engine.state(), EngineState::Stopped { .. }) {
-                self.drain_terminal_commands().await?;
+                if self.terminal_command_keepalive && !self.terminal_shutdown_requested {
+                    self.serve_terminal_commands_until_shutdown().await?;
+                } else {
+                    self.drain_terminal_commands().await?;
+                }
                 return Ok(self.report());
             }
             self.run_once().await?;
@@ -4885,7 +4917,11 @@ where
                 self.apply_command_or_recover(command).await
             }
             EngineState::Stopped { .. } => {
-                self.drain_terminal_commands().await?;
+                if self.terminal_command_keepalive && !self.terminal_shutdown_requested {
+                    self.serve_terminal_commands_until_shutdown().await?;
+                } else {
+                    self.drain_terminal_commands().await?;
+                }
                 Ok(())
             }
         }
@@ -4945,16 +4981,32 @@ where
     }
 
     async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
+        let shutdown_requested = acknowledged_stop_command(&command);
         let (command, acknowledgement) = split_acknowledged_command(command);
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
             let result = self.apply_spawned_fork_command(command).await;
+            self.record_terminal_shutdown_request(shutdown_requested, &result);
             complete_acknowledgement(acknowledgement, &result);
             return result;
         }
 
         let result = self.apply_command_without_spawning_forks(command).await;
+        self.record_terminal_shutdown_request(shutdown_requested, &result);
         complete_acknowledgement(acknowledgement, &result);
         result
+    }
+
+    fn record_terminal_shutdown_request(
+        &mut self,
+        shutdown_requested: bool,
+        result: &Result<(), SessionError>,
+    ) {
+        if shutdown_requested
+            && result.is_ok()
+            && matches!(self.engine.state(), EngineState::Stopped { .. })
+        {
+            self.terminal_shutdown_requested = true;
+        }
     }
 
     async fn apply_command_or_recover(
@@ -5108,6 +5160,27 @@ where
                     command.complete_error(error);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+    }
+
+    async fn serve_terminal_commands_until_shutdown(&mut self) -> Result<(), SessionError> {
+        loop {
+            match self.mailbox.recv().await {
+                Some(SessionCommand::Acknowledge { command, reply })
+                    if matches!(*command, SessionCommand::Stop) =>
+                {
+                    reply.complete(Ok(()));
+                    return Ok(());
+                }
+                Some(command) if command.is_terminal_accepted() => {
+                    self.apply_command(command).await?;
+                }
+                Some(command) => {
+                    let error = self.engine.invalid_transition(command.clone());
+                    command.complete_error(error);
+                }
+                None => return Ok(()),
             }
         }
     }
