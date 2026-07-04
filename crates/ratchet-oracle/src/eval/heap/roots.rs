@@ -7096,6 +7096,11 @@ fn validate_copied_heap_field_write_object_source(
             },
         ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
         (HeapObjectValue::Thunk(thunk), source)
+            if validate_forced_thunk_cached_result_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
+        (HeapObjectValue::Thunk(thunk), source)
             if validate_suspended_thunk_field_write_source(thunk, source)? =>
         {
             Ok(())
@@ -7142,6 +7147,11 @@ fn validate_direct_heap_field_write_object_source(
                 index,
             },
         ) if *index < lambda.scoped_global_env().scopes().len() => Ok(()),
+        (HeapObjectValue::Thunk(thunk), source)
+            if validate_forced_thunk_cached_result_write_source(thunk, source)? =>
+        {
+            Ok(())
+        }
         (HeapObjectValue::Thunk(thunk), source)
             if validate_suspended_thunk_field_write_source(thunk, source)? =>
         {
@@ -7285,6 +7295,19 @@ fn record_owned_heap_field_write_object(
                 scoped_globals,
             ))))
         }
+        (HeapObjectValue::Thunk(thunk), HeapEdgeSource::ThunkCachedResult) => {
+            if thunk
+                .cell()
+                .cached_value()
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?
+                .is_none()
+            {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            }
+            Ok(HeapObjectValue::Thunk(Rc::new(
+                EvalThunk::with_forced_cached_result_from(thunk, replacement),
+            )))
+        }
         (HeapObjectValue::Thunk(thunk), source) => {
             rewrite_suspended_thunk_field(thunk, source, replacement)
         }
@@ -7297,6 +7320,20 @@ fn validate_suspended_thunk_field_write_source(
     source: &HeapEdgeSource,
 ) -> Result<bool, EvalHeapError> {
     thunk_supports_suspended_field_write(thunk, source).map_err(EvalHeapError::Thunk)
+}
+
+fn validate_forced_thunk_cached_result_write_source(
+    thunk: &EvalThunk,
+    source: &HeapEdgeSource,
+) -> Result<bool, EvalHeapError> {
+    if source != &HeapEdgeSource::ThunkCachedResult {
+        return Ok(false);
+    }
+    Ok(thunk
+        .cell()
+        .cached_value()
+        .map_err(EvalHeapError::Thunk)?
+        .is_some())
 }
 
 fn thunk_supports_suspended_field_write(

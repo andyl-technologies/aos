@@ -117,6 +117,14 @@ impl EvalThunk {
         }
     }
 
+    /// Rebuilds a forced thunk record with the same deferred-work metadata.
+    pub(crate) fn with_forced_cached_result_from(thunk: &Self, value: Value) -> Self {
+        Self {
+            kind: thunk.kind.clone(),
+            cell: ThunkCell::forced(value),
+        }
+    }
+
     /// Returns the deferred work this thunk performs when forced.
     pub(crate) const fn kind(&self) -> &EvalThunkKind {
         &self.kind

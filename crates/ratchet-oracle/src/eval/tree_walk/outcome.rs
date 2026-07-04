@@ -11116,8 +11116,7 @@ impl EvalOutcome {
     /// allocate destination records, reserve semispace storage, mutate active
     /// evaluator frames or import caches, update JIT stack maps, rewrite shared
     /// lexical frame slots, blackholed thunk deferred-work/capture fields, or
-    /// forced thunk cached-result fields, write ABI forwarding headers, or
-    /// invoke Tier B.
+    /// write ABI forwarding headers, or invoke Tier B.
     ///
     /// # Errors
     ///
@@ -11245,8 +11244,7 @@ impl EvalOutcome {
     /// object headers, allocate synthetic destinations, reserve semispace
     /// storage, mutate active evaluator frames or import caches, update JIT
     /// stack maps, rewrite shared lexical frame slots, blackholed thunk
-    /// deferred-work/capture fields, or forced thunk cached-result fields, or
-    /// invoke Tier B.
+    /// deferred-work/capture fields, or invoke Tier B.
     ///
     /// # Errors
     ///
@@ -11330,14 +11328,14 @@ impl EvalOutcome {
     /// mutation. The applicator rewrites record-owned list elements, attrset
     /// bindings, primop arguments, lambda dynamic/global capture arrays,
     /// suspended thunk deferred-work fields, and suspended thunk dynamic/global
-    /// capture arrays.
+    /// capture arrays, and forced thunk cached-result fields.
     /// Direct old/permanent-to-young write barriers are staged against cloned
     /// outcome-owned remembered/card side tables before live side-table
     /// publication and heap mutation. Copied destinations still assume unaliased
     /// collector-owned scratch records because the side table cannot prove
     /// semispace ownership yet. Shared lexical frame slots, blackholed thunk
-    /// deferred-work/capture fields, forced thunk cached-result fields, ABI
-    /// headers, semispace storage, and Tier-B dispatch remain unsupported.
+    /// deferred-work/capture fields, ABI headers, semispace storage, and Tier-B
+    /// dispatch remain unsupported.
     ///
     /// # Errors
     ///
@@ -11349,7 +11347,8 @@ impl EvalOutcome {
     /// contains the expected from-space value, or if the field source is not a
     /// supported record-owned list element, attrset binding, primop argument,
     /// lambda dynamic/global capture array slot, suspended thunk deferred-work
-    /// field, or suspended thunk dynamic/global capture array slot.
+    /// field, suspended thunk dynamic/global capture array slot, or forced thunk
+    /// cached-result field.
     pub fn apply_gc_stress_boundary_minor_gc_heap_field_writebacks(
         &mut self,
     ) -> Result<EvalGcStressBoundaryMinorGcHeapFieldWritebackWritePlanReport, EvalHeapError> {
@@ -11375,9 +11374,8 @@ impl EvalOutcome {
     /// This is a read-only live-field bridge for GC-stress experiments. It still
     /// requires destination heap records to pre-exist, and it does not allocate
     /// destination records, reserve semispace storage, mutate shared lexical
-    /// frame slots, rewrite blackholed thunk deferred-work/capture fields or
-    /// forced thunk cached-result fields, write ABI forwarding headers, or
-    /// invoke Tier B.
+    /// frame slots, rewrite blackholed thunk deferred-work/capture fields, write
+    /// ABI forwarding headers, or invoke Tier B.
     ///
     /// # Errors
     ///
@@ -11417,9 +11415,8 @@ impl EvalOutcome {
     /// This is a narrow live-field bridge for GC-stress experiments. It still
     /// requires destination heap records to pre-exist, and it does not allocate
     /// destination records, reserve semispace storage, mutate shared lexical
-    /// frame slots, rewrite blackholed thunk deferred-work/capture fields or
-    /// forced thunk cached-result fields, write ABI forwarding headers, or
-    /// invoke Tier B.
+    /// frame slots, rewrite blackholed thunk deferred-work/capture fields, write
+    /// ABI forwarding headers, or invoke Tier B.
     ///
     /// # Errors
     ///
@@ -11461,9 +11458,8 @@ impl EvalOutcome {
     /// still requires destination heap records to pre-exist, and it does not
     /// allocate destination records, reserve semispace storage, mutate active
     /// evaluator frames or import caches, update JIT stack maps, rewrite shared
-    /// lexical frame slots, blackholed thunk deferred-work/capture fields, or
-    /// forced thunk cached-result fields, write ABI forwarding headers, or
-    /// invoke Tier B.
+    /// lexical frame slots, blackholed thunk deferred-work/capture fields, write
+    /// ABI forwarding headers, or invoke Tier B.
     ///
     /// # Errors
     ///

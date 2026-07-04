@@ -1606,24 +1606,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       merges copied and direct field edits into one staged object per target
       record, rewrites record-owned list elements, attrset bindings, primop
       arguments, lambda dynamic/global capture arrays, suspended thunk
-      apply/apply2/select deferred-work fields, and suspended thunk dynamic/global
-      capture arrays, publishes direct old/permanent-to-young remembered edges
-      and dirty cards through cloned outcome-owned side tables, and clears stale
-      hash caches on mutated records. Tests cover copied
+      apply/apply2/select deferred-work fields, suspended thunk dynamic/global
+      capture arrays, and forced thunk cached-result fields, publishes direct
+      old/permanent-to-young remembered edges and dirty cards through cloned
+      outcome-owned side tables, and clears stale hash caches on mutated
+      records. Tests cover copied
       list/attr/primop-argument/lambda-capture writes, copied suspended
-      select-thunk receiver writes, same-object copied-field staging, mixed
-      copied/direct same-record staging, malformed copied and cross-branch
-      request sets, direct old list/attr/primop-argument/lambda-capture writes,
-      direct suspended apply-thunk argument writes, forced cached-result and
-      blackholed deferred-work rejection without resetting thunk state, suspended
+      select-thunk receiver writes, copied forced cached-result writes,
+      same-object copied-field staging, mixed copied/direct same-record staging,
+      malformed copied and cross-branch request sets, direct old
+      list/attr/primop-argument/lambda-capture writes, direct suspended
+      apply-thunk argument writes, direct forced cached-result writes, blackholed
+      deferred-work rejection without resetting thunk state, suspended
       thunk capture rewrites, stale direct-field rejection without mutation,
       permanent-shared direct list writes, strict-path direct old-to-young
       rejection, barrier-aware direct old/permanent-to-young publication, attr
       symbol-slot stale metadata rejection, and outcome-level direct-write
       routing. Shared lexical frame slots, blackholed thunk deferred-work/capture
-      fields, forced thunk cached-result fields, synthetic destination
-      allocation, ABI object headers, semispace storage, and Tier-B dispatch
-      remain open, and copied destination records inherit the current unaliased
+      fields, synthetic destination allocation, ABI object headers, semispace
+      storage, and Tier-B dispatch remain open, and copied destination records
+      inherit the current unaliased
       collector-owned scratch record assumption because semispace ownership is
       not modeled yet. The historical copied-only
       `apply_gc_stress_boundary_minor_gc_copied_heap_field_writebacks` method now
@@ -1644,8 +1646,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       original destination. This still requires destination records to already
       exist as unaliased collector-owned scratch records, does not allocate
       synthetic destinations, and does not cover shared lexical frame slots,
-      blackholed thunk deferred-work/capture fields, forced thunk cached-result
-      fields, ABI object headers, semispace storage, or Tier-B dispatch.
+      blackholed thunk deferred-work/capture fields, ABI object headers,
+      semispace storage, or Tier-B dispatch.
 - [x] Current boundary live heap-field writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
       consumes the same installed live heap-field writeback metadata and
@@ -1663,8 +1665,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       This still requires destination records to already exist as
       unaliased collector-owned scratch records, does not allocate synthetic
       destinations, and does not cover shared lexical frame slots, blackholed
-      thunk deferred-work/capture fields, forced thunk cached-result fields, ABI
-      object headers, semispace storage, or Tier-B dispatch.
+      thunk deferred-work/capture fields, ABI object headers, semispace storage,
+      or Tier-B dispatch.
 - [x] Current boundary live reference writeback validation bridge:
       `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes the same installed live root and heap-field writeback metadata
@@ -1682,8 +1684,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       does not allocate synthetic destinations, and does not rewrite active
       evaluator frames, import caches, arbitrary value-stack roots, JIT stack
       maps, shared lexical frame slots, blackholed thunk deferred-work/capture
-      fields, forced thunk cached-result fields, ABI object headers, semispace
-      storage, or Tier-B dispatch.
+      fields, ABI object headers, semispace storage, or Tier-B dispatch.
 - [x] Current boundary existing-destination live commit validation bridge:
       `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_existing_destination_commit`
       composes the installed forwarding-header metadata check with the read-only
@@ -1704,8 +1705,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       does not allocate synthetic destinations, does not write ABI object
       headers, and does not cover active evaluator frames, import caches,
       arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
-      blackholed thunk deferred-work/capture fields, forced thunk cached-result
-      fields, semispace storage, or Tier-B dispatch.
+      blackholed thunk deferred-work/capture fields, semispace storage, or
+      Tier-B dispatch.
 - [x] Current boundary existing-destination live commit applicator:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_existing_destination_commit`
       composes installed forwarding-header metadata validation with the
@@ -1729,8 +1730,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       object headers, does not allocate synthetic destinations or own semispace
       storage, and does not cover active evaluator frames, import caches,
       arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
-      blackholed thunk deferred-work/capture fields, forced thunk cached-result
-      fields, or Tier-B dispatch.
+      blackholed thunk deferred-work/capture fields, or Tier-B dispatch.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
@@ -1751,8 +1751,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       records, does not allocate synthetic destinations, and does not rewrite
       active evaluator frames, import caches, arbitrary value-stack roots, JIT
       stack maps, shared lexical frame slots, blackholed thunk deferred-work/
-      capture fields, forced thunk cached-result fields, ABI object headers,
-      semispace storage, or Tier-B dispatch.
+      capture fields, ABI object headers, semispace storage, or Tier-B
+      dispatch.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
@@ -2832,9 +2832,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       root storage automatically at allocation safepoints beyond this explicit
       bridge, publish remembered-set/card-table state only through this
       existing-destination bridge, and do not cover shared lexical frame slots,
-      blackholed thunk deferred-work/capture fields, forced thunk cached-result
-      fields, real ABI object-header forwarding storage, semispace storage, or
-      Tier-B dispatch.
+      blackholed thunk deferred-work/capture fields, real ABI object-header
+      forwarding storage, semispace storage, or Tier-B dispatch.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and

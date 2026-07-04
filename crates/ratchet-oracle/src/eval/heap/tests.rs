@@ -7148,6 +7148,131 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_suspended_thunk_capt
     }));
 }
 
+fn assert_forced_apply_thunk_cached_result(
+    thunk: &EvalThunk,
+    function: Value,
+    argument: Value,
+    cached: Value,
+) {
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Forced));
+    assert!(
+        thunk
+            .cell()
+            .cached_value()
+            .expect("cached value reads")
+            .expect("forced cached result exists")
+            .raw_eq(cached)
+    );
+    let EvalThunkKind::Apply {
+        function_value,
+        argument_value,
+        ..
+    } = thunk.kind()
+    else {
+        panic!("forced parent thunk should preserve apply metadata");
+    };
+    assert!(function_value.raw_eq(function));
+    assert!(argument_value.raw_eq(argument));
+}
+
+#[test]
+fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_forced_thunk_cached_result() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let function = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(10),
+            IrId::new(11),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("function lambda allocates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(12)))
+        .expect("argument thunk allocates");
+    let forced = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("forced result thunk allocates");
+    let forced_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("forced destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(0, 1),
+            function,
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            argument,
+        ))
+        .expect("parent thunk allocates");
+    let parent_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(4)))
+        .expect("parent destination thunk allocates");
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    let claim = parent_thunk.cell().begin_force().expect("force begins");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new parent thunk should be claimable");
+    };
+    guard.finish(forced).expect("forced result publishes");
+
+    let parent_request = object_copy_request_for_values(
+        &heap,
+        parent,
+        parent_destination,
+        MinorGcSurvivorAction::CopyToNursery,
+    );
+    let forced_request = object_copy_request_for_values(
+        &heap,
+        forced,
+        forced_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        parent_request,
+        forced_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        gc_address(parent_destination),
+        0,
+        HeapEdgeSource::ThunkCachedResult,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(forced_destination),
+            generation: HeapGeneration::Old,
+        },
+        forced_request,
+        parent_request,
+    );
+
+    let report = heap
+        .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
+        .expect("copied forced cached-result write applies");
+
+    assert_eq!(report.fields(), 1);
+    let parent_destination_thunk = heap
+        .clone_thunk(parent_destination)
+        .expect("destination parent thunk clones");
+    assert_forced_apply_thunk_cached_result(
+        &parent_destination_thunk,
+        function,
+        argument,
+        forced_destination,
+    );
+    let parent_thunk = heap
+        .clone_thunk(parent)
+        .expect("source parent thunk clones");
+    assert_forced_apply_thunk_cached_result(&parent_thunk, function, argument, forced);
+}
+
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_field() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
@@ -7221,8 +7346,83 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_fiel
 }
 
 #[test]
-fn collector_poll_minor_gc_direct_heap_field_writes_reject_forced_thunk_cached_result() {
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_cached_result() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("argument thunk allocates");
+    let argument_destination = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("argument destination thunk allocates");
+    let parent = heap
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(0, 1),
+            Value::int(1),
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            argument,
+        ))
+        .expect("parent thunk allocates");
+    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
+    let parent_thunk = heap.clone_thunk(parent).expect("parent thunk clones");
+    let claim = parent_thunk.cell().begin_force().expect("force begins");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new parent thunk should be claimable");
+    };
+
+    let argument_request = object_copy_request_for_values(
+        &heap,
+        argument,
+        argument_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let write = AllocationCollectorPollDirectHeapFieldWrite::new(
+        HeapAllocationDomain::Worker,
+        gc_address(parent),
+        0,
+        HeapEdgeSource::ThunkCachedResult,
+        ResolvedValueGeneration::Heap {
+            address: gc_address(argument_destination),
+            generation: HeapGeneration::Old,
+        },
+        argument_request,
+    );
+
+    let err = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
+        .expect_err("blackholed cached-result field is not a current live slot");
+
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+            index: 0,
+            expected: HeapEdgeSource::ThunkCachedResult,
+            actual: Some(HeapEdgeSource::ThunkApplyArgument),
+        }
+    );
+    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Blackhole));
+    assert!(matches!(parent_thunk.cell().cached_value(), Ok(None)));
+    guard.abort().expect("claim aborts");
+    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_forced_thunk_cached_result() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let function = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(10),
+            IrId::new(11),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("function lambda allocates");
+    let argument = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(12)))
+        .expect("argument thunk allocates");
     let forced = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("forced result thunk allocates");
@@ -7230,7 +7430,15 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_forced_thunk_cached_r
         .alloc_thunk(EvalThunk::new(IrId::new(2)))
         .expect("forced destination thunk allocates");
     let parent = heap
-        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(0, 1),
+            function,
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            argument,
+        ))
         .expect("parent thunk allocates");
     set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
     set_heap_generation(&mut heap, parent, HeapGeneration::Old);
@@ -7268,28 +7476,13 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_forced_thunk_cached_r
         forced_request,
     );
 
-    let err = heap
+    let report = heap
         .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
-        .expect_err("forced cached-result rewrites remain unsupported");
+        .expect("forced cached-result rewrite applies");
 
-    assert_eq!(
-        err,
-        EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
-            writeback_object: gc_address(parent),
-            field_index: 0,
-            field_source: HeapEdgeSource::ThunkCachedResult,
-        }
-    );
+    assert_eq!(report.fields(), 1);
     let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
-    assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Forced));
-    assert!(
-        parent_thunk
-            .cell()
-            .cached_value()
-            .expect("cached value reads")
-            .expect("forced cached result exists")
-            .raw_eq(forced)
-    );
+    assert_forced_apply_thunk_cached_result(&parent_thunk, function, argument, forced_destination);
 }
 
 #[test]

@@ -195,6 +195,14 @@ impl ThunkCell {
         }
     }
 
+    /// Creates a forced thunk cell with an already relocated cached result.
+    pub(crate) fn forced(value: Value) -> Self {
+        Self {
+            state: AtomicU64::new(FORCED),
+            result: Cell::new(Some(value)),
+        }
+    }
+
     /// Returns the current thunk state using an acquire load.
     ///
     /// # Errors

@@ -75,7 +75,7 @@ const PRIMOP_HANDLE_BYTES: usize = std::mem::size_of::<u64>() * 4;
 const PRIMOP_HANDLE_ALIGN: usize = std::mem::align_of::<u64>();
 
 /// The suspended work stored in a tree-walk thunk heap record.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum EvalThunkKind {
     /// Evaluates a lowered IR body under captured lexical and dynamic scopes.
     Node {
