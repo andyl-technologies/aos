@@ -113,6 +113,10 @@
         needle = "an engine trusted retained-log\n  provider path can now lower prefix-safe safety/unreachability failures";
       }
       {
+        label = "phase5 CLI retained-log raw coverage and memory progress";
+        needle = "raw guest-address\n  coverage, physical-address/register memory samples";
+      }
+      {
         label = "phase5 CLI local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -503,6 +507,18 @@
         needle = "check_run(scenario.properties(), recorded.entries())";
       }
       {
+        label = "search assertion retained-log raw coverage allowlist";
+        needle = "point: CodePoint::GuestAddress { .. }";
+      }
+      {
+        label = "search assertion retained-log raw memory allowlist";
+        needle = "place: MemPlace::PhysicalAddress { .. } | MemPlace::Register { .. }";
+      }
+      {
+        label = "search assertion retained-log symbolic coverage unsupported";
+        needle = "Predicate::CoveragePoint { .. } => false";
+      }
+      {
         label = "search assertion retained-log unsupported quiescence";
         needle = "Predicate::Quiescent => false";
       }
@@ -551,6 +567,42 @@
       {
         label = "search assertion retained-log guest-marker regression";
         needle = "retained_guest_marker_oracle";
+      }
+      {
+        label = "search assertion retained-log raw coverage regression";
+        needle = "retained_raw_coverage_oracle";
+      }
+      {
+        label = "search assertion schedule-only raw coverage regression";
+        needle = "schedule_only_raw_coverage_oracle";
+      }
+      {
+        label = "search assertion retained-log symbolic coverage regression";
+        needle = "unsupported_symbol_coverage_oracle";
+      }
+      {
+        label = "search assertion retained-log physical memory regression";
+        needle = "retained_physical_memory_oracle";
+      }
+      {
+        label = "search assertion schedule-only physical memory regression";
+        needle = "schedule_only_physical_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log register memory regression";
+        needle = "retained_register_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log symbolic memory regression";
+        needle = "unsupported_symbol_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log virtual memory regression";
+        needle = "unsupported_virtual_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log observable helper";
+        needle = "retained_observable_log";
       }
       {
         label = "search assertion retained-log unsupported quiescence regression";

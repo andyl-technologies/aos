@@ -1154,7 +1154,8 @@ branch on the verdict without parsing output:
   prove the authored predicate semantics are prefix-safe. The engine now also
   exposes a trusted retained-log provider path that can lower prefix-safe
   safety/unreachability failures over event-log-backed predicates such as
-  time/timers, network/console/I/O/node/assertion-state observables, guest
+  time/timers, network/console/I/O/node/assertion-state observables, raw
+  guest-address coverage, physical-address/register memory samples, guest
   markers, and schedule fault-active facts when the caller supplies the exact
   `RecordedAssertionLog` for each reached configuration. The default CLI path
   intentionally excludes absence-based existential/liveness failures,
@@ -1175,8 +1176,8 @@ branch on the verdict without parsing output:
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage, backend wiring
   that supplies configuration-bound retained logs to the retained-log provider,
-  quiescence/memory/coverage predicate support for search lowering, and
-  non-prefix assertion classes.
+  quiescence support, host-resolution tables for symbolic coverage and
+  virtual/symbolic memory predicates, and non-prefix assertion classes.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
