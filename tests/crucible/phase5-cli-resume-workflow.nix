@@ -52,8 +52,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
-        label = "T-CLI-10 checkpoint runner blocker";
-        needle = "checkpoint-instantiation runner";
+        label = "T-CLI-10 handle-backed resume progress";
+        needle = "local-double resume to quiescence or virtual-time";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -92,16 +92,56 @@
         needle = "fn parse_blake3_content_hash";
       }
       {
-        label = "checkpoint runner blocker";
-        needle = "requires the checkpoint-instantiation runner tracked by T-CLI-10";
+        label = "resume handle scenario payload";
+        needle = "scenario-payload";
+      }
+      {
+        label = "resume handle schedule payload";
+        needle = "schedule-payload";
+      }
+      {
+        label = "resume evidence validator";
+        needle = "fn resume_handle_evidence";
+      }
+      {
+        label = "resume local double runner";
+        needle = "fn run_local_double_resume_workflow";
+      }
+      {
+        label = "resume evidence oracle gate";
+        needle = "savepoint handle oracle status";
+      }
+      {
+        label = "resume scaled wait budget";
+        needle = "fn resume_actor_boundary_yield_budget";
+      }
+      {
+        label = "resume lifecycle loop";
+        needle = "struct ResumeRecordingLifecycleLoop";
+      }
+      {
+        label = "bare checkpoint closure blocker";
+        needle = "DAG-store checkpoint closure loading remains tracked by T-CLI-10";
       }
       {
         label = "resume planning test";
         needle = "cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs";
       }
       {
-        label = "resume execution blocker test";
-        needle = "cli_resume_workflow_rejects_execution_until_checkpoint_runner_exists";
+        label = "resume execution test";
+        needle = "cli_resume_workflow_executes_local_double_handle";
+      }
+      {
+        label = "resume unverified evidence test";
+        needle = "cli_resume_workflow_rejects_unverified_handle_evidence";
+      }
+      {
+        label = "resume long virtual-time test";
+        needle = "cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound";
+      }
+      {
+        label = "resume bare hash blocker test";
+        needle = "cli_resume_workflow_rejects_bare_hash_until_closure_loader_exists";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

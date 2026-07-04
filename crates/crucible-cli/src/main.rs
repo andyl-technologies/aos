@@ -19,6 +19,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -32,17 +33,18 @@ use crucible_api::{
 };
 use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::{
-    CommandReply, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
-    SessionCommandKind, StepMode,
+    CommandReply, Engine, LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind,
+    QueryResult, SessionCommand, SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint, MemoryDagStore,
-        SimDuration, TemporalGraph, TemporalGraphStoreError,
+        Schedule, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
     },
 };
+use tokio::sync::mpsc;
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
-const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v1";
+const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
@@ -1012,8 +1014,10 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
         Commands::Resume(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: vec![
-                SessionCommandKind::Start,
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::StepDuration,
                 SessionCommandKind::Continue,
+                SessionCommandKind::Stop,
                 SessionCommandKind::Query,
             ],
             api_calls: vec![
@@ -1385,6 +1389,8 @@ struct SavepointOracleProof {
     configuration: crucible::ContentHash,
     fat_checkpoint: crucible::ContentHash,
     thin_checkpoint: crucible::ContentHash,
+    frontier: crucible::VirtualTime,
+    schedule: crucible::Schedule,
     store_objects: usize,
 }
 
@@ -1527,6 +1533,9 @@ struct SavepointHandle {
     checkpoint: crucible::ContentHash,
     scenario_id_hex: String,
     scenario_label: String,
+    scenario_payload: Vec<u8>,
+    schedule_payload: Vec<u8>,
+    frontier_ticks: u64,
     at: SaveAtArg,
     terminal_condition: RunTerminalCondition,
     materialization: String,
@@ -2442,6 +2451,9 @@ fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
     let mut label = None;
     let mut checkpoint = None;
     let mut scenario = None;
+    let mut scenario_payload = None;
+    let mut schedule_payload = None;
+    let mut frontier_ticks = None;
     let mut at = None;
     let mut terminal_condition = None;
     let mut materialization = None;
@@ -2478,6 +2490,21 @@ fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
                     tag,
                     (fields[1].clone(), fields[2].clone()),
                 )?;
+            }
+            "scenario-payload" => {
+                require_field_count(line_index, tag, &fields, 3)?;
+                let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
+                set_once(&mut scenario_payload, line_index, tag, payload)?;
+            }
+            "schedule-payload" => {
+                require_field_count(line_index, tag, &fields, 3)?;
+                let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
+                set_once(&mut schedule_payload, line_index, tag, payload)?;
+            }
+            "frontier" => {
+                require_field_count(line_index, tag, &fields, 2)?;
+                let parsed = parse_u64(line_index, tag, &fields[1])?;
+                set_once(&mut frontier_ticks, line_index, tag, parsed)?;
             }
             "at" => {
                 require_field_count(line_index, tag, &fields, 2)?;
@@ -2531,12 +2558,40 @@ fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
         checkpoint: checkpoint.ok_or_else(|| missing_line("checkpoint"))?,
         scenario_id_hex,
         scenario_label,
+        scenario_payload: scenario_payload.ok_or_else(|| missing_line("scenario-payload"))?,
+        schedule_payload: schedule_payload.ok_or_else(|| missing_line("schedule-payload"))?,
+        frontier_ticks: frontier_ticks.ok_or_else(|| missing_line("frontier"))?,
         at: at.ok_or_else(|| missing_line("at"))?,
         terminal_condition: terminal_condition.ok_or_else(|| missing_line("terminal-condition"))?,
         materialization: materialization.ok_or_else(|| missing_line("materialization"))?,
         oracle_status: oracle_status.ok_or_else(|| missing_line("oracle"))?,
         canonical_log_digest: canonical_log_digest.ok_or_else(|| missing_line("canonical-log"))?,
     })
+}
+
+fn parse_hex_payload_line(
+    line_index: usize,
+    tag: &str,
+    digest: &str,
+    payload_hex: &str,
+) -> Result<Vec<u8>, CliError> {
+    if !is_content_address(digest) {
+        return Err(artifact_line_error(
+            line_index,
+            tag,
+            &format!("payload digest is not a content address: `{digest}`"),
+        ));
+    }
+    let payload = parse_hex_bytes(line_index, tag, payload_hex)?;
+    let actual = content_address_bytes(&payload);
+    if actual != digest {
+        return Err(artifact_line_error(
+            line_index,
+            tag,
+            &format!("payload digest mismatch: expected `{digest}`, got `{actual}`"),
+        ));
+    }
+    Ok(payload)
 }
 
 fn parse_blake3_content_hash(
@@ -4511,6 +4566,23 @@ struct SaveWorkflowReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumeWorkflowReport {
+    run: RunWorkflowReport,
+    source_checkpoint: crucible::ContentHash,
+    resumed_configuration: crucible::ContentHash,
+    scenario_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumeHandleEvidence {
+    scenario_form: crucible::ScenarioDefForm,
+    scenario: crucible::ScenarioDef,
+    schedule: Schedule,
+    configuration: crucible::Configuration,
+    checkpoint: Checkpoint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifyWorkflowReport {
     witnesses: Vec<VerifyRunWitness>,
     divergence: Option<VerifyDivergenceReport>,
@@ -4666,6 +4738,74 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumeRecordingLifecycleLoop {
+    frontier: u64,
+}
+
+impl ResumeRecordingLifecycleLoop {
+    fn new(frontier: VirtualTime) -> Self {
+        Self {
+            frontier: frontier.ticks,
+        }
+    }
+}
+
+impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
+    fn drive_quantum(
+        &mut self,
+        request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        self.frontier = self.frontier.saturating_add(1);
+        let frontier = VirtualTime {
+            ticks: self.frontier,
+        };
+        let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+            at: frontier,
+            order: Vec::new(),
+        });
+        let configuration =
+            crucible::try_step(&request.configuration, decision.clone()).map_err(|error| {
+                crucible::SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "resume lifecycle double could not record virtual-time decision: {error}"
+                    ),
+                }
+            })?;
+        Ok(crucible::QuantumOutcome {
+            configuration,
+            frontier,
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: vec![decision],
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
+            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+        })
+    }
+
+    fn sample_fingerprint(
+        &mut self,
+        node: crucible::NodeId,
+    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        Ok(crucible::FingerprintSample {
+            node,
+            at: VirtualTime {
+                ticks: self.frontier,
+            },
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_canonical_material(
+                    "crucible.lifecycle.resume-fingerprint.v1",
+                    &format!("frontier={}\n", self.frontier),
+                ),
+            },
+        })
+    }
+}
+
 fn run_local_double_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -4737,6 +4877,358 @@ fn run_local_qemu_save_workflow(
     Err(backend_error(
         "save with local QEMU requires the real-QEMU savepoint export runner tracked by T-CLI-9; use --backend double for the current savepoint workflow",
     ))
+}
+
+fn run_local_double_resume_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
+        return Err(unsupported_resume_backend_error(resume_plan));
+    }
+    if resume_plan.terminal_condition == RunTerminalCondition::Property {
+        return Err(backend_error(
+            "resume --until property requires property-specific replay proof tracked by T-CLI-10",
+        ));
+    }
+    let evidence = resume_handle_evidence(resume_plan)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_resumed_savepoint_actor_async(
+        resume_plan,
+        evidence.clone(),
+    ))?;
+    finish_resume_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        report,
+    )
+}
+
+fn resume_handle_evidence(plan: &ResumeInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
+    let ResumeSavepointRef::Handle { handle, .. } = &plan.savepoint else {
+        return Err(backend_error(format!(
+            "resume from bare checkpoint {} requires a savepoint handle carrying scenario and schedule evidence; DAG-store checkpoint closure loading remains tracked by T-CLI-10",
+            format_content_hash_ref(plan.savepoint.checkpoint())
+        )));
+    };
+    if handle.materialization != "create-savepoint:reply" {
+        return Err(artifact_error(format!(
+            "savepoint handle materialization `{}` is not accepted for resume; expected `create-savepoint:reply`",
+            handle.materialization
+        )));
+    }
+    if handle.oracle_status != "fat==thin-passed" {
+        return Err(artifact_error(format!(
+            "savepoint handle oracle status `{}` is not accepted for resume; expected `fat==thin-passed`",
+            handle.oracle_status
+        )));
+    }
+    let scenario_form = crucible::ScenarioDefForm::from_compact_binary(&handle.scenario_payload)
+        .map_err(|error| {
+            artifact_error(format!("savepoint scenario payload is malformed: {error}"))
+        })?;
+    let scenario = scenario_form.scenario_def();
+    if scenario.id().to_hex() != handle.scenario_id_hex {
+        return Err(CliError::Identity(format!(
+            "savepoint scenario payload id {} did not match handle scenario {}",
+            scenario.id().to_hex(),
+            handle.scenario_id_hex
+        )));
+    }
+    let schedule = Schedule::from_compact_binary(&handle.schedule_payload).map_err(|error| {
+        artifact_error(format!("savepoint schedule payload is malformed: {error}"))
+    })?;
+    let configuration = crucible::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    if configuration.id() != handle.checkpoint {
+        return Err(CliError::Identity(format!(
+            "savepoint schedule reconstructs configuration {}, expected checkpoint {}",
+            format_content_hash_ref(configuration.id()),
+            format_content_hash_ref(handle.checkpoint)
+        )));
+    }
+    let checkpoint = checkpoint_for_resume_configuration(
+        &configuration,
+        VirtualTime {
+            ticks: handle.frontier_ticks,
+        },
+    )?;
+    Ok(ResumeHandleEvidence {
+        scenario_form,
+        scenario,
+        schedule,
+        configuration,
+        checkpoint,
+    })
+}
+
+fn checkpoint_for_resume_configuration(
+    configuration: &crucible::Configuration,
+    frontier: VirtualTime,
+) -> Result<Checkpoint, CliError> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))
+            .map_err(|error| {
+                CliError::Identity(format!("resume checkpoint schedule prefix failed: {error}"))
+            })?;
+        Some(crucible::Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        frontier,
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
+}
+
+async fn run_resumed_savepoint_actor_async(
+    plan: &ResumeInvocationPlan,
+    evidence: ResumeHandleEvidence,
+) -> Result<ResumeWorkflowReport, CliError> {
+    let mut graph = save_validation_graph(&evidence.scenario)?;
+    if !evidence.configuration.is_genesis() {
+        graph
+            .cache_snapshot(&evidence.configuration, evidence.checkpoint.clone())
+            .map_err(|error| {
+                CliError::Identity(format!("resume checkpoint cache admission failed: {error}"))
+            })?;
+    }
+    let genesis = crucible::Configuration::genesis(evidence.scenario.clone());
+    let mut parent = Engine::new(
+        genesis,
+        graph,
+        ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
+    );
+    let resumed = parent
+        .resume_session_from_checkpoint(
+            evidence.checkpoint.id,
+            ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
+        )
+        .map_err(|error| {
+            backend_error(format!("resume checkpoint instantiation failed: {error}"))
+        })?;
+    let source_checkpoint = resumed.checkpoint;
+    let resumed_configuration = resumed.configuration.id();
+    let live = resumed.session_actor.live_snapshot();
+    let sender = resumed.session_sender.clone();
+    let actor_task = tokio::spawn(async move { resumed.session_actor.run().await });
+    let mut acknowledged_commands = Vec::new();
+    let mut state_updates = vec![format!("{:?}", live.read().state_kind).to_ascii_lowercase()];
+    let mut watch_statuses = Vec::new();
+
+    match plan.terminal_condition {
+        RunTerminalCondition::Quiescence => {
+            send_resumed_actor_command(
+                &sender,
+                SessionCommand::Step {
+                    mode: StepMode::Quantum,
+                },
+                &mut acknowledged_commands,
+            )
+            .await?;
+            let boundary =
+                wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                    view.quanta_stepped > 0
+                })
+                .await?;
+            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+            if plan.watch_streams_live_status {
+                watch_statuses.push(resume_watch_status(boundary));
+            }
+        }
+        RunTerminalCondition::VirtualTime => {
+            let budget = plan
+                .max_virtual_time_ticks
+                .ok_or_else(|| usage_error("--until virtual-time requires --max-virtual-time"))?;
+            let initial = live.read();
+            if initial.virtual_time.ticks < budget {
+                let delta = budget.saturating_sub(initial.virtual_time.ticks);
+                send_resumed_actor_command(
+                    &sender,
+                    SessionCommand::Step {
+                        mode: StepMode::Duration(SimDuration { nanos: delta }),
+                    },
+                    &mut acknowledged_commands,
+                )
+                .await?;
+            }
+            let boundary = wait_resumed_actor_boundary(
+                &live,
+                resume_actor_boundary_yield_budget(initial.virtual_time.ticks, budget),
+                |view| {
+                    view.virtual_time.ticks >= budget
+                        && matches!(
+                            view.state_kind,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                },
+            )
+            .await?;
+            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+            if plan.watch_streams_live_status {
+                watch_statuses.push(resume_watch_status(boundary));
+            }
+        }
+        RunTerminalCondition::Stopped => {}
+        RunTerminalCondition::Property => {
+            return Err(backend_error(
+                "resume --until property requires property-specific replay proof tracked by T-CLI-10",
+            ));
+        }
+    }
+
+    send_resumed_actor_command(&sender, SessionCommand::Stop, &mut acknowledged_commands).await?;
+    let actor_report = actor_task
+        .await
+        .map_err(|error| backend_error(format!("resume actor task failed to join: {error}")))?
+        .map_err(|error| backend_error(format!("resume actor failed: {error}")))?;
+    let final_view = live.read();
+    state_updates.push(format!("{:?}", final_view.state_kind).to_ascii_lowercase());
+    let final_state = match plan.terminal_condition {
+        RunTerminalCondition::Quiescence => String::from("quiescent"),
+        RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+        RunTerminalCondition::Stopped => String::from("stopped"),
+        RunTerminalCondition::Property => String::from("property"),
+    };
+    if plan.watch_streams_live_status {
+        watch_statuses.push(resume_watch_status(final_view));
+    }
+
+    Ok(ResumeWorkflowReport {
+        run: RunWorkflowReport {
+            status: BackendCommandStatus::Passed,
+            created_state: String::from("paused"),
+            final_state,
+            outcome: Some(OutcomeKind::Passed),
+            terminal_savepoint: actor_report
+                .final_snapshot
+                .terminal_savepoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.id),
+            final_frontier_ticks: actor_report.final_snapshot.frontier.ticks,
+            final_quanta: actor_report.quanta,
+            budget_timed_out: false,
+            state_updates,
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands,
+            watch_statuses,
+        },
+        source_checkpoint,
+        resumed_configuration,
+        scenario_label: plan.savepoint.label(),
+    })
+}
+
+async fn send_resumed_actor_command(
+    sender: &mpsc::Sender<SessionCommand>,
+    command: SessionCommand,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError> {
+    let command_kind = SessionCommandKind::from(&command);
+    sender
+        .send(command)
+        .await
+        .map_err(|error| backend_error(format!("resume actor command channel closed: {error}")))?;
+    acknowledged_commands.push(command_kind);
+    Ok(())
+}
+
+async fn wait_resumed_actor_boundary(
+    live: &Arc<LiveSnapshot>,
+    max_actor_yields: u64,
+    predicate: impl Fn(LiveSnapshotView) -> bool,
+) -> Result<LiveSnapshotView, CliError> {
+    for _ in 0..max_actor_yields {
+        let view = live.read();
+        if predicate(view) {
+            return Ok(view);
+        }
+        if view.state_kind == LiveStateKind::Stopped {
+            return Ok(view);
+        }
+        tokio::task::yield_now().await;
+    }
+    Err(backend_error(
+        "resume actor did not reach the requested deterministic boundary",
+    ))
+}
+
+fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
+    RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(target_ticks.saturating_sub(start_ticks))
+}
+
+fn resume_watch_status(view: LiveSnapshotView) -> String {
+    format!(
+        "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
+        format!("{:?}", view.state_kind).to_ascii_lowercase(),
+        view.virtual_time.ticks,
+        view.quanta_stepped,
+        terminal_outcome_label(view.outcome),
+        view.terminal_savepoint
+            .map(format_content_hash_ref)
+            .unwrap_or_else(|| String::from("none"))
+    )
+}
+
+fn finish_resume_workflow_outcome(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+    report: ResumeWorkflowReport,
+) -> Result<BackendCommandOutcome, CliError> {
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    outcome.status = report.run.status;
+    outcome.exit_code = report.run.status.exit_code();
+    outcome.terminal_savepoint = report.run.terminal_savepoint;
+    outcome.stdout.push(format!(
+        "resume-session\tcheckpoint={}\tconfiguration={}\tscenario={}\tfinal={}\toutcome={}\tfrontier_ticks={}\tquanta={}\tacks={}",
+        format_content_hash_ref(report.source_checkpoint),
+        format_content_hash_ref(report.resumed_configuration),
+        report.scenario_label,
+        report.run.final_state,
+        terminal_outcome_label(report.run.outcome),
+        report.run.final_frontier_ticks,
+        report.run.final_quanta,
+        report.run.acknowledged_commands.len()
+    ));
+    for status in &report.run.watch_statuses {
+        outcome.stdout.push(format!("run-watch\t{status}"));
+    }
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("session"),
+        kind: String::from("resume_checkpoint"),
+        summary: format!(
+            "checkpoint={} configuration={} until={}",
+            format_content_hash_ref(report.source_checkpoint),
+            format_content_hash_ref(report.resumed_configuration),
+            resume_plan.terminal_condition.label()
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(outcome)
 }
 
 fn append_local_qemu_verify_identity(
@@ -6346,6 +6838,8 @@ fn validate_savepoint_checkpoint(
         configuration: replay.configuration,
         fat_checkpoint: replay.fat_checkpoint,
         thin_checkpoint: replay.thin_checkpoint,
+        frontier: checkpoint.virtual_time,
+        schedule: configuration.schedule.clone(),
         store_objects,
     })
 }
@@ -7359,6 +7853,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
         if let Some(resume_plan) = &resume_plan {
+            if backend_plan.target == BackendExecutionTarget::Local
+                && matches!(
+                    backend_plan.resolved_backend,
+                    Some(ResolvedLocalBackend::Double)
+                )
+            {
+                let outcome = run_local_double_resume_workflow(
+                    &thin_plan,
+                    &backend_plan,
+                    ergonomics_plan.as_ref(),
+                    resume_plan,
+                )?;
+                if emit_human && backend_plan.should_announce(cli.quiet) {
+                    println!("{}", backend_plan.announcement());
+                }
+                emit_backend_command_output(cli, &outcome)?;
+                if outcome.status.is_non_passing() {
+                    return Err(CliError::Outcome(outcome.status));
+                }
+                return Ok(());
+            }
             return Err(unsupported_resume_backend_error(resume_plan));
         }
         if let Some(fork_plan) = &fork_plan {
@@ -7755,8 +8270,12 @@ fn export_savepoint_handle(
     let savepoint = outcome.terminal_savepoint.ok_or_else(|| {
         backend_error("save completed without a validated create-savepoint reply")
     })?;
+    let oracle = outcome
+        .savepoint_oracle
+        .as_ref()
+        .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
     let checkpoint = format_content_hash_ref(savepoint);
-    let handle = savepoint_handle_bytes(plan, &checkpoint, outcome);
+    let handle = savepoint_handle_bytes(plan, &checkpoint, outcome, oracle);
     let handle_digest = content_address_bytes(&handle);
     let path = plan.output.resolve(&plan.label, &handle_digest);
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
@@ -7790,8 +8309,14 @@ fn savepoint_handle_bytes(
     plan: &SaveInvocationPlan,
     checkpoint: &str,
     outcome: &BackendCommandOutcome,
+    oracle: &SavepointOracleProof,
 ) -> Vec<u8> {
     let mut text = String::new();
+    let scenario_payload = plan.run_plan.scenario.scenario_form().to_compact_binary();
+    let scenario_payload_digest = content_address_bytes(&scenario_payload);
+    let schedule_payload = oracle.schedule.to_compact_binary();
+    let frontier_ticks = oracle.frontier.ticks;
+    let schedule_payload_digest = content_address_bytes(&schedule_payload);
     artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
@@ -7803,6 +8328,23 @@ fn savepoint_handle_bytes(
             &plan.run_plan.scenario.label(),
         ],
     );
+    artifact_line(
+        &mut text,
+        &[
+            "scenario-payload",
+            &scenario_payload_digest,
+            &hex_bytes(&scenario_payload),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "schedule-payload",
+            &schedule_payload_digest,
+            &hex_bytes(&schedule_payload),
+        ],
+    );
+    artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
     artifact_line(&mut text, &["at", plan.at.label()]);
     artifact_line(
         &mut text,
@@ -7812,11 +8354,7 @@ fn savepoint_handle_bytes(
         ],
     );
     artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
-    let oracle_status = outcome
-        .savepoint_oracle
-        .as_ref()
-        .map(SavepointOracleProof::status_label)
-        .unwrap_or("pending-fat-thin-replay-validation");
+    let oracle_status = oracle.status_label();
     artifact_line(&mut text, &["oracle", oracle_status]);
     artifact_line(&mut text, &["canonical-log", &outcome.canonical_log_digest]);
     text.into_bytes()
@@ -7824,7 +8362,7 @@ fn savepoint_handle_bytes(
 
 fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
     backend_error(format!(
-        "resume from checkpoint {} ({}) requires the checkpoint-instantiation runner tracked by T-CLI-10",
+        "resume from checkpoint {} ({}) requires remaining resume runner coverage tracked by T-CLI-10",
         format_content_hash_ref(plan.savepoint.checkpoint()),
         plan.savepoint.label()
     ))
@@ -10437,11 +10975,16 @@ mod tests {
     fn write_savepoint_handle_fixture(
         dir: &Path,
         label: &str,
+        form: &crucible::ScenarioDefForm,
+        schedule: &Schedule,
         checkpoint: crucible::ContentHash,
-        scenario: crucible::ContentHash,
+        frontier_ticks: u64,
         canonical_log: &str,
     ) -> Result<PathBuf, Box<dyn Error>> {
         fs::create_dir_all(dir)?;
+        let scenario = form.scenario_def();
+        let scenario_payload = form.to_compact_binary();
+        let schedule_payload = schedule.to_compact_binary();
         let mut text = String::new();
         artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
         artifact_line(&mut text, &["label", label]);
@@ -10451,12 +10994,29 @@ mod tests {
         );
         artifact_line(
             &mut text,
-            &["scenario", &scenario.to_hex(), "resume-scenario.toml"],
+            &["scenario", &scenario.id().to_hex(), "resume-scenario.toml"],
         );
+        artifact_line(
+            &mut text,
+            &[
+                "scenario-payload",
+                &content_address_bytes(&scenario_payload),
+                &hex_bytes(&scenario_payload),
+            ],
+        );
+        artifact_line(
+            &mut text,
+            &[
+                "schedule-payload",
+                &content_address_bytes(&schedule_payload),
+                &hex_bytes(&schedule_payload),
+            ],
+        );
+        artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
         artifact_line(&mut text, &["at", "quiescence"]);
         artifact_line(&mut text, &["terminal-condition", "quiescence"]);
         artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
-        artifact_line(&mut text, &["oracle", "pending-fat-thin-replay-validation"]);
+        artifact_line(&mut text, &["oracle", "fat==thin-passed"]);
         artifact_line(&mut text, &["canonical-log", canonical_log]);
         let path = dir.join("resume-source.crucible-savepoint");
         fs::write(&path, text)?;
@@ -11787,7 +12347,7 @@ mod tests {
                     && name.ends_with(".crucible-savepoint"))
         );
         let handle = fs::read_to_string(handle_path)?;
-        assert!(handle.contains("schema\tcrucible.savepoint-handle.v1\n"));
+        assert!(handle.contains(&format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}\n")));
         assert!(handle.contains("label\trelease candidate\n"));
         assert!(handle.contains("checkpoint\tblake3:"));
         assert!(handle.contains("at\tquiescence\n"));
@@ -11950,14 +12510,28 @@ mod tests {
     fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
-        let checkpoint = crucible::ContentHash::from_bytes(b"resume-checkpoint");
-        let scenario = crucible::ContentHash::from_bytes(b"resume-scenario");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
         let canonical_log = content_address_bytes(b"resume-log");
         let handle_path = write_savepoint_handle_fixture(
             temp.path(),
             "resume-source",
+            &form,
+            &schedule,
             checkpoint,
-            scenario,
+            1,
             &canonical_log,
         )?;
         let cli = Cli::parse_from([
@@ -11986,12 +12560,15 @@ mod tests {
             panic!("expected decoded handle");
         };
         assert_eq!(handle.label, "resume-source");
-        assert_eq!(handle.scenario_id_hex, scenario.to_hex());
+        assert_eq!(handle.scenario_id_hex, scenario.id().to_hex());
         assert_eq!(handle.scenario_label, "resume-scenario.toml");
+        assert_eq!(handle.scenario_payload, form.to_compact_binary());
+        assert_eq!(handle.schedule_payload, schedule.to_compact_binary());
+        assert_eq!(handle.frontier_ticks, 1);
         assert_eq!(handle.at, SaveAtArg::Quiescence);
         assert_eq!(handle.terminal_condition, RunTerminalCondition::Quiescence);
         assert_eq!(handle.materialization, "create-savepoint:reply");
-        assert_eq!(handle.oracle_status, "pending-fat-thin-replay-validation");
+        assert_eq!(handle.oracle_status, "fat==thin-passed");
         assert_eq!(handle.canonical_log_digest, canonical_log);
 
         let reference = format_content_hash_ref(checkpoint);
@@ -12036,7 +12613,7 @@ mod tests {
         assert_eq!(error.exit_code(), 64);
 
         let malformed = temp.path().join("malformed.crucible-savepoint");
-        fs::write(&malformed, "schema\tcrucible.savepoint-handle.v1\n")?;
+        fs::write(&malformed, format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}\n"))?;
         let malformed_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("resume"),
@@ -12057,7 +12634,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_resume_workflow_rejects_execution_until_checkpoint_runner_exists()
+    fn cli_resume_workflow_rejects_bare_hash_until_closure_loader_exists()
     -> Result<(), Box<dyn Error>> {
         let checkpoint = crucible::ContentHash::from_bytes(b"resume-execution");
         let cli = Cli::parse_from([
@@ -12069,17 +12646,212 @@ mod tests {
             format_content_hash_ref(checkpoint),
         ]);
         let error = match dispatch(&cli) {
-            Ok(_) => panic!("resume must not silently pass before checkpoint instantiation exists"),
+            Ok(_) => panic!("resume from a bare hash must not silently pass without closure data"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("savepoint handle"));
         assert!(error.to_string().contains("T-CLI-10"));
         assert!(
             error
                 .to_string()
                 .contains(&format_content_hash_ref(checkpoint))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "resume-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"resume-log"),
+        )?;
+        let handle_text = fs::read_to_string(&handle_path)?;
+        let bad_oracle = temp.path().join("bad-oracle.crucible-savepoint");
+        fs::write(
+            &bad_oracle,
+            handle_text.replace("oracle\tfat==thin-passed\n", "oracle\tfailed\n"),
+        )?;
+        let bad_materialization = temp.path().join("bad-materialization.crucible-savepoint");
+        fs::write(
+            &bad_materialization,
+            handle_text.replace(
+                "materialization\tcreate-savepoint\treply\n",
+                "materialization\tmanual\tfixture\n",
+            ),
+        )?;
+
+        for (path, needle) in [
+            (bad_oracle, "oracle status"),
+            (bad_materialization, "materialization"),
+        ] {
+            let cli = Cli::parse_from([
+                String::from("crucible"),
+                String::from("--quiet"),
+                String::from("--backend"),
+                String::from("double"),
+                String::from("resume"),
+                path.display().to_string(),
+            ]);
+            let error = match dispatch(&cli) {
+                Ok(_) => panic!("resume must reject unverified savepoint evidence"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, CliError::Artifact(_)));
+            assert_eq!(error.exit_code(), 5);
+            assert!(error.to_string().contains(needle));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "resume-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"resume-log"),
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("resume"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+        ]);
+        let Commands::Resume(args) = &cli.command else {
+            panic!("expected resume command");
+        };
+        let resume_plan = plan_resume_invocation(args)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
+        let outcome = run_local_double_resume_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &resume_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+        }));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_checkpoint")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "resume-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"resume-log"),
+        )?;
+        let target_ticks = RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(2);
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("resume"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            format!("{target_ticks}ticks"),
+        ]);
+        let Commands::Resume(args) = &cli.command else {
+            panic!("expected resume command");
+        };
+        let resume_plan = plan_resume_invocation(args)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
+        let outcome = run_local_double_resume_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &resume_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains(&format!("frontier_ticks={target_ticks}"))
+        }));
 
         Ok(())
     }
@@ -12112,14 +12884,28 @@ mod tests {
     fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
     -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
-        let checkpoint = crucible::ContentHash::from_bytes(b"fork-checkpoint");
-        let scenario = crucible::ContentHash::from_bytes(b"fork-scenario");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
         let canonical_log = content_address_bytes(b"fork-log");
         let handle_path = write_savepoint_handle_fixture(
             temp.path(),
             "fork-source",
+            &form,
+            &schedule,
             checkpoint,
-            scenario,
+            1,
             &canonical_log,
         )?;
         let cli = Cli::parse_from([
@@ -12250,7 +13036,7 @@ mod tests {
         assert!(error.to_string().contains("--seed and --override"));
 
         let malformed = temp.path().join("malformed-fork.crucible-savepoint");
-        fs::write(&malformed, "schema\tcrucible.savepoint-handle.v1\n")?;
+        fs::write(&malformed, format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}\n"))?;
         let malformed_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("fork"),
