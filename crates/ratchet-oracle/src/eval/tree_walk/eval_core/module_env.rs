@@ -565,13 +565,9 @@ impl TreeWalk {
                     span,
                 ));
             }
-            let selected = {
-                let attrs = self.heap.get_attrs(scope).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
-                attrs.get(symbol)
-            };
-            if let Some(value) = selected {
+            if let AttrSelectOutcome::Hit { value, .. } =
+                self.select_slow_flat_attr(id, span, scope, symbol)?
+            {
                 return Ok(Some(value));
             }
         }

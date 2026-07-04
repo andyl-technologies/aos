@@ -8055,7 +8055,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
       array. Tree-walk `Select`/`HasAttr` and `WithVar` scope probes now route
-      active flat attrsets through this dispatcher; `ShapedSelectCache` and
+      active flat attrsets through this dispatcher; scoped-global fallback
+      probes now use it for scoped-import overlays too. `ShapedSelectCache` and
       `HamtSelectCache` also use it for shaped/HAMT slow resolution. Tree-walk
       PIC integration, HAMT/shaped active evaluator storage, native runtime attr
       representation, and `.drv` effects remain open.

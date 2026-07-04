@@ -814,8 +814,10 @@ harness, never cut for scope.
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
       select defaults where present under the checked semantics in
       [25](25-intermediate-representation.md) §4, while `WithVar` probes
-      active scopes in lowered with-chain order. These active flat lookups use
-      the representation-dispatching `select_slow` precursor. This claims no
+      active scopes in lowered with-chain order and scoped-global fallback
+      probes walk scoped-import overlays innermost-first. These active flat
+      lookups use the representation-dispatching `select_slow` precursor. This
+      claims no
       `InlineCache`, shape guard,
       constant-offset load, `aos_select_ic`, `select_slow` runtime helper, HAMT
       dispatch, PIC widening, or deopt/uncommon-trap edge.
@@ -827,11 +829,12 @@ harness, never cut for scope.
       dispatches slow selection over `FlatAttrs`, `HamtAttrs`, and `ShapedAttrs`.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
       shape slot then load the value array. Tree-walk `Select`/`HasAttr` and
-      `WithVar` scope probes now route active flat attrsets through this
-      dispatcher; `ShapedSelectCache` and `HamtSelectCache` also use this
-      value-level dispatcher for shaped/HAMT slow resolution. Tree-walk PIC
-      integration, HAMT/shaped active evaluator storage, native runtime attr
-      representation, and `.drv` effects remain open.
+      `WithVar` scope probes plus scoped-global fallback probes now route active
+      flat attrsets through this dispatcher; `ShapedSelectCache` and
+      `HamtSelectCache` also use this value-level dispatcher for shaped/HAMT
+      slow resolution. Tree-walk PIC integration, HAMT/shaped active evaluator
+      storage, native runtime attr representation, and `.drv` effects remain
+      open.
 
 ### The update operator `//`
 
