@@ -55,6 +55,10 @@
         label = "T-CLI-10 handle-backed resume progress";
         needle = "local-double resume to quiescence, virtual-time, interactive command driving";
       }
+      {
+        label = "T-CLI-10 terminal oracle progress";
+        needle = "replay-oracle-validating";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -138,6 +142,34 @@
       {
         label = "resume property breakpoint validation";
         needle = "fn validate_resume_property_firing";
+      }
+      {
+        label = "resume terminal oracle validation";
+        needle = "fn validate_resume_terminal_savepoint";
+      }
+      {
+        label = "resume terminal source ancestry validation";
+        needle = "fn validate_resume_terminal_source_ancestor";
+      }
+      {
+        label = "resume replay anchor validation";
+        needle = "fn validate_resume_replay_anchor";
+      }
+      {
+        label = "resume rejects tampered handle frontier";
+        needle = "cli_resume_workflow_rejects_tampered_handle_frontier";
+      }
+      {
+        label = "resume rejects non-descendant terminal snapshot";
+        needle = "cli_resume_terminal_oracle_rejects_non_descendant_snapshot";
+      }
+      {
+        label = "resume oracle output";
+        needle = "resume-oracle";
+      }
+      {
+        label = "resume oracle canonical log";
+        needle = "resume_oracle_validation";
       }
       {
         label = "resume property final state";
