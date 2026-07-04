@@ -9,9 +9,10 @@ use crucible::{
     AssertionDef, AssertionId, ChoiceTag, Configuration, ContentHash, ControlFaultAction,
     ControlFaultDecision, Decision, EngineError, Fault, FaultDecision, FaultId,
     FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath, GenesisCheckpoint, Icount,
-    MaterializationPolicy, MaterializationTrigger, NodeFault, NodeId, NodeTemplate,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDefForm, Schedule, SchedulingPoint, SearchBudget, SearchFailureOracle,
+    MarkerId, MaterializationPolicy, MaterializationTrigger, NodeFault, NodeId, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
+    RecordedAssertionLog, RngDecision, RngStreamId, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulingPoint, SearchBudget, SearchFailureOracle,
     SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchScheduleNamedPredicateKey,
     SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph,
     TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
@@ -376,6 +377,73 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(timed_safety_with_named_truths.is_empty());
 
+    let marker = MarkerId::from_name("forbidden-search-marker");
+    let retained_log_scenario = assertion_lowering_scenario_with_world(
+        Property::Always {
+            predicate: Predicate::not(Predicate::guest_marker(marker.clone())),
+        },
+        single_node_world_with_white_box(
+            "retained-log-assertion-lowering",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let retained_log_root = Configuration::genesis(retained_log_scenario.scenario_def());
+    let retained_log_run = empty_search_run_for_root(&retained_log_root);
+    let schedule_only_guest_marker_oracle = SearchFailureOracle::from_search_assertion_violations(
+        &retained_log_scenario,
+        &retained_log_root,
+        &retained_log_run,
+    )?;
+
+    assert!(schedule_only_guest_marker_oracle.is_empty());
+
+    let missing_retained_log_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &retained_log_scenario,
+            &retained_log_root,
+            &retained_log_run,
+            |_configuration| None,
+        )?;
+
+    assert!(missing_retained_log_oracle.is_empty());
+
+    let retained_log = retained_guest_marker_log(marker)?;
+    let retained_guest_marker_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &retained_log_scenario,
+            &retained_log_root,
+            &retained_log_run,
+            |configuration| {
+                (configuration.id() == retained_log_root.id()).then(|| retained_log.clone())
+            },
+        )?;
+
+    assert!(
+        retained_guest_marker_oracle
+            .failure_for(retained_log_root.id())
+            .is_some()
+    );
+
+    let unsupported_quiescence_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::Quiescent,
+    })?;
+    let unsupported_quiescence_root =
+        Configuration::genesis(unsupported_quiescence_scenario.scenario_def());
+    let unsupported_quiescence_run = empty_search_run_for_root(&unsupported_quiescence_root);
+    let unsupported_quiescence_log = retained_boundary_log(time(0))?;
+    let unsupported_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &unsupported_quiescence_scenario,
+            &unsupported_quiescence_root,
+            &unsupported_quiescence_run,
+            |configuration| {
+                (configuration.id() == unsupported_quiescence_root.id())
+                    .then(|| unsupported_quiescence_log.clone())
+            },
+        )?;
+
+    assert!(unsupported_quiescence_oracle.is_empty());
+
     Ok(())
 }
 
@@ -549,6 +617,13 @@ fn bake_with_search_frontier_choices(
 }
 
 fn single_node_world(label: &str) -> Result<World, EngineError> {
+    single_node_world_with_white_box(label, WhiteBoxPolicy::Disabled)
+}
+
+fn single_node_world_with_white_box(
+    label: &str,
+    white_box: WhiteBoxPolicy,
+) -> Result<World, EngineError> {
     World::from_nodes(vec![WorldNode {
         id: node_id("search-node"),
         arch: NodeTemplate::DEFAULT_ARCH,
@@ -557,7 +632,7 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 100 },
         },
-        white_box: WhiteBoxPolicy::Disabled,
+        white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
@@ -599,7 +674,13 @@ fn override_decision(point: impl Into<String>, choice: impl Into<String>) -> Dec
 }
 
 fn assertion_lowering_scenario(property: Property) -> Result<ScenarioDefForm, EngineError> {
-    let world = single_node_world("assertion-lowering")?;
+    assertion_lowering_scenario_with_world(property, single_node_world("assertion-lowering")?)
+}
+
+fn assertion_lowering_scenario_with_world(
+    property: Property,
+    world: World,
+) -> Result<ScenarioDefForm, EngineError> {
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![AssertionDef {
@@ -609,6 +690,38 @@ fn assertion_lowering_scenario(property: Property) -> Result<ScenarioDefForm, En
         }],
     )?;
     ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::default())
+}
+
+fn retained_guest_marker_log(marker: MarkerId) -> Result<RecordedAssertionLog, EngineError> {
+    let segment = vec![
+        crucible::test_support::condition_observation_entry_for_test(
+            0,
+            &ObservableEvent::guest_marker(icount(7), node_id("search-node"), marker),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            time(9),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
+        EngineError::ScenarioSerialization {
+            reason: format!("search retained assertion log failed: {source}"),
+        }
+    })
+}
+
+fn retained_boundary_log(at: VirtualTime) -> Result<RecordedAssertionLog, EngineError> {
+    let segment = vec![crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        at,
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )];
+    RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
+        EngineError::ScenarioSerialization {
+            reason: format!("search retained boundary assertion log failed: {source}"),
+        }
+    })
 }
 
 fn empty_search_run_for_root(root: &Configuration) -> TemporalGraphSearchRun {
@@ -648,4 +761,8 @@ fn node_id(name: impl Into<String>) -> NodeId {
 
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
+}
+
+fn icount(retired: u64) -> Icount {
+    Icount { retired }
 }

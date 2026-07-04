@@ -109,6 +109,10 @@
         needle = "`--schedule-named-truths`\n  loading of explicit data-only oracle inputs";
       }
       {
+        label = "phase5 CLI retained-log provider progress";
+        needle = "an engine trusted retained-log\n  provider path can now lower prefix-safe safety/unreachability failures";
+      }
+      {
         label = "phase5 CLI local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -483,8 +487,24 @@
         needle = "pub fn from_search_assertion_violations_with_named_predicates";
       }
       {
+        label = "search assertion retained-log provider helper";
+        needle = "pub fn from_search_assertion_violations_with_retained_logs";
+      }
+      {
         label = "search assertion named truth-table scope";
         needle = "SearchAssertionPredicateScope::ScheduleAndNamedTruths";
+      }
+      {
+        label = "search assertion retained-log scope";
+        needle = "SearchAssertionPredicateScope::RetainedLog";
+      }
+      {
+        label = "search assertion retained-log black-box checker";
+        needle = "check_run(scenario.properties(), recorded.entries())";
+      }
+      {
+        label = "search assertion retained-log unsupported quiescence";
+        needle = "Predicate::Quiescent => false";
       }
       {
         label = "search assertion named truth-table type";
@@ -523,6 +543,18 @@
       {
         label = "search assertion named truth-table regression";
         needle = "from_search_assertion_violations_with_named_predicates";
+      }
+      {
+        label = "search assertion retained-log regression";
+        needle = "from_search_assertion_violations_with_retained_logs";
+      }
+      {
+        label = "search assertion retained-log guest-marker regression";
+        needle = "retained_guest_marker_oracle";
+      }
+      {
+        label = "search assertion retained-log unsupported quiescence regression";
+        needle = "unsupported_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
