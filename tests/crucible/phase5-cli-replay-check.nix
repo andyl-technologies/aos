@@ -55,6 +55,18 @@
         label = "replay bisect progress";
         needle = "artifact-to-artifact `--bisect <other-artifact>`";
       }
+      {
+        label = "content-addressed replay component resolution progress";
+        needle = "resolves missing content-addressed component payloads";
+      }
+      {
+        label = "replay identity before store progress";
+        needle = "pinned identity path before store access";
+      }
+      {
+        label = "replay inline store validation progress";
+        needle = "validates declared DAG-store references against inline payloads";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -74,6 +86,14 @@
       {
         label = "replay canonical log reconstruction";
         needle = "let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);";
+      }
+      {
+        label = "replay component hydration";
+        needle = "fn hydrate_replay_artifact_components";
+      }
+      {
+        label = "replay component store URI resolution";
+        needle = "parse_blake3_content_hash(\"component store URI\"";
       }
       {
         label = "replay bisect implementation";
@@ -106,6 +126,18 @@
       {
         label = "byte-identical replay check test";
         needle = "cli_replay_check_accepts_byte_identical_canonical_log";
+      }
+      {
+        label = "content-addressed component replay test";
+        needle = "cli_replay_resolves_content_addressed_component_payloads";
+      }
+      {
+        label = "externalized identity priority test";
+        needle = "cli_replay_externalized_identity_mismatch_keeps_identity_exit";
+      }
+      {
+        label = "inline payload store URI mismatch test";
+        needle = "cli_replay_rejects_inline_component_store_uri_mismatch";
       }
       {
         label = "replay check uses public JSONL trace bytes";

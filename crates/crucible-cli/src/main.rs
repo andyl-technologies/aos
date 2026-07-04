@@ -14084,9 +14084,80 @@ fn validate_replayable_reproduction_artifact(
     cli: &Cli,
     bytes: &[u8],
 ) -> Result<CliReproductionArtifact, CliError> {
-    let artifact = decode_reproduction_artifact(bytes)?;
+    let mut artifact = decode_reproduction_artifact(bytes)?;
     verify_replay_identity(&artifact.identity, &expected_replay_identity(cli)?)?;
+    hydrate_replay_artifact_components(&mut artifact, &default_run_store_root(cli))?;
     Ok(artifact)
+}
+
+fn hydrate_replay_artifact_components(
+    artifact: &mut CliReproductionArtifact,
+    store_root: &Path,
+) -> Result<(), CliError> {
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+    for component in artifact.components.clone() {
+        let embedded = artifact
+            .payloads
+            .iter()
+            .find(|payload| payload.digest == component.digest);
+        let Some(bytes) = replay_component_payload_bytes(&store, &component, embedded)? else {
+            continue;
+        };
+        let actual_digest = content_address_bytes(&bytes);
+        if actual_digest != component.digest {
+            return Err(artifact_error(format!(
+                "component `{}` resolved payload digest {} did not match artifact digest {}",
+                component.name, actual_digest, component.digest
+            )));
+        }
+        let size_bytes = u64::try_from(bytes.len()).map_err(|_| {
+            artifact_error(format!(
+                "component `{}` resolved payload size cannot be represented",
+                component.name
+            ))
+        })?;
+        if size_bytes != component.size_bytes {
+            return Err(artifact_error(format!(
+                "component `{}` declared {} bytes but DAG store resolved {} bytes",
+                component.name, component.size_bytes, size_bytes
+            )));
+        }
+        if embedded.is_none() {
+            artifact.payloads.push(CliPayload {
+                digest: component.digest,
+                bytes,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn replay_component_payload_bytes(
+    store: &crucible::LocalDagStore,
+    component: &CliComponent,
+    embedded: Option<&CliPayload>,
+) -> Result<Option<Vec<u8>>, CliError> {
+    if component.store_uri == format!("cas:{}", component.digest) {
+        return Ok(embedded.map(|payload| payload.bytes.clone()));
+    }
+    let key = parse_blake3_content_hash("component store URI", &component.store_uri)?;
+    let bytes = store.get(&key).map_err(|error| {
+        artifact_error(format!(
+            "component `{}` ({}) could not be resolved from DAG store {}: {error}",
+            component.name,
+            component.store_uri,
+            store.root().display()
+        ))
+    })?;
+    if let Some(payload) = embedded {
+        if payload.bytes != bytes {
+            return Err(artifact_error(format!(
+                "component `{}` inline payload does not match DAG store object {}",
+                component.name, component.store_uri
+            )));
+        }
+    }
+    Ok(Some(bytes))
 }
 
 fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Result<(), CliError> {
@@ -14460,11 +14531,14 @@ fn parse_component(
     validate_required_field("component.name", &component.name)?;
     validate_required_field("component.media_type", &component.media_type)?;
     validate_digest("component.digest", &component.digest)?;
-    if component.store_uri != format!("cas:{}", component.digest) {
+    if component.store_uri != format!("cas:{}", component.digest)
+        && crucible::ContentAddressedBlobRef::parse("component store_uri", &component.store_uri)
+            .is_err()
+    {
         return Err(artifact_line_error(
             line_index,
             tag,
-            "component store URI does not match digest",
+            "component store URI must either match the digest or be a blake3 DAG-store reference",
         ));
     }
     Ok(component)
@@ -16370,6 +16444,32 @@ finding.0.detail=synthetic signed finding evidence
         assert_eq!(loaded.reproduction_artifact, artifact_key);
         assert!(store.exists(&index)?);
         Ok(artifact_key)
+    }
+
+    fn externalized_replay_artifact_text(
+        artifact_bytes: &[u8],
+        store_root: &Path,
+        keep_inline_payloads: bool,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut decoded = decode_reproduction_artifact(artifact_bytes)?;
+        let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+        let mut store_uris = BTreeMap::new();
+        for payload in &decoded.payloads {
+            let key = store.put(&payload.bytes)?;
+            store_uris.insert(payload.digest.clone(), format_content_hash_ref(key));
+        }
+        if let Some(store_uri) = store_uris.get(&decoded.scenario.digest) {
+            decoded.scenario.store_uri = store_uri.clone();
+        }
+        for component in &mut decoded.components {
+            if let Some(store_uri) = store_uris.get(&component.digest) {
+                component.store_uri = store_uri.clone();
+            }
+        }
+        if !keep_inline_payloads {
+            decoded.payloads.clear();
+        }
+        Ok(canonical_artifact_text(&decoded))
     }
 
     fn fork_artifact_path(outcome: &BackendCommandOutcome) -> Result<PathBuf, Box<dyn Error>> {
@@ -24218,6 +24318,165 @@ finding.0.kind=property
         };
         assert_eq!(check.path, check_path);
         assert_eq!(check.digest, content_address_bytes(&canonical_log_bytes));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_resolves_content_addressed_component_payloads() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("externalized.crucible");
+        let check_path = temp.path().join("original.jsonl");
+        let store_root = temp.path().join("store");
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
+                .scenario_def()
+                .clone();
+        let entries = canonical_trace_entries();
+        let samples = vec![VerifyFingerprintSample {
+            index: 0,
+            instruction: 0,
+            node: String::from("session"),
+            digest: content_address_bytes(b"replay-store-fingerprint-sample"),
+        }];
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &entries,
+            &samples,
+        )?;
+        let externalized = externalized_replay_artifact_text(&artifact_bytes, &store_root, false)?;
+        fs::write(&artifact_path, externalized)?;
+        emit_canonical_trace(OutputFormat::Jsonl, &entries, Some(&check_path), false)?;
+
+        let artifact_arg = artifact_path.display().to_string();
+        let check_arg = check_path.display().to_string();
+        let store_arg = store_root.display().to_string();
+        let replay_cli = Cli::parse_from([
+            "crucible",
+            "--store",
+            &store_arg,
+            "replay",
+            &artifact_arg,
+            "--check",
+            &check_arg,
+        ]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+
+        let report = replay_reproduction_artifact(&replay_cli, args)?;
+
+        assert!(report.check.is_some());
+        assert_eq!(report.path, artifact_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_externalized_identity_mismatch_keeps_identity_exit() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("externalized-identity-drift.crucible");
+        let store_root = temp.path().join("store");
+        let empty_store_root = temp.path().join("empty-store");
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
+                .scenario_def()
+                .clone();
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &canonical_trace_entries(),
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"identity-priority-fingerprint-sample"),
+            }],
+        )?;
+        let externalized = externalized_replay_artifact_text(&artifact_bytes, &store_root, false)?;
+        let mut decoded = decode_reproduction_artifact(externalized.as_bytes())?;
+        decoded.identity.qemu_build_id = content_address_bytes(b"different-qemu-build");
+        fs::write(&artifact_path, canonical_artifact_text(&decoded))?;
+
+        let store_arg = empty_store_root.display().to_string();
+        let artifact_arg = artifact_path.display().to_string();
+        let replay_cli =
+            Cli::parse_from(["crucible", "--store", &store_arg, "replay", &artifact_arg]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("externalized identity drift must fail before store hydration"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("QEMU"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("inline-store-mismatch.crucible");
+        let store_root = temp.path().join("store");
+        let scenario_path = write_valid_run_scenario(&temp)?;
+        let scenario =
+            resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
+                .scenario_def()
+                .clone();
+        let artifact_bytes = verify_reproduction_artifact_bytes(
+            0xace,
+            Some(&ResolvedLocalBackend::Double),
+            &scenario,
+            &canonical_trace_entries(),
+            &[VerifyFingerprintSample {
+                index: 0,
+                instruction: 0,
+                node: String::from("session"),
+                digest: content_address_bytes(b"inline-store-mismatch-fingerprint-sample"),
+            }],
+        )?;
+        let externalized = externalized_replay_artifact_text(&artifact_bytes, &store_root, true)?;
+        let mut decoded = decode_reproduction_artifact(externalized.as_bytes())?;
+        let wrong_key = crucible::LocalDagStore::new(store_root.clone()).put(b"wrong bytes")?;
+        let wrong_uri = format_content_hash_ref(wrong_key);
+        let component = decoded
+            .components
+            .iter_mut()
+            .find(|component| component.kind == "other")
+            .ok_or("fixture must include a decision payload component")?;
+        component.store_uri = wrong_uri;
+        fs::write(&artifact_path, canonical_artifact_text(&decoded))?;
+
+        let store_arg = store_root.display().to_string();
+        let artifact_arg = artifact_path.display().to_string();
+        let replay_cli =
+            Cli::parse_from(["crucible", "--store", &store_arg, "replay", &artifact_arg]);
+        let Commands::Replay(args) = &replay_cli.command else {
+            panic!("expected replay command");
+        };
+
+        let error = match replay_reproduction_artifact(&replay_cli, args) {
+            Ok(_) => panic!("inline payload must agree with declared DAG store object"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("inline payload does not match DAG store object")
+        );
 
         Ok(())
     }

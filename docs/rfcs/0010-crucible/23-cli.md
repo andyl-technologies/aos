@@ -1119,14 +1119,16 @@ branch on the verdict without parsing output:
   satisfies [CLI-22]; spec §12.
   Work in progress under `checks.crucible.phase5.cliReplayCheck`: the CLI now
   accepts `replay --check <original-log>`, validates the artifact through the
-  pinned identity path, reconstructs the replay canonical log, returns exit 1 on
-  byte mismatch with deterministic first-difference byte localization, and
-  supports artifact-to-artifact `--bisect <other-artifact>` by validating both
-  artifacts, requiring matching replay inputs, localizing the first differing
-  canonical-log/fingerprint coordinate, and returning the replay-check failure
-  exit path on divergence. `--to` remains rejected until replay-to-savepoint is
-  implemented. Full closure remains blocked on content-addressed component
-  resolution, replay-to-savepoint, and machine-independent backend replay
+  pinned identity path before store access, resolves missing content-addressed
+  component payloads from the selected local DAG store, validates declared
+  DAG-store references against inline payloads, reconstructs the replay
+  canonical log, returns exit 1 on byte mismatch with deterministic
+  first-difference byte localization, and supports artifact-to-artifact
+  `--bisect <other-artifact>` by validating both artifacts, requiring matching
+  replay inputs, localizing the first differing canonical-log/fingerprint
+  coordinate, and returning the replay-check failure exit path on divergence.
+  `--to` remains rejected until replay-to-savepoint is implemented. Full closure
+  remains blocked on replay-to-savepoint and machine-independent backend replay
   coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples

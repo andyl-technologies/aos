@@ -476,13 +476,15 @@ long-held locks.
   provenance in stdout and the canonical log; full closure waits for
   process-backed real-QEMU fork execution.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
-  covers `replay --check <original-log>` parsing, pinned-identity validation,
-  byte-identical canonical-log comparison, exit 1 on mismatch with
-  deterministic first-difference byte localization, artifact-to-artifact
+  covers `replay --check <original-log>` parsing, pinned-identity validation
+  before store access, content-addressed component payload resolution from the
+  selected local DAG store, declared DAG-store reference validation against
+  inline payloads, byte-identical canonical-log comparison, exit 1 on mismatch
+  with deterministic first-difference byte localization, artifact-to-artifact
   `--bisect <other-artifact>` over validated matching replay inputs with
   canonical-log/fingerprint divergence localization, and continued rejection of
-  `--to`; full closure waits for content-addressed component resolution,
-  replay-to-savepoint, and machine-independent backend replay coverage.
+  `--to`; full closure waits for replay-to-savepoint and machine-independent
+  backend replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,
