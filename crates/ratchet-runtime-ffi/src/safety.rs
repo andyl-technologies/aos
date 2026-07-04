@@ -124,6 +124,13 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const BLACKHOLE_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeBlackholeCheckNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value);"
+    );
     const FORCE_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeForceNativeFn = ",
         "uns",
@@ -132,6 +139,13 @@ mod tests {
         "ern \"C\" fn(*mut c_void, Value) -> Value;"
     );
     const FORCE_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const BLACKHOLE_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_blackhole_check(_rt: *mut c_void, value: Value) {"
+    );
     const FORCE_FN_LINE: &str = concat!(
         "pub ",
         "uns",
@@ -139,22 +153,25 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_force(_rt: *mut c_void, value: Value) -> Value {"
     );
+    const DIRECT_BLACKHOLE_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, value) };");
     const DIRECT_FORCE_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_force(rt, expected) };");
-    const FORCE_BINDING_TEST_CALL_LINE: &str = concat!(
-        "let actual = ",
-        "uns",
-        "afe { (binding.function())(rt, expected) };"
-    );
+    const FORCE_BINDING_TEST_CALL_LINE: &str =
+        concat!("let actual = ", "uns", "afe { function(rt, expected) };");
+    const BLACKHOLE_BINDING_TEST_CALL_LINE: &str = concat!("uns", "afe { function(rt, value) };");
     const FORCE_MALFORMED_VALUE_TRANSMUTE_LINE: &str = concat!(
-        "let malformed = ",
         "uns",
-        "afe { std::mem::transmute::<RawValueForTest, Value>(raw) };"
+        "afe { std::mem::transmute::<RawValueForTest, Value>(raw) }"
     );
     const FORCE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
         concat!("let _ = ", "uns", "afe { aos_force(rt, malformed) };");
     const FORCE_THUNK_ABORT_TEST_CALL_LINE: &str =
         concat!("let _ = ", "uns", "afe { aos_force(rt, thunk) };");
+    const BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, malformed) };");
+    const BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, thunk) };");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -296,16 +313,25 @@ mod tests {
 
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
-            trimmed == FORCE_FN_TYPE_LINE
+            trimmed == BLACKHOLE_FN_TYPE_LINE
+                || trimmed == FORCE_FN_TYPE_LINE
                 || trimmed == FORCE_EXPORT_ATTR_LINE
+                || trimmed == BLACKHOLE_FN_LINE
                 || trimmed == FORCE_FN_LINE
+                || trimmed == DIRECT_BLACKHOLE_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_TEST_CALL_LINE
                 || trimmed == FORCE_BINDING_TEST_CALL_LINE
+                || trimmed == BLACKHOLE_BINDING_TEST_CALL_LINE
                 || trimmed == FORCE_MALFORMED_VALUE_TRANSMUTE_LINE
                 || trimmed == FORCE_MALFORMED_ABORT_TEST_CALL_LINE
                 || trimmed == FORCE_THUNK_ABORT_TEST_CALL_LINE
+                || trimmed == BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE
+                || trimmed == BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
-            trimmed == FORCE_FN_TYPE_LINE || trimmed == FORCE_FN_LINE
+            trimmed == BLACKHOLE_FN_TYPE_LINE
+                || trimmed == FORCE_FN_TYPE_LINE
+                || trimmed == BLACKHOLE_FN_LINE
+                || trimmed == FORCE_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
         } else {
@@ -604,19 +630,34 @@ mod unchecked_cfg;
             "metadata function-pointer test call must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_FN_TYPE_LINE),
+            1,
+            "blackhole-check native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&force, FORCE_FN_TYPE_LINE),
             1,
             "force native function-pointer type must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, FORCE_EXPORT_ATTR_LINE),
+            2,
+            "force native wrapper export attributes must stay reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_FN_LINE),
             1,
-            "force native wrapper export attribute must stay singly reviewed"
+            "aos_blackhole_check native wrapper must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, FORCE_FN_LINE),
             1,
             "aos_force native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_BLACKHOLE_TEST_CALL_LINE),
+            1,
+            "direct test call of aos_blackhole_check must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, DIRECT_FORCE_TEST_CALL_LINE),
@@ -627,6 +668,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&force, FORCE_BINDING_TEST_CALL_LINE),
             1,
             "force metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_BINDING_TEST_CALL_LINE),
+            1,
+            "blackhole metadata function-pointer test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, FORCE_MALFORMED_VALUE_TRANSMUTE_LINE),
@@ -642,6 +688,16 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&force, FORCE_THUNK_ABORT_TEST_CALL_LINE),
             1,
             "thunk abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE),
+            1,
+            "blackhole malformed payload abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE),
+            1,
+            "blackhole thunk abort test call must stay singly reviewed"
         );
     }
 
@@ -675,6 +731,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
+            DIRECT_BLACKHOLE_TEST_CALL_LINE,
+            "direct blackhole wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
             DIRECT_FORCE_TEST_CALL_LINE,
             "direct force wrapper test call must keep a SAFETY comment",
         );
@@ -682,6 +743,11 @@ mod unchecked_cfg;
             &force_lines,
             FORCE_BINDING_TEST_CALL_LINE,
             "force metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            BLACKHOLE_BINDING_TEST_CALL_LINE,
+            "blackhole metadata function-pointer test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -697,6 +763,16 @@ mod unchecked_cfg;
             &force_lines,
             FORCE_THUNK_ABORT_TEST_CALL_LINE,
             "thunk abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE,
+            "blackhole malformed payload abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE,
+            "blackhole thunk abort test call must keep a SAFETY comment",
         );
     }
 
@@ -720,8 +796,18 @@ mod unchecked_cfg;
         );
         assert_has_safety_doc_before(
             &force_lines,
+            BLACKHOLE_FN_TYPE_LINE,
+            "public blackhole native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &force_lines,
             FORCE_FN_TYPE_LINE,
             "public force native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &force_lines,
+            BLACKHOLE_FN_LINE,
+            "public blackhole native wrapper must document # Safety",
         );
         assert_has_safety_doc_before(
             &force_lines,

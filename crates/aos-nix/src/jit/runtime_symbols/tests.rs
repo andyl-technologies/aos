@@ -22,7 +22,8 @@ const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic", "aos_update"];
 const EXPECTED_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force", "aos_force_deep"];
-const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force_deep"];
+const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] = &["aos_blackhole_check", "aos_force"];
+const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &["aos_force_deep"];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]
@@ -70,6 +71,35 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_rust_callable_helper)
     );
     assert!(preflight.missing_binding_for("aos_apply").is_none());
+    let blackhole = preflight
+        .address_candidate_for("aos_blackhole_check")
+        .expect("blackhole helper has a native-wrapper address candidate");
+    assert_eq!(
+        blackhole.kind(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+    );
+    assert_eq!(
+        blackhole.address().as_nonzero_usize().get(),
+        blackhole_native_wrapper_address()
+    );
+    assert_ne!(
+        blackhole.address().as_nonzero_usize().get(),
+        blackhole_rust_callable_address()
+    );
+    assert!(
+        preflight
+            .address_provenance_for_symbol("aos_blackhole_check")
+            .is_some_and(|provenance| {
+                provenance.is_runtime_ffi_native_wrapper()
+                    && provenance.kind()
+                        == RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl)
+            })
+    );
+    assert!(
+        preflight
+            .missing_binding_for("aos_blackhole_check")
+            .is_none()
+    );
     let force = preflight
         .address_candidate_for("aos_force")
         .expect("force helper has a native-wrapper address candidate");
@@ -101,7 +131,10 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
         .filter(|provenance| provenance.is_runtime_ffi_native_wrapper())
         .map(NixJitRuntimeSymbolAddressProvenance::symbol_name)
         .collect::<Vec<_>>();
-    assert_eq!(runtime_ffi_symbols, ["aos_env_get", "aos_force"]);
+    assert_eq!(
+        runtime_ffi_symbols,
+        ["aos_blackhole_check", "aos_env_get", "aos_force"]
+    );
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
         let attr_access = preflight
             .address_candidate_for(symbol_name)
@@ -123,6 +156,13 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
         );
         assert_ne!(force.address().as_nonzero_usize().get(), 0);
         assert!(preflight.missing_binding_for(symbol_name).is_none());
+    }
+    for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
     }
     for symbol_name in EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS {
         assert!(
@@ -427,15 +467,22 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(
+        candidates
+            .address_provenance_for_symbol("aos_blackhole_check")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
         registration
             .address_provenance_gap_for_symbol("aos_env_get")
             .is_none()
     );
-    assert!(
-        registration
-            .address_provenance_gap_for_symbol("aos_force")
-            .is_none()
-    );
+    for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
     for symbol_name in EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS {
         assert!(
             registration
@@ -600,6 +647,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
             .address_provenance_for_symbol("aos_force")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_blackhole_check")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             preflight
@@ -618,11 +671,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
                     == Some(RuntimeHelperRole::ForcingControl))
         );
     }
-    assert!(
-        preflight
-            .address_provenance_gap_for_symbol("aos_force")
-            .is_none()
-    );
+    for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
     for symbol_name in EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS {
         assert!(
             preflight
@@ -712,6 +767,15 @@ fn force_native_wrapper_address() -> usize {
         .as_ptr() as usize
 }
 
+fn blackhole_native_wrapper_address() -> usize {
+    runtime_forcing_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == "aos_blackhole_check")
+        .expect("runtime FFI blackhole-check wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
 fn env_rust_callable_address() -> usize {
     let binding = runtime_symbol_rust_callable_preflight()
         .expect("oracle Rust-callable preflight builds")
@@ -726,6 +790,21 @@ fn env_rust_callable_address() -> usize {
             binding.address().as_ptr() as usize
         }
         _ => panic!("aos_env_get is an environment-access helper"),
+    }
+}
+
+fn blackhole_rust_callable_address() -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_blackhole_check")
+        .expect("oracle blackhole-check Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr() as usize,
+        _ => panic!("aos_blackhole_check is a forcing helper"),
     }
 }
 

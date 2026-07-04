@@ -4,8 +4,8 @@
 //! `ratchet-oracle` runtime metadata, the unsafe-capable `ratchet-jit` crate,
 //! and the narrow `ratchet-runtime-ffi` native-wrapper crate. Most projected
 //! addresses are still process-local Rust callable helper addresses;
-//! `aos_env_get` and the `aos_force` WHNF fast path now come from success-path
-//! runtime-FFI native wrappers. The safe registered native-call gate in this
+//! `aos_env_get`, `aos_blackhole_check`, and the `aos_force` WHNF fast path now
+//! come from success-path runtime-FFI native wrappers. The safe registered native-call gate in this
 //! module still refuses to cross the unsafe native-call boundary until the
 //! strict exported runtime-symbol registration plan is complete. The separate
 //! literal conformance precursor uses `ratchet-jit`'s reviewed no-import
