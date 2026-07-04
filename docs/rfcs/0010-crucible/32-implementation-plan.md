@@ -486,8 +486,10 @@ long-held locks.
   <SAVEPOINT>` validation for savepoint handles or local DAG-store checkpoint
   hashes through savepoint evidence, scenario-identity matching, artifact
   decision-count bound checks, payload-backed typed schedule-prefix proof with
-  equal-length non-prefix and missing-prefix-payload rejection, and pure
-  replay-oracle validation; full closure waits for materialized backend
+  equal-length non-prefix and missing-prefix-payload rejection, pure
+  replay-oracle validation, and unified model temporal-graph replay
+  materialization with runtime/reduced-state, single-VM-fingerprint, and
+  fat/thin checkpoint agreement; full closure waits for process-backed
   replay-to-savepoint and machine-independent backend replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,

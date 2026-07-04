@@ -1134,8 +1134,11 @@ branch on the verdict without parsing output:
   rejects equal-length non-prefix artifacts with deterministic mismatch
   diagnostics, requires artifact decision payload bytes to resolve for the proved
   prefix, and still requires the savepoint schedule length to fit within the
-  encoded artifact decision stream. Full closure remains blocked on materialized
-  backend replay-to-savepoint and machine-independent backend replay coverage.
+  encoded artifact decision stream. It also materializes the target through the
+  unified model temporal-graph replay operation, proving the realized runtime
+  state, reduced state, single-VM fingerprint, and replay-oracle fat/thin
+  checkpoints agree. Full closure remains blocked on process-backed
+  replay-to-savepoint and machine-independent backend replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —

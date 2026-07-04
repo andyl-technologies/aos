@@ -11769,55 +11769,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Replay(args) => {
             let report = replay_reproduction_artifact(cli, args)?;
             if !cli.quiet {
-                println!(
-                    "crucible: replay artifact {} ({}) seed={} scenario={} digest={}",
-                    report.path.display(),
-                    REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-                    report.seed,
-                    report.scenario_digest,
-                    report.digest
-                );
-                if let Some(check) = &report.check {
-                    println!(
-                        "crucible: replay check {} status=byte-identical digest={}",
-                        check.path.display(),
-                        check.digest
-                    );
-                }
-                if let Some(target) = &report.to_savepoint {
-                    println!("{}", replay_to_savepoint_status_line(target));
-                }
-                if let Some(bisect) = &report.bisect {
-                    match &bisect.divergence {
-                        Some(divergence) => {
-                            println!(
-                                "crucible: replay bisect {} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
-                                bisect.other_path.display(),
-                                divergence.mismatch.label(),
-                                divergence
-                                    .first_different_decision
-                                    .map(|decision| decision.to_string())
-                                    .unwrap_or_else(|| String::from("unknown")),
-                                divergence
-                                    .first_different_fingerprint_sample
-                                    .map(|sample| sample.to_string())
-                                    .unwrap_or_else(|| String::from("unknown")),
-                                divergence.first_different_instruction,
-                                divergence.node.as_deref().unwrap_or("unknown"),
-                                divergence.first_different_byte,
-                                divergence.left_state_digest,
-                                divergence.right_state_digest
-                            );
-                        }
-                        None => {
-                            println!(
-                                "crucible: replay bisect {} status=byte-identical digest={}",
-                                bisect.other_path.display(),
-                                bisect.other_digest
-                            );
-                        }
-                    }
-                }
+                write_replay_report_human(&mut io::stdout(), &report)?;
             }
             if let Some(bisect) = &report.bisect {
                 if let Some(divergence) = &bisect.divergence {
@@ -11905,6 +11857,66 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+fn write_replay_report_human(
+    output: &mut impl Write,
+    report: &ReplayArtifactReport,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "crucible: replay artifact {} ({}) seed={} scenario={} digest={}",
+        report.path.display(),
+        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+        report.seed,
+        report.scenario_digest,
+        report.digest
+    )?;
+    if let Some(check) = &report.check {
+        writeln!(
+            output,
+            "crucible: replay check {} status=byte-identical digest={}",
+            check.path.display(),
+            check.digest
+        )?;
+    }
+    if let Some(target) = &report.to_savepoint {
+        writeln!(output, "{}", replay_to_savepoint_status_line(target))?;
+    }
+    if let Some(bisect) = &report.bisect {
+        match &bisect.divergence {
+            Some(divergence) => {
+                writeln!(
+                    output,
+                    "crucible: replay bisect {} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
+                    bisect.other_path.display(),
+                    divergence.mismatch.label(),
+                    divergence
+                        .first_different_decision
+                        .map(|decision| decision.to_string())
+                        .unwrap_or_else(|| String::from("unknown")),
+                    divergence
+                        .first_different_fingerprint_sample
+                        .map(|sample| sample.to_string())
+                        .unwrap_or_else(|| String::from("unknown")),
+                    divergence.first_different_instruction,
+                    divergence.node.as_deref().unwrap_or("unknown"),
+                    divergence.first_different_byte,
+                    divergence.left_state_digest,
+                    divergence.right_state_digest
+                )?;
+            }
+            None => {
+                writeln!(
+                    output,
+                    "crucible: replay bisect {} status=byte-identical digest={}",
+                    bisect.other_path.display(),
+                    bisect.other_digest
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn default_run_store_root(cli: &Cli) -> PathBuf {
@@ -13260,12 +13272,15 @@ fn replay_to_savepoint(
         &evidence.checkpoint,
         evidence.checkpoint.virtual_time,
     )?;
+    let materialization =
+        materialize_replay_to_savepoint(&evidence.scenario, &evidence.configuration, &oracle)?;
     Ok(ReplayToSavepointReport {
         target_label: savepoint.label(),
         checkpoint: evidence.checkpoint.id,
         frontier_ticks: evidence.checkpoint.virtual_time.ticks,
         schedule_prefix,
         oracle,
+        materialization,
     })
 }
 
@@ -13370,8 +13385,10 @@ fn typed_schedule_prefix_digest(decisions: &[ReplaySchedulePrefixDecisionProof])
 
 fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
     format!(
-        "crucible: replay --to {} status=target-validated schedule_prefix=typed checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} oracle={} store_objects={}",
+        "crucible: replay --to {} status=target-validated schedule_prefix=typed materialization={} unified_operation={} checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} materialized_configuration={} materialized_schedule={} materialized_checkpoint={} runtime_state={} reduced_state={} single_vm_fingerprint={} graph={} replay_fat={} replay_thin={} oracle={} store_objects={}",
         target.target_label,
+        target.materialization.materialization,
+        target.materialization.operation,
         format_content_hash_ref(target.checkpoint),
         target.frontier_ticks,
         target.schedule_prefix.target_decisions,
@@ -13379,9 +13396,48 @@ fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
         target.schedule_prefix.matched_decisions,
         target.schedule_prefix.typed_prefix_digest,
         target.schedule_prefix.artifact_prefix_digest,
+        format_content_hash_ref(target.materialization.configuration),
+        format_content_hash_ref(target.materialization.schedule),
+        format_content_hash_ref(target.materialization.checkpoint),
+        format_content_hash_ref(target.materialization.runtime_state),
+        format_content_hash_ref(target.materialization.reduced_state),
+        format_content_hash_ref(target.materialization.single_vm_fingerprint),
+        format_content_hash_ref(target.materialization.graph),
+        format_content_hash_ref(target.materialization.replay_fat_checkpoint),
+        format_content_hash_ref(target.materialization.replay_thin_checkpoint),
         target.oracle.status_label(),
         target.oracle.store_objects
     )
+}
+
+fn materialize_replay_to_savepoint(
+    scenario: &crucible::ScenarioDef,
+    configuration: &crucible::Configuration,
+    oracle: &SavepointOracleProof,
+) -> Result<ReplayToSavepointMaterializationProof, CliError> {
+    let mut graph = save_validation_graph(scenario)?;
+    let replay = crucible::ReplayOracleCheck {
+        configuration: oracle.configuration,
+        fat_checkpoint: oracle.fat_checkpoint,
+        thin_checkpoint: oracle.thin_checkpoint,
+    };
+    let report = graph
+        .validate_unified_operation(&crucible::UnifiedGraphOperationEvidence::Replay {
+            configuration: configuration.clone(),
+            replay,
+        })
+        .map_err(|error| {
+            CliError::Identity(format!(
+                "replay --to materialized temporal-graph replay failed: {error}"
+            ))
+        })?;
+    if report.operation != crucible::UnifiedGraphOperationKind::Replay {
+        return Err(CliError::Identity(format!(
+            "replay --to materialized unexpected unified operation {:?}",
+            report.operation
+        )));
+    }
+    Ok(ReplayToSavepointMaterializationProof::from_report(report))
 }
 
 fn replay_bisect_artifacts(
@@ -15475,6 +15531,7 @@ struct ReplayToSavepointReport {
     frontier_ticks: u64,
     schedule_prefix: ReplaySchedulePrefixProof,
     oracle: SavepointOracleProof,
+    materialization: ReplayToSavepointMaterializationProof,
 }
 
 #[derive(Debug)]
@@ -15493,6 +15550,39 @@ struct ReplaySchedulePrefixDecisionProof {
     kind: String,
     payload_summary: String,
     payload_digest: String,
+}
+
+#[derive(Debug)]
+struct ReplayToSavepointMaterializationProof {
+    materialization: &'static str,
+    operation: &'static str,
+    graph: crucible::ContentHash,
+    configuration: crucible::ContentHash,
+    schedule: crucible::ContentHash,
+    checkpoint: crucible::ContentHash,
+    reduced_state: crucible::ContentHash,
+    runtime_state: crucible::ContentHash,
+    single_vm_fingerprint: crucible::ContentHash,
+    replay_fat_checkpoint: crucible::ContentHash,
+    replay_thin_checkpoint: crucible::ContentHash,
+}
+
+impl ReplayToSavepointMaterializationProof {
+    fn from_report(report: crucible::UnifiedGraphOperationReport) -> Self {
+        Self {
+            materialization: "model-temporal-graph",
+            operation: "replay",
+            graph: report.graph,
+            configuration: report.configuration,
+            schedule: report.schedule,
+            checkpoint: report.checkpoint,
+            reduced_state: report.reduced_state,
+            runtime_state: report.runtime_state,
+            single_vm_fingerprint: report.single_vm_fingerprint.hash,
+            replay_fat_checkpoint: report.replay_oracle.fat_checkpoint,
+            replay_thin_checkpoint: report.replay_oracle.thin_checkpoint,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -25246,6 +25336,61 @@ finding.0.kind=property
         assert!(status_line.contains(&format!("matched_decisions={}", schedule.len())));
         assert!(status_line.contains("typed_prefix_digest=crucible-hash:"));
         assert!(status_line.contains("artifact_prefix_digest=crucible-hash:"));
+        assert_eq!(
+            target_report.materialization.materialization,
+            "model-temporal-graph"
+        );
+        assert_eq!(target_report.materialization.operation, "replay");
+        assert_eq!(
+            target_report.materialization.configuration,
+            configuration.id()
+        );
+        assert_eq!(target_report.materialization.checkpoint, checkpoint.id);
+        assert_eq!(
+            target_report.materialization.replay_fat_checkpoint,
+            checkpoint.id
+        );
+        assert_eq!(
+            target_report.materialization.replay_thin_checkpoint,
+            checkpoint.id
+        );
+        assert_eq!(
+            target_report.materialization.runtime_state,
+            target_report.materialization.reduced_state
+        );
+        assert!(status_line.contains("materialization=model-temporal-graph"));
+        assert!(status_line.contains("unified_operation=replay"));
+        assert!(status_line.contains(&format!(
+            "materialized_checkpoint={}",
+            format_content_hash_ref(checkpoint.id)
+        )));
+        assert!(status_line.contains(&format!(
+            "runtime_state={}",
+            format_content_hash_ref(target_report.materialization.runtime_state)
+        )));
+        assert!(status_line.contains(&format!(
+            "reduced_state={}",
+            format_content_hash_ref(target_report.materialization.reduced_state)
+        )));
+        assert!(status_line.contains(&format!(
+            "single_vm_fingerprint={}",
+            format_content_hash_ref(target_report.materialization.single_vm_fingerprint)
+        )));
+        assert!(status_line.contains(&format!(
+            "replay_fat={}",
+            format_content_hash_ref(checkpoint.id)
+        )));
+        assert!(status_line.contains(&format!(
+            "replay_thin={}",
+            format_content_hash_ref(checkpoint.id)
+        )));
+        let mut replay_stdout = Vec::new();
+        write_replay_report_human(&mut replay_stdout, &report)?;
+        let replay_stdout = String::from_utf8(replay_stdout)?;
+        assert!(replay_stdout.contains("crucible: replay artifact"));
+        assert!(replay_stdout.contains(&status_line));
+        assert!(replay_stdout.contains("materialization=model-temporal-graph"));
+        assert!(replay_stdout.contains("unified_operation=replay"));
         assert_eq!(target_report.oracle.fat_checkpoint, checkpoint.id);
         assert_eq!(target_report.oracle.thin_checkpoint, checkpoint.id);
         dispatch(&replay_cli)?;

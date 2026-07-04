@@ -208,6 +208,14 @@
         needle = "fn replay_to_savepoint_status_line";
       }
       {
+        label = "replay human output writer";
+        needle = "fn write_replay_report_human";
+      }
+      {
+        label = "replay dispatch uses human output writer";
+        needle = "write_replay_report_human(&mut io::stdout(), &report)?;";
+      }
+      {
         label = "typed replay to non-prefix diagnostic";
         needle = "schedule-prefix mismatch at decision";
       }
@@ -218,6 +226,30 @@
       {
         label = "typed replay to missing payload rejection test";
         needle = "cli_replay_to_savepoint_rejects_missing_prefix_decision_payload";
+      }
+      {
+        label = "replay to materialized temporal graph implementation";
+        needle = "fn materialize_replay_to_savepoint";
+      }
+      {
+        label = "replay to unified replay operation";
+        needle = "UnifiedGraphOperationEvidence::Replay";
+      }
+      {
+        label = "replay to unified operation validation";
+        needle = "validate_unified_operation";
+      }
+      {
+        label = "replay to materialized temporal graph output";
+        needle = "materialization=model-temporal-graph";
+      }
+      {
+        label = "replay to single VM fingerprint output";
+        needle = "single_vm_fingerprint";
+      }
+      {
+        label = "replay to materialized checkpoint output";
+        needle = "materialized_checkpoint";
       }
       {
         label = "replay to savepoint target validation output";
@@ -340,6 +372,7 @@ in
             component=crucible-cli
             replay_check=byte-identical-canonical-log
             replay_to_schedule_prefix=typed-payload-backed
+            replay_to_materialization=model-temporal-graph
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
