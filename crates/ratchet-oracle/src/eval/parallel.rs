@@ -6,10 +6,12 @@
 //! idle workers steal older peer work from the opposite end, and collate results
 //! by stable task index rather than completion order.
 //!
-//! The executor here deliberately uses safe standard-library synchronization.
-//! It is a correctness/readiness layer for tests and future evaluator wiring,
-//! not the final lock-free Chase-Lev deque implementation and not the L2 CAS
-//! thunk protocol.
+//! The original safe executor and ready-work queues here deliberately use
+//! standard-library synchronization. The Chase-Lev entry point delegates queue
+//! ownership to [`super::parallel_chase_lev`] while keeping result collation and
+//! error reporting in this module. These are correctness/readiness layers for
+//! tests and future evaluator wiring, not the complete parallel graph evaluator
+//! and not the L2 CAS thunk protocol.
 
 use std::{
     collections::VecDeque,
@@ -21,6 +23,9 @@ use std::{
 
 use thiserror::Error;
 
+use super::parallel_chase_lev::{
+    ParallelChaseLevTaskSource, ParallelChaseLevWorkerQueue, parallel_chase_lev_worker_queues,
+};
 use super::thunk_wait::ParallelThunkReadyWork;
 
 /// Builds the deterministic round-robin seed plan for top-level tasks.
@@ -125,6 +130,93 @@ where
             handles.push((
                 worker_id,
                 scope.spawn(move || worker_loop(worker_id, queues, results, worker, worker_count)),
+            ));
+        }
+
+        let mut worker_reports = Vec::with_capacity(worker_count);
+        let mut first_error = None;
+        for (worker_id, handle) in handles {
+            match handle.join() {
+                Ok(Ok(report)) => worker_reports.push(report),
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if first_error.is_none() {
+                        first_error = Some(ParallelTopLevelError::WorkerPanicked { worker_id });
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(worker_reports)
+        }
+    })?;
+
+    let mut results = results
+        .into_inner()
+        .map_err(|_| ParallelTopLevelError::ResultBufferPoisoned)?;
+    results.sort_by_key(ParallelTaskExecution::task_index);
+
+    Ok(ParallelTopLevelExecutionReport {
+        worker_count,
+        task_count,
+        results,
+        worker_reports,
+    })
+}
+
+/// Executes independent top-level tasks with Chase-Lev worker deques.
+///
+/// This entry point has the same task metadata and stable result collation
+/// contract as [`execute_parallel_top_level`], but its worker queues are backed
+/// by the Phase 3.5 Chase-Lev deque adapter instead of the standard-library
+/// mutex queue precursor. Workers own their local deque, pop local work in LIFO
+/// order, and steal older peer work through cloneable stealers. Result collation
+/// remains sorted by stable task index rather than completion order.
+///
+/// # Errors
+///
+/// Returns [`ParallelTopLevelError`] if the result buffer is poisoned by a
+/// panic, or if a worker thread panics while executing a task.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped worker
+/// threads. Task panics are caught and returned as
+/// [`ParallelTopLevelError::WorkerPanicked`].
+pub fn execute_parallel_top_level_chase_lev<I, T, R, F>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+    worker: F,
+) -> Result<ParallelTopLevelExecutionReport<R>, ParallelTopLevelError>
+where
+    I: IntoIterator<Item = T>,
+    T: Send,
+    R: Send,
+    F: Fn(T) -> R + Sync,
+{
+    let queues = parallel_chase_lev_worker_queues(tasks, worker_count);
+    let worker_count = queues.worker_count();
+    let task_count = queues.task_count();
+    let worker_queues = queues.into_worker_queues();
+    let results = Mutex::new(Vec::with_capacity(task_count));
+
+    let worker_reports = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for worker_queue in worker_queues {
+            let worker_id = worker_queue.worker_id();
+            let results = &results;
+            let worker = &worker;
+            handles.push((
+                worker_id,
+                scope.spawn(move || chase_lev_worker_loop(worker_queue, results, worker)),
             ));
         }
 
@@ -676,6 +768,39 @@ where
     Ok(report)
 }
 
+fn chase_lev_worker_loop<T, R, F>(
+    queue: ParallelChaseLevWorkerQueue<T>,
+    results: &Mutex<Vec<ParallelTaskExecution<R>>>,
+    worker: &F,
+) -> Result<ParallelWorkerExecutionReport, ParallelTopLevelError>
+where
+    F: Fn(T) -> R,
+{
+    let mut report = ParallelWorkerExecutionReport::new(queue.worker_id());
+
+    while let Some(take) = queue.take_next_retrying() {
+        match take.source() {
+            ParallelChaseLevTaskSource::Local => report.local_pops += 1,
+            ParallelChaseLevTaskSource::Stolen => report.steals += 1,
+        }
+
+        let task = take.into_task();
+        let task_index = task.task_index();
+        let initial_worker = task.initial_worker();
+        let result = worker(task.into_payload());
+
+        report.tasks_completed += 1;
+        lock_results(results)?.push(ParallelTaskExecution {
+            task_index,
+            initial_worker,
+            worker_id: report.worker_id,
+            result,
+        });
+    }
+
+    Ok(report)
+}
+
 fn take_next_task<T>(
     queues: &[Mutex<VecDeque<ParallelTopLevelTask<T>>>],
     worker_id: usize,
@@ -1029,6 +1154,72 @@ mod tests {
         let report =
             execute_parallel_top_level(std::iter::empty::<usize>(), workers(2), |value| value)
                 .expect("empty execution succeeds");
+
+        assert_eq!(report.worker_count(), 2);
+        assert_eq!(report.task_count(), 0);
+        assert!(report.results().is_empty());
+        assert_eq!(report.worker_reports().len(), 2);
+        assert!(report.worker_reports().iter().all(|worker| {
+            worker.local_pops() == 0 && worker.steals() == 0 && worker.tasks_completed() == 0
+        }));
+    }
+
+    #[test]
+    fn chase_lev_executor_returns_results_in_stable_task_order() {
+        let report =
+            execute_parallel_top_level_chase_lev([3, 1, 4, 1, 5, 9], workers(3), |value| {
+                value * value
+            })
+            .expect("Chase-Lev execution succeeds");
+
+        assert_eq!(report.worker_count(), 3);
+        assert_eq!(report.task_count(), 6);
+        assert_eq!(
+            report.into_results_in_task_order(),
+            vec![9, 1, 16, 1, 25, 81]
+        );
+    }
+
+    #[test]
+    fn chase_lev_executor_reports_every_task_once() {
+        let report = execute_parallel_top_level_chase_lev(0..96, workers(4), |value| value + 10)
+            .expect("Chase-Lev execution succeeds");
+        let completed = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.tasks_completed())
+            .sum::<usize>();
+        let local_and_stolen = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.local_pops() + worker.steals())
+            .sum::<usize>();
+
+        assert_eq!(completed, 96);
+        assert_eq!(local_and_stolen, 96);
+        assert_eq!(report.results().len(), 96);
+        assert!(
+            report
+                .results()
+                .iter()
+                .enumerate()
+                .all(|(expected_index, execution)| {
+                    execution.task_index() == expected_index
+                        && execution.initial_worker() == expected_index % 4
+                        && execution.worker_id() < 4
+                        && *execution.result() == expected_index + 10
+                })
+        );
+    }
+
+    #[test]
+    fn chase_lev_executor_handles_empty_task_sets() {
+        let report = execute_parallel_top_level_chase_lev(
+            std::iter::empty::<usize>(),
+            workers(2),
+            |value| value,
+        )
+        .expect("empty Chase-Lev execution succeeds");
 
         assert_eq!(report.worker_count(), 2);
         assert_eq!(report.task_count(), 0);
@@ -1576,6 +1767,20 @@ mod tests {
     }
 
     #[test]
+    fn chase_lev_executor_reports_worker_panic() {
+        let error = execute_parallel_top_level_chase_lev(0..4, workers(2), |value| {
+            assert_ne!(value, 2, "task panic is reported as worker failure");
+            value
+        })
+        .expect_err("panicking task fails Chase-Lev execution");
+
+        assert!(matches!(
+            error,
+            ParallelTopLevelError::WorkerPanicked { worker_id } if worker_id < 2
+        ));
+    }
+
+    #[test]
     fn top_level_executor_drains_join_handles_after_multiple_worker_panics() {
         let outcome = std::panic::catch_unwind(|| {
             execute_parallel_top_level(0..8, workers(4), |value| {
@@ -1590,6 +1795,27 @@ mod tests {
         let error = outcome
             .expect("executor call did not unwind")
             .expect_err("panicking tasks fail execution");
+        assert!(matches!(
+            error,
+            ParallelTopLevelError::WorkerPanicked { worker_id } if worker_id < 4
+        ));
+    }
+
+    #[test]
+    fn chase_lev_executor_drains_join_handles_after_multiple_worker_panics() {
+        let outcome = std::panic::catch_unwind(|| {
+            execute_parallel_top_level_chase_lev(0..8, workers(4), |value| {
+                panic!("task {value} panics");
+            })
+        });
+
+        assert!(
+            outcome.is_ok(),
+            "Chase-Lev executor returns an error instead of unwinding"
+        );
+        let error = outcome
+            .expect("executor call did not unwind")
+            .expect_err("panicking tasks fail Chase-Lev execution");
         assert!(matches!(
             error,
             ParallelTopLevelError::WorkerPanicked { worker_id } if worker_id < 4

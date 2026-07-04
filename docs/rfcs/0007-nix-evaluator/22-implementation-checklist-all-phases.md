@@ -7352,10 +7352,23 @@ nurseries build on the bump arena.
       worker/task count preservation, empty pools, the public empty/non-retry
       surface, and concurrent drains that complete every seeded task exactly
       once. This is a deque admission/audit primitive only: the public
-      top-level and fallible executors still use their existing safe scheduler
-      precursors, derivations are not evaluated through the Chase-Lev adapter,
-      no per-worker nursery ownership is allocated from live heaps, no CAS
-      wait/park token is attached, and the loom/Miri/TSan gate remains open.
+      fallible executor and ready-work wait hooks still use their existing safe
+      scheduler precursors, derivations are not evaluated through the Chase-Lev
+      adapter, no per-worker nursery ownership is allocated from live heaps, no
+      CAS wait/park token is attached, and the loom/Miri/TSan gate remains open.
+- [x] Current Chase-Lev top-level execution precursor:
+      `ratchet-oracle::eval::execute_parallel_top_level_chase_lev` runs
+      independent infallible top-level tasks over the Chase-Lev worker/stealer
+      adapter while preserving the existing stable task-index result collation
+      and per-worker local-pop, steal, and completion counters. Tests cover
+      stable result order, exactly-once completion and accounting, empty task
+      sets, and worker-panic reporting. This is still an infallible independent
+      task executor only: it does not evaluate Nix derivations, does not replace
+      the fallible/cancellation executor, does not connect ready-work parking to
+      Chase-Lev deques, does not allocate through live per-worker nurseries,
+      does not integrate with shared thunk CAS wait/park tokens, and does not
+      satisfy the full L1 scheduler, full-closure differential, or
+      loom/Miri/TSan gates.
 - [ ] `eval/thunk_cas.rs` — the L2 **lock-free CAS thunk protocol**
       (`Suspended → Pending → Awaited → Forced/Failed`); claim-by-CAS, with
       work-stealing or parking on a claimed thunk ([13](13-parallel-evaluation.md) §3).

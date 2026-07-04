@@ -35,8 +35,8 @@ pub use parallel::{
     ParallelReadyWorkParkReadiness, ParallelReadyWorkParkReadinessError, ParallelReadyWorkPoll,
     ParallelReadyWorkQueues, ParallelReadyWorkStep, ParallelTaskExecution, ParallelTaskPlacement,
     ParallelTopLevelError, ParallelTopLevelExecutionReport, ParallelTopLevelSeedPlan,
-    ParallelWorkerExecutionReport, execute_parallel_top_level, parallel_ready_work_queues,
-    parallel_top_level_seed_plan,
+    ParallelWorkerExecutionReport, execute_parallel_top_level,
+    execute_parallel_top_level_chase_lev, parallel_ready_work_queues, parallel_top_level_seed_plan,
 };
 pub use parallel_chase_lev::{
     ParallelChaseLevTake, ParallelChaseLevTask, ParallelChaseLevTaskSource,
