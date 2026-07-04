@@ -277,7 +277,7 @@ fn static_attrset_literals_record_repr_decision_telemetry() {
 }
 
 #[test]
-fn dynamic_attrset_literals_do_not_record_static_repr_decisions() {
+fn dynamic_attrset_literals_record_dynamic_repr_decisions() {
     let ir = lower(r#"let name = "a"; in ({ ${name} = 1; }).a"#);
 
     let outcome = eval_whnf_owned(&ir).expect("dynamic attrset evaluates");
@@ -287,8 +287,11 @@ fn dynamic_attrset_literals_do_not_record_static_repr_decisions() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("repr telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
     assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
 }
 
 #[test]
@@ -309,7 +312,7 @@ fn recursive_static_attrsets_record_static_repr_decisions() {
 }
 
 #[test]
-fn recursive_overrides_do_not_record_outer_static_repr_decision() {
+fn recursive_overrides_record_dynamic_repr_decisions() {
     let ir = lower(r#"let name = "a"; in rec { a = 1; __overrides = { ${name} = 2; }; }.a"#);
 
     let outcome = eval_whnf_owned(&ir).expect("recursive override attrset evaluates");
@@ -319,12 +322,33 @@ fn recursive_overrides_do_not_record_outer_static_repr_decision() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("repr telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
     assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
 }
 
 #[test]
-fn null_skipped_dynamic_attrsets_do_not_record_static_repr_decisions() {
+fn static_recursive_overrides_record_static_inner_and_dynamic_outer_decisions() {
+    let ir = lower("rec { a = 1; __overrides = { a = 2; }; }.a");
+
+    let outcome = eval_whnf_owned(&ir).expect("static recursive override attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(2));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 1);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
+fn null_skipped_dynamic_attrsets_record_dynamic_repr_decisions() {
     let ir = lower("({ ${null} = 1; a = 2; }).a");
 
     let outcome = eval_whnf_owned(&ir).expect("null-skipped dynamic attrset evaluates");
@@ -334,8 +358,34 @@ fn null_skipped_dynamic_attrsets_do_not_record_static_repr_decisions() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("repr telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 0);
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 1);
     assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
+fn large_dynamic_attrsets_record_projected_hamt_repr_decisions() {
+    let bindings = (0..65)
+        .map(|index| format!(r#""k{index}" = {index};"#))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!(r#"let key = "selected"; in {{ ${{key}} = 99; {bindings} }}.selected"#);
+    let ir = lower(&source);
+
+    let outcome = eval_whnf_owned(&ir).expect("large dynamic attrset evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(99));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 1);
+    assert_eq!(snapshot.flat_decisions, 0);
+    assert_eq!(snapshot.hamt_decisions, 1);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.large_dynamic_construction, 1);
 }
 
 #[test]

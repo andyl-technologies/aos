@@ -906,13 +906,12 @@ impl TreeWalk {
             .map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
-        if !has_dynamic && active_overrides_symbol.is_none() {
-            self.record_attr_repr_decision_telemetry(
-                id,
-                node.span,
-                AttrSetConstruction::StaticLiteral { len },
-            );
-        }
+        let construction = if !has_dynamic && active_overrides_symbol.is_none() {
+            AttrSetConstruction::StaticLiteral { len }
+        } else {
+            AttrSetConstruction::Dynamic { len }
+        };
+        self.record_attr_repr_decision_telemetry(id, node.span, construction);
         Ok(result)
     }
 
