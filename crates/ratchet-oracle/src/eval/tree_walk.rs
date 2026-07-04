@@ -71,8 +71,12 @@ use super::thunk_payload::{
 use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
+    hamt::{HamtAttrs, HamtError, HamtMergeSummary},
     pic::{FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource},
-    repr::{AttrSetConstruction, AttrSetReprKind, AttrSetReprPolicy},
+    repr::{
+        AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprPolicy,
+        AttrSetReprValue, AttrSetReprValueError,
+    },
     select::{
         AttrSelectError, AttrSelectOutcome, AttrSelectRepr, AttrSelectSource, AttrSelectTarget,
         select_slow,
@@ -920,6 +924,23 @@ enum FetchTarballCompression {
 struct AttrUpdateTelemetryState {
     override_chain_depth: usize,
     projected_repr: AttrSetReprKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AttrUpdateMergeProjection {
+    left_repr: AttrSetReprKind,
+    override_chain_depth: usize,
+    decision: AttrSetReprDecision,
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(super) enum AttrUpdateTelemetryDispatchError {
+    #[error("flat attrset operand normalization failed: {0}")]
+    Flat(#[from] AttrError),
+    #[error("HAMT operand normalization failed: {0}")]
+    Hamt(#[from] HamtError),
+    #[error("representation-dispatched update failed: {0}")]
+    Repr(#[from] AttrSetReprValueError),
 }
 
 type AttrUpdateTelemetryNodeKey = (u32, u32);

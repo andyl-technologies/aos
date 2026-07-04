@@ -8633,8 +8633,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       apply right-biased `//` merges through persistent insert/replace
       operations, preserve old roots, report inserted/replaced counts, and
       rebuild the cached raw-byte lexicographic ordered view once for the merged
-      result. Active `//` evaluator wiring, representation-policy dispatch,
-      final CHAMP tuning, and `.drv` effects remain open.
+      result. The active `//` evaluator shadow-dispatch bridge described below
+      now uses this path for HAMT-classified telemetry accounting. Active HAMT
+      heap storage, final CHAMP tuning, and `.drv` effects remain open.
 - [x] Current `attrs/repr.rs` precursor: `ratchet-value` exposes a safe
       `Flat`/`Hamt` representation-policy classifier for static literals,
       dynamic constructions, and `//` merge results. Static literals are
@@ -8647,10 +8648,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `update_from_flat_right` policy dispatch. Small flat-left merges copy into
       a new flat attrset preserving left slots plus right-only append order;
       HAMT-classified merges convert flat left operands as needed and call the
-      persistent HAMT merge helper. The precursor assumes `self`, `right`, and
-      `symbols` share one symbol universe. Active evaluator `//` wiring, HAMT
-      right source-order semantics, measured threshold calibration, and `.drv`
-      differential proof remain open.
+      persistent HAMT merge helper. The active tree-walk `//` path now builds
+      policy-compatible flat operands and runs this dispatch after successful
+      flat heap allocation so `EvalOutcome::attr_telemetry` records real HAMT
+      insert/replace summaries for HAMT-classified update samples. The runtime
+      heap result remains `FlatAttrs` to preserve the current value surface;
+      active HAMT storage, HAMT right source-order semantics, measured
+      threshold calibration, and `.drv` differential proof remain open.
 - [x] Current HAMT select-policy precursor: `ratchet-value` exposes
       `HamtSelectCache`, which binds one static select key and models the two
       RFC policy choices for HAMT-valued selections: cache a distinguished HAMT
@@ -8701,12 +8705,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       outcomes, static and dynamic attrset-node representation decisions, and
       selected builtin result representation decisions, plus `//` update-merge
       samples with syntactic update-chain depth through this telemetry surface
-      and exposes them via `EvalOutcome::attr_telemetry`; active static flat
-      select-cache terminal states are recorded there too. Flat cache hits use
-      mirrored `EvalStats` inline-cache counters while unresolved cache lookups
-      keep the slow-select telemetry. This does not replace runtime
-      shape/PIC/HAMT instrumentation, full package-set measurements, C++
-      `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
+      and exposes them via `EvalOutcome::attr_telemetry`; HAMT-classified active
+      update samples now also carry HAMT insert/replace summaries from the
+      representation-dispatch bridge, and active static flat select-cache
+      terminal states are recorded there too. Flat cache hits use mirrored
+      `EvalStats` inline-cache counters while unresolved cache lookups keep the
+      slow-select telemetry. This does not replace runtime shape/PIC/HAMT
+      instrumentation, full package-set measurements, C++ `NIX_SHOW_STATS`
+      comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**
 

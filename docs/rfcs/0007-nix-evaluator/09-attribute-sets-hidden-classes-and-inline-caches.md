@@ -885,8 +885,9 @@ harness, never cut for scope.
       that apply `//` merges through persistent insert/replace operations,
       report inserted/replaced counts, preserve old roots, and recompute the
       cached raw-byte lexicographic ordered view once for the merged result.
-      Active `//` evaluator wiring, representation-policy dispatch, final CHAMP
-      tuning, and `.drv` effects remain open.
+      The active `//` evaluator shadow-dispatch bridge described below now uses
+      this path for HAMT-classified telemetry accounting. Active HAMT heap
+      storage, final CHAMP tuning, and `.drv` effects remain open.
 - [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
 - [x] Current representation-policy precursor: `ratchet-value::attrs::repr`
       classifies static literals, dynamic constructions, and `//` merge results
@@ -902,10 +903,13 @@ harness, never cut for scope.
       `update_from_flat_right` policy dispatch. Small flat-left merges copy into
       a new flat attrset preserving left slots plus right-only append order;
       HAMT-classified merges convert flat left operands as needed and call the
-      persistent HAMT merge helper. The precursor assumes `self`, `right`, and
-      `symbols` share one symbol universe. Active evaluator `//` wiring, HAMT
-      right source-order semantics, measured threshold calibration, and `.drv`
-      differential proof remain open.
+      persistent HAMT merge helper. The active tree-walk `//` path now builds
+      policy-compatible flat operands and runs this dispatch after successful
+      flat heap allocation so `EvalOutcome::attr_telemetry` records real HAMT
+      insert/replace summaries for HAMT-classified update samples. The runtime
+      heap result remains `FlatAttrs` to preserve the current value surface;
+      active HAMT storage, HAMT right source-order semantics, measured
+      threshold calibration, and `.drv` differential proof remain open.
 - [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
 - [x] Current HAMT select-policy precursor: `ratchet-value::attrs::pic`
       exposes `HamtSelectCache`, which binds one static select key and models
@@ -971,7 +975,9 @@ harness, never cut for scope.
       outcomes, static and dynamic attrset-node representation decisions, and
       selected builtin result representation decisions, plus `//` update merges
       with syntactic update-chain depth, and exposes the captured samples
-      through `EvalOutcome::attr_telemetry`; active static flat select-cache
+      through `EvalOutcome::attr_telemetry`; HAMT-classified active update
+      samples now also carry HAMT insert/replace summaries from the
+      representation-dispatch bridge, and active static flat select-cache
       terminal states are recorded there too. Flat cache hits use mirrored
       `EvalStats` inline-cache counters while unresolved cache lookups keep
       slow-select telemetry. Runtime shape/PIC/HAMT instrumentation, full AOS

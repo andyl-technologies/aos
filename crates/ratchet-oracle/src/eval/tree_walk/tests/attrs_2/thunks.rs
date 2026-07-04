@@ -857,8 +857,34 @@ fn attr_update_telemetry_tracks_projected_hamt_left_state() {
     assert_eq!(snapshot.decisions, 11);
     assert_eq!(snapshot.flat_decisions, 9);
     assert_eq!(snapshot.hamt_decisions, 2);
+    assert_eq!(snapshot.update_merges, 5);
+    assert_eq!(snapshot.flat_update_merges, 3);
+    assert_eq!(snapshot.hamt_update_merges, 2);
+    assert_eq!(snapshot.hamt_inserted, 2);
+    assert_eq!(snapshot.hamt_replaced, 0);
     assert_eq!(snapshot.reasons.static_literal, 6);
     assert_eq!(snapshot.reasons.small_shape_stable, 3);
+    assert_eq!(snapshot.reasons.deep_override_chain, 1);
+    assert_eq!(snapshot.reasons.left_already_hamt, 1);
+}
+
+#[test]
+fn attr_update_telemetry_records_hamt_replacements_from_dispatch_bridge() {
+    let ir = lower(
+        "((((({ a = 1; b = 2; } // { c = 3; }) // { d = 4; }) // { e = 5; }) // { a = 50; }) // { c = 60; }).c",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("deep replacement attr update chain evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(60));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("merge telemetry snapshot allocates");
+    assert_eq!(snapshot.update_merges, 5);
+    assert_eq!(snapshot.hamt_update_merges, 2);
+    assert_eq!(snapshot.hamt_inserted, 0);
+    assert_eq!(snapshot.hamt_replaced, 2);
     assert_eq!(snapshot.reasons.deep_override_chain, 1);
     assert_eq!(snapshot.reasons.left_already_hamt, 1);
 }

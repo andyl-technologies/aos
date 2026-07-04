@@ -111,14 +111,14 @@ impl TreeWalk {
         );
     }
 
-    pub(super) fn record_attr_update_telemetry(
-        &mut self,
+    pub(super) fn project_attr_update_merge(
+        &self,
         id: IrId,
         span: Span,
         lhs: IrId,
         left_len: usize,
         right_len: usize,
-    ) {
+    ) -> Option<AttrUpdateMergeProjection> {
         let lhs_ref = (self.current_module.as_u32(), lhs.as_u32());
         let left_state = self
             .attr_update_node_states
@@ -136,7 +136,7 @@ impl TreeWalk {
                 span_end = span.end,
                 "skipping attr update telemetry after override-chain depth overflow"
             );
-            return;
+            return None;
         };
         let policy = AttrSetReprPolicy::default();
         let construction = AttrSetConstruction::UpdateMerge {
@@ -156,16 +156,50 @@ impl TreeWalk {
                     error = %source,
                     "skipping attr update telemetry after representation policy failure"
                 );
-                return;
+                return None;
             }
         };
 
+        Some(AttrUpdateMergeProjection {
+            left_repr: left_state.projected_repr,
+            override_chain_depth,
+            decision,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_attr_update_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lhs: IrId,
+        left_len: usize,
+        right_len: usize,
+    ) {
+        let Some(projection) = self.project_attr_update_merge(id, span, lhs, left_len, right_len)
+        else {
+            return;
+        };
+        self.record_projected_attr_update_telemetry(
+            id, span, left_len, right_len, projection, None,
+        );
+    }
+
+    pub(super) fn record_projected_attr_update_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        left_len: usize,
+        right_len: usize,
+        projection: AttrUpdateMergeProjection,
+        hamt_summary: Option<HamtMergeSummary>,
+    ) {
         if let Err(source) = self.attr_telemetry.record_update_merge(
             left_len,
             right_len,
-            override_chain_depth,
-            decision,
-            None,
+            projection.override_chain_depth,
+            projection.decision,
+            hamt_summary,
         ) {
             tracing::debug!(
                 target: "aos_nix::eval::attr_telemetry",
@@ -179,8 +213,8 @@ impl TreeWalk {
         }
 
         let result_state = AttrUpdateTelemetryState {
-            override_chain_depth,
-            projected_repr: decision.kind(),
+            override_chain_depth: projection.override_chain_depth,
+            projected_repr: projection.decision.kind(),
         };
         self.attr_update_node_states
             .insert((self.current_module.as_u32(), id.as_u32()), result_state);

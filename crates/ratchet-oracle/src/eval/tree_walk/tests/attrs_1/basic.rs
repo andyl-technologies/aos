@@ -290,6 +290,15 @@ fn attr_update_merges_shallowly_with_rhs_precedence() {
 }
 
 #[test]
+fn attr_update_preserves_old_tree_walk_source_order_metadata_for_overwrites() {
+    let ir = lower("{ a = 1; b = 2; } // { a = 3; c = 4; }");
+    let mut evaluator = TreeWalk::new(&ir);
+    let value = evaluator.eval_root().expect("attr update evaluates");
+
+    assert_source_order_attrset_ints(&evaluator, value, &[(b"b", 2), (b"a", 3), (b"c", 4)]);
+}
+
+#[test]
 fn attr_update_keeps_values_lazy() {
     assert_eq!(
         eval("let r = { a = 1; } // { b = 1 / 0; }; in r.a").as_int(),

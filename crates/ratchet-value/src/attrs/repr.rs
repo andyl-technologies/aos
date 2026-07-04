@@ -352,8 +352,8 @@ impl AttrSetReprValue {
     /// insert/replace operations. `self`, `right`, and `symbols` must belong
     /// to the same symbol universe.
     ///
-    /// This is a value-level precursor only; it is not wired into tree-walk
-    /// `//` evaluation.
+    /// This is a value-level precursor only; the tree-walk evaluator may use it
+    /// for shadow telemetry, but it is not the active runtime attrset storage.
     ///
     /// # Errors
     ///

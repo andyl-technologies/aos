@@ -213,15 +213,66 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let left_len = left_entries.len();
         let right_len = right_entries.len();
-        let capacity = left_entries.len().checked_add(right_len).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Attr {
+        let attrs = self.merge_flat_update_entries_for_active_heap(
+            id,
+            span,
+            &left_entries,
+            &right_entries,
+        )?;
+        let result = self
+            .heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+
+        if let Some(projection) = self.project_attr_update_merge(id, span, lhs, left_len, right_len)
+        {
+            match self.dispatch_attr_update_merge_for_telemetry(
+                projection,
+                &left_entries,
+                &right_entries,
+            ) {
+                Ok(hamt_summary) => self.record_projected_attr_update_telemetry(
                     id,
-                    source: AttrError::TooManyEntries { len: usize::MAX },
-                },
-                span,
-            )
-        })?;
+                    span,
+                    left_len,
+                    right_len,
+                    projection,
+                    hamt_summary,
+                ),
+                Err(error) => {
+                    tracing::debug!(
+                        target: "aos_nix::eval::attr_telemetry",
+                        node = id.as_u32(),
+                        span_start = span.start,
+                        span_end = span.end,
+                        error = %error,
+                        "skipping policy-dispatched attr update accounting after representation merge failure"
+                    );
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn merge_flat_update_entries_for_active_heap(
+        &self,
+        id: IrId,
+        span: Span,
+        left_entries: &[AttrEntry],
+        right_entries: &[AttrEntry],
+    ) -> Result<FlatAttrs, TreeWalkError> {
+        let capacity = left_entries
+            .len()
+            .checked_add(right_entries.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::TooManyEntries { len: usize::MAX },
+                    },
+                    span,
+                )
+            })?;
         let mut entries = Vec::new();
         entries.try_reserve_exact(capacity).map_err(|_| {
             TreeWalkError::new(
@@ -234,19 +285,54 @@ impl TreeWalk {
         })?;
         for entry in left_entries {
             if !right_entries.iter().any(|right| right.key == entry.key) {
-                entries.push(entry);
+                entries.push(*entry);
             }
         }
-        entries.extend(right_entries);
+        entries.extend_from_slice(right_entries);
 
-        let attrs = FlatAttrs::new(entries, &self.symbols)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        let result = self
-            .heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        self.record_attr_update_telemetry(id, span, lhs, left_len, right_len);
-        Ok(result)
+        FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))
+    }
+
+    fn dispatch_attr_update_merge_for_telemetry(
+        &self,
+        projection: AttrUpdateMergeProjection,
+        left_entries: &[AttrEntry],
+        right_entries: &[AttrEntry],
+    ) -> Result<Option<HamtMergeSummary>, AttrUpdateTelemetryDispatchError> {
+        let left_attrs = self.flat_attrs_from_update_entries_for_telemetry(left_entries)?;
+        let right_attrs = self.flat_attrs_from_update_entries_for_telemetry(right_entries)?;
+        let left = match projection.left_repr {
+            AttrSetReprKind::Flat => AttrSetReprValue::from_flat(left_attrs),
+            AttrSetReprKind::Hamt => AttrSetReprValue::from_hamt(
+                HamtAttrs::from_flat(&left_attrs, &self.symbols)
+                    .map_err(AttrUpdateTelemetryDispatchError::Hamt)?,
+            ),
+        };
+        let merge = left
+            .update_from_flat_right(
+                &right_attrs,
+                AttrSetReprPolicy::default(),
+                projection.override_chain_depth,
+                &self.symbols,
+            )
+            .map_err(AttrUpdateTelemetryDispatchError::Repr)?;
+        debug_assert_eq!(merge.decision(), projection.decision);
+        Ok(merge.hamt_summary())
+    }
+
+    fn flat_attrs_from_update_entries_for_telemetry(
+        &self,
+        entries: &[AttrEntry],
+    ) -> Result<FlatAttrs, AttrUpdateTelemetryDispatchError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(entries.len()).map_err(|_| {
+            AttrUpdateTelemetryDispatchError::Flat(AttrError::AllocationFailed {
+                entries: entries.len(),
+            })
+        })?;
+        cloned.extend_from_slice(entries);
+        FlatAttrs::new(cloned, &self.symbols).map_err(AttrUpdateTelemetryDispatchError::Flat)
     }
 
     pub(in crate::eval::tree_walk) fn concat_lists(
