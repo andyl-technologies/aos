@@ -10,8 +10,8 @@ use crucible::{
     FindingDiscoveryPath, GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger,
     NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
     ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
-    SearchStrategy, Seed, TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode, bake, try_step,
+    SearchReplayOracleSamplingConfig, SearchStrategy, Seed, TemporalGraph, TemporalGraphSearchRun,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -77,6 +77,46 @@ fn gate_search_strategies_depth_bound_stops_before_exhaustion() -> Result<(), Bo
         expected_reached_graph(&fixture.root, &fixture.children)
     );
     assert!(!run.exhausted);
+
+    Ok(())
+}
+
+#[test]
+fn gate_search_strategies_sample_replay_oracle_checks() -> Result<(), Box<dyn Error>> {
+    let mut fixture = strategy_fixture()?;
+    let config = SearchReplayOracleSamplingConfig::new(
+        1,
+        1,
+        "gate-search-strategies-sampled-replay-oracle",
+    )?;
+    let sampled = fixture
+        .graph
+        .search_with_strategy_and_failure_oracle_bounded_depth_sampled(
+            &fixture.scenario,
+            &fixture.root,
+            SearchStrategy::BreadthFirst,
+            SearchBudget::new(1),
+            MaterializationPolicy::with_budget(4),
+            MaterializationTrigger::RepeatedForkSource,
+            &SearchFailureOracle::none(),
+            None,
+            &config,
+        )?;
+
+    assert_eq!(sampled.run.expansions.len(), 1);
+    assert_eq!(
+        sampled.replay_oracle_sampling.considered,
+        fixture.children.len()
+    );
+    assert_eq!(
+        sampled.replay_oracle_sampling.sampled,
+        fixture.children.len()
+    );
+    assert_eq!(sampled.replay_oracle_sampling.skipped, 0);
+    assert_eq!(
+        sampled.replay_oracle_sampling.sampled_checkpoints.len(),
+        fixture.children.len()
+    );
 
     Ok(())
 }

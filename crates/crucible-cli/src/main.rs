@@ -1486,6 +1486,9 @@ struct LocalDoubleSearchReport {
     explored: usize,
     failures: usize,
     exhausted: bool,
+    replay_oracle_considered: usize,
+    replay_oracle_sampled: usize,
+    replay_oracle_skipped: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11568,29 +11571,62 @@ fn run_local_double_search_workflow(
     let scenario = plan.scenario.scenario_def().clone();
     let root = crucible::Configuration::genesis(scenario.clone());
     let mut graph = save_validation_graph(&scenario)?;
+    run_local_double_search_workflow_with_graph(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        plan,
+        &root,
+        &mut graph,
+    )
+}
+
+fn run_local_double_search_workflow_with_graph(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    root: &crucible::Configuration,
+    graph: &mut TemporalGraph,
+) -> Result<BackendCommandOutcome, CliError> {
     let failure_oracle = SearchFailureOracle::none();
-    let run = graph
-        .search_with_strategy_and_failure_oracle_bounded_depth(
+    let sampling_config =
+        crucible::SearchReplayOracleSamplingConfig::new(1, 1, "cli-local-double-search")
+            .map_err(|error| backend_error(format!("local-double search setup failed: {error}")))?;
+    let sampled = graph
+        .search_with_strategy_and_failure_oracle_bounded_depth_sampled(
             plan.scenario.scenario_form(),
-            &root,
+            root,
             plan.engine_strategy,
             plan.budget,
-            MaterializationPolicy::thin_only(),
-            MaterializationTrigger::Cold,
+            MaterializationPolicy::with_budget(search_materialization_budget(plan.max_states)),
+            MaterializationTrigger::RepeatedForkSource,
             &failure_oracle,
             plan.max_depth,
+            &sampling_config,
         )
         .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
+    let run = sampled.run;
     let report = LocalDoubleSearchReport {
         root: run.root,
         expansions: run.expansions.len(),
         explored: run.explored_graph.len(),
         failures: run.discovered_failures.len(),
         exhausted: run.exhausted,
+        replay_oracle_considered: sampled.replay_oracle_sampling.considered,
+        replay_oracle_sampled: sampled.replay_oracle_sampling.sampled,
+        replay_oracle_skipped: sampled.replay_oracle_sampling.skipped,
     };
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     apply_local_double_search_report(&mut outcome, plan, &report);
     Ok(outcome)
+}
+
+fn search_materialization_budget(max_states: u64) -> usize {
+    match usize::try_from(max_states) {
+        Ok(max_states) => max_states,
+        Err(_) => usize::MAX,
+    }
 }
 
 fn apply_local_double_search_report(
@@ -11604,7 +11640,7 @@ fn apply_local_double_search_report(
     outcome.status = status;
     outcome.exit_code = status.exit_code();
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}\tbudget_exhausted={}\tstatus={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle=none\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
         format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
@@ -11612,6 +11648,9 @@ fn apply_local_double_search_report(
         plan.max_depth
             .map(|depth| depth.to_string())
             .unwrap_or_else(|| String::from("none")),
+        report.replay_oracle_considered,
+        report.replay_oracle_sampled,
+        report.replay_oracle_skipped,
         plan.on_violation.label(),
         report.expansions,
         report.explored,
@@ -11626,13 +11665,16 @@ fn apply_local_double_search_report(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={} budget_exhausted={} status={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle=none replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={} exhausted={} budget_exhausted={} status={}",
             format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
             plan.max_depth
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| String::from("none")),
+            report.replay_oracle_considered,
+            report.replay_oracle_sampled,
+            report.replay_oracle_skipped,
             plan.on_violation.label(),
             report.expansions,
             report.explored,
@@ -14118,6 +14160,101 @@ mod tests {
         let path = temp.path().join("scenario.toml");
         fs::write(&path, fixture.scenario.to_canonical_toml()?)?;
         Ok(path)
+    }
+
+    fn write_search_frontier_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let form = search_frontier_scenario_form()?;
+        let path = temp.path().join("search-frontier-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+        let world = search_frontier_world()?;
+        Ok(::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &::crucible::Properties::empty(),
+            ::crucible::Seed::default(),
+        )?)
+    }
+
+    fn search_frontier_world() -> Result<::crucible::World, Box<dyn Error>> {
+        Ok(::crucible::World::from_nodes(vec![
+            ::crucible::WorldNode {
+                id: ::crucible::NodeId {
+                    name: String::from("cli-search-node"),
+                },
+                arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
+                memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+                cmdline: String::from("crucible-cli-search-frontier"),
+                ready_point: ::crucible::ReadyPoint::FixedIcount {
+                    icount: ::crucible::Icount { retired: 100 },
+                },
+                white_box: ::crucible::WhiteBoxPolicy::Disabled,
+                smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+                icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+                kernel: None,
+                root_image: None,
+                initrd: None,
+            },
+        ])?)
+    }
+
+    fn search_frontier_graph(
+        scenario: &::crucible::ScenarioDefForm,
+    ) -> Result<::crucible::TemporalGraph, Box<dyn Error>> {
+        let baked =
+            baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
+        Ok(::crucible::TemporalGraph::empty()
+            .with_baked_genesis(&scenario.scenario_def(), baked)?)
+    }
+
+    fn baked_with_search_frontier_choices(
+        world: &::crucible::World,
+        decisions: Vec<::crucible::Decision>,
+    ) -> Result<::crucible::GenesisCheckpoint, Box<dyn Error>> {
+        let mut baked = ::crucible::bake(world)?;
+        let state = baked.checkpoint.state.as_ref().ok_or_else(|| {
+            std::io::Error::other("search frontier genesis checkpoint missing state")
+        })?;
+        let mut scheduler = state.scheduler.clone();
+        scheduler.search_frontier = ::crucible::SearchFrontierChoices::from_decisions(decisions);
+        baked.checkpoint.state = Some(
+            ::crucible::MaterializedState::from_components_with_event_log_segments(
+                state.vm_snapshots.clone(),
+                state.device_overlays.clone(),
+                scheduler,
+                state.decision_rng.clone(),
+                state.event_log,
+                state.event_log_segments.clone(),
+            ),
+        );
+        Ok(baked)
+    }
+
+    fn search_frontier_decisions() -> Vec<::crucible::Decision> {
+        vec![
+            ::crucible::Decision::FaultFires(::crucible::FaultDecision {
+                at: ::crucible::VirtualTime { ticks: 12 },
+                fault: ::crucible::FaultId {
+                    name: String::from("cli-search/packet-loss"),
+                },
+                fired: true,
+            }),
+            ::crucible::Decision::RngDraw(::crucible::RngDecision {
+                stream: ::crucible::RngStreamId::from_name("cli-search/decision-rng"),
+                value: 0xa5a5_5a5a,
+            }),
+            ::crucible::Decision::Override(::crucible::OverrideDecision {
+                point: ::crucible::SchedulingPoint {
+                    key: String::from("cli-search/scheduler-point"),
+                },
+                choice: ::crucible::ChoiceTag {
+                    name: String::from("non-default-choice"),
+                },
+            }),
+        ]
     }
 
     fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
@@ -18689,19 +18826,35 @@ mod tests {
         let search_plan = plan_search_invocation(args, temp.path())?;
         let backend_plan =
             plan_backend_selection(&search_cli)?.expect("search should route to backend");
-        let mut timeout_outcome =
-            backend_command_outcome(&plan_cli_invocation(&search_cli), &backend_plan, None);
-        apply_local_double_search_report(
-            &mut timeout_outcome,
-            &search_plan,
-            &LocalDoubleSearchReport {
-                root: search_plan.scenario.scenario_def().id(),
-                expansions: 1,
-                explored: 2,
-                failures: 0,
-                exhausted: false,
-            },
-        );
+
+        let frontier_scenario = write_search_frontier_scenario(&temp)?;
+        let frontier_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            frontier_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+        ]);
+        let Commands::Search(args) = &frontier_cli.command else {
+            panic!("expected search command");
+        };
+        let frontier_plan = plan_search_invocation(args, temp.path())?;
+        let frontier_backend =
+            plan_backend_selection(&frontier_cli)?.expect("search should route to backend");
+        let frontier_root =
+            crucible::Configuration::genesis(frontier_plan.scenario.scenario_def().clone());
+        let mut frontier_graph = search_frontier_graph(frontier_plan.scenario.scenario_form())?;
+        let timeout_outcome = run_local_double_search_workflow_with_graph(
+            &plan_cli_invocation(&frontier_cli),
+            &frontier_backend,
+            None,
+            &frontier_plan,
+            &frontier_root,
+            &mut frontier_graph,
+        )?;
         assert_eq!(timeout_outcome.status, BackendCommandStatus::Timeout);
         assert_eq!(timeout_outcome.exit_code, 2);
         assert!(
@@ -18709,6 +18862,8 @@ mod tests {
                 .stdout
                 .iter()
                 .any(|line| line.contains("budget_exhausted=true")
+                    && line.contains("replay_oracle_considered=1")
+                    && line.contains("replay_oracle_sampled=1")
                     && line.contains("status=timeout"))
         );
         assert!(timeout_outcome.canonical_log.iter().any(|entry| {
@@ -18731,6 +18886,9 @@ mod tests {
         assert!(search_line.contains("strategy=dfs"));
         assert!(search_line.contains("max_states=1"));
         assert!(search_line.contains("failure_oracle=none"));
+        assert!(search_line.contains("replay_oracle_sampling=1/1"));
+        assert!(search_line.contains("replay_oracle_considered=0"));
+        assert!(search_line.contains("replay_oracle_sampled=0"));
         assert!(search_line.contains("failures=0"));
         assert!(search_line.contains("budget_exhausted=false"));
         assert!(search_line.contains("status=passed"));
@@ -18775,6 +18933,7 @@ mod tests {
             .find(|line| line.starts_with("search-run\t"))
             .expect("collect search workflow must emit a search-run line");
         assert!(collect_line.contains("budget_exhausted=false"));
+        assert!(collect_line.contains("replay_oracle_sampling=1/1"));
         assert!(collect_line.contains("status=passed"));
         dispatch(&collect_cli)?;
 
