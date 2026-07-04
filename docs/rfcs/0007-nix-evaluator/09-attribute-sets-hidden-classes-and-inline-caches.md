@@ -774,19 +774,19 @@ harness, never cut for scope.
       exposes a process-local `ShapeTable` rooted at the empty shape, interns
       `AttrShape` descriptors behind pointer-identity handles, reuses
       fingerprint-filtered raw-equal shapes, and caches new-key transition edges
-      on the parent record. This is not a global/shared shape table, does not
-      provide lock-free reads, and is not wired into attr allocation, select
-      sites, or `.drv`-observable behavior.
+      on the parent record. The active tree-walk evaluator now projects
+      successful flat attr heap allocations through a process-local shape table
+      for shape-census telemetry only. This is not a global/shared shape table,
+      does not provide lock-free reads, and is not wired into shaped heap
+      allocation, select sites, or `.drv`-observable behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [x] Current static-shape-plan precursor: `ratchet-value::attrs::shape`
       exposes `StaticShapePlan`, which resolves a static literal's
       construction-order keys through the process-local transition tree once,
       stores the final `ShapeHandle`, and records source-slot to symbol-slot
-      placement for filling shaped value arrays. The active tree-walk evaluator
-      now resolves eligible static literals through a process-local shape table
-      for shape-census telemetry only. It is not wired into IR lowering,
-      evaluator attr allocation, select/runtime storage, or `.drv`-observable
-      behavior.
+      placement for filling shaped value arrays. It is not wired into IR
+      lowering, evaluator shaped-value allocation, select/runtime storage, or
+      `.drv`-observable behavior.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
 - [x] Current shaped hash-consing precursor: `ratchet-value::attrs::shape`
       exposes `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an
@@ -985,9 +985,9 @@ harness, never cut for scope.
       terminal-state histograms, shaped/HAMT select-cache lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
-      tree-walk evaluator now feeds this surface from static-literal
-      shape-census samples, flat slow-select outcomes, static and dynamic
-      attrset-node representation decisions, and selected builtin result
+      tree-walk evaluator now feeds this surface from successful flat attr heap
+      allocation shape-census samples, flat slow-select outcomes, static and
+      dynamic attrset-node representation decisions, and selected builtin result
       representation decisions, plus `//` update merges with syntactic
       update-chain depth, and exposes the captured samples through
       `EvalOutcome::attr_telemetry`; HAMT-classified active update samples now

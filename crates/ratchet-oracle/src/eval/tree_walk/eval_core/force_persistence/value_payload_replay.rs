@@ -83,6 +83,24 @@ impl TreeWalk {
         Some(AttrPosition::new(target, position.span))
     }
 
+    fn alloc_replayed_attrs_with_census(
+        &mut self,
+        repr: AttrSetReprKind,
+        attrs: FlatAttrs,
+    ) -> Option<Value> {
+        let span = Span::new(0, 0);
+        let census_shape =
+            self.project_flat_attr_shape_census_telemetry(IrId::new(0), span, &attrs);
+        let value = self
+            .heap
+            .alloc_attrs_with_repr_metadata(0, repr, attrs)
+            .ok()?;
+        if let Some(census_shape) = census_shape {
+            self.record_projected_attr_shape_census_telemetry(IrId::new(0), span, &census_shape);
+        }
+        Some(value)
+    }
+
     fn value_for_cached_expression_payload_with_depth(
         &mut self,
         payload: CachedExpressionValue,
@@ -126,10 +144,7 @@ impl TreeWalk {
         }
         if payload.is_empty_attrs() {
             let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
-            return self
-                .heap
-                .alloc_attrs_with_repr_metadata(0, repr, FlatAttrs::empty())
-                .ok();
+            return self.alloc_replayed_attrs_with_census(repr, FlatAttrs::empty());
         }
         if let Some(attr_payloads) = payload.attrs_entries_with_positions() {
             let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
@@ -152,10 +167,7 @@ impl TreeWalk {
                 entries.push(entry);
             }
             let attrs = FlatAttrs::new(entries, &self.symbols).ok()?;
-            return self
-                .heap
-                .alloc_attrs_with_repr_metadata(0, repr, attrs)
-                .ok();
+            return self.alloc_replayed_attrs_with_census(repr, attrs);
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.heap.alloc_path(NixString::from_bytes(bytes)).ok()

@@ -906,9 +906,6 @@ impl TreeWalk {
         } else {
             AttrSetConstruction::Dynamic { len }
         };
-        if is_static_literal {
-            self.record_static_attr_shape_census_telemetry(id, node.span, &attrs);
-        }
         self.alloc_flat_attrs_with_repr_telemetry(
             id,
             node.span,

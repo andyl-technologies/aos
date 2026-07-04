@@ -276,12 +276,12 @@ impl TreeWalk {
         }
     }
 
-    pub(super) fn record_static_attr_shape_census_telemetry(
+    pub(super) fn project_flat_attr_shape_census_telemetry(
         &mut self,
         id: IrId,
         span: Span,
         attrs: &FlatAttrs,
-    ) {
+    ) -> Option<ShapeHandle> {
         let mut keys = Vec::new();
         if keys.try_reserve_exact(attrs.len()).is_err() {
             tracing::debug!(
@@ -290,47 +290,52 @@ impl TreeWalk {
                 span_start = span.start,
                 span_end = span.end,
                 entries = attrs.len(),
-                "skipping static attr shape-census telemetry after key-buffer allocation failure"
+                "skipping flat attr shape-census telemetry after key-buffer allocation failure"
             );
-            return;
+            return None;
         }
         keys.extend(attrs.iter_source_order().map(|entry| entry.key));
 
-        let shape = {
-            let Some(shape_table) = self.shape_table.as_mut() else {
+        let Some(shape_table) = self.shape_table.as_mut() else {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                "skipping flat attr shape-census telemetry because shape table initialization failed"
+            );
+            return None;
+        };
+        match shape_table.intern_construction_order(&keys, &self.symbols) {
+            Ok(shape) => Some(shape),
+            Err(source) => {
                 tracing::debug!(
                     target: "aos_nix::eval::attr_telemetry",
                     node = id.as_u32(),
                     span_start = span.start,
                     span_end = span.end,
-                    "skipping static attr shape-census telemetry because shape table initialization failed"
+                    error = %source,
+                    "skipping flat attr shape-census telemetry after shape projection failure"
                 );
-                return;
-            };
-            match StaticShapePlan::resolve(shape_table, &keys, &self.symbols) {
-                Ok(plan) => plan.shape().clone(),
-                Err(source) => {
-                    tracing::debug!(
-                        target: "aos_nix::eval::attr_telemetry",
-                        node = id.as_u32(),
-                        span_start = span.start,
-                        span_end = span.end,
-                        error = %source,
-                        "skipping static attr shape-census telemetry after shape-plan failure"
-                    );
-                    return;
-                }
+                None
             }
-        };
+        }
+    }
 
-        if let Err(source) = self.attr_telemetry.record_shape_instance(&shape) {
+    pub(super) fn record_projected_attr_shape_census_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        shape: &ShapeHandle,
+    ) {
+        if let Err(source) = self.attr_telemetry.record_shape_instance(shape) {
             tracing::debug!(
                 target: "aos_nix::eval::attr_telemetry",
                 node = id.as_u32(),
                 span_start = span.start,
                 span_end = span.end,
                 error = %source,
-                "skipping static attr shape-census telemetry after recording failure"
+                "skipping flat attr shape-census telemetry after recording failure"
             );
         }
     }
@@ -343,12 +348,16 @@ impl TreeWalk {
         attrs: FlatAttrs,
         construction: AttrSetConstruction,
     ) -> Result<Value, TreeWalkError> {
+        let census_shape = self.project_flat_attr_shape_census_telemetry(id, span, &attrs);
         let decision = self.classify_attr_repr_decision(id, span, construction);
         let repr = decision.map_or(AttrSetReprKind::Flat, AttrSetReprDecision::kind);
         let value = self
             .heap
             .alloc_attrs_with_repr_metadata(shape, repr, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if let Some(census_shape) = census_shape {
+            self.record_projected_attr_shape_census_telemetry(id, span, &census_shape);
+        }
         if let Some(decision) = decision {
             self.record_classified_attr_repr_decision_telemetry(id, span, construction, decision);
         }

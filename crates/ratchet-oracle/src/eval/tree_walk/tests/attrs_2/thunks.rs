@@ -250,6 +250,27 @@ fn attr_update_records_active_merge_telemetry() {
             HistogramBucket { value: 2, count: 1 },
         ],
     );
+
+    let census = outcome
+        .attr_telemetry()
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 5);
+    assert_eq!(census.distinct_shapes, 5);
+    let mut key_counts = census
+        .shapes
+        .iter()
+        .map(|entry| entry.key_count)
+        .collect::<Vec<_>>();
+    key_counts.sort_unstable();
+    assert_eq!(key_counts, vec![1, 1, 2, 2, 3],);
+    assert_eq!(
+        census.multiplicity.as_ref(),
+        &[ShapeMultiplicityBucket {
+            instances_per_shape: 1,
+            shape_count: 5,
+        }],
+    );
 }
 
 #[test]
@@ -320,8 +341,9 @@ fn dynamic_attrset_literals_record_dynamic_repr_decisions() {
         .attr_telemetry()
         .shape_census()
         .expect("shape census snapshot allocates");
-    assert_eq!(census.total_instances, 0);
-    assert_eq!(census.distinct_shapes, 0);
+    assert_eq!(census.total_instances, 1);
+    assert_eq!(census.distinct_shapes, 1);
+    assert_eq!(census.shapes[0].key_count, 1);
 }
 
 #[test]
@@ -466,6 +488,20 @@ fn list_to_attrs_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 2);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+
+    let census = outcome
+        .attr_telemetry()
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 3);
+    assert_eq!(census.distinct_shapes, 2);
+    let mut key_counts = census
+        .shapes
+        .iter()
+        .map(|entry| (entry.key_count, entry.instances))
+        .collect::<Vec<_>>();
+    key_counts.sort_unstable();
+    assert_eq!(key_counts, vec![(2, 1), (2, 2)]);
 }
 
 #[test]
@@ -1077,6 +1113,14 @@ fn force_cache_payload_replay_preserves_attr_repr_metadata() {
     assert_eq!(metadata.shape(), 0);
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
     assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
+
+    let census = replay
+        .attr_telemetry
+        .shape_census()
+        .expect("shape census snapshot allocates");
+    assert_eq!(census.total_instances, 1);
+    assert_eq!(census.distinct_shapes, 1);
+    assert_eq!(census.shapes[0].key_count, 6);
 }
 
 #[test]

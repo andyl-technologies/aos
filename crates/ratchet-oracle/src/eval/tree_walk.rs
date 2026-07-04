@@ -84,7 +84,7 @@ use crate::attrs::{
         AttrSelectError, AttrSelectOutcome, AttrSelectRepr, AttrSelectSource, AttrSelectTarget,
         select_slow,
     },
-    shape::{ShapeTable, StaticShapePlan},
+    shape::{ShapeHandle, ShapeTable},
     telemetry::AttrTelemetry,
 };
 use crate::cache::{

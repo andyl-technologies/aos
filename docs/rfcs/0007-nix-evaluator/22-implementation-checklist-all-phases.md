@@ -8546,8 +8546,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
 - [x] Current shape-table precursor: `ratchet-value` exposes a process-local
       `ShapeTable` rooted at the empty shape, pointer-identity `ShapeHandle`s,
       fingerprint-filtered descriptor interning, and parent-record transition
-      edge caching. Global/shared table behavior, lock-free reads, runtime attr
-      allocation, select-site use, and `.drv` effects remain open.
+      edge caching. The active tree-walk evaluator now projects successful flat
+      attr heap allocations through a process-local shape table for
+      shape-census telemetry only. Global/shared table behavior, lock-free
+      reads, shaped heap allocation, select-site use, and `.drv` effects remain
+      open.
 - [x] Current shaped-instance precursor: `ratchet-value` exposes `ShapedAttrs`,
       a safe `{ ShapeHandle, values_by_symbol }` flat instance that validates
       value counts, stores values in the shape's symbol-slot order, and
@@ -8558,11 +8561,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `StaticShapePlan`, which resolves static literal construction-order keys
       through the process-local transition tree once, stores the final
       `ShapeHandle`, and records source-slot to symbol-slot placement for
-      filling shaped value arrays. The active tree-walk evaluator now resolves
-      eligible static literals through a process-local shape table for
-      shape-census telemetry only. IR lowering, evaluator attr allocation,
-      active `FlatAttrs` replacement, select/runtime storage, and `.drv`
-      effects remain open.
+      filling shaped value arrays. IR lowering, evaluator shaped-value
+      allocation, active `FlatAttrs` replacement, select/runtime storage, and
+      `.drv` effects remain open.
 - [x] Current shaped hash-consing precursor: `ratchet-value` exposes
       `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an in-process
       shaped fingerprint and reuses only candidates confirmed by the same
@@ -8714,19 +8715,19 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       paths, `//`
       operand-size, result-length-upper-bound, and override-chain-depth
       distributions, HAMT merge insert/replace totals, and order-parity
-      outcomes. The active tree-walk evaluator now records static-literal
-      shape-census samples, flat slow-select outcomes, static and dynamic
-      attrset-node representation decisions, and selected builtin result
-      representation decisions, plus `//` update-merge samples with syntactic
-      update-chain depth through this telemetry surface and exposes them via
-      `EvalOutcome::attr_telemetry`; HAMT-classified active update samples now
-      also carry HAMT insert/replace summaries from the representation-dispatch
-      bridge, and active static flat select-cache terminal states are recorded
-      there too. Flat cache hits use mirrored `EvalStats` inline-cache counters
-      while unresolved cache lookups keep the slow-select telemetry. This does
-      not replace runtime shape/PIC/HAMT storage instrumentation, full
-      package-set measurements, C++ `NIX_SHOW_STATS` comparison, or `.drv`
-      differential proof.
+      outcomes. The active tree-walk evaluator now records successful flat attr
+      heap allocation shape-census samples, flat slow-select outcomes, static
+      and dynamic attrset-node representation decisions, and selected builtin
+      result representation decisions, plus `//` update-merge samples with
+      syntactic update-chain depth through this telemetry surface and exposes
+      them via `EvalOutcome::attr_telemetry`; HAMT-classified active update
+      samples now also carry HAMT insert/replace summaries from the
+      representation-dispatch bridge, and active static flat select-cache
+      terminal states are recorded there too. Flat cache hits use mirrored
+      `EvalStats` inline-cache counters while unresolved cache lookups keep the
+      slow-select telemetry. This does not replace runtime shape/PIC/HAMT
+      storage instrumentation, full package-set measurements, C++
+      `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**
 
