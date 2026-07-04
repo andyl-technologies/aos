@@ -111,10 +111,15 @@ impl TreeWalk {
         if !self.lambda_uses_formal_set_pattern(id, span, &lambda)? {
             return Ok(value);
         }
-        let argument = self
-            .heap
-            .alloc_attrs(0, FlatAttrs::empty())
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let attrs = FlatAttrs::empty();
+        let len = attrs.len();
+        let argument = self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )?;
         self.apply_lambda_value(id, span, id, value, span, id, argument)
     }
 

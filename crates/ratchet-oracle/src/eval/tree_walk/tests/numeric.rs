@@ -46,6 +46,29 @@ fn dynamic_attrset_bindings_evaluate_even_with_false_dynamic_flag() {
 }
 
 #[test]
+fn attr_path_auto_call_records_empty_arg_repr_decision() {
+    let ir = lower("{ selected ? 7 }: { selected = selected; }");
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &[b"selected".to_vec()],
+        TreeWalkOptions::default(),
+        None,
+    )
+    .expect("formal-set auto-call attr path evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 1);
+    assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
 fn malformed_thunk_payloads_are_reported_through_list_children() {
     let root = IrId::new(0);
     let child = IrId::new(1);
