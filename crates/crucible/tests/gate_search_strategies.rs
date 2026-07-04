@@ -14,9 +14,9 @@ use crucible::{
     NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
     ReachabilityExpectation, ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
     RngDecision, RngStreamId, RuntimeState, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerState, SchedulingPoint,
-    SearchBudget, SearchExpansion, SearchFailureOracle, SearchFrontierChoices,
-    SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
+    SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
+    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
     SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
     SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
     TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
@@ -1004,6 +1004,94 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
             .failure_for(after_quiescence_root.id())
             .is_some()
     );
+
+    let retained_sometimes_marker = MarkerId::from_name("never-retained-marker");
+    let retained_sometimes_scenario = assertion_lowering_scenario_with_world(
+        Property::Sometimes {
+            predicate: Predicate::guest_marker(retained_sometimes_marker),
+        },
+        single_node_world_with_white_box(
+            "retained-log-sometimes-lowering",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let retained_sometimes_root =
+        Configuration::genesis(retained_sometimes_scenario.scenario_def());
+    let retained_sometimes_run = empty_search_run_for_root(&retained_sometimes_root);
+    let retained_sometimes_log = retained_boundary_log(time(50))?;
+    let retained_sometimes_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_sometimes_scenario,
+            &retained_sometimes_root,
+            &retained_sometimes_run,
+            |configuration| {
+                (configuration.id() == retained_sometimes_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_sometimes_log.clone())
+                })
+            },
+        )?;
+
+    assert!(retained_sometimes_without_terminal_quiescence_oracle.is_empty());
+
+    let retained_sometimes_with_blocked_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_sometimes_scenario,
+            &retained_sometimes_root,
+            &retained_sometimes_run,
+            |configuration| {
+                (configuration.id() == retained_sometimes_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_sometimes_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence {
+                            blockers: vec![SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                                target: node_id("search-node"),
+                            }],
+                        })
+                })
+            },
+        )?;
+
+    assert!(retained_sometimes_with_blocked_terminal_quiescence_oracle.is_empty());
+
+    let retained_sometimes_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_sometimes_scenario,
+            &retained_sometimes_root,
+            &retained_sometimes_run,
+            |configuration| {
+                (configuration.id() == retained_sometimes_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_sometimes_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        retained_sometimes_with_terminal_quiescence_oracle
+            .failure_for(retained_sometimes_root.id())
+            .is_some()
+    );
+
+    let sometimes_quiescence_scenario = assertion_lowering_scenario(Property::Sometimes {
+        predicate: Predicate::Quiescent,
+    })?;
+    let sometimes_quiescence_root =
+        Configuration::genesis(sometimes_quiescence_scenario.scenario_def());
+    let sometimes_quiescence_run = empty_search_run_for_root(&sometimes_quiescence_root);
+    let sometimes_quiescence_log = retained_boundary_log(time(60))?;
+    let sometimes_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &sometimes_quiescence_scenario,
+            &sometimes_quiescence_root,
+            &sometimes_quiescence_run,
+            |configuration| {
+                (configuration.id() == sometimes_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(sometimes_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(sometimes_quiescence_with_terminal_quiescence_oracle.is_empty());
 
     Ok(())
 }

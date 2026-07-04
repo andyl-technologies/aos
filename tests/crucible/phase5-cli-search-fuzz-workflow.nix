@@ -567,6 +567,14 @@
         needle = "allow_terminal_quiescence_predicates";
       }
       {
+        label = "search assertion retained-log terminal completeness allowlist";
+        needle = "terminal_complete_retained_quantifier";
+      }
+      {
+        label = "search assertion retained-log terminal quiescent guard";
+        needle = "SchedulerQuiescence::is_quiescent";
+      }
+      {
         label = "search assertion retained-log after-quiescence allowlist";
         needle = "AssertionQuantifierKind::AfterQuiescence";
       }
@@ -719,6 +727,22 @@
       {
         label = "search assertion retained-log terminal quiescence reachability guard";
         needle = "unreachable_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal sometimes regression";
+        needle = "retained_sometimes_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal sometimes regression";
+        needle = "retained_sometimes_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence sometimes guard";
+        needle = "sometimes_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log blocked terminal sometimes guard";
+        needle = "retained_sometimes_with_blocked_terminal_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
