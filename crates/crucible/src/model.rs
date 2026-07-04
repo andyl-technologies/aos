@@ -15251,6 +15251,7 @@ impl TemporalGraph {
             trigger,
             None,
             &failure_oracle,
+            None,
         )
     }
 
@@ -15298,6 +15299,48 @@ impl TemporalGraph {
             trigger,
             Some(scenario),
             failure_oracle,
+            None,
+        )
+    }
+
+    /// Searches with a deterministic failure oracle and decision-depth bound.
+    ///
+    /// `max_depth` limits which pending frontier checkpoints may be expanded by
+    /// their recorded-decision depth. Candidates at or beyond the bound remain
+    /// pending, so [`TemporalGraphSearchRun::exhausted`] is false when a depth
+    /// bound, rather than graph exhaustion, stops the run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::search_with_strategy_and_failure_oracle`].
+    pub fn search_with_strategy_and_failure_oracle_bounded_depth(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+        max_depth: Option<u64>,
+    ) -> Result<TemporalGraphSearchRun, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+        self.search_with_strategy_inner(
+            root,
+            strategy,
+            budget,
+            FrontierReductionPolicy::none(),
+            materialization_policy,
+            trigger,
+            Some(scenario),
+            failure_oracle,
+            max_depth,
         )
     }
 
@@ -15451,6 +15494,7 @@ impl TemporalGraph {
             trigger,
             None,
             &failure_oracle,
+            None,
         )
     }
 
@@ -15464,6 +15508,7 @@ impl TemporalGraph {
         trigger: MaterializationTrigger,
         scenario: Option<&ScenarioDefForm>,
         failure_oracle: &SearchFailureOracle,
+        max_depth: Option<u64>,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
         let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
         let mut scheduled = BTreeSet::from([root.id()]);
@@ -15481,7 +15526,9 @@ impl TemporalGraph {
         )?;
 
         while (expansions.len() as u64) < budget.max_expansions {
-            let Some(index) = select_search_frontier_candidate(self, &worklist, strategy) else {
+            let Some(index) =
+                select_search_frontier_candidate(self, &worklist, strategy, max_depth)
+            else {
                 break;
             };
             let candidate = worklist.remove(index);
@@ -23273,14 +23320,23 @@ fn select_search_frontier_candidate(
     graph: &TemporalGraph,
     worklist: &[SearchFrontierCandidate],
     strategy: SearchStrategy,
+    max_depth: Option<u64>,
 ) -> Option<usize> {
     worklist
         .iter()
         .enumerate()
+        .filter(|(_, candidate)| search_depth_allows_expansion(max_depth, candidate.depth))
         .min_by(|(_, left), (_, right)| {
             compare_search_frontier_candidates(graph, left, right, strategy)
         })
         .map(|(index, _)| index)
+}
+
+fn search_depth_allows_expansion(max_depth: Option<u64>, depth: usize) -> bool {
+    match max_depth {
+        Some(max_depth) => (depth as u64) < max_depth,
+        None => true,
+    }
 }
 
 fn select_fleet_work_stealing_candidate(

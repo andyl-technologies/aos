@@ -54,6 +54,34 @@ fn gate_search_strategies_reach_same_graph_under_complete_budget() -> Result<(),
 }
 
 #[test]
+fn gate_search_strategies_depth_bound_stops_before_exhaustion() -> Result<(), Box<dyn Error>> {
+    let mut fixture = strategy_fixture()?;
+    let run = fixture
+        .graph
+        .search_with_strategy_and_failure_oracle_bounded_depth(
+            &fixture.scenario,
+            &fixture.root,
+            SearchStrategy::BreadthFirst,
+            SearchBudget::new(4),
+            MaterializationPolicy::thin_only(),
+            MaterializationTrigger::Cold,
+            &SearchFailureOracle::none(),
+            Some(1),
+        )?;
+
+    assert_eq!(run.expansions.len(), 1);
+    assert_eq!(run.expansions[0].frontier, run.root);
+    assert_eq!(run.expansions[0].depth, 0);
+    assert_eq!(
+        run.explored_graph,
+        expected_reached_graph(&fixture.root, &fixture.children)
+    );
+    assert!(!run.exhausted);
+
+    Ok(())
+}
+
+#[test]
 fn gate_breadth_first_breaks_equal_depth_ties_by_content_address() -> Result<(), Box<dyn Error>> {
     let fixture = run_strategy(SearchStrategy::BreadthFirst, SearchBudget::new(4))?;
     let mut sorted_children = fixture
