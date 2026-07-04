@@ -11556,17 +11556,12 @@ fn run_local_double_search_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if plan.max_depth.is_some() {
-        return Err(backend_error(
-            "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13",
-        ));
-    }
     let scenario = plan.scenario.scenario_def().clone();
     let root = crucible::Configuration::genesis(scenario.clone());
     let mut graph = save_validation_graph(&scenario)?;
     let failure_oracle = SearchFailureOracle::none();
     let run = graph
-        .search_with_strategy_and_failure_oracle(
+        .search_with_strategy_and_failure_oracle_bounded_depth(
             plan.scenario.scenario_form(),
             &root,
             plan.engine_strategy,
@@ -11574,6 +11569,7 @@ fn run_local_double_search_workflow(
             MaterializationPolicy::thin_only(),
             MaterializationTrigger::Cold,
             &failure_oracle,
+            plan.max_depth,
         )
         .map_err(|error| backend_error(format!("local-double search failed: {error}")))?;
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
@@ -11600,10 +11596,13 @@ fn run_local_double_search_workflow(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle=none on_violation={} expansions={} explored={} failures={} exhausted={}",
             format_content_hash_ref(run.root),
             plan.strategy_arg.label(),
             plan.max_states,
+            plan.max_depth
+                .map(|depth| depth.to_string())
+                .unwrap_or_else(|| String::from("none")),
             plan.on_violation.label(),
             run.expansions.len(),
             run.explored_graph.len(),
@@ -18665,14 +18664,31 @@ mod tests {
             String::from("--max-depth"),
             String::from("1"),
         ]);
-        let error = match dispatch(&depth_cli) {
-            Ok(_) => panic!("local-double search must reject unsupported depth bounds"),
-            Err(error) => error,
+        let Commands::Search(args) = &depth_cli.command else {
+            panic!("expected search command");
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("--max-depth"));
-        assert!(error.to_string().contains("T-CLI-13"));
+        let depth_plan = plan_search_invocation(args, temp.path())?;
+        let depth_backend =
+            plan_backend_selection(&depth_cli)?.expect("search should route to backend");
+        let depth_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&depth_cli),
+            &depth_backend,
+            None,
+            &depth_plan,
+        )?;
+        assert_eq!(depth_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(depth_outcome.exit_code, 0);
+        let depth_line = depth_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("bounded search must emit a search-run line");
+        assert!(depth_line.contains("max_depth=1"));
+        assert!(depth_line.contains("expansions=1"));
+        assert!(depth_outcome.canonical_log.iter().any(|entry| {
+            entry.kind == "search_strategy_run" && entry.summary.contains("max_depth=1")
+        }));
+        dispatch(&depth_cli)?;
 
         let violation_cli = Cli::parse_from([
             String::from("crucible"),

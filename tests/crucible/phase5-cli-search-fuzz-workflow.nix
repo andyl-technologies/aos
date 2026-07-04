@@ -55,6 +55,10 @@
         label = "T-CLI-13 local-double search progress";
         needle = "accepts explicit `--on-violation`";
       }
+      {
+        label = "T-CLI-13 local-double depth progress";
+        needle = "honors `--max-depth` as a bounded\n  decision-depth search run";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -64,6 +68,10 @@
       {
         label = "phase5 CLI local-double search progress";
         needle = "`search-run` output with `failure_oracle=none`";
+      }
+      {
+        label = "phase5 CLI local-double depth progress";
+        needle = "bounded decision-depth execution for\n  `--max-depth`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -116,12 +124,16 @@
         needle = "search_with_strategy_and_failure_oracle";
       }
       {
+        label = "local-double bounded search budget";
+        needle = "search_with_strategy_and_failure_oracle_bounded_depth";
+      }
+      {
         label = "local-double search canonical log";
         needle = "search_strategy_run";
       }
       {
-        label = "local-double max-depth blocker";
-        needle = "local-double search --max-depth requires the depth-limited search runner tracked by T-CLI-13";
+        label = "local-double max-depth execution";
+        needle = "max_depth=1";
       }
       {
         label = "fuzz runner blocker";
