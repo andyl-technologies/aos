@@ -1237,9 +1237,10 @@ branch on the verdict without parsing output:
   backend-routed output path now appends a machine-readable final-outcome record
   to canonical `json`/`jsonl` traces, keeps human summary/footer lines out of
   machine-readable stdout, process-tests local-double `run`, `save`, `search`,
-  and `fuzz` JSONL output with parsed command-specific canonical events plus
-  `final_outcome`, and regression-tests the RFC §15 exit-code mapping for
-  success, failure/divergence, timeout, crash/backend/identity, discovery,
+  `fuzz`, and `replay --check` success/mismatch JSONL output with parsed
+  command-specific canonical events plus `final_outcome`, and regression-tests
+  the RFC §15 exit-code mapping for success, failure/divergence, timeout,
+  crash/backend/identity, discovery,
   invalid-artifact/scenario, and usage classes. Full closure remains blocked on
   the remaining run-capable command-behavior gates (`T-CLI-7 … T-CLI-13`) so the
   same output contract can be certified across every implemented runner.

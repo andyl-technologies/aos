@@ -1,8 +1,10 @@
 //! Process-level checks for machine-readable CLI stdout.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -200,10 +202,110 @@ fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_fina
     Ok(())
 }
 
+#[test]
+fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
+{
+    let temp = TempDir::new()?;
+    let fixture = crucible::happy_path_scenario()?;
+    let scenario = temp.path().join("scenario.toml");
+    let artifact_dir = temp.path().join("replay-artifacts");
+    let check_path = temp.path().join("original.jsonl");
+    let mismatch_check_path = temp.path().join("mismatch.jsonl");
+    fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
+
+    let failure_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "6",
+            "--artifact-dir",
+        ])
+        .arg(&artifact_dir)
+        .arg("run")
+        .arg(&scenario)
+        .arg("--emit-mock-failure-artifact")
+        .output()?;
+    assert_eq!(
+        failure_output.status.code(),
+        Some(1),
+        "mock failure run should exit 1; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&failure_output.stdout),
+        String::from_utf8_lossy(&failure_output.stderr),
+    );
+    let failure_stdout = String::from_utf8(failure_output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(&failure_stdout, &["run_scenario"], 1)?;
+
+    let artifact_path = single_reproduction_artifact(&artifact_dir)?;
+    fs::write(
+        &check_path,
+        canonical_jsonl_from_reproduction_artifact(&artifact_path)?,
+    )?;
+
+    let replay_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&artifact_path)
+        .arg("--check")
+        .arg(&check_path)
+        .output()?;
+    assert!(
+        replay_output.status.success(),
+        "crucible replay --check --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&replay_output.stdout),
+        String::from_utf8_lossy(&replay_output.stderr),
+    );
+    let replay_stdout = String::from_utf8(replay_output.stdout)?;
+    assert_machine_readable_jsonl(&replay_stdout, &["replay_artifact", "replay_check"])?;
+    assert!(replay_stdout.contains("subcommand=replay"));
+    assert!(replay_stdout.contains("status=passed"));
+    assert!(replay_stdout.contains("artifact=crucible-hash:"));
+    assert!(!replay_stdout.contains("crucible: replay artifact"));
+
+    let mut mismatch_check = fs::read(&check_path)?;
+    let first_byte = mismatch_check
+        .first_mut()
+        .ok_or_else(|| invalid_data("replay check fixture must not be empty"))?;
+    *first_byte = first_byte.wrapping_add(1);
+    fs::write(&mismatch_check_path, mismatch_check)?;
+
+    let mismatch_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&artifact_path)
+        .arg("--check")
+        .arg(&mismatch_check_path)
+        .output()?;
+    assert_eq!(
+        mismatch_output.status.code(),
+        Some(1),
+        "crucible replay --check mismatch --format jsonl should exit 1; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&mismatch_output.stdout),
+        String::from_utf8_lossy(&mismatch_output.stderr),
+    );
+    let mismatch_stdout = String::from_utf8(mismatch_output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(
+        &mismatch_stdout,
+        &["replay_artifact", "replay_check"],
+        1,
+    )?;
+    assert!(mismatch_stdout.contains("subcommand=replay"));
+    assert!(mismatch_stdout.contains("status=failed"));
+    assert!(mismatch_stdout.contains("status=mismatch"));
+    assert!(mismatch_stdout.contains("first_diff_byte=0"));
+    assert!(!mismatch_stdout.contains("crucible: replay artifact"));
+
+    Ok(())
+}
+
 fn run_machine_readable(
     format: &str,
-    scenario: &std::path::Path,
-    artifact_dir: &std::path::Path,
+    scenario: &Path,
+    artifact_dir: &Path,
 ) -> Result<String, Box<dyn Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
         .args([
@@ -391,4 +493,146 @@ node = "cli-search-retained-node"
 marker = "forbidden-search-marker"
 retired_icount = 7
 "#
+}
+
+#[derive(Debug)]
+struct ArtifactDecision {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    node: String,
+    kind: String,
+    payload_digest: String,
+}
+
+fn single_reproduction_artifact(artifact_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let mut paths = fs::read_dir(artifact_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+            (file_name.starts_with("repro-failed-") && file_name.ends_with(".crucible"))
+                .then_some(path)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        _ => Err(invalid_data(format!(
+            "expected one failed reproduction artifact in `{}`, found {}",
+            artifact_dir.display(),
+            paths.len()
+        ))
+        .into()),
+    }
+}
+
+fn canonical_jsonl_from_reproduction_artifact(path: &Path) -> Result<String, Box<dyn Error>> {
+    let text = fs::read_to_string(path)?;
+    let mut payloads = BTreeMap::new();
+    let mut decisions = Vec::new();
+    for line in text.lines() {
+        let fields = parse_artifact_fields(line)?;
+        let Some(tag) = fields.first().map(String::as_str) else {
+            continue;
+        };
+        match tag {
+            "payload" if fields.len() == 3 => {
+                payloads.insert(fields[1].clone(), hex_to_bytes(&fields[2])?);
+            }
+            "decision" if fields.len() == 6 => {
+                decisions.push(ArtifactDecision {
+                    sequence: fields[1].parse()?,
+                    virtual_time_ticks: fields[2].parse()?,
+                    node: fields[3].clone(),
+                    kind: fields[4].clone(),
+                    payload_digest: fields[5].clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    if decisions.is_empty() {
+        return Err(invalid_data(format!(
+            "artifact `{}` did not encode any replay decisions",
+            path.display()
+        ))
+        .into());
+    }
+
+    let mut jsonl = String::new();
+    for decision in decisions {
+        let payload = payloads.get(&decision.payload_digest).ok_or_else(|| {
+            invalid_data(format!(
+                "artifact `{}` is missing payload `{}`",
+                path.display(),
+                decision.payload_digest
+            ))
+        })?;
+        let summary = std::str::from_utf8(payload)?;
+        jsonl.push_str(&format!(
+            "{{\"seq\":{},\"virtual_time\":{},\"node\":{},\"kind\":{},\"summary\":{}}}\n",
+            decision.sequence,
+            decision.virtual_time_ticks,
+            serde_json::to_string(&decision.node)?,
+            serde_json::to_string(&decision.kind)?,
+            serde_json::to_string(summary)?
+        ));
+    }
+    Ok(jsonl)
+}
+
+fn parse_artifact_fields(line: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    line.split('\t').map(unescape_artifact_field).collect()
+}
+
+fn unescape_artifact_field(value: &str) -> Result<String, Box<dyn Error>> {
+    let mut output = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            output.push(ch);
+            continue;
+        }
+        let high = chars
+            .next()
+            .ok_or_else(|| invalid_data(format!("truncated artifact escape in `{value}`")))?;
+        let low = chars
+            .next()
+            .ok_or_else(|| invalid_data(format!("truncated artifact escape in `{value}`")))?;
+        match (high, low) {
+            ('2', '5') => output.push('%'),
+            ('0', '9') => output.push('\t'),
+            ('0', 'A') => output.push('\n'),
+            ('0', 'D') => output.push('\r'),
+            _ => {
+                return Err(invalid_data(format!(
+                    "unknown artifact escape %{high}{low} in `{value}`"
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    if hex.len() % 2 != 0 {
+        return Err(invalid_data("hex payload has odd length").into());
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let high = hex_nibble(chunk[0]).ok_or_else(|| invalid_data("malformed hex payload"))?;
+        let low = hex_nibble(chunk[1]).ok_or_else(|| invalid_data("malformed hex payload"))?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }

@@ -572,9 +572,10 @@ long-held locks.
   currently covers the backend-routed output path appending a machine-readable
   final-outcome record to canonical `json`/`jsonl` traces, suppressing human
   summary/footer lines from machine-readable stdout, process-level local-double
-  `run`, `save`, `search`, and `fuzz` JSONL output with parsed
-  command-specific canonical events plus `final_outcome`, and regression-testing
-  the RFC §15 exit-code classes; full closure waits for the remaining run-capable
+  `run`, `save`, `search`, `fuzz`, and `replay --check` success/mismatch JSONL
+  output with parsed command-specific canonical events plus `final_outcome`, and
+  regression-testing the RFC §15 exit-code classes; full closure waits for the
+  remaining run-capable
   command-behavior gates `T-CLI-7 … T-CLI-13` so the same contract can be
   certified across every implemented runner.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).

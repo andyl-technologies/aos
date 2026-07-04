@@ -11897,8 +11897,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     match &cli.command {
         Commands::Replay(args) => {
             let report = replay_reproduction_artifact(cli, args)?;
-            if !cli.quiet {
-                write_replay_report_human(&mut io::stdout(), &report)?;
+            emit_replay_report_output(cli, &report)?;
+            if let Some(check) = &report.check {
+                if let Some(mismatch) = &check.mismatch {
+                    return Err(replay_check_mismatch_error(check, mismatch));
+                }
             }
             if let Some(bisect) = &report.bisect {
                 if let Some(divergence) = &bisect.divergence {
@@ -12002,12 +12005,28 @@ fn write_replay_report_human(
         report.digest
     )?;
     if let Some(check) = &report.check {
-        writeln!(
-            output,
-            "crucible: replay check {} status=byte-identical digest={}",
-            check.path.display(),
-            check.digest
-        )?;
+        match &check.mismatch {
+            Some(mismatch) => {
+                writeln!(
+                    output,
+                    "crucible: replay check {} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
+                    check.path.display(),
+                    mismatch.original_digest,
+                    mismatch.replayed_digest,
+                    mismatch.first_diff_byte,
+                    mismatch.original_len,
+                    mismatch.replayed_len
+                )?;
+            }
+            None => {
+                writeln!(
+                    output,
+                    "crucible: replay check {} status=byte-identical digest={}",
+                    check.path.display(),
+                    check.digest
+                )?;
+            }
+        }
     }
     if let Some(target) = &report.to_savepoint {
         writeln!(output, "{}", replay_to_savepoint_status_line(target))?;
@@ -13264,6 +13283,196 @@ fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
     )
 }
 
+fn emit_replay_report_output(cli: &Cli, report: &ReplayArtifactReport) -> Result<(), CliError> {
+    if cli.format.is_machine_readable() {
+        let status = replay_report_status(report);
+        let exit_code = replay_report_exit_code(report);
+        let entries = replay_machine_readable_trace_entries(report, status, exit_code);
+        emit_canonical_trace(cli.format, &entries, cli.trace.as_deref(), !cli.quiet)?;
+    } else if !cli.quiet {
+        write_replay_report_human(&mut io::stdout(), report)?;
+    }
+    Ok(())
+}
+
+fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
+    if report
+        .check
+        .as_ref()
+        .and_then(|check| check.mismatch.as_ref())
+        .is_some()
+    {
+        return BackendCommandStatus::Failed;
+    }
+    if report
+        .bisect
+        .as_ref()
+        .and_then(|bisect| bisect.divergence.as_ref())
+        .is_some()
+    {
+        BackendCommandStatus::Failed
+    } else {
+        BackendCommandStatus::Passed
+    }
+}
+
+fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
+    replay_report_status(report).exit_code()
+}
+
+fn replay_machine_readable_trace_entries(
+    report: &ReplayArtifactReport,
+    status: BackendCommandStatus,
+    exit_code: i32,
+) -> Vec<CanonicalLogEntry> {
+    let mut entries = Vec::new();
+    push_replay_trace_entry(
+        &mut entries,
+        "replay_artifact",
+        format!(
+            "path={} digest={} seed={} scenario={}",
+            report.path.display(),
+            report.digest,
+            report.seed,
+            report.scenario_digest
+        ),
+    );
+    if let Some(check) = &report.check {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_check",
+            replay_check_machine_readable_summary(check),
+        );
+    }
+    if let Some(target) = &report.to_savepoint {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_to_savepoint",
+            replay_to_savepoint_machine_readable_summary(target),
+        );
+    }
+    if let Some(bisect) = &report.bisect {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_bisect",
+            replay_bisect_machine_readable_summary(bisect),
+        );
+    }
+    let canonical_log_digest = canonical_log_digest(&entries);
+    push_replay_trace_entry(
+        &mut entries,
+        "final_outcome",
+        replay_final_outcome_summary(report, status, exit_code, &canonical_log_digest),
+    );
+    entries
+}
+
+fn push_replay_trace_entry(
+    entries: &mut Vec<CanonicalLogEntry>,
+    kind: impl Into<String>,
+    summary: impl Into<String>,
+) {
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: entries
+            .last()
+            .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+            .unwrap_or(0),
+        node: String::from("cli"),
+        kind: kind.into(),
+        summary: summary.into(),
+    });
+}
+
+fn replay_final_outcome_summary(
+    report: &ReplayArtifactReport,
+    status: BackendCommandStatus,
+    exit_code: i32,
+    canonical_log_digest: &str,
+) -> String {
+    format!(
+        "subcommand=replay status={} exit_code={} canonical_log={} artifact={}",
+        status.label(),
+        exit_code,
+        canonical_log_digest,
+        report.digest
+    )
+}
+
+fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
+    match &check.mismatch {
+        Some(mismatch) => format!(
+            "path={} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
+            check.path.display(),
+            mismatch.original_digest,
+            mismatch.replayed_digest,
+            mismatch.first_diff_byte,
+            mismatch.original_len,
+            mismatch.replayed_len
+        ),
+        None => format!(
+            "path={} status=byte-identical digest={}",
+            check.path.display(),
+            check.digest
+        ),
+    }
+}
+
+fn replay_to_savepoint_machine_readable_summary(target: &ReplayToSavepointReport) -> String {
+    format!(
+        "target={} status=target-validated schedule_prefix=typed materialization={} unified_operation={} checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} materialized_configuration={} materialized_schedule={} materialized_checkpoint={} runtime_state={} reduced_state={} single_vm_fingerprint={} graph={} replay_fat={} replay_thin={} oracle={} store_objects={}",
+        target.target_label,
+        target.materialization.materialization,
+        target.materialization.operation,
+        format_content_hash_ref(target.checkpoint),
+        target.frontier_ticks,
+        target.schedule_prefix.target_decisions,
+        target.schedule_prefix.artifact_decisions,
+        target.schedule_prefix.matched_decisions,
+        target.schedule_prefix.typed_prefix_digest,
+        target.schedule_prefix.artifact_prefix_digest,
+        format_content_hash_ref(target.materialization.configuration),
+        format_content_hash_ref(target.materialization.schedule),
+        format_content_hash_ref(target.materialization.checkpoint),
+        format_content_hash_ref(target.materialization.runtime_state),
+        format_content_hash_ref(target.materialization.reduced_state),
+        format_content_hash_ref(target.materialization.single_vm_fingerprint),
+        format_content_hash_ref(target.materialization.graph),
+        format_content_hash_ref(target.materialization.replay_fat_checkpoint),
+        format_content_hash_ref(target.materialization.replay_thin_checkpoint),
+        target.oracle.status_label(),
+        target.oracle.store_objects
+    )
+}
+
+fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
+    match &bisect.divergence {
+        Some(divergence) => format!(
+            "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
+            bisect.other_path.display(),
+            divergence.mismatch.label(),
+            divergence
+                .first_different_decision
+                .map(|decision| decision.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_fingerprint_sample
+                .map(|sample| sample.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence.first_different_instruction,
+            divergence.node.as_deref().unwrap_or("unknown"),
+            divergence.first_different_byte,
+            divergence.left_state_digest,
+            divergence.right_state_digest
+        ),
+        None => format!(
+            "path={} status=byte-identical digest={}",
+            bisect.other_path.display(),
+            bisect.other_digest
+        ),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TraceRenderReport {
     format: OutputFormat,
@@ -13343,30 +13552,33 @@ fn replay_reproduction_artifact(
         let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
         let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
         let original = fs::read(path)?;
-        if original != canonical_log_bytes {
-            let first_diff = bisect_first_different_byte(&original, &canonical_log_bytes);
-            return Err(CliError::ReplayCheck(format!(
-                "replay --check mismatch for `{}`: expected {}, replayed {}, first_diff_byte={}, original_len={}, replayed_len={}",
-                path.display(),
-                content_address_bytes(&original),
-                content_address_bytes(&canonical_log_bytes),
-                first_diff,
-                original.len(),
-                canonical_log_bytes.len()
-            )));
-        }
+        let mismatch = (original != canonical_log_bytes).then(|| ReplayCheckMismatchReport {
+            original_digest: content_address_bytes(&original),
+            replayed_digest: content_address_bytes(&canonical_log_bytes),
+            first_diff_byte: bisect_first_different_byte(&original, &canonical_log_bytes),
+            original_len: original.len(),
+            replayed_len: canonical_log_bytes.len(),
+        });
         Some(ReplayCheckReport {
             path: path.clone(),
             digest: content_address_bytes(&canonical_log_bytes),
+            mismatch,
         })
     } else {
         None
     };
-    let bisect = args
-        .bisect
+    let bisect = if check
         .as_ref()
-        .map(|other| replay_bisect_artifacts(cli, other, &artifact, &bytes))
-        .transpose()?;
+        .and_then(|check| check.mismatch.as_ref())
+        .is_some()
+    {
+        None
+    } else {
+        args.bisect
+            .as_ref()
+            .map(|other| replay_bisect_artifacts(cli, other, &artifact, &bytes))
+            .transpose()?
+    };
     Ok(ReplayArtifactReport {
         path: args.artifact.clone(),
         digest: content_address_bytes(&bytes),
@@ -13625,6 +13837,21 @@ fn replay_bisect_error(
         divergence.first_different_byte,
         divergence.left_state_digest,
         divergence.right_state_digest
+    ))
+}
+
+fn replay_check_mismatch_error(
+    check: &ReplayCheckReport,
+    mismatch: &ReplayCheckMismatchReport,
+) -> CliError {
+    CliError::ReplayCheck(format!(
+        "replay --check mismatch for `{}`: expected {}, replayed {}, first_diff_byte={}, original_len={}, replayed_len={}",
+        check.path.display(),
+        mismatch.original_digest,
+        mismatch.replayed_digest,
+        mismatch.first_diff_byte,
+        mismatch.original_len,
+        mismatch.replayed_len
     ))
 }
 
@@ -15718,6 +15945,16 @@ impl ReplayToSavepointMaterializationProof {
 struct ReplayCheckReport {
     path: PathBuf,
     digest: String,
+    mismatch: Option<ReplayCheckMismatchReport>,
+}
+
+#[derive(Debug)]
+struct ReplayCheckMismatchReport {
+    original_digest: String,
+    replayed_digest: String,
+    first_diff_byte: usize,
+    original_len: usize,
+    replayed_len: usize,
 }
 
 #[derive(Debug)]
@@ -26406,10 +26643,17 @@ finding.0.kind=property
         let Commands::Replay(args) = &replay_cli.command else {
             panic!("expected replay command");
         };
-        let error = match replay_reproduction_artifact(&replay_cli, args) {
-            Ok(_) => panic!("replay --check must reject byte mismatches"),
-            Err(error) => error,
-        };
+        let report = replay_reproduction_artifact(&replay_cli, args)?;
+        assert_eq!(replay_report_status(&report), BackendCommandStatus::Failed);
+        let check = report
+            .check
+            .as_ref()
+            .expect("replay --check mismatch should retain a check report");
+        let mismatch = check
+            .mismatch
+            .as_ref()
+            .expect("replay --check mismatch should retain mismatch details");
+        let error = replay_check_mismatch_error(check, mismatch);
 
         assert!(matches!(error, CliError::ReplayCheck(_)));
         assert_eq!(error.exit_code(), 1);
@@ -26435,16 +26679,28 @@ finding.0.kind=property
         let replacement = shifted_original[first_diff].wrapping_add(1);
         shifted_original[first_diff] = replacement;
         fs::write(&check_path, &shifted_original)?;
-        let error = match replay_reproduction_artifact(&replay_cli, args) {
-            Ok(_) => panic!("replay --check must localize nonzero byte mismatches"),
-            Err(error) => error,
-        };
+        let report = replay_reproduction_artifact(&replay_cli, args)?;
+        let check = report
+            .check
+            .as_ref()
+            .expect("replay --check mismatch should retain a check report");
+        let mismatch = check
+            .mismatch
+            .as_ref()
+            .expect("replay --check mismatch should retain mismatch details");
+        let error = replay_check_mismatch_error(check, mismatch);
         assert!(matches!(error, CliError::ReplayCheck(_)));
         assert!(
             error
                 .to_string()
                 .contains(&format!("first_diff_byte={first_diff}"))
         );
+        let dispatch_error = match dispatch(&replay_cli) {
+            Ok(()) => panic!("dispatch must reject replay --check mismatches"),
+            Err(error) => error,
+        };
+        assert!(matches!(dispatch_error, CliError::ReplayCheck(_)));
+        assert_eq!(dispatch_error.exit_code(), 1);
 
         Ok(())
     }
