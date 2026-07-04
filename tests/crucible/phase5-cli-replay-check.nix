@@ -184,6 +184,42 @@
         needle = "savepoint frontier has {target_decisions} decisions";
       }
       {
+        label = "typed replay to schedule-prefix proof schema";
+        needle = "crucible.replay.schedule-prefix-proof.v1";
+      }
+      {
+        label = "typed replay to schedule-prefix proof implementation";
+        needle = "fn prove_replay_schedule_prefix";
+      }
+      {
+        label = "typed replay to schedule-prefix output";
+        needle = "schedule_prefix=typed";
+      }
+      {
+        label = "typed replay to schedule-prefix digest";
+        needle = "typed_prefix_digest";
+      }
+      {
+        label = "typed replay to resolved payload binding";
+        needle = "let actual_payload_summary = decision_payload_summary(artifact, actual)?;";
+      }
+      {
+        label = "typed replay to status line helper";
+        needle = "fn replay_to_savepoint_status_line";
+      }
+      {
+        label = "typed replay to non-prefix diagnostic";
+        needle = "schedule-prefix mismatch at decision";
+      }
+      {
+        label = "typed replay to non-prefix rejection test";
+        needle = "cli_replay_to_savepoint_rejects_non_matching_schedule_prefix";
+      }
+      {
+        label = "typed replay to missing payload rejection test";
+        needle = "cli_replay_to_savepoint_rejects_missing_prefix_decision_payload";
+      }
+      {
         label = "replay to savepoint target validation output";
         needle = "status=target-validated";
       }
@@ -303,6 +339,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             replay_check=byte-identical-canonical-log
+            replay_to_schedule_prefix=typed-payload-backed
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
