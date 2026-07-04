@@ -263,7 +263,8 @@ pub use trigger::{
     ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
     PropertyLifecycleState, ReadyPointResolution, ReadyPointResolutionError,
     ReadyPointResolutionKind, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
-    TcgExecBasicBlock, basic_block_coverage_map_index, check_assertion_violation_reproduction,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, TcgExecBasicBlock,
+    basic_block_coverage_map_index, check_assertion_violation_reproduction,
     check_assertion_violation_reproduction_with_oracles, lint_host_assertion_harness_source,
     resolve_ready_point,
 };

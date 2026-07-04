@@ -423,6 +423,18 @@
         needle = "pub fn from_search_assertion_violations";
       }
       {
+        label = "search assertion named truth-table helper";
+        needle = "pub fn from_search_assertion_violations_with_named_predicates";
+      }
+      {
+        label = "search assertion named truth-table scope";
+        needle = "SearchAssertionPredicateScope::ScheduleAndNamedTruths";
+      }
+      {
+        label = "search assertion named truth-table type";
+        needle = "SearchScheduleNamedPredicateTruths";
+      }
+      {
         label = "search assertion retained log helper";
         needle = "recorded_assertion_log_from_schedule_for_search";
       }
@@ -451,6 +463,10 @@
       {
         label = "search assertion oracle lowering gate";
         needle = "gate_search_failure_oracle_lowers_prefix_safe_assertion_violations";
+      }
+      {
+        label = "search assertion named truth-table regression";
+        needle = "from_search_assertion_violations_with_named_predicates";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
