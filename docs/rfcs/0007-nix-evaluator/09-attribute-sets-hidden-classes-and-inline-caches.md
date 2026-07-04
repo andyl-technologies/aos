@@ -946,8 +946,11 @@ harness, never cut for scope.
       `FlatAttrs`, `HamtAttrs`, `ShapedAttrs`, and `AttrSetReprValue`, compares
       representations against each other under the same symbol universe, rejects
       unresolved symbols, and tests adversarial symbol allocation order (`b`,
-      `a\xff`, `a`, `a\0`). This does not call C++ Nix, drive
-      `derivationStrict`, or prove `.drv` byte parity.
+      `a\xff`, `a`, `a\0`). It also cross-checks a shaped update-transition
+      result against flat and HAMT views for adversarial raw-byte order,
+      guarding that current value-level transition case's cached lexicographic
+      permutation. This does not call C++ Nix, drive `derivationStrict`, or
+      prove `.drv` byte parity.
 - [x] Cached lexicographic permutation per shape + per-symbol sort rank
       (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
       Implemented by `aos-nix-syntax::SymbolTable::lexicographic_rank`

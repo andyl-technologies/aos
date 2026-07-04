@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use crate::attrs::hamt::HamtAttrs;
     use crate::attrs::repr::AttrSetReprValue;
-    use crate::attrs::shape::{ShapeTable, ShapedAttrs};
+    use crate::attrs::shape::{ShapeTable, ShapedAttrs, ShapedUpdatePlan};
     use crate::attrs::{AttrEntry, FlatAttrs};
     use crate::value::Value;
 
@@ -313,6 +313,73 @@ mod tests {
             &symbols,
         )
         .expect("flat and wrapped HAMT order match");
+    }
+
+    #[test]
+    fn parity_harness_matches_shaped_update_transition_result_order() {
+        let (symbols, ids) = symbols(&[b"b", b"a\xff", b"m", b"a\x00", b"a"]);
+        let mut operand_table = ShapeTable::new().expect("operand shape table initializes");
+        let left_shape = operand_table
+            .intern_construction_order(&[ids[0], ids[1], ids[2]], &symbols)
+            .expect("left shape interns");
+        let right_shape = operand_table
+            .intern_construction_order(&[ids[1], ids[3], ids[4]], &symbols)
+            .expect("right shape interns");
+        let left = ShapedAttrs::from_source_order(
+            left_shape,
+            &[Value::int(10), Value::int(20), Value::int(30)],
+        )
+        .expect("left attrs build");
+        let right = ShapedAttrs::from_source_order(
+            right_shape,
+            &[Value::int(200), Value::int(40), Value::int(50)],
+        )
+        .expect("right attrs build");
+        let mut result_table = ShapeTable::new().expect("result shape table initializes");
+
+        let plan = ShapedUpdatePlan::plan(&mut result_table, &left, &right, &symbols)
+            .expect("shaped update plan builds");
+        let shaped = plan
+            .instantiate(&left, &right)
+            .expect("shaped update result instantiates");
+        let flat = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(200)),
+                AttrEntry::new(ids[2], Value::int(30)),
+                AttrEntry::new(ids[3], Value::int(40)),
+                AttrEntry::new(ids[4], Value::int(50)),
+            ],
+            &symbols,
+        )
+        .expect("flat result builds");
+        let hamt = HamtAttrs::from_flat(&flat, &symbols).expect("HAMT result builds");
+
+        assert_same_lexicographic_order(
+            AttrOrderTarget::Shaped(&shaped),
+            AttrOrderTarget::Flat(&flat),
+            &symbols,
+        )
+        .expect("shaped update result matches flat raw-byte order");
+        assert_same_lexicographic_order(
+            AttrOrderTarget::Shaped(&shaped),
+            AttrOrderTarget::Hamt(&hamt),
+            &symbols,
+        )
+        .expect("shaped update result matches HAMT raw-byte order");
+        let shaped_keys =
+            collect_checked_lexicographic_keys(AttrOrderTarget::Shaped(&shaped), &symbols)
+                .expect("shaped update order checks");
+        assert_eq!(
+            key_names(&shaped_keys, &symbols),
+            vec![
+                b"a".to_vec(),
+                b"a\x00".to_vec(),
+                b"a\xff".to_vec(),
+                b"b".to_vec(),
+                b"m".to_vec(),
+            ]
+        );
     }
 
     #[test]

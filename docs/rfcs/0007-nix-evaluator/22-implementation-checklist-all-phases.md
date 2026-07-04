@@ -8677,9 +8677,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       lexicographic key vectors for `FlatAttrs`, `HamtAttrs`, `ShapedAttrs`, and
       `AttrSetReprValue`, compares representations against each other under the
       same symbol universe, rejects unresolved symbols, and tests adversarial
-      symbol allocation order (`b`, `a\xff`, `a`, `a\0`). C++ Nix differential
-      checking, `derivationStrict` consumption, and `.drv` byte parity remain
-      open.
+      symbol allocation order (`b`, `a\xff`, `a`, `a\0`). It also cross-checks
+      a shaped update-transition result against flat and HAMT views for
+      adversarial raw-byte order, guarding that current value-level transition
+      case's cached lexicographic permutation. C++ Nix differential
+      checking, active evaluator shape consumption, `derivationStrict`
+      consumption, and `.drv` byte parity remain open.
 - [x] Current cached ordering-rank precursor: `aos-nix-syntax::SymbolTable`
       maintains process-local current raw-byte lexicographic ranks; current
       flat attrsets, shapes, and HAMTs sort ordered views through that rank
