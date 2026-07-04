@@ -266,13 +266,14 @@ fn count_attr_path_references(
         .attr_paths
         .get(path.index())
         .ok_or(ScalarReplacementError::InvalidAttrPath { id, path })?;
-    Ok(segments
-        .iter()
-        .map(|segment| match segment {
-            IrAttrPathSegment::Static(_) => 0,
-            IrAttrPathSegment::Dynamic(dynamic) => count_id(*dynamic, target),
-        })
-        .sum())
+    let mut count = 0usize;
+    for segment in segments {
+        if let IrAttrPathSegment::Dynamic(dynamic) = segment {
+            validate_node(ir, *dynamic)?;
+            count += count_id(*dynamic, target);
+        }
+    }
+    Ok(count)
 }
 
 fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], ScalarReplacementError> {

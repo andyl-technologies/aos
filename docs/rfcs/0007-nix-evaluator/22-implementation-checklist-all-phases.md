@@ -8265,6 +8265,14 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       exposes a lowering-safe plan surface for the narrow aggregate escape
       precursor, but it still does not rewrite IR, decompose aggregate fields,
       or provide optimized storage lowering.
+- [x] Current scalar replacement side-table validation hardening:
+      `scalar_replacement_plan` tests now pin rejection for forged
+      strict/no-escape proofs over malformed aggregate and primop side tables:
+      unresolved primop symbols, invalid primop child slices, dangling primop
+      child ids, invalid attrset shapes, invalid attrset binding slices,
+      invalid attr-path ids, and dangling dynamic attr-path segment ids. This is
+      a planner-boundary hardening check only; it does not add new
+      scalar-replacement candidates or optimized storage lowering.
 - [x] Current primop escape-signature precursor:
       `ratchet-core::analysis::escape_signature` classifies only direct primops
       whose result is guaranteed to be an immediate scalar, and `annotate_escape`
