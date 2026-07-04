@@ -81,6 +81,10 @@
         label = "T-CLI-13 local-double fuzz corpus progress";
         needle = "persists retained corpus\n  artifacts through `LocalDagStore`";
       }
+      {
+        label = "T-CLI-13 stored fuzz family progress";
+        needle = "loads stored family hashes as strict\n  scenario-family TOML from the configured DAG store";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -114,6 +118,10 @@
       {
         label = "phase5 CLI local-double fuzz corpus progress";
         needle = "durable\n  `LocalDagStore` corpus persistence";
+      }
+      {
+        label = "phase5 CLI stored fuzz family progress";
+        needle = "stored family-hash loading as strict\n  scenario-family TOML from the configured DAG store";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -242,6 +250,14 @@
         needle = "fn run_local_double_fuzz_workflow";
       }
       {
+        label = "stored fuzz family loader";
+        needle = "fn load_stored_fuzz_family";
+      }
+      {
+        label = "stored fuzz family store get";
+        needle = "store.get(&reference)";
+      }
+      {
         label = "fuzz dispatch route";
         needle = "enum FuzzDispatchRoute";
       }
@@ -282,8 +298,24 @@
         needle = "corpus=none";
       }
       {
-        label = "stored fuzz family error";
-        needle = "requires DAG-store ScenarioFamily loading";
+        label = "stored fuzz family positive regression";
+        needle = "stored-family fuzz workflow must emit a fuzz-run line";
+      }
+      {
+        label = "stored fuzz family missing-object error";
+        needle = "could not be loaded from store";
+      }
+      {
+        label = "stored fuzz family corrupt-object error";
+        needle = "corrupt stored family TOML must fail";
+      }
+      {
+        label = "stored fuzz family non-UTF-8 error";
+        needle = "non-UTF-8 stored family bytes must fail";
+      }
+      {
+        label = "stored fuzz family malformed TOML error";
+        needle = "malformed stored family TOML must fail";
       }
       {
         label = "search fuzz help test";

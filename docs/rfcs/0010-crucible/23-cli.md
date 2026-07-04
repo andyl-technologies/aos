@@ -1146,14 +1146,14 @@ branch on the verdict without parsing output:
   families, executes local `--backend double fuzz` through
   `ScenarioFamily::fuzz_coverage_guided` or
   `ScenarioFamily::fuzz_coverage_guided_corpus`, persists retained corpus
-  artifacts through `LocalDagStore`, and reports deterministic `fuzz-run`
-  output with generated-mutant, admission, retained-entry, store-put, and
-  replay-oracle validation counts. Stored family hashes and unsupported backend
-  targets still fail explicitly until the remaining policy runners are wired.
-  Full closure remains blocked on property/assertion lowering into the search
-  failure oracle, counterexample artifact emission with repro commands,
-  DAG-store loading for stored `ScenarioFamily` references, and real-QEMU
-  coverage.
+  artifacts through `LocalDagStore`, loads stored family hashes as strict
+  scenario-family TOML from the configured DAG store, and reports deterministic
+  `fuzz-run` output with generated-mutant, admission, retained-entry, store-put,
+  and replay-oracle validation counts. Missing/corrupt stored family objects and
+  unsupported backend targets fail explicitly until the remaining policy runners
+  are wired. Full closure remains blocked on property/assertion lowering into
+  the search failure oracle, counterexample artifact emission with repro
+  commands, and real-QEMU coverage.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

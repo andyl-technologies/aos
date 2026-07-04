@@ -1498,6 +1498,7 @@ struct FuzzDriverPlan {
     runs: u64,
     coverage: FuzzCoverageArg,
     corpus: Option<PathBuf>,
+    store_root: PathBuf,
     config: crucible::CoverageGuidedFuzzConfig,
     delegates_policy_to_advanced_engine: bool,
     pins_one_scenario_def_per_iteration: bool,
@@ -2411,6 +2412,7 @@ fn resolve_search_scenario(
 fn plan_fuzz_invocation(
     args: &FuzzArgs,
     seed: &DeterminismErgonomicsPlan,
+    store_root: &Path,
 ) -> Result<FuzzDriverPlan, CliError> {
     let family = resolve_fuzz_family_ref(args.family.as_deref(), args.family_flag.as_deref())?;
     validate_positive_budget("--runs", args.runs)?;
@@ -2433,6 +2435,7 @@ fn plan_fuzz_invocation(
         runs: args.runs,
         coverage: args.coverage,
         corpus: args.corpus.clone(),
+        store_root: store_root.to_path_buf(),
         config,
         delegates_policy_to_advanced_engine: true,
         pins_one_scenario_def_per_iteration: true,
@@ -2504,7 +2507,7 @@ fn load_fuzz_family(plan: &FuzzDriverPlan) -> Result<crucible::ScenarioFamily, C
             ))
         }),
         FuzzFamilyRef::File(path) => load_fuzz_family_file(path),
-        FuzzFamilyRef::Stored(_) => Err(unsupported_stored_fuzz_family_error(plan)),
+        FuzzFamilyRef::Stored(reference) => load_stored_fuzz_family(plan, *reference),
     }
 }
 
@@ -2515,24 +2518,56 @@ fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliErr
             path.display()
         ))
     })?;
-    let authored = toml::from_str::<CliScenarioFamilyToml>(&text).map_err(|error| {
+    load_fuzz_family_toml(&format!("file `{}`", path.display()), &text)
+}
+
+fn load_stored_fuzz_family(
+    plan: &FuzzDriverPlan,
+    reference: crucible::ContentHash,
+) -> Result<crucible::ScenarioFamily, CliError> {
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let bytes = store.get(&reference).map_err(|error| {
         backend_error(format!(
-            "family `{}` is not valid scenario-family TOML: {error}",
-            path.display()
+            "family {} could not be loaded from store `{}`: {error}",
+            format_content_hash_ref(reference),
+            plan.store_root.display()
         ))
     })?;
-    scenario_family_from_toml(path, authored)
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        backend_error(format!(
+            "family {} in store `{}` is not UTF-8 scenario-family TOML: {error}",
+            format_content_hash_ref(reference),
+            plan.store_root.display()
+        ))
+    })?;
+    load_fuzz_family_toml(
+        &format!(
+            "{} in store `{}`",
+            format_content_hash_ref(reference),
+            plan.store_root.display()
+        ),
+        text,
+    )
+}
+
+fn load_fuzz_family_toml(label: &str, text: &str) -> Result<crucible::ScenarioFamily, CliError> {
+    let authored = toml::from_str::<CliScenarioFamilyToml>(&text).map_err(|error| {
+        backend_error(format!(
+            "family {label} is not valid scenario-family TOML: {error}"
+        ))
+    })?;
+    scenario_family_from_toml(label, authored)
 }
 
 fn scenario_family_from_toml(
-    path: &Path,
+    label: &str,
     authored: CliScenarioFamilyToml,
 ) -> Result<crucible::ScenarioFamily, CliError> {
     const SCHEMA: &str = "crucible.scenario-family.v1";
 
     if authored.schema != SCHEMA {
         return Err(family_file_error(
-            path,
+            label,
             format!(
                 "uses unsupported schema `{}`; expected `{SCHEMA}`",
                 authored.schema
@@ -2540,43 +2575,43 @@ fn scenario_family_from_toml(
         ));
     }
 
-    let seeds = seed_space_from_toml(path, authored.seed_space)?;
+    let seeds = seed_space_from_toml(label, authored.seed_space)?;
     let min_density = crucible::FaultDensity::from_millionths(
         authored.fault_density.min_millionths,
     )
-    .map_err(|error| family_file_error(path, format!("has invalid minimum density: {error}")))?;
+    .map_err(|error| family_file_error(label, format!("has invalid minimum density: {error}")))?;
     let max_density = crucible::FaultDensity::from_millionths(
         authored.fault_density.max_millionths,
     )
-    .map_err(|error| family_file_error(path, format!("has invalid maximum density: {error}")))?;
+    .map_err(|error| family_file_error(label, format!("has invalid maximum density: {error}")))?;
     let fault_density = crucible::FaultDensityRange::new(min_density, max_density)
-        .map_err(|error| family_file_error(path, format!("has invalid density range: {error}")))?;
+        .map_err(|error| family_file_error(label, format!("has invalid density range: {error}")))?;
     let topology_size =
         crucible::TopologySizeRange::new(authored.topology_size.min, authored.topology_size.max)
             .map_err(|error| {
-                family_file_error(path, format!("has invalid topology size range: {error}"))
+                family_file_error(label, format!("has invalid topology size range: {error}"))
             })?;
     let topology_shapes = authored
         .topology_shapes
         .iter()
-        .map(|shape| topology_shape_from_toml(path, shape))
+        .map(|shape| topology_shape_from_toml(label, shape))
         .collect::<Result<Vec<_>, _>>()?;
     let space = crucible::FamilySpace::new(seeds, fault_density, topology_size, topology_shapes)
-        .map_err(|error| family_file_error(path, format!("has invalid family space: {error}")))?;
-    let node_template = node_template_from_toml(path, authored.node_template)?;
+        .map_err(|error| family_file_error(label, format!("has invalid family space: {error}")))?;
+    let node_template = node_template_from_toml(label, authored.node_template)?;
 
     Ok(crucible::ScenarioFamily::new(space, node_template))
 }
 
 fn seed_space_from_toml(
-    path: &Path,
+    label: &str,
     authored: CliSeedSpaceToml,
 ) -> Result<crucible::SeedSpace, CliError> {
     match authored {
         CliSeedSpaceToml::Generated { meta_seed, count } => {
-            let meta_seed = parse_family_seed(path, "seed_space.meta_seed", &meta_seed)?;
+            let meta_seed = parse_family_seed(label, "seed_space.meta_seed", &meta_seed)?;
             crucible::SeedSpace::generated(meta_seed, count).map_err(|error| {
-                family_file_error(path, format!("has invalid generated seed space: {error}"))
+                family_file_error(label, format!("has invalid generated seed space: {error}"))
             })
         }
         CliSeedSpaceToml::Explicit { seeds } => {
@@ -2584,31 +2619,31 @@ fn seed_space_from_toml(
                 .iter()
                 .enumerate()
                 .map(|(index, seed)| {
-                    parse_family_seed(path, &format!("seed_space.seeds[{index}]"), seed)
+                    parse_family_seed(label, &format!("seed_space.seeds[{index}]"), seed)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             crucible::SeedSpace::explicit(seeds).map_err(|error| {
-                family_file_error(path, format!("has invalid explicit seed space: {error}"))
+                family_file_error(label, format!("has invalid explicit seed space: {error}"))
             })
         }
     }
 }
 
-fn topology_shape_from_toml(path: &Path, shape: &str) -> Result<crucible::TopologyShape, CliError> {
+fn topology_shape_from_toml(label: &str, shape: &str) -> Result<crucible::TopologyShape, CliError> {
     match shape {
         "ring" => Ok(crucible::TopologyShape::Ring),
         "star" => Ok(crucible::TopologyShape::Star),
         "mesh" => Ok(crucible::TopologyShape::Mesh),
         "random" => Ok(crucible::TopologyShape::Random),
         value => Err(family_file_error(
-            path,
+            label,
             format!("uses unknown topology shape `{value}`"),
         )),
     }
 }
 
 fn node_template_from_toml(
-    path: &Path,
+    label: &str,
     authored: CliNodeTemplateToml,
 ) -> Result<crucible::NodeTemplate, CliError> {
     let agent_signal = authored.agent_signal.unwrap_or(false);
@@ -2623,7 +2658,7 @@ fn node_template_from_toml(
     .count();
     if ready_point_count != 1 {
         return Err(family_file_error(
-            path,
+            label,
             "node_template must set exactly one of fixed_icount, network_idle_nanos, console_marker, or agent_signal=true",
         ));
     }
@@ -2639,10 +2674,10 @@ fn node_template_from_toml(
     };
 
     if let Some(arch) = authored.arch {
-        template = template.arch(vm_architecture_from_toml(path, &arch)?);
+        template = template.arch(vm_architecture_from_toml(label, &arch)?);
     }
     if let Some(white_box) = authored.white_box {
-        template = template.white_box(white_box_from_toml(path, &white_box)?);
+        template = template.white_box(white_box_from_toml(label, &white_box)?);
     }
     if let Some(memory_mib) = authored.memory_mib {
         template = template.memory_mib(memory_mib);
@@ -2657,61 +2692,61 @@ fn node_template_from_toml(
         template = template.icount_shift(icount_shift);
     }
     if let Some(kernel) = authored.kernel {
-        template = template.kernel(blob_ref_from_toml(path, "node_template.kernel", &kernel)?);
+        template = template.kernel(blob_ref_from_toml(label, "node_template.kernel", &kernel)?);
     }
     if let Some(root_image) = authored.root_image {
         template = template.root_image(blob_ref_from_toml(
-            path,
+            label,
             "node_template.root_image",
             &root_image,
         )?);
     }
     if let Some(initrd) = authored.initrd {
-        template = template.initrd(blob_ref_from_toml(path, "node_template.initrd", &initrd)?);
+        template = template.initrd(blob_ref_from_toml(label, "node_template.initrd", &initrd)?);
     }
 
     Ok(template)
 }
 
 fn vm_architecture_from_toml(
-    path: &Path,
+    label: &str,
     value: &str,
 ) -> Result<crucible::VmArchitecture, CliError> {
     match value {
         "x86_64" => Ok(crucible::VmArchitecture::X86_64),
         "aarch64" => Ok(crucible::VmArchitecture::Aarch64),
         value => Err(family_file_error(
-            path,
+            label,
             format!("uses unknown node_template.arch `{value}`"),
         )),
     }
 }
 
-fn white_box_from_toml(path: &Path, value: &str) -> Result<crucible::WhiteBoxPolicy, CliError> {
+fn white_box_from_toml(label: &str, value: &str) -> Result<crucible::WhiteBoxPolicy, CliError> {
     match value {
         "enabled" => Ok(crucible::WhiteBoxPolicy::Enabled),
         "disabled" => Ok(crucible::WhiteBoxPolicy::Disabled),
         value => Err(family_file_error(
-            path,
+            label,
             format!("uses unknown node_template.white_box `{value}`"),
         )),
     }
 }
 
 fn blob_ref_from_toml(
-    path: &Path,
+    label: &str,
     field: &'static str,
     value: &str,
 ) -> Result<crucible::ContentAddressedBlobRef, CliError> {
     crucible::ContentAddressedBlobRef::parse(field, value)
-        .map_err(|error| family_file_error(path, format!("has invalid {field}: {error}")))
+        .map_err(|error| family_file_error(label, format!("has invalid {field}: {error}")))
 }
 
-fn parse_family_seed(path: &Path, field: &str, value: &str) -> Result<crucible::Seed, CliError> {
+fn parse_family_seed(label: &str, field: &str, value: &str) -> Result<crucible::Seed, CliError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(family_file_error(
-            path,
+            label,
             format!("{field} must not be empty"),
         ));
     }
@@ -2721,44 +2756,44 @@ fn parse_family_seed(path: &Path, field: &str, value: &str) -> Result<crucible::
     if let Some(hex) = hex {
         if hex.len() == 64 {
             return Ok(crucible::Seed::from_bytes(parse_family_seed_hex(
-                path, field, hex,
+                label, field, hex,
             )?));
         }
         let value = u64::from_str_radix(hex, 16).map_err(|error| {
-            family_file_error(path, format!("{field} has invalid u64 hex seed: {error}"))
+            family_file_error(label, format!("{field} has invalid u64 hex seed: {error}"))
         })?;
         return Ok(crucible::Seed::from_u64(value));
     }
     if trimmed.len() == 64 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(crucible::Seed::from_bytes(parse_family_seed_hex(
-            path, field, trimmed,
+            label, field, trimmed,
         )?));
     }
     let value = trimmed.parse::<u64>().map_err(|error| {
         family_file_error(
-            path,
+            label,
             format!("{field} must be a u64 or 64-byte hex seed: {error}"),
         )
     })?;
     Ok(crucible::Seed::from_u64(value))
 }
 
-fn parse_family_seed_hex(path: &Path, field: &str, value: &str) -> Result<[u8; 32], CliError> {
+fn parse_family_seed_hex(label: &str, field: &str, value: &str) -> Result<[u8; 32], CliError> {
     let mut bytes = [0; 32];
     for (index, chunk) in value.as_bytes().chunks(2).enumerate() {
         let high = hex_nibble(chunk[0]).ok_or_else(|| {
-            family_file_error(path, format!("{field} has malformed 64-byte hex seed"))
+            family_file_error(label, format!("{field} has malformed 64-byte hex seed"))
         })?;
         let low = hex_nibble(chunk[1]).ok_or_else(|| {
-            family_file_error(path, format!("{field} has malformed 64-byte hex seed"))
+            family_file_error(label, format!("{field} has malformed 64-byte hex seed"))
         })?;
         bytes[index] = (high << 4) | low;
     }
     Ok(bytes)
 }
 
-fn family_file_error(path: &Path, message: impl Into<String>) -> CliError {
-    backend_error(format!("family `{}` {}", path.display(), message.into()))
+fn family_file_error(label: &str, message: impl Into<String>) -> CliError {
+    backend_error(format!("family {label} {}", message.into()))
 }
 
 fn validate_positive_optional_budget(
@@ -11152,7 +11187,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let seed = ergonomics_plan.as_ref().ok_or_else(|| {
                 backend_error("fuzz requires a resolved deterministic campaign seed")
             })?;
-            Some(plan_fuzz_invocation(args, seed)?)
+            Some(plan_fuzz_invocation(args, seed, &run_store_root)?)
         }
         _ => None,
     };
@@ -12240,15 +12275,6 @@ fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
 fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
     backend_error(format!(
         "fuzz family {} runs={} coverage={} requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13",
-        plan.family.label(),
-        plan.runs,
-        plan.coverage.label()
-    ))
-}
-
-fn unsupported_stored_fuzz_family_error(plan: &FuzzDriverPlan) -> CliError {
-    backend_error(format!(
-        "fuzz family {} runs={} coverage={} requires DAG-store ScenarioFamily loading tracked by T-CLI-13",
         plan.family.label(),
         plan.runs,
         plan.coverage.label()
@@ -14704,11 +14730,8 @@ mod tests {
         Ok(path)
     }
 
-    fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-        let path = temp.path().join("family.toml");
-        fs::write(
-            &path,
-            r#"schema = "crucible.scenario-family.v1"
+    fn valid_fuzz_family_toml() -> &'static str {
+        r#"schema = "crucible.scenario-family.v1"
 topology_shapes = ["ring"]
 
 [seed_space]
@@ -14727,8 +14750,12 @@ max = 2
 [node_template]
 fixed_icount = 17
 cmdline = "cli-fuzz-family"
-"#,
-        )?;
+"#
+    }
+
+    fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp.path().join("family.toml");
+        fs::write(&path, valid_fuzz_family_toml())?;
         Ok(path)
     }
 
@@ -19226,7 +19253,7 @@ cmdline = "cli-fuzz-family"
         let Commands::Fuzz(args) = &fuzz_cli.command else {
             panic!("expected fuzz command");
         };
-        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, temp.path())?;
 
         assert_eq!(fuzz_plan.family, FuzzFamilyRef::File(family_path.clone()));
         assert_eq!(fuzz_plan.runs, 5);
@@ -19252,7 +19279,7 @@ cmdline = "cli-fuzz-family"
             &mut FakeSeedEntropySource::new(1),
         )?
         .expect("fuzz should resolve a generated seed");
-        let hash_plan = plan_fuzz_invocation(args, &hash_seed)?;
+        let hash_plan = plan_fuzz_invocation(args, &hash_seed, temp.path())?;
         assert!(matches!(hash_plan.family, FuzzFamilyRef::Stored(_)));
 
         let builtin_cli = Cli::parse_from([
@@ -19272,7 +19299,7 @@ cmdline = "cli-fuzz-family"
             &mut FakeSeedEntropySource::new(2),
         )?
         .expect("built-in fuzz should resolve a seed");
-        let builtin_plan = plan_fuzz_invocation(args, &builtin_seed)?;
+        let builtin_plan = plan_fuzz_invocation(args, &builtin_seed, temp.path())?;
         assert_eq!(builtin_plan.family, FuzzFamilyRef::BuiltInFaultCampaign);
         assert_eq!(
             builtin_plan.config,
@@ -19284,7 +19311,7 @@ cmdline = "cli-fuzz-family"
             runs: 1,
             ..FuzzArgs::default()
         };
-        let error = match plan_fuzz_invocation(&malformed_hash, &seed_plan) {
+        let error = match plan_fuzz_invocation(&malformed_hash, &seed_plan, temp.path()) {
             Ok(_) => panic!("malformed fuzz family hash must be discovery/config"),
             Err(error) => error,
         };
@@ -19304,7 +19331,7 @@ cmdline = "cli-fuzz-family"
                 ..FuzzArgs::default()
             },
         ] {
-            let error = match plan_fuzz_invocation(&args, &seed_plan) {
+            let error = match plan_fuzz_invocation(&args, &seed_plan, temp.path()) {
                 Ok(_) => panic!("malformed fuzz invocation must fail"),
                 Err(error) => error,
             };
@@ -19325,6 +19352,7 @@ cmdline = "cli-fuzz-family"
                 ..FuzzArgs::default()
             },
             &seed_plan,
+            temp.path(),
         ) {
             Ok(_) => panic!("file corpus must fail"),
             Err(error) => error,
@@ -19360,7 +19388,7 @@ cmdline = "cli-fuzz-family"
             &mut FakeSeedEntropySource::new(0),
         )?
         .expect("built-in fuzz should resolve a seed");
-        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, &default_run_store_root(&cli))?;
         let backend_plan = plan_backend_selection(&cli)?.expect("built-in fuzz should route");
         assert_eq!(
             fuzz_dispatch_route(&backend_plan, &fuzz_plan),
@@ -19622,7 +19650,7 @@ cmdline = "cli-fuzz-family"
             &mut FakeSeedEntropySource::new(0),
         )?
         .expect("fuzz should resolve a seed");
-        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, temp.path())?;
         let backend_plan =
             plan_backend_selection(&fuzz_cli)?.expect("fuzz should route to backend");
         let outcome = run_local_double_fuzz_workflow(
@@ -19675,7 +19703,7 @@ cmdline = "cli-fuzz-family"
             &mut FakeSeedEntropySource::new(0),
         )?
         .expect("no-corpus fuzz should resolve a seed");
-        let no_corpus_plan = plan_fuzz_invocation(args, &no_corpus_seed_plan)?;
+        let no_corpus_plan = plan_fuzz_invocation(args, &no_corpus_seed_plan, temp.path())?;
         let no_corpus_backend =
             plan_backend_selection(&no_corpus_cli)?.expect("no-corpus fuzz should route");
         assert_eq!(
@@ -19705,29 +19733,151 @@ cmdline = "cli-fuzz-family"
         assert!(no_corpus_line.contains("status=passed"));
         dispatch(&no_corpus_cli)?;
 
-        let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
+        let store_root = temp.path().join("stored-family-store");
+        let store = crucible::LocalDagStore::new(store_root.clone());
+        let stored_family = store.put(valid_fuzz_family_toml().as_bytes())?;
+        let reference = format_content_hash_ref(stored_family);
         let stored_cli = Cli::parse_from([
-            "crucible",
-            "--quiet",
-            "--backend",
-            "double",
-            "fuzz",
-            "--family",
-            &reference,
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("--seed"),
+            String::from("9"),
+            String::from("fuzz"),
+            String::from("--family"),
+            reference.clone(),
+            String::from("--runs"),
+            String::from("2"),
         ]);
-        let error = match dispatch(&stored_cli) {
-            Ok(_) => panic!("stored family hashes still need DAG-store family loading"),
+        let Commands::Fuzz(args) = &stored_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let stored_seed_plan = plan_determinism_ergonomics(
+            &stored_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("stored-family fuzz should resolve a seed");
+        let stored_plan = plan_fuzz_invocation(args, &stored_seed_plan, &store_root)?;
+        assert_eq!(stored_plan.family, FuzzFamilyRef::Stored(stored_family));
+        assert_eq!(stored_plan.store_root, store_root);
+        let stored_backend =
+            plan_backend_selection(&stored_cli)?.expect("stored-family fuzz should route");
+        let stored_outcome = run_local_double_fuzz_workflow(
+            &plan_cli_invocation(&stored_cli),
+            &stored_backend,
+            Some(&stored_seed_plan),
+            &stored_plan,
+        )?;
+        assert_eq!(stored_outcome.status, BackendCommandStatus::Passed);
+        let stored_line = stored_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fuzz-run\t"))
+            .expect("stored-family fuzz workflow must emit a fuzz-run line");
+        assert!(stored_line.contains(&format!("family={reference}")));
+        assert!(stored_line.contains("iterations=2"));
+        assert!(stored_line.contains("status=passed"));
+        dispatch(&stored_cli)?;
+
+        let missing_reference =
+            format_content_hash_ref(crucible::ContentHash::from_bytes(b"missing-family-ref"));
+        let missing_stored_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("fuzz"),
+            String::from("--family"),
+            missing_reference,
+        ]);
+        let error = match dispatch(&missing_stored_cli) {
+            Ok(_) => panic!("missing stored family hashes must fail"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("T-CLI-13"));
+        assert!(error.to_string().contains("could not be loaded from store"));
+
+        let corrupt_family = store.put(
+            valid_fuzz_family_toml()
+                .replace("crucible.scenario-family.v1", "wrong.schema")
+                .as_bytes(),
+        )?;
+        let corrupt_reference = format_content_hash_ref(corrupt_family);
+        let corrupt_stored_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("fuzz"),
+            String::from("--family"),
+            corrupt_reference,
+        ]);
+        let error = match dispatch(&corrupt_stored_cli) {
+            Ok(_) => panic!("corrupt stored family TOML must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("unsupported schema"));
+
+        let invalid_utf8_family = store.put(&[0xff, 0xfe])?;
+        let invalid_utf8_reference = format_content_hash_ref(invalid_utf8_family);
+        let invalid_utf8_stored_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("fuzz"),
+            String::from("--family"),
+            invalid_utf8_reference,
+        ]);
+        let error = match dispatch(&invalid_utf8_stored_cli) {
+            Ok(_) => panic!("non-UTF-8 stored family bytes must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
         assert!(
             error
                 .to_string()
-                .contains("requires DAG-store ScenarioFamily loading")
+                .contains("is not UTF-8 scenario-family TOML")
         );
-        assert!(error.to_string().contains("runs=1"));
+
+        let malformed_family = store.put(b"schema = [")?;
+        let malformed_reference = format_content_hash_ref(malformed_family);
+        let malformed_stored_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("fuzz"),
+            String::from("--family"),
+            malformed_reference,
+        ]);
+        let error = match dispatch(&malformed_stored_cli) {
+            Ok(_) => panic!("malformed stored family TOML must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+        assert!(
+            error
+                .to_string()
+                .contains("is not valid scenario-family TOML")
+        );
 
         Ok(())
     }
