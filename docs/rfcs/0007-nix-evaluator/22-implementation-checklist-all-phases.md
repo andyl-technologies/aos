@@ -7352,10 +7352,11 @@ nurseries build on the bump arena.
       worker/task count preservation, empty pools, the public empty/non-retry
       surface, and concurrent drains that complete every seeded task exactly
       once. This is a deque admission/audit primitive only: the public
-      fallible executor and ready-work wait hooks still use their existing safe
-      scheduler precursors, derivations are not evaluated through the Chase-Lev
-      adapter, no per-worker nursery ownership is allocated from live heaps, no
-      CAS wait/park token is attached, and the loom/Miri/TSan gate remains open.
+      default fallible executor and ready-work wait hooks still use their
+      existing safe scheduler precursors, derivations are not evaluated through
+      the Chase-Lev adapter, no per-worker nursery ownership is allocated from
+      live heaps, no CAS wait/park token is attached, and the loom/Miri/TSan
+      gate remains open.
 - [x] Current Chase-Lev top-level execution precursor:
       `ratchet-oracle::eval::execute_parallel_top_level_chase_lev` runs
       independent infallible top-level tasks over the Chase-Lev worker/stealer
@@ -7369,6 +7370,23 @@ nurseries build on the bump arena.
       does not integrate with shared thunk CAS wait/park tokens, and does not
       satisfy the full L1 scheduler, full-closure differential, or
       loom/Miri/TSan gates.
+- [x] Current Chase-Lev fallible root execution precursor:
+      `ratchet-oracle::eval::execute_parallel_top_level_fallible_chase_lev`
+      and its worker-aware form run independent fallible top-level tasks over
+      the Chase-Lev worker/stealer adapter while preserving stable outcome
+      collation, canonical observed-error selection by stable task order, worker
+      context, local-pop/steal/completion/error counters, and cooperative
+      fail-fast cancellation at task boundaries. Because Chase-Lev worker handles
+      are owner-local, skipped queued roots are reported as submitted roots minus
+      completed outcomes after all workers join. Tests cover collect-all
+      root-local errors, stable successful outcomes, worker-aware context,
+      single-worker fail-fast skipped-root accounting, worker accounting, empty
+      task sets, worker-panic reporting, and multi-panic join draining. This is
+      still an independent-root executor only: it does not evaluate Nix
+      derivations, does not connect ready-work parking to Chase-Lev deques, does
+      not allocate through live per-worker nurseries, does not integrate with
+      shared thunk CAS wait/park tokens, and does not satisfy the full L1
+      scheduler, full-closure differential, or loom/Miri/TSan gates.
 - [ ] `eval/thunk_cas.rs` — the L2 **lock-free CAS thunk protocol**
       (`Suspended → Pending → Awaited → Forced/Failed`); claim-by-CAS, with
       work-stealing or parking on a claimed thunk ([13](13-parallel-evaluation.md) §3).

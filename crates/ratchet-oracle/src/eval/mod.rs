@@ -46,7 +46,9 @@ pub use parallel_chase_lev::{
 pub use parallel_failure::{
     ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTaskContext,
     ParallelFallibleTopLevelError, ParallelFallibleTopLevelReport, ParallelTaskOutcome,
-    execute_parallel_top_level_fallible, execute_parallel_top_level_fallible_with_worker,
+    execute_parallel_top_level_fallible, execute_parallel_top_level_fallible_chase_lev,
+    execute_parallel_top_level_fallible_chase_lev_with_worker,
+    execute_parallel_top_level_fallible_with_worker,
 };
 pub use parallel_heap::{
     ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,

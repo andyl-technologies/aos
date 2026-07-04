@@ -9,9 +9,12 @@
 //! fail-fast cancellation is cooperative at task boundaries
 //! ```
 //!
-//! The executor here still uses standard-library deques, mutexes, and scoped
-//! threads. It does not store per-thunk error payloads, wake thunk waiters,
-//! interrupt in-flight work, or replace the final work-stealing scheduler.
+//! The original executor here still uses standard-library deques, mutexes, and
+//! scoped threads. The Chase-Lev entry points delegate queue ownership to
+//! [`super::parallel_chase_lev`] while keeping root-local error collation and
+//! cooperative cancellation in this module. Neither path stores per-thunk error
+//! payloads, wakes thunk waiters, interrupts in-flight work, or replaces the
+//! final work-stealing scheduler.
 
 use std::{
     collections::VecDeque,
@@ -25,6 +28,10 @@ use std::{
 };
 
 use thiserror::Error;
+
+use super::parallel_chase_lev::{
+    ParallelChaseLevTaskSource, ParallelChaseLevWorkerQueue, parallel_chase_lev_worker_queues,
+};
 
 /// Executes independent top-level tasks whose evaluation can fail.
 ///
@@ -68,6 +75,44 @@ where
     execute_parallel_top_level_fallible_with_worker(tasks, worker_count, policy, |_, payload| {
         worker(payload)
     })
+}
+
+/// Executes independent fallible top-level tasks with Chase-Lev worker deques.
+///
+/// This entry point has the same outcome collation and cooperative cancellation
+/// contract as [`execute_parallel_top_level_fallible`], but its worker queues
+/// are backed by the Phase 3.5 Chase-Lev deque adapter instead of the
+/// standard-library mutex queue precursor.
+///
+/// # Errors
+///
+/// Returns [`ParallelFallibleTopLevelError`] if the result buffer is poisoned
+/// by a panic, or if a worker thread panics while evaluating a task.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped worker
+/// threads. Task panics are caught and returned as
+/// [`ParallelFallibleTopLevelError::WorkerPanicked`].
+pub fn execute_parallel_top_level_fallible_chase_lev<I, T, R, E, F>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+    policy: ParallelFailurePolicy,
+    worker: F,
+) -> Result<ParallelFallibleTopLevelReport<R, E>, ParallelFallibleTopLevelError>
+where
+    I: IntoIterator<Item = T>,
+    T: Send,
+    R: Send,
+    E: Send,
+    F: Fn(T) -> Result<R, E> + Sync,
+{
+    execute_parallel_top_level_fallible_chase_lev_with_worker(
+        tasks,
+        worker_count,
+        policy,
+        |_, payload| worker(payload),
+    )
 }
 
 /// Executes independent fallible top-level tasks with worker execution context.
@@ -193,6 +238,114 @@ where
     })
 }
 
+/// Executes independent fallible Chase-Lev tasks with worker execution context.
+///
+/// This is the worker-aware form of
+/// [`execute_parallel_top_level_fallible_chase_lev`]. The supplied closure
+/// receives [`ParallelFallibleTaskContext`] describing the stable task index,
+/// initial worker queue, executing worker, and worker count for the task
+/// currently being evaluated.
+///
+/// # Errors
+///
+/// Returns [`ParallelFallibleTopLevelError`] if the result buffer is poisoned
+/// by a panic, or if a worker thread panics while evaluating a task.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped worker
+/// threads. Task panics are caught and returned as
+/// [`ParallelFallibleTopLevelError::WorkerPanicked`].
+pub fn execute_parallel_top_level_fallible_chase_lev_with_worker<I, T, R, E, F>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+    policy: ParallelFailurePolicy,
+    worker: F,
+) -> Result<ParallelFallibleTopLevelReport<R, E>, ParallelFallibleTopLevelError>
+where
+    I: IntoIterator<Item = T>,
+    T: Send,
+    R: Send,
+    E: Send,
+    F: Fn(ParallelFallibleTaskContext, T) -> Result<R, E> + Sync,
+{
+    let queues = parallel_chase_lev_worker_queues(tasks, worker_count);
+    let worker_count = queues.worker_count();
+    let task_count = queues.task_count();
+    let worker_queues = queues.into_worker_queues();
+    let outcomes = Mutex::new(Vec::with_capacity(task_count));
+    let cancelled = AtomicBool::new(false);
+
+    let worker_reports = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for worker_queue in worker_queues {
+            let worker_id = worker_queue.worker_id();
+            let outcomes = &outcomes;
+            let cancelled = &cancelled;
+            let worker = &worker;
+            handles.push((
+                worker_id,
+                scope.spawn(move || {
+                    chase_lev_fallible_worker_loop(
+                        worker_queue,
+                        outcomes,
+                        cancelled,
+                        policy,
+                        worker,
+                    )
+                }),
+            ));
+        }
+
+        let mut worker_reports = Vec::with_capacity(worker_count);
+        let mut first_error = None;
+        for (worker_id, handle) in handles {
+            match handle.join() {
+                Ok(Ok(report)) => worker_reports.push(report),
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if first_error.is_none() {
+                        first_error =
+                            Some(ParallelFallibleTopLevelError::WorkerPanicked { worker_id });
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(worker_reports)
+        }
+    })?;
+
+    let mut outcomes = outcomes
+        .into_inner()
+        .map_err(|_| ParallelFallibleTopLevelError::ResultBufferPoisoned)?;
+    outcomes.sort_by_key(ParallelTaskOutcome::task_index);
+    let completed_task_count = outcomes.len();
+    debug_assert!(
+        completed_task_count <= task_count,
+        "Chase-Lev fallible executor cannot complete more tasks than were submitted"
+    );
+    let cancelled_before_start_count = task_count.saturating_sub(completed_task_count);
+
+    Ok(ParallelFallibleTopLevelReport {
+        worker_count,
+        task_count,
+        completed_task_count,
+        cancelled_before_start_count,
+        cancelled: cancelled.load(Ordering::Acquire),
+        outcomes,
+        worker_reports,
+    })
+}
+
 fn fallible_worker_loop<T, R, E, F>(
     worker_id: usize,
     queues: &[Mutex<VecDeque<ParallelFallibleTopLevelTask<T>>>],
@@ -241,6 +394,61 @@ where
     }
 
     Ok(report)
+}
+
+fn chase_lev_fallible_worker_loop<T, R, E, F>(
+    queue: ParallelChaseLevWorkerQueue<T>,
+    outcomes: &Mutex<Vec<ParallelTaskOutcome<R, E>>>,
+    cancelled: &AtomicBool,
+    policy: ParallelFailurePolicy,
+    worker: &F,
+) -> Result<ParallelFailureWorkerReport, ParallelFallibleTopLevelError>
+where
+    F: Fn(ParallelFallibleTaskContext, T) -> Result<R, E>,
+{
+    let mut report = ParallelFailureWorkerReport::new(queue.worker_id());
+
+    loop {
+        if policy.cancels_queued_after_first_error() && cancelled.load(Ordering::Acquire) {
+            report.task_boundary_cancellations += 1;
+            return Ok(report);
+        }
+
+        let Some(take) = queue.take_next_retrying() else {
+            return Ok(report);
+        };
+
+        match take.source() {
+            ParallelChaseLevTaskSource::Local => report.local_pops += 1,
+            ParallelChaseLevTaskSource::Stolen => report.steals += 1,
+        }
+
+        let task = take.into_task();
+        let task_index = task.task_index();
+        let initial_worker = task.initial_worker();
+        let worker_id = report.worker_id;
+        let context = ParallelFallibleTaskContext {
+            task_index,
+            initial_worker,
+            worker_id,
+            worker_count: queue.worker_count(),
+        };
+        let outcome = worker(context, task.into_payload());
+        if outcome.is_err() {
+            report.task_errors += 1;
+            if policy.cancels_queued_after_first_error() {
+                cancelled.store(true, Ordering::Release);
+            }
+        }
+
+        report.tasks_completed += 1;
+        lock_outcomes(outcomes)?.push(ParallelTaskOutcome {
+            task_index,
+            initial_worker,
+            worker_id,
+            outcome,
+        });
+    }
 }
 
 fn take_next_fallible_task<T>(
@@ -639,6 +847,85 @@ mod tests {
     }
 
     #[test]
+    fn chase_lev_collect_all_reports_every_root_and_selects_canonical_error() {
+        let report = execute_parallel_top_level_fallible_chase_lev(
+            0..6,
+            workers(3),
+            ParallelFailurePolicy::CollectAll,
+            |value| {
+                if value == 4 || value == 1 {
+                    Err(format!("root {value} failed"))
+                } else {
+                    Ok(value * 10)
+                }
+            },
+        )
+        .expect("Chase-Lev fallible execution succeeds");
+
+        assert_eq!(report.worker_count(), 3);
+        assert_eq!(report.task_count(), 6);
+        assert_eq!(report.completed_task_count(), 6);
+        assert_eq!(report.cancelled_before_start_count(), 0);
+        assert!(!report.cancelled());
+        assert_eq!(
+            report
+                .outcomes()
+                .iter()
+                .map(ParallelTaskOutcome::task_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            report
+                .outcomes()
+                .iter()
+                .filter(|outcome| outcome.is_err())
+                .map(ParallelTaskOutcome::task_index)
+                .collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+        assert_eq!(
+            report
+                .canonical_error()
+                .expect("canonical error exists")
+                .task_index(),
+            1
+        );
+    }
+
+    #[test]
+    fn chase_lev_successful_outcomes_are_returned_in_stable_task_order() {
+        let report = execute_parallel_top_level_fallible_chase_lev(
+            [3, 1, 4, 1, 5, 9],
+            workers(3),
+            ParallelFailurePolicy::CollectAll,
+            |value| Ok::<_, &'static str>(value * value),
+        )
+        .expect("Chase-Lev fallible execution succeeds");
+
+        assert_eq!(report.canonical_error(), None);
+        assert_eq!(
+            report
+                .outcomes()
+                .iter()
+                .map(|outcome| *outcome.outcome().as_ref().expect("root succeeded"))
+                .collect::<Vec<_>>(),
+            vec![9, 1, 16, 1, 25, 81]
+        );
+        assert!(
+            report
+                .outcomes()
+                .iter()
+                .enumerate()
+                .all(
+                    |(expected_index, outcome)| outcome.task_index() == expected_index
+                        && outcome.initial_worker() == expected_index % 3
+                        && outcome.worker_id() < 3
+                )
+        );
+    }
+
+    #[test]
     fn worker_aware_executor_reports_task_context() {
         let report = execute_parallel_top_level_fallible_with_worker(
             0..9,
@@ -676,6 +963,43 @@ mod tests {
     }
 
     #[test]
+    fn chase_lev_worker_aware_executor_reports_task_context() {
+        let report = execute_parallel_top_level_fallible_chase_lev_with_worker(
+            0..9,
+            workers(3),
+            ParallelFailurePolicy::CollectAll,
+            |context, value| {
+                Ok::<_, &'static str>((
+                    value,
+                    context.task_index(),
+                    context.initial_worker(),
+                    context.worker_id(),
+                    context.worker_count(),
+                ))
+            },
+        )
+        .expect("worker-aware Chase-Lev fallible execution succeeds");
+
+        assert_eq!(report.worker_count(), 3);
+        assert!(
+            report
+                .outcomes()
+                .iter()
+                .enumerate()
+                .all(|(expected_index, outcome)| {
+                    let (value, task_index, initial_worker, context_worker, worker_count) =
+                        outcome.outcome().as_ref().expect("root succeeded");
+                    *value == expected_index
+                        && *task_index == expected_index
+                        && *initial_worker == expected_index % 3
+                        && *context_worker == outcome.worker_id()
+                        && outcome.worker_id() < 3
+                        && *worker_count == 3
+                })
+        );
+    }
+
+    #[test]
     fn fail_fast_cancellation_stops_only_before_new_task_boundaries() {
         let report = execute_parallel_top_level_fallible(
             0..5,
@@ -690,6 +1014,42 @@ mod tests {
             },
         )
         .expect("fallible execution succeeds");
+
+        assert!(report.cancelled());
+        assert_eq!(report.completed_task_count(), 1);
+        assert_eq!(report.cancelled_before_start_count(), 4);
+        assert_eq!(
+            report
+                .canonical_error()
+                .expect("canonical observed error exists")
+                .task_index(),
+            4
+        );
+        assert_eq!(
+            report
+                .worker_reports()
+                .iter()
+                .map(|worker| worker.task_boundary_cancellations())
+                .sum::<usize>(),
+            1
+        );
+    }
+
+    #[test]
+    fn chase_lev_fail_fast_cancellation_stops_only_before_new_task_boundaries() {
+        let report = execute_parallel_top_level_fallible_chase_lev(
+            0..5,
+            workers(1),
+            ParallelFailurePolicy::CancelQueuedAfterFirstError,
+            |value| {
+                if value == 4 {
+                    Err("requested root failed")
+                } else {
+                    Ok(value)
+                }
+            },
+        )
+        .expect("Chase-Lev fallible execution succeeds");
 
         assert!(report.cancelled());
         assert_eq!(report.completed_task_count(), 1);
@@ -930,6 +1290,44 @@ mod tests {
     }
 
     #[test]
+    fn chase_lev_worker_reports_account_for_completed_tasks_and_errors() {
+        let report = execute_parallel_top_level_fallible_chase_lev(
+            0..16,
+            workers(4),
+            ParallelFailurePolicy::CollectAll,
+            |value| {
+                if value % 5 == 0 {
+                    Err(value)
+                } else {
+                    Ok(value)
+                }
+            },
+        )
+        .expect("Chase-Lev fallible execution succeeds");
+
+        let completed = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.tasks_completed())
+            .sum::<usize>();
+        let local_and_stolen = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.local_pops() + worker.steals())
+            .sum::<usize>();
+        let task_errors = report
+            .worker_reports()
+            .iter()
+            .map(|worker| worker.task_errors())
+            .sum::<usize>();
+
+        assert_eq!(completed, 16);
+        assert_eq!(local_and_stolen, 16);
+        assert_eq!(task_errors, 4);
+        assert_eq!(report.outcomes().len(), 16);
+    }
+
+    #[test]
     fn fallible_executor_handles_empty_task_sets() {
         let report = execute_parallel_top_level_fallible(
             std::iter::empty::<usize>(),
@@ -938,6 +1336,25 @@ mod tests {
             Ok::<_, &'static str>,
         )
         .expect("empty execution succeeds");
+
+        assert_eq!(report.worker_count(), 2);
+        assert_eq!(report.task_count(), 0);
+        assert_eq!(report.completed_task_count(), 0);
+        assert_eq!(report.cancelled_before_start_count(), 0);
+        assert!(!report.cancelled());
+        assert!(report.outcomes().is_empty());
+        assert_eq!(report.worker_reports().len(), 2);
+    }
+
+    #[test]
+    fn chase_lev_fallible_executor_handles_empty_task_sets() {
+        let report = execute_parallel_top_level_fallible_chase_lev(
+            std::iter::empty::<usize>(),
+            workers(2),
+            ParallelFailurePolicy::CancelQueuedAfterFirstError,
+            Ok::<_, &'static str>,
+        )
+        .expect("empty Chase-Lev fallible execution succeeds");
 
         assert_eq!(report.worker_count(), 2);
         assert_eq!(report.task_count(), 0);
@@ -964,6 +1381,51 @@ mod tests {
         assert!(matches!(
             error,
             ParallelFallibleTopLevelError::WorkerPanicked { worker_id } if worker_id < 2
+        ));
+    }
+
+    #[test]
+    fn chase_lev_fallible_executor_reports_worker_panic() {
+        let error = execute_parallel_top_level_fallible_chase_lev(
+            0..4,
+            workers(2),
+            ParallelFailurePolicy::CollectAll,
+            |value| {
+                assert_ne!(value, 2, "task panic is reported as worker failure");
+                Ok::<_, &'static str>(value)
+            },
+        )
+        .expect_err("panicking task fails Chase-Lev fallible execution");
+
+        assert!(matches!(
+            error,
+            ParallelFallibleTopLevelError::WorkerPanicked { worker_id } if worker_id < 2
+        ));
+    }
+
+    #[test]
+    fn chase_lev_fallible_executor_drains_join_handles_after_multiple_worker_panics() {
+        let outcome = std::panic::catch_unwind(|| {
+            execute_parallel_top_level_fallible_chase_lev(
+                0..8,
+                workers(4),
+                ParallelFailurePolicy::CollectAll,
+                |value| -> Result<usize, &'static str> {
+                    panic!("task {value} panics");
+                },
+            )
+        });
+
+        assert!(
+            outcome.is_ok(),
+            "Chase-Lev fallible executor returns an error instead of unwinding"
+        );
+        let error = outcome
+            .expect("executor call did not unwind")
+            .expect_err("panicking tasks fail Chase-Lev fallible execution");
+        assert!(matches!(
+            error,
+            ParallelFallibleTopLevelError::WorkerPanicked { worker_id } if worker_id < 4
         ));
     }
 
