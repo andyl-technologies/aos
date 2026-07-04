@@ -427,14 +427,13 @@ long-held locks.
   future selector proof path; creates a label-bearing savepoint at the paused
   boundary, validates the returned materialized checkpoint through replay-oracle
   `fat==thin` before exporting a `.crucible-savepoint` handle, supports default
-  `--artifact-dir` and explicit `--out` destinations, exercises the
-  local-double property selector path against a fixed `no-split-brain`
-  assertion-state event and the marker selector path against a fixed
-  `compaction-started` guest-marker event through suspending breakpoints plus
-  breakpoint-firing proof, and fails non-matching property and marker selectors
-  and local QEMU saves clearly until their proof paths land; full closure waits
-  for production assertion-event/guest-marker sources across selector saves and
-  real-QEMU savepoint coverage.
+  `--artifact-dir` and explicit `--out` destinations, exercises selector-driven
+  local-double property and marker saves by emitting the requested assertion/
+  marker identities through suspending breakpoints plus breakpoint-firing proof,
+  and fails undeclared property selectors, marker selectors without a white-box
+  source, and local QEMU saves clearly until their proof paths land; full closure
+  waits for production assertion-event/guest-marker sources across selector
+  saves and real-QEMU savepoint coverage.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`

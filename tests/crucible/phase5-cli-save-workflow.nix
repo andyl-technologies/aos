@@ -164,12 +164,16 @@
         needle = "fn wait_for_save_workflow_advanced_paused";
       }
       {
-        label = "fixed local-double assertion fixture";
-        needle = "SAVE_DOUBLE_ASSERTION_VIOLATION";
+        label = "selector-driven assertion fixture";
+        needle = "assertion: crucible::AssertionId";
       }
       {
-        label = "fixed local-double marker fixture";
-        needle = "SAVE_DOUBLE_GUEST_MARKER";
+        label = "selector-driven marker fixture";
+        needle = "marker: crucible::MarkerId";
+      }
+      {
+        label = "selector-derived marker id";
+        needle = "MarkerId::from_name(name.clone())";
       }
       {
         label = "local-double marker fixture enum";
@@ -184,12 +188,20 @@
         needle = "guest_marker_observation";
       }
       {
-        label = "non-matching property selector test";
-        needle = "wrong-property-stop";
+        label = "second declared property selector test";
+        needle = "split-property-stop";
       }
       {
-        label = "non-matching marker selector test";
-        needle = "wrong-marker-stop";
+        label = "marker without source test";
+        needle = "no-source-marker-stop";
+      }
+      {
+        label = "non-fixed marker selector test";
+        needle = "phase-two-marker";
+      }
+      {
+        label = "marker without source helper";
+        needle = "write_marker_selector_without_source_scenario";
       }
       {
         label = "selector proof rejection test";
