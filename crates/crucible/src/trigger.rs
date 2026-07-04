@@ -3534,6 +3534,7 @@ pub struct OfflineAssertionChecker {
     guest_assertion_catalog: Vec<GuestAssertionMarker>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    terminal_quiescence: Option<SchedulerQuiescence>,
 }
 
 impl OfflineAssertionChecker {
@@ -3591,6 +3592,13 @@ impl OfflineAssertionChecker {
         mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
     ) -> Self {
         self.mem_places = mem_places.into_iter().collect();
+        self
+    }
+
+    /// Adds terminal scheduler-quiescence evidence for after-quiescence checks.
+    #[must_use]
+    pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
+        self.terminal_quiescence = Some(quiescence);
         self
     }
 
@@ -3670,6 +3678,9 @@ impl OfflineAssertionChecker {
                     .iter()
                     .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
             );
+        if let Some(quiescence) = self.terminal_quiescence.clone() {
+            evaluator = evaluator.with_terminal_scheduler_quiescence(quiescence);
+        }
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
 
@@ -3932,6 +3943,7 @@ pub struct HostAssertionEvaluator {
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    terminal_quiescence: Option<SchedulerQuiescence>,
     last_prefix: Option<ConditionEventLogPrefix>,
 }
 
@@ -3950,6 +3962,7 @@ impl HostAssertionEvaluator {
             white_box_policies: BTreeMap::new(),
             code_points: BTreeMap::new(),
             mem_places: BTreeMap::new(),
+            terminal_quiescence: None,
             last_prefix: None,
         }
     }
@@ -4004,6 +4017,13 @@ impl HostAssertionEvaluator {
         mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
     ) -> Self {
         self.mem_places = mem_places.into_iter().collect();
+        self
+    }
+
+    /// Adds terminal scheduler-quiescence evidence for after-quiescence checks.
+    #[must_use]
+    pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
+        self.terminal_quiescence = Some(quiescence);
         self
     }
 
@@ -4137,6 +4157,7 @@ impl HostAssertionEvaluator {
                 &self.white_box_policies,
                 &self.code_points,
                 &self.mem_places,
+                self.terminal_quiescence.as_ref(),
             );
         }
         for state in &mut self.guest_marker_states {
@@ -4473,6 +4494,7 @@ where
                 white_box_policies,
                 code_points,
                 mem_places,
+                None,
             ) {
                 None
             } else {
@@ -4502,6 +4524,7 @@ where
                 white_box_policies,
                 code_points,
                 mem_places,
+                None,
             );
             let distance = host_condition_distance_to_satisfaction(
                 prefix,
@@ -4512,6 +4535,7 @@ where
                 white_box_policies,
                 code_points,
                 mem_places,
+                None,
             );
             state.observe_proximity(prefix, distance);
             if satisfied {
@@ -4616,6 +4640,7 @@ where
             white_box_policies,
             code_points,
             mem_places,
+            None,
         )
     {
         state.eventually_triggered = true;
@@ -4636,6 +4661,7 @@ where
             white_box_policies,
             code_points,
             mem_places,
+            None,
         );
     if !state.pending_eventually.is_empty() {
         let distance = host_condition_distance_to_satisfaction(
@@ -4647,6 +4673,7 @@ where
             white_box_policies,
             code_points,
             mem_places,
+            None,
         );
         state.observe_proximity(prefix, distance);
     }
@@ -4711,6 +4738,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        None,
     ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -4726,6 +4754,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        None,
     );
     state.observe_proximity(prefix, distance);
 
@@ -4779,6 +4808,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        None,
     );
     if matches!(expectation, ReachabilityExpectation::Reachable { .. }) {
         let distance = host_condition_distance_to_satisfaction(
@@ -4790,6 +4820,7 @@ where
             white_box_policies,
             code_points,
             mem_places,
+            None,
         );
         state.observe_proximity(prefix, distance);
     }
@@ -4825,6 +4856,7 @@ fn finalize_host_assertion_state<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    terminal_quiescence: Option<&SchedulerQuiescence>,
 ) where
     O: HostAssertionOracle + ?Sized,
 {
@@ -4877,6 +4909,7 @@ fn finalize_host_assertion_state<O>(
                 white_box_policies,
                 code_points,
                 mem_places,
+                terminal_quiescence,
             ) {
                 state.terminal(
                     HostAssertionOutcomeKind::Passed,
@@ -7248,6 +7281,7 @@ struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     white_box_policies: &'state BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &'state BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &'state BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    scheduler_quiescence: Option<&'state SchedulerQuiescence>,
 }
 
 type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
@@ -7307,6 +7341,10 @@ where
         self.observed.fault_facts()
     }
 
+    fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        self.scheduler_quiescence
+    }
+
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.white_box_policies.get(node).copied()
     }
@@ -7354,6 +7392,7 @@ fn host_condition_is_true<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
     O: HostAssertionOracle + ?Sized,
@@ -7368,6 +7407,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        scheduler_quiescence,
     )
 }
 
@@ -7380,6 +7420,7 @@ fn host_condition_is_true_with_cache<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
     O: HostAssertionOracle + ?Sized,
@@ -7392,6 +7433,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        scheduler_quiescence,
     };
     evaluate_condition(&mut evaluator, condition)
 }
@@ -7434,6 +7476,7 @@ fn host_condition_distance_to_satisfaction<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> u128
 where
     O: HostAssertionOracle + ?Sized,
@@ -7447,6 +7490,7 @@ where
         white_box_policies,
         code_points,
         mem_places,
+        scheduler_quiescence,
     };
     condition_distance_to_satisfaction(&mut evaluator, condition)
 }

@@ -28,7 +28,7 @@ use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
     EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
     EventLogCoverageFeedbackConsumer, EventLogIcountStamp, EventSource, ScheduledEventPayload,
-    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
     coverage_fingerprint_from_event_log, event_log_causal_projection,
     recorded_assertion_log_from_schedule_for_search,
 };
@@ -18820,6 +18820,7 @@ impl SearchRetainedLogPredicateResolutions {
 pub struct SearchRetainedLogAssertionEvidence {
     recorded_log: RecordedAssertionLog,
     resolutions: SearchRetainedLogPredicateResolutions,
+    terminal_quiescence: Option<SchedulerQuiescence>,
 }
 
 impl SearchRetainedLogAssertionEvidence {
@@ -18829,6 +18830,7 @@ impl SearchRetainedLogAssertionEvidence {
         Self {
             recorded_log,
             resolutions: SearchRetainedLogPredicateResolutions::new(),
+            terminal_quiescence: None,
         }
     }
 
@@ -18836,6 +18838,13 @@ impl SearchRetainedLogAssertionEvidence {
     #[must_use]
     pub fn with_resolutions(mut self, resolutions: SearchRetainedLogPredicateResolutions) -> Self {
         self.resolutions = resolutions;
+        self
+    }
+
+    /// Adds terminal scheduler-quiescence evidence to this retained-log evidence.
+    #[must_use]
+    pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
+        self.terminal_quiescence = Some(quiescence);
         self
     }
 
@@ -18849,6 +18858,12 @@ impl SearchRetainedLogAssertionEvidence {
     #[must_use]
     pub const fn resolutions(&self) -> &SearchRetainedLogPredicateResolutions {
         &self.resolutions
+    }
+
+    /// Returns terminal scheduler-quiescence evidence, if supplied.
+    #[must_use]
+    pub const fn terminal_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        self.terminal_quiescence.as_ref()
     }
 }
 
@@ -19048,6 +19063,9 @@ impl SearchFailureOracle {
     /// retained-log boundary: every returned [`SearchRetainedLogAssertionEvidence`]
     /// must contain the exact retained log for that configuration and any
     /// host-resolution facts that were valid when the log was captured.
+    /// Terminal scheduler-quiescence evidence is used only for retained
+    /// `after-quiescence` assertions; it does not make quiescence predicates
+    /// admissible for prefix or reachability properties.
     ///
     /// # Errors
     ///
@@ -19088,6 +19106,7 @@ impl SearchFailureOracle {
                 &configuration,
                 evidence.recorded_log(),
                 evidence.resolutions(),
+                evidence.terminal_quiescence(),
             )? {
                 failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
             }
@@ -24168,6 +24187,7 @@ where
                 outcome,
                 predicate_scope,
                 None,
+                false,
             )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
@@ -24178,8 +24198,9 @@ fn search_assertion_failure_fingerprint_from_retained_log(
     configuration: &Configuration,
     recorded: &RecordedAssertionLog,
     resolutions: &SearchRetainedLogPredicateResolutions,
+    terminal_quiescence: Option<&SchedulerQuiescence>,
 ) -> Result<Option<ContentHash>, EngineError> {
-    let report = OfflineAssertionChecker::new()
+    let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
         .with_resolved_code_points(
             resolutions
@@ -24192,7 +24213,11 @@ fn search_assertion_failure_fingerprint_from_retained_log(
                 .mem_places
                 .iter()
                 .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
-        )
+        );
+    if let Some(quiescence) = terminal_quiescence.cloned() {
+        checker = checker.with_terminal_scheduler_quiescence(quiescence);
+    }
+    let report = checker
         .check_run(scenario.properties(), recorded.entries())
         .map_err(|source| {
             scenario_serialization_error(format!(
@@ -24208,6 +24233,7 @@ fn search_assertion_failure_fingerprint_from_retained_log(
                 outcome,
                 SearchAssertionPredicateScope::RetainedLog,
                 Some(resolutions),
+                terminal_quiescence.is_some(),
             )
         })
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
@@ -24243,17 +24269,26 @@ fn prefix_safe_search_assertion_failure(
     outcome: &HostAssertionOutcome,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
+    terminal_quiescence: bool,
 ) -> bool {
+    let supported_quantifier = matches!(
+        outcome.quantifier,
+        AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
+    ) || (predicate_scope == SearchAssertionPredicateScope::RetainedLog
+        && terminal_quiescence
+        && outcome.quantifier == AssertionQuantifierKind::AfterQuiescence);
+    let allow_terminal_quiescence_predicates = predicate_scope
+        == SearchAssertionPredicateScope::RetainedLog
+        && terminal_quiescence
+        && outcome.quantifier == AssertionQuantifierKind::AfterQuiescence;
     outcome.kind == HostAssertionOutcomeKind::Violated
-        && matches!(
-            outcome.quantifier,
-            AssertionQuantifierKind::Always | AssertionQuantifierKind::Reachable
-        )
+        && supported_quantifier
         && assertion_uses_only_search_schedule_predicates(
             properties,
             &outcome.assertion,
             predicate_scope,
             resolutions,
+            allow_terminal_quiescence_predicates,
         )
 }
 
@@ -24262,6 +24297,7 @@ fn assertion_uses_only_search_schedule_predicates(
     assertion: &AssertionId,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
+    allow_terminal_quiescence_predicates: bool,
 ) -> bool {
     properties
         .assertions()
@@ -24272,6 +24308,7 @@ fn assertion_uses_only_search_schedule_predicates(
                 &candidate.property,
                 predicate_scope,
                 resolutions,
+                allow_terminal_quiescence_predicates,
             )
         })
 }
@@ -24280,14 +24317,23 @@ fn property_uses_only_search_schedule_predicates(
     property: &Property,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
+    allow_terminal_quiescence_predicates: bool,
 ) -> bool {
     match property {
         Property::Always { predicate }
         | Property::Sometimes { predicate }
-        | Property::AfterQuiescence { predicate }
-        | Property::Reachable { predicate, .. } => {
-            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope, resolutions)
-        }
+        | Property::Reachable { predicate, .. } => predicate_uses_only_search_schedule_predicates(
+            predicate,
+            predicate_scope,
+            resolutions,
+            false,
+        ),
+        Property::AfterQuiescence { predicate } => predicate_uses_only_search_schedule_predicates(
+            predicate,
+            predicate_scope,
+            resolutions,
+            allow_terminal_quiescence_predicates,
+        ),
         Property::Eventually { .. } => false,
     }
 }
@@ -24296,6 +24342,7 @@ fn predicate_uses_only_search_schedule_predicates(
     predicate: &Predicate,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
+    allow_terminal_quiescence_predicates: bool,
 ) -> bool {
     match predicate {
         Predicate::FaultActive { .. } => true,
@@ -24308,11 +24355,17 @@ fn predicate_uses_only_search_schedule_predicates(
                     predicate,
                     predicate_scope,
                     resolutions,
+                    allow_terminal_quiescence_predicates,
                 )
             })
         }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            predicate_uses_only_search_schedule_predicates(predicate, predicate_scope, resolutions)
+            predicate_uses_only_search_schedule_predicates(
+                predicate,
+                predicate_scope,
+                resolutions,
+                allow_terminal_quiescence_predicates,
+            )
         }
         Predicate::At { .. }
         | Predicate::After { .. }
@@ -24343,7 +24396,10 @@ fn predicate_uses_only_search_schedule_predicates(
                 && resolutions
                     .is_some_and(|resolutions| resolutions.resolves_mem_place(node, place))
         }
-        Predicate::Quiescent => false,
+        Predicate::Quiescent => {
+            predicate_scope == SearchAssertionPredicateScope::RetainedLog
+                && allow_terminal_quiescence_predicates
+        }
     }
 }
 
