@@ -489,8 +489,11 @@ long-held locks.
   equal-length non-prefix and missing-prefix-payload rejection, pure
   replay-oracle validation, and unified model temporal-graph replay
   materialization with runtime/reduced-state, single-VM-fingerprint, and
-  fat/thin checkpoint agreement; full closure waits for process-backed
-  replay-to-savepoint and machine-independent backend replay coverage.
+  fat/thin checkpoint agreement, plus mock host-profile machine-independent
+  replay coverage in the same gate for quiet single-core vs loaded many-core
+  artifact reproduction; full closure waits for process-backed
+  replay-to-savepoint and real-backend/fleet machine-independent replay
+  coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,

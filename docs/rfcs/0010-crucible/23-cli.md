@@ -1137,8 +1137,11 @@ branch on the verdict without parsing output:
   encoded artifact decision stream. It also materializes the target through the
   unified model temporal-graph replay operation, proving the realized runtime
   state, reduced state, single-VM fingerprint, and replay-oracle fat/thin
-  checkpoints agree. Full closure remains blocked on process-backed
-  replay-to-savepoint and machine-independent backend replay coverage.
+  checkpoints agree, and wires mock host-profile machine-independent replay into
+  the replay gate by reproducing the same artifact across quiet single-core and
+  loaded many-core profiles with identical canonical log, fingerprint, and
+  artifact digest. Full closure remains blocked on process-backed
+  replay-to-savepoint and real-backend/fleet machine-independent replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
