@@ -706,8 +706,7 @@ mod tests {
             readiness
                 .runtime_symbol_registration()
                 .address_provenance_gaps()
-                .len()
-                > 0
+                .is_empty()
         );
         assert!(
             readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
@@ -723,11 +722,8 @@ mod tests {
             })
         );
         assert!(
-            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolAddressProvenance {
-                missing_count: readiness
-                    .runtime_symbol_registration()
-                    .address_provenance_gaps()
-                    .len(),
+            !readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolAddressProvenance {
+                missing_count: 0,
             })
         );
         assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {

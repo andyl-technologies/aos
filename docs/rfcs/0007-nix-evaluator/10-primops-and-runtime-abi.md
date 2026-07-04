@@ -255,20 +255,27 @@ to install a fallback resolver. The JIT uses this table to satisfy external
 references at finalize time, and the resulting function pointer remains valid
 until the module's memory is freed.
 
-aos-nix registers the entire runtime symbol set once, at JIT construction:
+The final native-call path registers the entire runtime symbol set once, at JIT
+construction. Current implementation slices stop earlier at checked
+address/provenance metadata and strict incomplete-plan gates until final
+exported wrappers and trap transfer are ready.
 
 ```rust
-/// Install every runtime symbol the JIT can reference. Called once when the
-/// `JITModule` is built; thereafter all compiled tiers resolve `aos_*` and
-/// `nix.builtin.*` names through this table.
+/// Design target: install every runtime symbol the JIT can reference.
+/// Called once when the `JITModule` is built; thereafter all compiled tiers
+/// resolve `aos_*` and `nix.builtin.*` names through this table.
 fn install_runtime_symbols(builder: &mut JITBuilder, rt: &Runtime) {
     // Allocation + control + attrset-access helpers.
     builder.symbol("aos_force",        aos_force        as *const u8);
     builder.symbol("aos_force_deep",   aos_force_deep   as *const u8);
     builder.symbol("aos_blackhole_check", aos_blackhole_check as *const u8);
-    builder.symbol("aos_alloc_thunk",  aos_alloc_thunk  as *const u8);
     builder.symbol("aos_alloc_attrs",  aos_alloc_attrs  as *const u8);
+    builder.symbol("aos_alloc_cons",   aos_alloc_cons   as *const u8);
+    builder.symbol("aos_alloc_lambda", aos_alloc_lambda as *const u8);
     builder.symbol("aos_alloc_list",   aos_alloc_list   as *const u8);
+    builder.symbol("aos_alloc_raw",    aos_alloc_raw    as *const u8);
+    builder.symbol("aos_alloc_string", aos_alloc_string as *const u8);
+    builder.symbol("aos_alloc_thunk",  aos_alloc_thunk  as *const u8);
     builder.symbol("aos_has_attr",     aos_has_attr     as *const u8);
     builder.symbol("aos_select_ic",    aos_select_ic    as *const u8);
     builder.symbol("aos_update",       aos_update       as *const u8);
@@ -287,10 +294,11 @@ fn install_runtime_symbols(builder: &mut JITBuilder, rt: &Runtime) {
 > was renamed to `cranelift-jit::JITBuilder`; aos-nix targets the current
 > `cranelift-jit`. See References.
 
-Because every symbol is a real Rust function compiled into the aos-nix binary,
-the *same* `aos_force` / `nix.builtin.map` implementation backs both the JIT
-(reached via the symbol table) and the tree-walk oracle (reached via a direct
-Rust call). There is no second implementation to drift out of compatibility.
+In the final registered path, every symbol is a real Rust function compiled into
+the aos-nix binary. The *same* `aos_force` / `nix.builtin.map` implementation
+backs both the JIT (reached via the symbol table) and the tree-walk oracle
+(reached via a direct Rust call), so there is no second implementation to drift
+out of compatibility.
 
 ### 3.3 Symbol naming and stability
 
@@ -885,7 +893,7 @@ harness, never cut for scope.
       candidacy and records current helper candidates as missing exported C ABI
       wrappers. It preserves family-specific blockers from allocation,
       call-control, attrset-access, environment-access, forcing, and write-barrier native-export preflights:
-      missing `unsafe extern "C"` wrappers, runtime-context/environment-frame
+      missing final exported wrappers, runtime-context/environment-frame
       decoding, active force-root binding, thunk blackhole/force-cache
       integration, evaluator trap transfer, typed/native return materialization,
       allocation semantic-payload initialization, write-barrier GC-state
@@ -964,6 +972,18 @@ harness, never cut for scope.
       allocation calls. This is internal safe startup dispatch only; it does not
       export wrappers, perform native trap transfer, register Cranelift symbols,
       install a Tier-B table, or relink compiled artifacts.
+- [x] Current allocation runtime-FFI trap-wrapper precursor:
+      `ratchet-runtime-ffi::alloc::runtime_allocation_native_wrapper_bindings()`
+      provides process-local trap-only `unsafe extern "C"` wrapper addresses for
+      every frozen pointer-returning `aos_alloc_*` ABI. The wrappers abort for
+      every call until runtime-context decoding, allocator extraction,
+      safepoint/trap transfer, typed heap-pointer return materialization, and
+      semantic payload initialization for cons/lambda/thunk payloads exist.
+      `aos-nix` projects these addresses as runtime-FFI provenance for JIT
+      address candidates, but the oracle native-export gate still rejects final
+      registration. This is address/provenance metadata only; no wrapper
+      allocates, initializes heap payloads, transfers traps, registers with
+      `JITBuilder::symbol`, or becomes a final exported native ABI target.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
       allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helper as

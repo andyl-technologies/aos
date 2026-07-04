@@ -124,6 +124,103 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const ALLOC_CODE_ENV_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;"
+    );
+    const ALLOC_ATTRS_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, u32, u32) -> *mut c_void;"
+    );
+    const ALLOC_CONS_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value, *mut c_void) -> *mut c_void;"
+    );
+    const ALLOC_LEN_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeAllocationLenNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, usize) -> *mut c_void;"
+    );
+    const ALLOC_RAW_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, usize, usize, u32) -> *mut c_void;"
+    );
+    const ALLOC_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const ALLOC_ATTRS_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_alloc_attrs("
+    );
+    const ALLOC_CONS_FN_LINE: &str =
+        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_cons(");
+    const ALLOC_LAMBDA_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_alloc_lambda("
+    );
+    const ALLOC_LIST_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_alloc_list(_rt: *mut c_void, _len: usize) -> *mut c_void {"
+    );
+    const ALLOC_RAW_FN_LINE: &str =
+        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_raw(");
+    const ALLOC_STRING_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_alloc_string(_rt: *mut c_void, _len: usize) -> *mut c_void {"
+    );
+    const ALLOC_THUNK_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_alloc_thunk("
+    );
+    const ALLOC_ATTRS_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_alloc_attrs(rt, shape, slots) };"
+    );
+    const ALLOC_CONS_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_alloc_cons(rt, head, tail) };");
+    const ALLOC_LAMBDA_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_alloc_lambda(rt, code_ptr, env) };"
+    );
+    const ALLOC_LIST_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_alloc_list(rt, len) };");
+    const ALLOC_RAW_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_alloc_raw(rt, size, align, type_tag) };"
+    );
+    const ALLOC_STRING_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_alloc_string(rt, len) };");
+    const ALLOC_THUNK_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_alloc_thunk(rt, code_ptr, env) };"
+    );
     const APPLY_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeApplyNativeFn = ",
         "uns",
@@ -341,6 +438,7 @@ mod tests {
                 let line = raw_lines[line_number];
                 for token in code_tokens(code) {
                     if is_allowed_env_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_alloc_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_apply_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_attr_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_write_barrier_wrapper_token(
@@ -404,6 +502,62 @@ mod tests {
             trimmed == ENV_GET_FN_TYPE_LINE || trimmed == ENV_GET_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == ENV_GET_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_alloc_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("alloc.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == ALLOC_CODE_ENV_FN_TYPE_LINE
+                || trimmed == ALLOC_ATTRS_FN_TYPE_LINE
+                || trimmed == ALLOC_CONS_FN_TYPE_LINE
+                || trimmed == ALLOC_LEN_FN_TYPE_LINE
+                || trimmed == ALLOC_RAW_FN_TYPE_LINE
+                || trimmed == ALLOC_EXPORT_ATTR_LINE
+                || trimmed == ALLOC_ATTRS_FN_LINE
+                || trimmed == ALLOC_CONS_FN_LINE
+                || trimmed == ALLOC_LAMBDA_FN_LINE
+                || trimmed == ALLOC_LIST_FN_LINE
+                || trimmed == ALLOC_RAW_FN_LINE
+                || trimmed == ALLOC_STRING_FN_LINE
+                || trimmed == ALLOC_THUNK_FN_LINE
+                || trimmed == ALLOC_ATTRS_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_CONS_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_LAMBDA_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_LIST_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_RAW_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_STRING_ABORT_TEST_CALL_LINE
+                || trimmed == ALLOC_THUNK_ABORT_TEST_CALL_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == ALLOC_CODE_ENV_FN_TYPE_LINE
+                || trimmed == ALLOC_ATTRS_FN_TYPE_LINE
+                || trimmed == ALLOC_CONS_FN_TYPE_LINE
+                || trimmed == ALLOC_LEN_FN_TYPE_LINE
+                || trimmed == ALLOC_RAW_FN_TYPE_LINE
+                || trimmed == ALLOC_ATTRS_FN_LINE
+                || trimmed == ALLOC_CONS_FN_LINE
+                || trimmed == ALLOC_LAMBDA_FN_LINE
+                || trimmed == ALLOC_LIST_FN_LINE
+                || trimmed == ALLOC_RAW_FN_LINE
+                || trimmed == ALLOC_STRING_FN_LINE
+                || trimmed == ALLOC_THUNK_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == ALLOC_EXPORT_ATTR_LINE
         } else {
             false
         }
@@ -801,6 +955,8 @@ mod unchecked_cfg;
     const PATH_ATTRIBUTE_LABEL: &str = concat!("#[", "pa", "th]");
 
     fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
+        let alloc = fs::read_to_string(source_root.join("alloc.rs"))
+            .expect("allocation FFI source file is readable");
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
         let attr = fs::read_to_string(source_root.join("attr.rs"))
@@ -851,6 +1007,106 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&env, BINDING_TEST_CALL_LINE),
             1,
             "metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_CODE_ENV_FN_TYPE_LINE),
+            1,
+            "allocation code/env native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_ATTRS_FN_TYPE_LINE),
+            1,
+            "allocation attrset native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_TYPE_LINE),
+            1,
+            "allocation cons native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_LEN_FN_TYPE_LINE),
+            1,
+            "allocation length native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_RAW_FN_TYPE_LINE),
+            1,
+            "allocation raw native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_EXPORT_ATTR_LINE),
+            7,
+            "allocation native wrapper export attributes must stay reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_ATTRS_FN_LINE),
+            1,
+            "aos_alloc_attrs native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_LINE),
+            1,
+            "aos_alloc_cons native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_LAMBDA_FN_LINE),
+            1,
+            "aos_alloc_lambda native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_LIST_FN_LINE),
+            1,
+            "aos_alloc_list native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_RAW_FN_LINE),
+            1,
+            "aos_alloc_raw native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_STRING_FN_LINE),
+            1,
+            "aos_alloc_string native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_THUNK_FN_LINE),
+            1,
+            "aos_alloc_thunk native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_ATTRS_ABORT_TEST_CALL_LINE),
+            1,
+            "attrset allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_CONS_ABORT_TEST_CALL_LINE),
+            1,
+            "cons allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_LAMBDA_ABORT_TEST_CALL_LINE),
+            1,
+            "lambda allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_LIST_ABORT_TEST_CALL_LINE),
+            1,
+            "list allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_RAW_ABORT_TEST_CALL_LINE),
+            1,
+            "raw allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_STRING_ABORT_TEST_CALL_LINE),
+            1,
+            "string allocation abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&alloc, ALLOC_THUNK_ABORT_TEST_CALL_LINE),
+            1,
+            "thunk allocation abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&apply, APPLY_FN_TYPE_LINE),
@@ -1050,6 +1306,8 @@ mod unchecked_cfg;
     }
 
     fn assert_reviewed_safety_comments(source_root: &Path) {
+        let alloc = fs::read_to_string(source_root.join("alloc.rs"))
+            .expect("allocation FFI source file is readable");
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
         let attr = fs::read_to_string(source_root.join("attr.rs"))
@@ -1061,6 +1319,7 @@ mod unchecked_cfg;
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let apply_lines = apply.lines().collect::<Vec<_>>();
+        let alloc_lines = alloc.lines().collect::<Vec<_>>();
         let attr_lines = attr.lines().collect::<Vec<_>>();
         let lines = env.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
@@ -1085,6 +1344,41 @@ mod unchecked_cfg;
             &lines,
             BINDING_TEST_CALL_LINE,
             "metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_ATTRS_ABORT_TEST_CALL_LINE,
+            "attrset allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_CONS_ABORT_TEST_CALL_LINE,
+            "cons allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_LAMBDA_ABORT_TEST_CALL_LINE,
+            "lambda allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_LIST_ABORT_TEST_CALL_LINE,
+            "list allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_RAW_ABORT_TEST_CALL_LINE,
+            "raw allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_STRING_ABORT_TEST_CALL_LINE,
+            "string allocation abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_THUNK_ABORT_TEST_CALL_LINE,
+            "thunk allocation abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &apply_lines,
@@ -1194,6 +1488,8 @@ mod unchecked_cfg;
     }
 
     fn assert_public_unsafe_docs(source_root: &Path) {
+        let alloc = fs::read_to_string(source_root.join("alloc.rs"))
+            .expect("allocation FFI source file is readable");
         let apply = fs::read_to_string(source_root.join("apply.rs"))
             .expect("apply FFI source file is readable");
         let attr = fs::read_to_string(source_root.join("attr.rs"))
@@ -1205,6 +1501,7 @@ mod unchecked_cfg;
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let apply_lines = apply.lines().collect::<Vec<_>>();
+        let alloc_lines = alloc.lines().collect::<Vec<_>>();
         let attr_lines = attr.lines().collect::<Vec<_>>();
         let lines = env.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
@@ -1219,6 +1516,66 @@ mod unchecked_cfg;
             &lines,
             ENV_GET_FN_LINE,
             "public native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_CODE_ENV_FN_TYPE_LINE,
+            "public allocation code/env native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_ATTRS_FN_TYPE_LINE,
+            "public allocation attrset native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_CONS_FN_TYPE_LINE,
+            "public allocation cons native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_LEN_FN_TYPE_LINE,
+            "public allocation length native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_RAW_FN_TYPE_LINE,
+            "public allocation raw native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_ATTRS_FN_LINE,
+            "public attrset allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_CONS_FN_LINE,
+            "public cons allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_LAMBDA_FN_LINE,
+            "public lambda allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_LIST_FN_LINE,
+            "public list allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_RAW_FN_LINE,
+            "public raw allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_STRING_FN_LINE,
+            "public string allocation native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &alloc_lines,
+            ALLOC_THUNK_FN_LINE,
+            "public thunk allocation native wrapper must document # Safety",
         );
         assert_has_safety_doc_before(
             &apply_lines,

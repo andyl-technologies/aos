@@ -8,6 +8,8 @@
 //! Current coverage is intentionally small:
 //!
 //! ```text
+//! ratchet_runtime_ffi::alloc
+//!   aos_alloc_* trap-only wrappers for frozen pointer-returning allocation ABIs
 //! ratchet_runtime_ffi::env
 //!   aos_env_get success-path wrapper for the frozen `(env, slot) -> Value` ABI
 //! ratchet_runtime_ffi::force
@@ -32,6 +34,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod alloc;
 pub mod apply;
 pub mod attr;
 pub mod barrier;

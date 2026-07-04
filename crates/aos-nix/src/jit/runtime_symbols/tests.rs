@@ -3,9 +3,10 @@ use ratchet_jit::{
     JitRuntimeSymbolRegistrationGap, jit_runtime_symbol_registration_preflight_with_candidates,
 };
 use ratchet_oracle::runtime::{
-    apply::RuntimeApplyEntryPoint, attr::RuntimeAttrAccessEntryPoint,
-    helpers::runtime_symbol_rust_callable_preflight,
+    alloc::RuntimeAllocationEntryPoint, apply::RuntimeApplyEntryPoint,
+    attr::RuntimeAttrAccessEntryPoint, helpers::runtime_symbol_rust_callable_preflight,
 };
+use ratchet_runtime_ffi::alloc::runtime_allocation_native_wrapper_bindings;
 use ratchet_runtime_ffi::apply::runtime_apply_native_wrapper_bindings;
 use ratchet_runtime_ffi::attr::runtime_attr_access_native_wrapper_bindings;
 use ratchet_runtime_ffi::barrier::runtime_write_barrier_native_wrapper_bindings;
@@ -26,6 +27,8 @@ const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
 
 const EXPECTED_ENV_ACCESS_SYMBOLS: &[&str] = &["aos_env_get"];
 const EXPECTED_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
+const EXPECTED_RUNTIME_FFI_ALLOCATION_SYMBOLS: &[&str] = EXPECTED_ALLOCATION_SYMBOLS;
+const EXPECTED_RUST_CALLABLE_ALLOCATION_SYMBOLS: &[&str] = &[];
 const EXPECTED_RUNTIME_FFI_CALL_CONTROL_SYMBOLS: &[&str] = &["aos_apply"];
 const EXPECTED_ATTRSET_ACCESS_SYMBOLS: &[&str] = &["aos_has_attr", "aos_select_ic", "aos_update"];
 const EXPECTED_RUNTIME_FFI_ATTRSET_ACCESS_SYMBOLS: &[&str] =
@@ -42,6 +45,34 @@ const EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barr
 fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
     let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
+
+    for symbol_name in EXPECTED_ALLOCATION_SYMBOLS {
+        let allocation = preflight
+            .address_candidate_for(symbol_name)
+            .expect("allocation helper has a native-wrapper address candidate");
+        assert_eq!(
+            allocation.kind(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
+        );
+        assert_eq!(
+            allocation.address().as_nonzero_usize().get(),
+            allocation_native_wrapper_address(symbol_name)
+        );
+        assert_ne!(
+            allocation.address().as_nonzero_usize().get(),
+            allocation_rust_callable_address(symbol_name)
+        );
+        assert!(
+            preflight
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(|provenance| {
+                    provenance.is_runtime_ffi_native_wrapper()
+                        && provenance.kind()
+                            == RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
+                })
+        );
+        assert!(preflight.missing_binding_for(symbol_name).is_none());
+    }
 
     let env_get = preflight
         .address_candidate_for("aos_env_get")
@@ -238,6 +269,13 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
     assert_eq!(
         runtime_ffi_symbols,
         [
+            "aos_alloc_attrs",
+            "aos_alloc_cons",
+            "aos_alloc_lambda",
+            "aos_alloc_list",
+            "aos_alloc_raw",
+            "aos_alloc_string",
+            "aos_alloc_thunk",
             "aos_apply",
             "aos_blackhole_check",
             "aos_env_get",
@@ -265,6 +303,20 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
             preflight
                 .address_provenance_for_symbol(symbol_name)
                 .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
+    }
+    for symbol_name in EXPECTED_RUNTIME_FFI_ALLOCATION_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
+    }
+    for symbol_name in EXPECTED_RUST_CALLABLE_ALLOCATION_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_rust_callable_helper)
         );
     }
     for symbol_name in EXPECTED_RUNTIME_FFI_ATTRSET_ACCESS_SYMBOLS {
@@ -309,7 +361,19 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_allocation_helpers() 
             candidate.kind(),
             RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
         );
-        assert_ne!(candidate.address().as_nonzero_usize().get(), 0);
+        assert_eq!(
+            candidate.address().as_nonzero_usize().get(),
+            allocation_native_wrapper_address(candidate.symbol_name())
+        );
+        assert_ne!(
+            candidate.address().as_nonzero_usize().get(),
+            allocation_rust_callable_address(candidate.symbol_name())
+        );
+        assert!(
+            preflight
+                .address_provenance_for_symbol(candidate.symbol_name())
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
         assert!(
             preflight
                 .missing_binding_for(candidate.symbol_name())
@@ -361,8 +425,9 @@ fn jit_runtime_symbol_address_candidate_preflight_filters_helper_roles() {
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(preflight.missing_binding_for(symbol_name).is_none());
     }
-    for symbol_name in EXPECTED_ENV_ACCESS_SYMBOLS
+    for symbol_name in EXPECTED_ALLOCATION_SYMBOLS
         .iter()
+        .chain(EXPECTED_ENV_ACCESS_SYMBOLS)
         .chain(EXPECTED_CALL_CONTROL_SYMBOLS)
         .chain(EXPECTED_ATTRSET_ACCESS_SYMBOLS)
         .chain(EXPECTED_FORCE_SYMBOLS)
@@ -456,6 +521,15 @@ fn jit_runtime_symbol_allocation_candidates_feed_jit_registration_preflight() {
                         .address_candidate_for(symbol_name)
                         .expect("allocation candidate exists")
                         .address())
+        );
+        assert_eq!(
+            candidate_preflight
+                .address_candidate_for(symbol_name)
+                .expect("allocation candidate exists")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            allocation_native_wrapper_address(symbol_name)
         );
         assert!(registration.gap_for_symbol(symbol_name).is_none());
     }
@@ -573,6 +647,28 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
             .filter(|provenance| provenance.is_rust_callable_helper())
             .count()
     );
+    assert!(registration.address_provenance_gaps().is_empty());
+    for symbol_name in EXPECTED_RUNTIME_FFI_ALLOCATION_SYMBOLS {
+        assert!(
+            candidates
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
+    for symbol_name in EXPECTED_RUST_CALLABLE_ALLOCATION_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_some_and(
+                    |gap| gap.kind() == RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation)
+                )
+        );
+    }
     assert!(
         candidates
             .address_provenance_for_symbol("aos_env_get")
@@ -660,16 +756,20 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
                 )
         );
     }
-    assert!(
-        registration
-            .native_export_gap_for_symbol("aos_alloc_attrs")
-            .is_some_and(|gap| {
-                gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::Allocation)
-                    && gap
-                        .missing_exported_allocation_blockers()
-                        .is_some_and(|blockers| !blockers.is_empty())
-            })
-    );
+    for symbol_name in EXPECTED_ALLOCATION_SYMBOLS {
+        let entrypoint = RuntimeAllocationEntryPoint::from_symbol_name(symbol_name)
+            .expect("expected allocation symbol maps to an entry point");
+        assert!(
+            registration
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| {
+                    gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::Allocation)
+                        && gap
+                            .missing_exported_allocation_blockers()
+                            .is_some_and(|blockers| blockers == entrypoint.native_export_blockers())
+                })
+        );
+    }
     assert!(
         registration
             .native_export_gap_for_symbol("aos_env_get")
@@ -758,6 +858,53 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
     );
     assert!(missing_count > 0);
     assert!(!preflight.is_complete());
+    assert!(preflight.address_provenance_gaps().is_empty());
+    for symbol_name in EXPECTED_ALLOCATION_SYMBOLS {
+        let entrypoint = RuntimeAllocationEntryPoint::from_symbol_name(symbol_name)
+            .expect("expected allocation symbol maps to an entry point");
+        assert!(preflight.gap_for_symbol(symbol_name).is_none());
+        assert!(
+            preflight
+                .binding_for_symbol(symbol_name)
+                .is_some_and(|binding| binding.address()
+                    == preflight
+                        .address_candidate_preflight()
+                        .address_candidate_for(symbol_name)
+                        .expect("allocation candidate exists")
+                        .address())
+        );
+        assert_eq!(
+            preflight
+                .address_candidate_preflight()
+                .address_candidate_for(symbol_name)
+                .expect("allocation candidate exists")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            allocation_native_wrapper_address(symbol_name)
+        );
+        assert!(
+            preflight
+                .address_candidate_preflight()
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+        assert!(
+            preflight
+                .native_export_gap_for_symbol(symbol_name)
+                .is_some_and(|gap| {
+                    gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::Allocation)
+                        && gap
+                            .missing_exported_allocation_blockers()
+                            .is_some_and(|blockers| blockers == entrypoint.native_export_blockers())
+                })
+        );
+    }
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(preflight.gap_for_symbol(symbol_name).is_none());
     }
@@ -960,6 +1107,32 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
             .address_provenance_gap_for_symbol("aos_env_get")
             .is_none()
     );
+}
+
+fn allocation_native_wrapper_address(symbol_name: &str) -> usize {
+    runtime_allocation_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == symbol_name)
+        .expect("runtime FFI allocation wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
+fn allocation_rust_callable_address(symbol_name: &str) -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == symbol_name)
+        .expect("oracle allocation Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::Allocation(binding) => {
+            binding.address().as_ptr() as usize
+        }
+        _ => panic!("{symbol_name} is an allocation helper"),
+    }
 }
 
 fn env_native_wrapper_address() -> usize {

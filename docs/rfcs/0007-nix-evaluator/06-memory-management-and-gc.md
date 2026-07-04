@@ -908,6 +908,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       semantic payload initialization for `code_ptr`/`env` or `head`/`tail`,
       trap transfer, Cranelift registration, Tier-B table, or compiled-artifact
       relinking is implemented here.
+- [x] Current allocation runtime-FFI trap-wrapper precursor:
+      `ratchet-runtime-ffi::alloc::runtime_allocation_native_wrapper_bindings()`
+      exposes process-local trap-only `unsafe extern "C"` wrapper addresses for
+      every frozen `aos_alloc_*` entry point in manifest order. The wrappers
+      preserve the frozen pointer-returning ABI shapes and abort for every call
+      until runtime-context decoding, allocator extraction, safepoint/trap
+      transfer, typed heap-pointer return materialization, and semantic payload
+      initialization for cons/lambda/thunk payloads exist. `aos-nix` uses these
+      addresses for runtime-symbol provenance, replacing the allocation
+      Rust-callable provenance gap, but the oracle native-export readiness gate
+      still rejects final registration. This is process-local preflight
+      metadata only: no allocation wrapper allocates, initializes heap payloads,
+      transfers traps, registers with `JITBuilder::symbol`, or becomes a final
+      exported native ABI target.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
@@ -1076,10 +1090,13 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current allocation native-export readiness gate:
       `runtime::alloc::runtime_allocation_native_export_preflight()` now records
       the exact blockers that keep each frozen `aos_alloc_*` helper from being
-      an exported native ABI symbol: missing `unsafe extern "C"` wrapper,
+      a final exported native ABI symbol: missing final exported wrapper,
       runtime-context ABI decoding, evaluator trap transfer, typed pointer
       return materialization, and the extra semantic-payload initialization gap
       for `aos_alloc_cons`, `aos_alloc_lambda`, and `aos_alloc_thunk`.
+      The separate runtime-FFI trap wrappers supply process-local address
+      provenance for JIT preflights but are not accepted by this oracle gate as
+      final native exports.
       `runtime::helpers::runtime_symbol_native_export_preflight()` lifts that
       into the full runtime-symbol order, preserving earlier helper/builtin
       candidate gaps and converting current address-free helper candidates into
