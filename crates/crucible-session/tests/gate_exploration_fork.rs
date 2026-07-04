@@ -47,15 +47,20 @@ async fn fork_child_uses_temporal_graph_fork_and_independent_child_actor() {
     assert_eq!(fork.record.schedule_delta.decisions(), &[fork_decision]);
     assert!(matches!(
         fork.child_actor.engine().state(),
-        EngineState::Loaded
+        EngineState::Paused {
+            reason: PauseReason::Instantiated
+        }
     ));
     assert_eq!(fork.child_actor.engine().configuration(), &expected_branch);
+    assert_eq!(
+        fork.child_actor.engine().frontier(),
+        VirtualTime { ticks: 2 }
+    );
 
     let child_sender = fork.child_sender.clone();
     let child_live = fork.child_actor.live_snapshot();
     let child_task = tokio::spawn(async move { fork.child_actor.run().await });
 
-    send_command(&child_sender, SessionCommand::Start).await;
     send_command(&child_sender, SessionCommand::Continue).await;
     wait_for_quanta(&child_live, 1).await;
     send_command(&child_sender, SessionCommand::Stop).await;

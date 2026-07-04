@@ -37,8 +37,9 @@ use crucible_session::{
     LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
     SessionCommand, SessionCommandKind, StepMode,
     engine::{
-        self as crucible, Checkpoint, CheckpointKind, DagStore, GenesisCheckpoint,
-        MaterializationPolicy, MaterializationTrigger, MemoryDagStore, Schedule,
+        self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
+        FindingReproductionArtifact, GenesisCheckpoint, MaterializationPolicy,
+        MaterializationTrigger, MemoryDagStore, OverrideDecision, Schedule, SchedulingPoint,
         SearchFailureOracle, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
     },
 };
@@ -1441,6 +1442,7 @@ struct ResumeInvocationPlan {
 struct ForkInvocationPlan {
     source: ResumeSavepointRef,
     label: String,
+    artifact_dir: PathBuf,
     decision_overrides: Vec<ForkDecisionOverride>,
     explicit_seed_requested: bool,
     terminal_condition: RunTerminalCondition,
@@ -2165,6 +2167,7 @@ fn resolve_resume_savepoint(savepoint: Option<&str>) -> Result<ResumeSavepointRe
 fn plan_fork_invocation(
     args: &ForkArgs,
     explicit_seed_requested: bool,
+    artifact_dir: &Path,
 ) -> Result<ForkInvocationPlan, CliError> {
     let source = resolve_savepoint_ref("fork", args.savepoint.as_deref())?;
     if explicit_seed_requested && !args.overrides.is_empty() {
@@ -2211,6 +2214,7 @@ fn plan_fork_invocation(
     Ok(ForkInvocationPlan {
         source,
         label,
+        artifact_dir: artifact_dir.to_path_buf(),
         decision_overrides,
         explicit_seed_requested,
         terminal_condition,
@@ -2225,6 +2229,14 @@ fn plan_fork_invocation(
         initial_control_commands: vec![SessionCommandKind::Query],
         accepted_interactive_commands,
     })
+}
+
+#[cfg(test)]
+fn plan_fork_invocation_for_test(
+    args: &ForkArgs,
+    explicit_seed_requested: bool,
+) -> Result<ForkInvocationPlan, CliError> {
+    plan_fork_invocation(args, explicit_seed_requested, Path::new("./.crucible"))
 }
 
 fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
@@ -4595,9 +4607,21 @@ struct ForkWorkflowReport {
     source_checkpoint: crucible::ContentHash,
     branch_checkpoint: crucible::ContentHash,
     branch_configuration: crucible::ContentHash,
+    terminal_configuration: crucible::Configuration,
+    scenario_form: crucible::ScenarioDefForm,
     scenario_label: String,
     label: String,
     terminal_oracle: SavepointOracleProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ForkReproductionArtifactReport {
+    path: PathBuf,
+    digest: String,
+    model_artifact: crucible::ContentHash,
+    replay_state: crucible::ContentHash,
+    schedule: crucible::ContentHash,
+    finding_fingerprint: crucible::ContentHash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5458,11 +5482,6 @@ fn run_local_double_fork_workflow(
             "fork --seed execution remains tracked by T-CLI-11; omit --seed for the current no-divergence local-double fork runner",
         ));
     }
-    if !fork_plan.decision_overrides.is_empty() {
-        return Err(backend_error(
-            "fork --override execution remains tracked by T-CLI-11; omit --override for the current no-divergence local-double fork runner",
-        ));
-    }
     let evidence = fork_handle_evidence(fork_plan)?;
     let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
         ResumeInteractiveCommandDriver::Stdin
@@ -5506,7 +5525,7 @@ fn run_local_double_fork_workflow_with_interactive_commands(
     fork_plan: &ForkInvocationPlan,
     commands: &[SessionCommandKind],
 ) -> Result<BackendCommandOutcome, CliError> {
-    if fork_plan.explicit_seed_requested || !fork_plan.decision_overrides.is_empty() {
+    if fork_plan.explicit_seed_requested {
         return run_local_double_fork_workflow(thin_plan, backend_plan, ergonomics_plan, fork_plan);
     }
     let evidence = fork_handle_evidence(fork_plan)?;
@@ -5656,17 +5675,48 @@ fn resume_recording_loop_for_plan(
 fn fork_recording_loop_for_plan(
     plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
+    frontier: VirtualTime,
 ) -> Result<ResumeRecordingLifecycleLoop, CliError> {
     if plan.terminal_condition == RunTerminalCondition::Property {
         let assertion = resume_property_fixture_assertion(&evidence.scenario_form)?;
         return Ok(ResumeRecordingLifecycleLoop::with_property_violation(
-            evidence.checkpoint.virtual_time,
-            assertion,
+            frontier, assertion,
         ));
     }
-    Ok(ResumeRecordingLifecycleLoop::new(
-        evidence.checkpoint.virtual_time,
-    ))
+    Ok(ResumeRecordingLifecycleLoop::new(frontier))
+}
+
+fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible::Decision> {
+    plan.decision_overrides
+        .iter()
+        .map(|override_plan| {
+            crucible::Decision::Override(OverrideDecision {
+                point: SchedulingPoint {
+                    key: override_plan.decision.clone(),
+                },
+                choice: ChoiceTag {
+                    name: override_plan.value.clone(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn fork_branch_frontier(
+    evidence: &ResumeHandleEvidence,
+    appended_decisions: usize,
+) -> Result<VirtualTime, CliError> {
+    let branch_len = evidence
+        .schedule
+        .len()
+        .checked_add(appended_decisions)
+        .ok_or_else(|| CliError::Identity("fork branch schedule length overflowed".to_string()))?;
+    let ticks = u64::try_from(branch_len).map_err(|_| {
+        CliError::Identity(format!(
+            "fork branch schedule length {branch_len} cannot be represented as virtual time"
+        ))
+    })?;
+    Ok(VirtualTime { ticks })
 }
 
 fn resume_property_fixture_assertion(
@@ -5925,7 +5975,9 @@ async fn run_forked_savepoint_actor_with_driver_async(
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<ForkWorkflowReport, CliError> {
-    let child_loop = fork_recording_loop_for_plan(plan, &evidence)?;
+    let fork_decisions = fork_override_decisions(plan);
+    let branch_frontier = fork_branch_frontier(&evidence, fork_decisions.len())?;
+    let child_loop = fork_recording_loop_for_plan(plan, &evidence, branch_frontier)?;
     let mut graph = save_validation_graph(&evidence.scenario)?;
     if !evidence.configuration.is_genesis() {
         graph
@@ -5943,16 +5995,24 @@ async fn run_forked_savepoint_actor_with_driver_async(
     parent
         .apply_command(SessionCommand::Start)
         .map_err(|error| backend_error(format!("fork parent instantiation failed: {error}")))?;
-    let fork = parent
-        .fork_child_from_checkpoint(
-            CheckpointRef::Checkpoint(evidence.checkpoint.id),
-            child_loop,
-        )
-        .map_err(|error| {
-            backend_error(format!(
-                "fork child checkpoint instantiation failed: {error}"
-            ))
-        })?;
+    let fork = if fork_decisions.is_empty() {
+        parent
+            .fork_child_from_checkpoint(
+                CheckpointRef::Checkpoint(evidence.checkpoint.id),
+                child_loop,
+            )
+            .map_err(|error| {
+                backend_error(format!(
+                    "fork child checkpoint instantiation failed: {error}"
+                ))
+            })?
+    } else {
+        parent
+            .fork_child(&evidence.configuration, fork_decisions, child_loop)
+            .map_err(|error| {
+                backend_error(format!("fork child override instantiation failed: {error}"))
+            })?
+    };
     let source_checkpoint = fork.record.from_checkpoint;
     let branch_checkpoint = fork.record.branch_checkpoint;
     let branch_configuration = fork.branch_configuration.id();
@@ -6128,6 +6188,8 @@ async fn run_forked_savepoint_actor_with_driver_async(
         source_checkpoint,
         branch_checkpoint,
         branch_configuration,
+        terminal_configuration: actor_report.final_snapshot.configuration,
+        scenario_form: evidence.scenario_form,
         scenario_label: plan.source.label(),
         label: plan.label.clone(),
         terminal_oracle,
@@ -6654,6 +6716,12 @@ fn finish_fork_workflow_outcome(
 ) -> Result<BackendCommandOutcome, CliError> {
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     let oracle = report.terminal_oracle.clone();
+    let artifact = write_fork_reproduction_artifact(
+        fork_plan,
+        backend_plan.resolved_backend.as_ref(),
+        &report.scenario_form,
+        &report.terminal_configuration,
+    )?;
     outcome.status = report.run.status;
     outcome.exit_code = report.run.status.exit_code();
     outcome.terminal_savepoint = report.run.terminal_savepoint;
@@ -6669,6 +6737,15 @@ fn finish_fork_workflow_outcome(
         report.run.final_frontier_ticks,
         report.run.final_quanta,
         report.run.acknowledged_commands.len()
+    ));
+    outcome.stdout.push(format!(
+        "fork-artifact\tpath={}\tdigest={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
+        artifact.path.display(),
+        artifact.digest,
+        format_content_hash_ref(artifact.model_artifact),
+        format_content_hash_ref(artifact.replay_state),
+        format_content_hash_ref(artifact.schedule),
+        format_content_hash_ref(artifact.finding_fingerprint)
     ));
     for status in &report.run.watch_statuses {
         outcome.stdout.push(format!("run-watch\t{status}"));
@@ -6707,9 +6784,140 @@ fn finish_fork_workflow_outcome(
             format_content_hash_ref(oracle.thin_checkpoint)
         ),
     });
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("artifact"),
+        kind: String::from("fork_reproduction_artifact"),
+        summary: format!(
+            "path={} digest={} model_artifact={} replay_state={} schedule={}",
+            artifact.path.display(),
+            artifact.digest,
+            format_content_hash_ref(artifact.model_artifact),
+            format_content_hash_ref(artifact.replay_state),
+            format_content_hash_ref(artifact.schedule)
+        ),
+    });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     outcome.savepoint_oracle = Some(oracle);
     Ok(outcome)
+}
+
+fn write_fork_reproduction_artifact(
+    plan: &ForkInvocationPlan,
+    backend: Option<&ResolvedLocalBackend>,
+    scenario_form: &crucible::ScenarioDefForm,
+    configuration: &crucible::Configuration,
+) -> Result<ForkReproductionArtifactReport, CliError> {
+    let finding_fingerprint = fork_finding_fingerprint(plan, configuration);
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::InteractiveFork,
+        finding_fingerprint,
+        scenario_form,
+        configuration,
+    )
+    .map_err(|error| {
+        CliError::Identity(format!(
+            "fork reproduction artifact replay validation failed: {error}"
+        ))
+    })?;
+    let canonical_log = fork_artifact_canonical_log(configuration);
+    let instruction = u64::try_from(configuration.schedule.len()).map_err(|_| {
+        CliError::Identity(format!(
+            "fork artifact schedule length {} cannot be represented as an instruction index",
+            configuration.schedule.len()
+        ))
+    })?;
+    let fingerprint = VerifyFingerprintSample {
+        index: 0,
+        instruction,
+        node: String::from("fork"),
+        digest: content_address_bytes(format_content_hash_ref(finding.replay.state).as_bytes()),
+    };
+    let bytes = verify_reproduction_artifact_bytes(
+        seed_to_u64(scenario_form.seed()),
+        backend,
+        &scenario_form.scenario_def(),
+        &canonical_log,
+        &[fingerprint],
+    )?;
+    let digest = content_address_bytes(&bytes);
+    fs::create_dir_all(&plan.artifact_dir)?;
+    let path = plan.artifact_dir.join(format!(
+        "fork-{}-{}.crucible",
+        sanitize_slug(&plan.label),
+        short_digest(&digest)
+    ));
+    fs::write(&path, bytes)?;
+    Ok(ForkReproductionArtifactReport {
+        path,
+        digest,
+        model_artifact: finding.artifact.id(),
+        replay_state: finding.replay.state,
+        schedule: finding.artifact.schedule().content_hash(),
+        finding_fingerprint,
+    })
+}
+
+fn fork_finding_fingerprint(
+    plan: &ForkInvocationPlan,
+    configuration: &crucible::Configuration,
+) -> crucible::ContentHash {
+    let mut material = format!(
+        "source={}\nlabel={}\nconfiguration={}\n",
+        format_content_hash_ref(plan.source.checkpoint()),
+        plan.label,
+        format_content_hash_ref(configuration.id())
+    );
+    for decision_override in &plan.decision_overrides {
+        material.push_str("override=");
+        material.push_str(&decision_override.decision);
+        material.push('=');
+        material.push_str(&decision_override.value);
+        material.push('\n');
+    }
+    crucible::ContentHash::from_canonical_material("crucible.cli.fork.finding.v1", &material)
+}
+
+fn fork_artifact_canonical_log(configuration: &crucible::Configuration) -> Vec<CanonicalLogEntry> {
+    let mut entries = configuration
+        .schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .map(|(sequence, decision)| CanonicalLogEntry {
+            sequence: sequence as u64,
+            virtual_time_ticks: sequence.saturating_add(1) as u64,
+            node: String::from("schedule"),
+            kind: fork_artifact_decision_kind(decision).to_string(),
+            summary: format!("{decision:?}"),
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        entries.push(CanonicalLogEntry {
+            sequence: 0,
+            virtual_time_ticks: 0,
+            node: String::from("fork"),
+            kind: String::from("empty_schedule"),
+            summary: format!(
+                "configuration={}",
+                format_content_hash_ref(configuration.id())
+            ),
+        });
+    }
+    entries
+}
+
+fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
+    match decision {
+        crucible::Decision::DeliveryOrder(_) => "delivery_order",
+        crucible::Decision::FaultFires(_) => "fault_fires",
+        crucible::Decision::RngDraw(_) => "rng_draw",
+        crucible::Decision::Override(_) => "override",
+        crucible::Decision::Preemption(_) => "preemption",
+        crucible::Decision::AppRandom(_) => "app_random",
+        crucible::Decision::ControlFault(_) => "control_fault",
+    }
 }
 
 fn append_local_qemu_verify_identity(
@@ -10033,7 +10241,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         _ => None,
     };
     let fork_plan = match &cli.command {
-        Commands::Fork(args) => Some(plan_fork_invocation(args, cli.seed.is_some())?),
+        Commands::Fork(args) => Some(plan_fork_invocation(
+            args,
+            cli.seed.is_some(),
+            &cli.artifact_dir,
+        )?),
         _ => None,
     };
     let search_plan = match &cli.command {
@@ -13638,6 +13850,39 @@ mod tests {
         Ok(path)
     }
 
+    fn fork_artifact_path(outcome: &BackendCommandOutcome) -> Result<PathBuf, Box<dyn Error>> {
+        let line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fork-artifact\t"))
+            .ok_or("fork workflow did not emit fork-artifact line")?;
+        let path = line
+            .split('\t')
+            .find_map(|field| field.strip_prefix("path="))
+            .ok_or("fork-artifact line did not include path")?;
+        Ok(PathBuf::from(path))
+    }
+
+    fn assert_fork_artifact_replays(
+        cli: &Cli,
+        outcome: &BackendCommandOutcome,
+    ) -> Result<(), Box<dyn Error>> {
+        let path = fork_artifact_path(outcome)?;
+        let report = replay_reproduction_artifact(
+            cli,
+            &ReplayArgs {
+                artifact: path.clone(),
+                check: None,
+                bisect: None,
+            },
+        )?;
+        assert_eq!(report.path, path);
+        assert!(report.digest.starts_with(CONTENT_ADDRESS_PREFIX));
+        assert!(report.check.is_none());
+        assert!(report.bisect.is_none());
+        Ok(())
+    }
+
     fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
         vec![
             (CliSubcommand::Run, vec!["run"]),
@@ -16284,7 +16529,7 @@ mod tests {
         let Commands::Fork(args) = &cli.command else {
             panic!("expected fork command");
         };
-        let plan = plan_fork_invocation(args, false)?;
+        let plan = plan_fork_invocation_for_test(args, false)?;
 
         assert!(matches!(plan.source, ResumeSavepointRef::Handle { .. }));
         assert_eq!(plan.source.checkpoint(), checkpoint);
@@ -16329,7 +16574,7 @@ mod tests {
         let Commands::Fork(args) = &hash_cli.command else {
             panic!("expected fork command");
         };
-        let hash_plan = plan_fork_invocation(args, false)?;
+        let hash_plan = plan_fork_invocation_for_test(args, false)?;
         assert_eq!(hash_plan.source.checkpoint(), checkpoint);
         assert_eq!(hash_plan.label, "hash-child");
         assert!(!hash_plan.explicit_seed_requested);
@@ -16342,11 +16587,11 @@ mod tests {
         let Commands::Fork(args) = &seed_cli.command else {
             panic!("expected fork command");
         };
-        let seed_plan = plan_fork_invocation(args, true)?;
+        let seed_plan = plan_fork_invocation_for_test(args, true)?;
         assert!(seed_plan.explicit_seed_requested);
 
         let missing = ForkArgs::default();
-        let error = match plan_fork_invocation(&missing, false) {
+        let error = match plan_fork_invocation_for_test(&missing, false) {
             Ok(_) => panic!("fork without savepoint must fail"),
             Err(error) => error,
         };
@@ -16359,7 +16604,7 @@ mod tests {
         let Commands::Fork(args) = &no_budget.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation(args, false) {
+        let error = match plan_fork_invocation_for_test(args, false) {
             Ok(_) => panic!("virtual-time fork requires a duration budget"),
             Err(error) => error,
         };
@@ -16372,7 +16617,7 @@ mod tests {
                 overrides: vec![String::from(malformed)],
                 ..ForkArgs::default()
             };
-            let error = match plan_fork_invocation(&args, false) {
+            let error = match plan_fork_invocation_for_test(&args, false) {
                 Ok(_) => panic!("malformed fork override `{malformed}` must fail"),
                 Err(error) => error,
             };
@@ -16392,7 +16637,7 @@ mod tests {
         let Commands::Fork(args) = &seed_conflict.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation(args, true) {
+        let error = match plan_fork_invocation_for_test(args, true) {
             Ok(_) => panic!("fork must reject explicit seed plus override"),
             Err(error) => error,
         };
@@ -16410,7 +16655,7 @@ mod tests {
         let Commands::Fork(args) = &malformed_cli.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation(args, false) {
+        let error = match plan_fork_invocation_for_test(args, false) {
             Ok(_) => panic!("malformed fork savepoint handle must fail"),
             Err(error) => error,
         };
@@ -16454,6 +16699,7 @@ mod tests {
     #[test]
     fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("fork-artifacts");
         let fixture = crucible::happy_path_scenario()?;
         let form = fixture.scenario;
         let scenario = form.scenario_def();
@@ -16480,6 +16726,8 @@ mod tests {
         let cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("fork"),
@@ -16494,7 +16742,7 @@ mod tests {
         let Commands::Fork(args) = &cli.command else {
             panic!("expected fork command");
         };
-        let fork_plan = plan_fork_invocation(args, false)?;
+        let fork_plan = plan_fork_invocation(args, false, &cli.artifact_dir)?;
         let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
         let outcome = run_local_double_fork_workflow(
             &plan_cli_invocation(&cli),
@@ -16525,6 +16773,12 @@ mod tests {
                 && line.contains("fat=blake3:")
                 && line.contains("thin=blake3:")
         }));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-artifact\t")
+                && line.contains("digest=crucible-hash:")
+                && line.contains("model_artifact=blake3:")
+                && line.contains("replay_state=blake3:")
+        }));
         assert!(
             outcome
                 .canonical_log
@@ -16537,10 +16791,20 @@ mod tests {
                 .iter()
                 .any(|entry| entry.kind == "fork_oracle_validation")
         );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "fork_reproduction_artifact")
+        );
+        assert!(fs::read_dir(&artifact_dir)?.next().is_some());
+        assert_fork_artifact_replays(&cli, &outcome)?;
 
         let quiescence_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("fork"),
@@ -16551,7 +16815,7 @@ mod tests {
         let Commands::Fork(args) = &quiescence_cli.command else {
             panic!("expected fork command");
         };
-        let quiescence_plan = plan_fork_invocation(args, false)?;
+        let quiescence_plan = plan_fork_invocation(args, false, &quiescence_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&quiescence_cli)?.expect("fork should route to backend");
         let quiescence_outcome = run_local_double_fork_workflow(
@@ -16579,6 +16843,8 @@ mod tests {
         let interactive_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("fork"),
@@ -16591,7 +16857,7 @@ mod tests {
         let Commands::Fork(args) = &interactive_cli.command else {
             panic!("expected fork command");
         };
-        let interactive_plan = plan_fork_invocation(args, false)?;
+        let interactive_plan = plan_fork_invocation(args, false, &interactive_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&interactive_cli)?.expect("fork should route to backend");
         let interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
@@ -16614,6 +16880,8 @@ mod tests {
         let seed_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -16631,6 +16899,8 @@ mod tests {
         let override_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("fork"),
@@ -16638,12 +16908,172 @@ mod tests {
             String::from("--override"),
             String::from("decision=value"),
         ]);
-        let error = match dispatch(&override_cli) {
-            Ok(_) => panic!("fork --override execution must remain blocked"),
-            Err(error) => error,
+        let expected_override_branch = crucible::try_step(
+            &configuration,
+            crucible::Decision::Override(OverrideDecision {
+                point: SchedulingPoint {
+                    key: String::from("decision"),
+                },
+                choice: ChoiceTag {
+                    name: String::from("value"),
+                },
+            }),
+        )?;
+        let expected_override_branch_ref = format_content_hash_ref(expected_override_branch.id());
+        let Commands::Fork(args) = &override_cli.command else {
+            panic!("expected fork command");
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert!(error.to_string().contains("--override"));
+        let override_plan = plan_fork_invocation(args, false, &override_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&override_cli)?.expect("fork should route to backend");
+        let override_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&override_cli),
+            &backend_plan,
+            None,
+            &override_plan,
+        )?;
+        assert_eq!(override_outcome.status, BackendCommandStatus::Passed);
+        assert!(override_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("branch={expected_override_branch_ref}"))
+                && line.contains(&format!("configuration={expected_override_branch_ref}"))
+        }));
+        assert!(override_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-artifact\t") && line.contains("model_artifact=blake3:")
+        }));
+        assert_fork_artifact_replays(&override_cli, &override_outcome)?;
+
+        let override_virtual_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--override"),
+            String::from("decision=value"),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("child-override-virtual"),
+        ]);
+        let Commands::Fork(args) = &override_virtual_cli.command else {
+            panic!("expected fork command");
+        };
+        let override_virtual_plan =
+            plan_fork_invocation(args, false, &override_virtual_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&override_virtual_cli)?.expect("fork should route to backend");
+        let override_virtual_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&override_virtual_cli),
+            &backend_plan,
+            None,
+            &override_virtual_plan,
+        )?;
+        assert_eq!(
+            override_virtual_outcome.status,
+            BackendCommandStatus::Passed
+        );
+        assert!(override_virtual_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("branch={expected_override_branch_ref}"))
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+                && line.contains("quanta=0")
+        }));
+
+        let override_stopped_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--override"),
+            String::from("decision=value"),
+            String::from("--until"),
+            String::from("stopped"),
+            String::from("--label"),
+            String::from("child-override-stopped"),
+        ]);
+        let Commands::Fork(args) = &override_stopped_cli.command else {
+            panic!("expected fork command");
+        };
+        let override_stopped_plan =
+            plan_fork_invocation(args, false, &override_stopped_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&override_stopped_cli)?.expect("fork should route to backend");
+        let override_stopped_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&override_stopped_cli),
+            &backend_plan,
+            None,
+            &override_stopped_plan,
+        )?;
+        assert_eq!(
+            override_stopped_outcome.status,
+            BackendCommandStatus::Passed
+        );
+        assert!(override_stopped_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("branch={expected_override_branch_ref}"))
+                && line.contains("final=stopped")
+                && line.contains("frontier_ticks=2")
+                && line.contains("quanta=0")
+        }));
+
+        let override_interactive_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--override"),
+            String::from("decision=value"),
+            String::from("--interactive"),
+            String::from("--watch"),
+            String::from("--label"),
+            String::from("child-override-interactive"),
+        ]);
+        let Commands::Fork(args) = &override_interactive_cli.command else {
+            panic!("expected fork command");
+        };
+        let override_interactive_plan =
+            plan_fork_invocation(args, false, &override_interactive_cli.artifact_dir)?;
+        let backend_plan = plan_backend_selection(&override_interactive_cli)?
+            .expect("fork should route to backend");
+        let override_interactive_outcome =
+            run_local_double_fork_workflow_with_interactive_commands(
+                &plan_cli_invocation(&override_interactive_cli),
+                &backend_plan,
+                None,
+                &override_interactive_plan,
+                &[],
+            )?;
+        assert_eq!(
+            override_interactive_outcome.status,
+            BackendCommandStatus::Passed
+        );
+        assert!(override_interactive_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("branch={expected_override_branch_ref}"))
+                && line.contains("final=interactive")
+                && line.contains("frontier_ticks=2")
+                && line.contains("quanta=0")
+        }));
+        assert!(
+            override_interactive_outcome.stdout.iter().any(|line| {
+                line.starts_with("run-watch\t") && line.contains("frontier_ticks=2")
+            })
+        );
 
         Ok(())
     }

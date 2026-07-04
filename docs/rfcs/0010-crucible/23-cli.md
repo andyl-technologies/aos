@@ -1092,10 +1092,13 @@ branch on the verdict without parsing output:
   validates override pairs, virtual-time budgets, malformed handles, and
   conflicting explicit `--seed` plus `--override`; executes handle-backed
   no-divergence local-double forks through an independent child session to
-  quiescence, virtual-time, or interactive command boundaries; and validates the
-  terminal child savepoint with the replay oracle. Full closure remains blocked
-  on bare-hash checkpoint closure loading, final post-fork seed/override
-  application, child reproduction artifacts, and real-QEMU coverage.
+  quiescence, virtual-time, or interactive command boundaries; applies
+  repeatable post-fork `--override` decisions through the session fork path;
+  writes a CLI-replayable child reproduction artifact while reporting separate
+  model artifact/replay-state evidence for the same child configuration; and
+  validates the terminal child savepoint with the replay oracle. Full closure
+  remains blocked on bare-hash checkpoint closure loading, post-fork `--seed`
+  re-seeding semantics, and real-QEMU coverage.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
