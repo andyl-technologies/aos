@@ -17,6 +17,8 @@
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
+  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
+  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -64,6 +66,10 @@
       {
         label = "phase5 CLI save progress note";
         needle = "`T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently";
+      }
+      {
+        label = "phase5 CLI remote save progress";
+        needle = "routes remote-daemon quiescence and virtual-time saves over the RPC control API";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -126,6 +132,14 @@
       {
         label = "save handle encoder";
         needle = "fn savepoint_handle_bytes";
+      }
+      {
+        label = "remote save workflow runner";
+        needle = "fn run_remote_save_workflow";
+      }
+      {
+        label = "remote virtual-time save coverage";
+        needle = "remote-virtual-time-save";
       }
       {
         label = "machine-readable handle path summary";
@@ -227,6 +241,14 @@
         label = "qemu-selected dispatch save test";
         needle = "qemu-dispatch-save";
       }
+      {
+        label = "remote daemon save test";
+        needle = "cli_save_workflow_executes_remote_daemon_savepoint";
+      }
+      {
+        label = "remote daemon dispatch save test";
+        needle = "remote-dispatch-save";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
       {
@@ -238,6 +260,50 @@
       {
         label = "lifecycle white-box policy hook";
         needle = "with_white_box_policy_provider";
+      }
+      {
+        label = "quiescent loop records schedule decision";
+        needle = "quiescent lifecycle loop could not record virtual-time decision";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+      {
+        label = "RPC snapshot query decoder";
+        needle = "QueryResult::Snapshot(EngineSnapshot";
+      }
+      {
+        label = "RPC snapshot scenario identity";
+        needle = "query result snapshot scenario id";
+      }
+      {
+        label = "RPC savepoint request label payload";
+        needle = "\"savepoint-label\"";
+      }
+      {
+        label = "RPC duration step request payload";
+        needle = "\"step-duration-nanos\"";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
+      {
+        label = "RPC snapshot query parser";
+        needle = "Ok(QueryKind::Snapshot)";
+      }
+      {
+        label = "RPC snapshot result wire";
+        needle = "\"snapshot|{}|{}|{}|{}|{}|{}|{}|{}|{}\"";
+      }
+      {
+        label = "RPC savepoint result wire";
+        needle = "\"savepoint|{}|{}|{}\"";
+      }
+      {
+        label = "RPC savepoint request parser";
+        needle = "savepoint-label=";
+      }
+      {
+        label = "RPC duration step request parser";
+        needle = "step-duration-nanos=";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [

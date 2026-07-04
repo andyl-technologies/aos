@@ -12,11 +12,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible::{
-    ContentHash, EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Seed, VirtualTime,
+    Checkpoint, Configuration, ContentHash, EventLevel, ExecutionFingerprint, FingerprintSample,
+    NodeId, Schedule, Seed, SimDuration, VirtualTime,
 };
 use crucible_session::{
-    LifecycleStateKind, LiveSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
-    SessionCommand, SessionCommandKind,
+    EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot, LiveStateKind, Outcome,
+    OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo, SessionCommand,
+    SessionCommandKind, StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -1300,6 +1302,21 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     push_line(&mut output, "command", &command_kind);
     if let SessionCommand::Query { kind, .. } = &request.command {
         push_line(&mut output, "query", &query_kind_request_wire(kind));
+    } else if let SessionCommand::CreateSavepoint { label, .. } = &request.command {
+        push_line(
+            &mut output,
+            "savepoint-label",
+            &hex_encode(label.as_bytes()),
+        );
+    } else if let SessionCommand::Step {
+        mode: StepMode::Duration(duration),
+    } = &request.command
+    {
+        push_line(
+            &mut output,
+            "step-duration-nanos",
+            &duration.nanos.to_string(),
+        );
     }
     output.into_bytes()
 }
@@ -1307,11 +1324,11 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
 fn validate_rpc_send_request(request: &SendRequest) -> Result<(), ControlClientError> {
     if let SessionCommand::Query { kind, .. } = &request.command {
         let message = match kind {
-            QueryKind::Snapshot => Some("snapshot query is not supported by the RPC wire format"),
             QueryKind::BreakpointFirings => {
                 Some("breakpoint-firing query is not supported by the RPC wire format")
             }
             QueryKind::State
+            | QueryKind::Snapshot
             | QueryKind::EventLogLength
             | QueryKind::ExecutionFingerprint { .. } => None,
         };
@@ -1630,6 +1647,11 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
     let status = parse_command_status_line(lines.next())?;
     let state_update = parse_state_update_line(lines.next())?;
     let query_result = parse_query_result_line(lines.next())?;
+    let savepoint_info = match lines.next() {
+        Some(line) if line.starts_with("savepoint-info=") => parse_savepoint_info_line(Some(line))?,
+        Some(_) => return Err(rpc_decode("unexpected trailing fields in RPC response")),
+        None => None,
+    };
     reject_trailing(lines.next())?;
     Ok(SendResponse {
         result: CommandResult {
@@ -1640,7 +1662,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
         state_update,
         query_result,
         breakpoint_id: None,
-        savepoint_info: None,
+        savepoint_info,
     })
 }
 
@@ -2248,8 +2270,61 @@ fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, Co
                 fingerprint: ExecutionFingerprint { hash },
             })))
         }
+        "snapshot" => {
+            let state = parse_engine_state_field(fields.next(), "query result snapshot state")?;
+            let frontier = VirtualTime {
+                ticks: parse_u64_field(fields.next(), "query result snapshot frontier")?,
+            };
+            let event_log_len =
+                parse_usize_field(fields.next(), "query result snapshot event log length")?;
+            let quanta = parse_u64_field(fields.next(), "query result snapshot quanta")?;
+            let scenario_id = parse_required_content_hash_field(
+                fields.next(),
+                "query result snapshot scenario id",
+            )?;
+            let seed = parse_seed_field(fields.next(), "query result snapshot seed")?;
+            let app_random_draw_cap =
+                parse_u64_field(fields.next(), "query result snapshot app-random draw cap")?;
+            let schedule_bytes =
+                parse_hex_bytes_field(fields.next(), "query result snapshot schedule payload")?;
+            let terminal_savepoint = fields
+                .next()
+                .ok_or_else(|| rpc_decode("missing query result snapshot terminal savepoint"))?;
+            let terminal_savepoint = parse_optional_checkpoint_field(
+                terminal_savepoint,
+                "query result snapshot terminal savepoint",
+            )?;
+            reject_extra_query_result_fields(fields.next())?;
+            let schedule = Schedule::from_compact_binary(&schedule_bytes).map_err(|error| {
+                rpc_decode(format!("invalid query result snapshot schedule: {error}"))
+            })?;
+            let configuration = Configuration {
+                def: crucible::ScenarioDef::from_trusted_identity(
+                    scenario_id,
+                    seed,
+                    app_random_draw_cap,
+                ),
+                schedule,
+            };
+            Ok(Some(QueryResult::Snapshot(EngineSnapshot {
+                state,
+                configuration,
+                terminal_savepoint,
+                frontier,
+                event_log_len,
+                quanta,
+            })))
+        }
         kind => Err(rpc_decode(format!("unknown query result kind `{kind}`"))),
     }
+}
+
+fn parse_hex_bytes_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<Vec<u8>, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    parse_hex_bytes(value)
 }
 
 fn reject_extra_query_result_fields(field: Option<&str>) -> Result<(), ControlClientError> {
@@ -2257,6 +2332,149 @@ fn reject_extra_query_result_fields(field: Option<&str>) -> Result<(), ControlCl
         return Err(rpc_decode("unexpected extra query result fields"));
     }
     Ok(())
+}
+
+fn parse_savepoint_info_line(
+    line: Option<&str>,
+) -> Result<Option<SavepointInfo>, ControlClientError> {
+    let value = parse_prefixed_line(line, "savepoint-info=")?;
+    if value == "none" {
+        return Ok(None);
+    }
+    let mut fields = value.split('|');
+    match fields
+        .next()
+        .ok_or_else(|| rpc_decode("missing savepoint-info kind"))?
+    {
+        "savepoint" => {
+            let label = parse_hex_string_field(fields.next(), "savepoint label")?;
+            let configuration =
+                parse_required_content_hash_field(fields.next(), "savepoint configuration")?;
+            let checkpoint_bytes = parse_hex_bytes_field(fields.next(), "savepoint checkpoint")?;
+            reject_extra_query_result_fields(fields.next())?;
+            let checkpoint = Checkpoint::from_compact_binary(&checkpoint_bytes)
+                .map_err(|error| rpc_decode(format!("invalid savepoint checkpoint: {error}")))?;
+            Ok(Some(SavepointInfo {
+                label,
+                configuration,
+                checkpoint,
+            }))
+        }
+        kind => Err(rpc_decode(format!("unknown savepoint-info kind `{kind}`"))),
+    }
+}
+
+fn parse_optional_checkpoint_field(
+    value: &str,
+    label: &'static str,
+) -> Result<Option<Checkpoint>, ControlClientError> {
+    if value == "none" {
+        return Ok(None);
+    }
+    let bytes = parse_hex_bytes(value)?;
+    Checkpoint::from_compact_binary(&bytes)
+        .map(Some)
+        .map_err(|error| rpc_decode(format!("invalid {label}: {error}")))
+}
+
+fn parse_engine_state_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<EngineState, ControlClientError> {
+    let value = value.ok_or_else(|| rpc_decode(format!("missing {label}")))?;
+    if value == "loaded" {
+        return Ok(EngineState::Loaded);
+    }
+    if value == "running" {
+        return Ok(EngineState::Running);
+    }
+    if let Some(reason) = value.strip_prefix("paused:") {
+        return Ok(EngineState::Paused {
+            reason: parse_pause_reason_field(reason, label)?,
+        });
+    }
+    if let Some(outcome) = value.strip_prefix("stopped:") {
+        return Ok(EngineState::Stopped {
+            outcome: parse_snapshot_outcome_field(outcome, label)?,
+        });
+    }
+    Err(rpc_decode(format!("invalid {label} `{value}`")))
+}
+
+fn parse_pause_reason_field(
+    value: &str,
+    label: &'static str,
+) -> Result<PauseReason, ControlClientError> {
+    if value == "instantiated" {
+        return Ok(PauseReason::Instantiated);
+    }
+    if value == "user-requested" {
+        return Ok(PauseReason::UserRequested);
+    }
+    if let Some(id) = value.strip_prefix("breakpoint:") {
+        return Ok(PauseReason::Breakpoint {
+            id: id
+                .parse::<u64>()
+                .map_err(|error| rpc_decode(format!("invalid {label} breakpoint id: {error}")))?,
+        });
+    }
+    if let Some(mode) = value.strip_prefix("step:") {
+        return Ok(PauseReason::StepComplete {
+            mode: parse_step_mode_field(mode, label)?,
+        });
+    }
+    Err(rpc_decode(format!(
+        "invalid {label} pause reason `{value}`"
+    )))
+}
+
+fn parse_step_mode_field(value: &str, label: &'static str) -> Result<StepMode, ControlClientError> {
+    match value {
+        "quantum" => Ok(StepMode::Quantum),
+        "event" => Ok(StepMode::Event),
+        "assertion" => Ok(StepMode::Assertion),
+        "timer" => Ok(StepMode::Timer),
+        value => {
+            let Some(nanos) = value.strip_prefix("duration:") else {
+                return Err(rpc_decode(format!("invalid {label} step mode `{value}`")));
+            };
+            Ok(StepMode::Duration(SimDuration {
+                nanos: nanos.parse::<u64>().map_err(|error| {
+                    rpc_decode(format!("invalid {label} step duration: {error}"))
+                })?,
+            }))
+        }
+    }
+}
+
+fn parse_snapshot_outcome_field(
+    value: &str,
+    label: &'static str,
+) -> Result<Outcome, ControlClientError> {
+    match value {
+        "passed" => Ok(Outcome::Passed),
+        "timeout" => Ok(Outcome::Timeout),
+        "stopped" => Ok(Outcome::Stopped),
+        value => {
+            if let Some(detail) = value.strip_prefix("crashed:") {
+                return Ok(Outcome::Crashed {
+                    detail: parse_hex_string_field(Some(detail), label)?,
+                });
+            }
+            if let Some(violations) = value.strip_prefix("failed:") {
+                let violations = if violations.is_empty() {
+                    Vec::new()
+                } else {
+                    violations
+                        .split(',')
+                        .map(|violation| parse_hex_string_field(Some(violation), label))
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                return Ok(Outcome::Failed { violations });
+            }
+            Err(rpc_decode(format!("invalid {label} outcome `{value}`")))
+        }
+    }
 }
 
 fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, ControlClientError> {

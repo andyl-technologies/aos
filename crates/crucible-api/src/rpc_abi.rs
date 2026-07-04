@@ -22,7 +22,7 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 /// RPC protocol major version for wire-incompatible changes.
 pub const RPC_PROTOCOL_MAJOR: u16 = 2;
 /// RPC protocol minor version for backward-compatible additions.
-pub const RPC_PROTOCOL_MINOR: u16 = 0;
+pub const RPC_PROTOCOL_MINOR: u16 = 2;
 /// RPC protocol patch version for compatible fixes.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
@@ -39,7 +39,7 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 2,
-    minor: 0,
+    minor: 2,
     patch: 0,
     build: "crucible-rpc-abi-v2",
 };
@@ -255,7 +255,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
             client_name: "crucible-api-golden-client",
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/hello-request\nversion=2.0.0+crucible-rpc-abi-v2\nclient=crucible-api-golden-client\n",
+        bytes: b"crucible.rpc/hello-request\nversion=2.2.0+crucible-rpc-abi-v2\nclient=crucible-api-golden-client\n",
     },
     RpcGoldenVector {
         name: "hello-response",
@@ -265,7 +265,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=2.0.0+crucible-rpc-abi-v2\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        bytes: b"crucible.rpc/hello-response\nversion=2.2.0+crucible-rpc-abi-v2\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -276,7 +276,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
             mode: RpcAttachMode::Control,
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/attached\nversion=2.0.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        bytes: b"crucible.rpc/attached\nversion=2.2.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\n",
     },
     RpcGoldenVector {
         name: "attached-with-reproduction",
@@ -292,7 +292,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
                 "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
             scheduler_control: "none",
         },
-        bytes: b"crucible.rpc/attached-with-reproduction\nversion=2.0.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        bytes: b"crucible.rpc/attached-with-reproduction\nversion=2.2.0+crucible-rpc-abi-v2\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     },
     RpcGoldenVector {
         name: "get-reproduction-request",
@@ -340,7 +340,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
             status: RpcStatusCode::Ok,
             state_update: "none",
         },
-        bytes: b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\nquery-result=none\n",
+        bytes: b"crucible.rpc/send-response\ncommand-id=9001\ncommand=crucible.cmd.continue\nstatus=accepted\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
     },
     RpcGoldenVector {
         name: "send-response-rejected-not-found",
@@ -351,7 +351,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 11] = [
             status: RpcStatusCode::NotFound,
             state_update: "none",
         },
-        bytes: b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\n",
+        bytes: b"crucible.rpc/send-response\ncommand-id=9002\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
     },
     RpcGoldenVector {
         name: "rpc-error-invalid-state",
@@ -519,6 +519,7 @@ pub fn encode_rpc_message(message: RpcGoldenVectorMessage) -> Vec<u8> {
             push_str_line(&mut output, "status", &status);
             push_str_line(&mut output, "state-update", state_update);
             push_str_line(&mut output, "query-result", "none");
+            push_str_line(&mut output, "savepoint-info", "none");
             output.into_bytes()
         }
         RpcGoldenVectorMessage::RpcError {

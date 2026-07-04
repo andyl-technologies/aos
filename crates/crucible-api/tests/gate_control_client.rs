@@ -35,8 +35,9 @@ use crucible_api::{
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
-    CheckpointRef, CommandReply, Engine, LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind,
-    QueryResult, SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport,
+    CheckpointRef, CommandReply, Engine, EngineState, LifecycleStateKind, LiveStateKind,
+    OutcomeKind, QueryKind, QueryResult, SessionActor, SessionCommand, SessionCommandKind,
+    SessionError, SessionRunReport,
 };
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -618,14 +619,13 @@ async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
         .await
         .unwrap_or_else(|error| panic!("production HTTP/2 control send should decode: {error}"));
     assert_eq!(query.result.status, CommandResultStatus::Accepted);
-    assert_raw_send_error(
+    assert_raw_send_accepted(
         &format!("http://{addr}"),
         format!(
             "{}query=snapshot\n",
             raw_send_body(created.session, 2, "crucible.cmd.query")
         ),
-        "invalid-argument",
-        "invalid-argument",
+        "crucible.cmd.query",
     )
     .await;
 
@@ -1062,22 +1062,49 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
         Some(QueryResult::State(LifecycleStateKind::Paused)),
     );
 
-    let no_request_server = spawn_scripted_send_server(Vec::new()).await;
-    let client = RpcControlClient::new(RpcEndpoint::http2(no_request_server.endpoint()))
-        .unwrap_or_else(|error| panic!("snapshot rejection RPC client should build: {error}"));
-    let snapshot_error = client
+    let scenario = generated_scenario(9013);
+    let config = Configuration::genesis(scenario.clone());
+    let snapshot_result_server = spawn_scripted_send_server(vec![scripted_send_response(
+        axum::http::StatusCode::OK,
+        format!(
+            "crucible.rpc/send-response\ncommand-id=13\ncommand=crucible.cmd.query\nstatus=accepted\nstate-update=none\nquery-result=snapshot|paused:user-requested|0|0|0|{}|{}|{}|{}|none\n",
+            scenario.id().to_hex(),
+            scenario.seed().to_hex(),
+            scenario.app_random_draw_cap(),
+            hex_encode(&config.schedule.to_compact_binary()),
+        ),
+    )])
+    .await;
+    let client = RpcControlClient::new(RpcEndpoint::http2(snapshot_result_server.endpoint()))
+        .unwrap_or_else(|error| panic!("snapshot result RPC client should build: {error}"));
+    let decoded = client
         .send_command(SendRequest::new(
             session,
             13,
             SessionCommand::query_snapshot(),
         ))
         .await
-        .expect_err("RPC client should reject snapshot query before sending");
-    assert!(matches!(
-        snapshot_error,
-        ControlClientError::UnsupportedRpcCommand { ref message }
-            if message.contains("snapshot query is not supported")
-    ));
+        .unwrap_or_else(|error| panic!("snapshot query-result send should decode: {error}"));
+    let Some(QueryResult::Snapshot(snapshot)) = decoded.query_result else {
+        panic!("snapshot query should decode to an engine snapshot");
+    };
+    assert_eq!(
+        snapshot.state,
+        EngineState::Paused {
+            reason: crucible_session::PauseReason::UserRequested,
+        }
+    );
+    assert_eq!(snapshot.frontier, VirtualTime { ticks: 0 });
+    assert_eq!(snapshot.event_log_len, 0);
+    assert_eq!(snapshot.quanta, 0);
+    assert_eq!(snapshot.configuration.def.id(), scenario.id());
+    assert_eq!(snapshot.configuration.def.seed(), scenario.seed());
+    assert_eq!(
+        snapshot.configuration.def.app_random_draw_cap(),
+        scenario.app_random_draw_cap(),
+    );
+    assert_eq!(snapshot.configuration.schedule, config.schedule);
+    assert!(snapshot.terminal_savepoint.is_none());
 
     let golden_error = spawn_scripted_send_server(vec![scripted_send_response(
         axum::http::StatusCode::PRECONDITION_FAILED,
@@ -1133,7 +1160,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=2.0.0+crucible-rpc-abi-v2\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=2.2.0+crucible-rpc-abi-v2\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1220,6 +1247,29 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
     assert_rpc_snapshot("send-request", &send, &send);
 
+    let savepoint_request = format!(
+        "crucible.rpc/send-request\nsession-id=42\nepoch=7\nseed={seed_hex}\nexpected-epoch=7\ncommand-id=100\ncommand=crucible.cmd.create-savepoint\nsavepoint-label=636f6e74726163742d73617665\n"
+    );
+    let parsed_savepoint = parse_send_request(savepoint_request.as_bytes())
+        .unwrap_or_else(|error| panic!("savepoint send request should parse: {error}"));
+    assert_eq!(
+        parsed_savepoint,
+        SendRequest::new(
+            session,
+            100,
+            SessionCommand::CreateSavepoint {
+                label: String::from("contract-save"),
+                reply: CommandReply::discard(),
+            },
+        )
+        .with_expected_epoch(7),
+    );
+    assert_rpc_snapshot(
+        "send-request-savepoint",
+        &savepoint_request,
+        &savepoint_request,
+    );
+
     let hello_response = String::from_utf8(encode_rpc_hello_response(
         "contract-server",
         RPC_PROTOCOL_VERSION,
@@ -1229,7 +1279,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=2.0.0+crucible-rpc-abi-v2\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=2.2.0+crucible-rpc-abi-v2\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1311,7 +1361,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=2.0.0+crucible-rpc-abi-v2\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=2.2.0+crucible-rpc-abi-v2\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1331,7 +1381,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             savepoint_info: None,
         }),
         &format!(
-            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\n"
+            "crucible.rpc/send-response\ncommand-id=99\ncommand=crucible.cmd.pause\nstatus=accepted\nstate-update=42|7|{seed_hex}|paused\nquery-result=none\nsavepoint-info=none\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1349,7 +1399,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             breakpoint_id: None,
             savepoint_info: None,
         }),
-        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\n",
+        "crucible.rpc/send-response\ncommand-id=100\ncommand=crucible.cmd.remove-breakpoint\nstatus=rejected:not-found\nstate-update=none\nquery-result=none\nsavepoint-info=none\n",
     );
 
     let mut attributes = BTreeMap::new();
@@ -2687,6 +2737,31 @@ async fn assert_raw_send_rejection(
     assert!(text.contains("state-update=none\n"));
 }
 
+async fn assert_raw_send_accepted(endpoint: &str, body: String, expected_command: &str) {
+    let http = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap_or_else(|error| panic!("raw RPC client should build: {error}"));
+    let response = http
+        .post(format!(
+            "{}/crucible.rpc/send",
+            endpoint.trim_end_matches('/')
+        ))
+        .body(body)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("raw send request should complete: {error}"));
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|error| panic!("raw send response body should decode: {error}"));
+    assert!(text.starts_with("crucible.rpc/send-response\n"));
+    assert!(text.contains(&format!("command={expected_command}\n")));
+    assert!(text.contains("status=accepted\n"));
+    assert!(text.contains("savepoint-info=none\n"));
+}
+
 fn assert_reproduction_pause_record(record: &ReproductionCommandRecord, at_sequence: u64) {
     assert_eq!(record.sequence, 1);
     assert_eq!(record.payload.command, SessionCommandKind::Pause);
@@ -2895,6 +2970,7 @@ fn send_response_body(
     push_wire_line(&mut output, "status", &command_status_wire(status));
     push_wire_line(&mut output, "state-update", "none");
     push_wire_line(&mut output, "query-result", "none");
+    push_wire_line(&mut output, "savepoint-info", "none");
     output
 }
 
@@ -3702,6 +3778,7 @@ fn encode_send_response(response: &SendResponse) -> String {
         None => push_wire_line(&mut output, "state-update", "none"),
     }
     push_wire_line(&mut output, "query-result", "none");
+    push_wire_line(&mut output, "savepoint-info", "none");
     output
 }
 
@@ -3802,11 +3879,23 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
     let command_line = lines.next();
     let next_line = lines.next();
-    let (query_line, trailing_line) = match next_line {
-        Some(line) if line.starts_with("query=") => (Some(line), lines.next()),
-        line => (None, line),
+    let (query_line, savepoint_label_line, step_duration_line, trailing_line) = match next_line {
+        Some(line) if line.starts_with("query=") => (Some(line), None, None, lines.next()),
+        Some(line) if line.starts_with("savepoint-label=") => {
+            (None, Some(line), None, lines.next())
+        }
+        Some(line) if line.starts_with("step-duration-nanos=") => {
+            (None, None, Some(line), lines.next())
+        }
+        line => (None, None, None, line),
     };
-    let command = parse_session_command(command_line, "command=", query_line)?;
+    let command = parse_session_command(
+        command_line,
+        "command=",
+        query_line,
+        savepoint_label_line,
+        step_duration_line,
+    )?;
     reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
@@ -3850,20 +3939,80 @@ fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
     query_line: Option<&str>,
+    savepoint_label_line: Option<&str>,
+    step_duration_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
         .ok_or_else(|| format!("unknown command `{command_kind_wire}`"))?;
     if command_kind == SessionCommandKind::Query {
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
         let query_line = query_line
             .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
         return Ok(SessionCommand::Query {
             kind: parse_query_kind_line(Some(query_line))?,
             reply: CommandReply::discard(),
         });
+    } else if command_kind == SessionCommandKind::CreateSavepoint {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
+        let label = match savepoint_label_line {
+            Some(line) => parse_hex_string_field(
+                Some(parse_wire_line(Some(line), "savepoint-label=")?),
+                "savepoint label",
+            )?,
+            None => String::from("lifecycle-model"),
+        };
+        return Ok(SessionCommand::CreateSavepoint {
+            label,
+            reply: CommandReply::discard(),
+        });
+    } else if command_kind == SessionCommandKind::StepDuration {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        let nanos = match step_duration_line {
+            Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
+            None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
+        };
+        return Ok(SessionCommand::Step {
+            mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+        });
     } else if query_line.is_some() {
         return Err(format!(
             "command `{command_kind_wire}` does not accept a query payload"
+        ));
+    } else if savepoint_label_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a savepoint label"
+        ));
+    } else if step_duration_line.is_some() {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a step duration"
         ));
     }
     command_kind
@@ -3880,9 +4029,7 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
     {
         "snapshot" => {
             reject_extra_query_field(fields.next())?;
-            Err(String::from(
-                "snapshot query is not supported by the RPC wire format",
-            ))
+            Ok(QueryKind::Snapshot)
         }
         "breakpoint-firings" => {
             reject_extra_query_field(fields.next())?;

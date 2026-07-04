@@ -10,12 +10,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crucible::{
-    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
-    EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset,
-    ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
-    PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest, RestartPolicy, ScenarioDef,
-    SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
-    WhiteBoxPolicy,
+    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind, Decision,
+    DeliveryOrderDecision, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
+    EventLogOffset, ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel,
+    MembershipFault, NodeId, PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest,
+    RestartPolicy, ScenarioDef, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
+    TemporalGraph, VirtualTime, WhiteBoxPolicy,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, Engine, LiveSnapshot, LiveStateKind,
@@ -79,12 +79,24 @@ impl QuantumLoop for QuiescentLifecycleLoop {
         self.event_log_events = self
             .event_log_events
             .saturating_add(event_log_entries.len() as u64);
+        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: frontier,
+            order: Vec::new(),
+        });
+        let configuration =
+            crucible::try_step(&request.configuration, decision.clone()).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "quiescent lifecycle loop could not record virtual-time decision: {error}"
+                    ),
+                }
+            })?;
         Ok(QuantumOutcome {
-            configuration: request.configuration,
+            configuration,
             frontier,
             advanced_node: None,
             resolved_events: Vec::new(),
-            decisions: Vec::new(),
+            decisions: vec![decision],
             event_log_entries,
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
