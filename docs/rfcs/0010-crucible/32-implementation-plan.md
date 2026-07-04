@@ -459,11 +459,15 @@ long-held locks.
   `blake3:<hash>` checkpoint references, malformed-handle artifact errors,
   seed/override conflict usage errors, handle-backed no-divergence local-double
   fork execution through an independent child session, repeatable post-fork
-  `--override` decision application, interactive child command driving,
-  CLI-replayable child reproduction artifact writing with separate model
-  artifact/replay-state evidence, and terminal savepoint replay-oracle
-  validation; full closure waits for bare-hash checkpoint closure loading,
-  post-fork `--seed` re-seeding semantics, and real-QEMU coverage.
+  `--override` decision application, explicit post-fork `--seed` execution in
+  the local double by deriving the child's post-fork decision stream from the
+  explicit seed while preserving the requested savepoint prefix, distinct-seed
+  terminal-savepoint and exact virtual-time-boundary proof, interactive child
+  command driving, CLI-replayable child reproduction artifact writing whose
+  embedded seed remains the scenario-form seed plus fork-seed provenance output
+  and separate model artifact/replay-state evidence, and terminal savepoint
+  replay-oracle validation; full closure waits for bare-hash checkpoint closure
+  loading and real-QEMU coverage.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch with

@@ -60,8 +60,12 @@
         needle = "applies\n  repeatable post-fork `--override` decisions";
       }
       {
+        label = "T-CLI-11 seed execution progress";
+        needle = "applies explicit post-fork `--seed` in the local double by deriving the child's";
+      }
+      {
         label = "T-CLI-11 child artifact progress";
-        needle = "writes a CLI-replayable child reproduction artifact";
+        needle = "writes a CLI-replayable child reproduction artifact whose\n  embedded seed remains the scenario-form seed";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -74,8 +78,12 @@
         needle = "repeatable post-fork\n  `--override` decision application";
       }
       {
+        label = "phase5 CLI fork seed progress";
+        needle = "explicit post-fork `--seed` execution in\n  the local double by deriving the child's post-fork decision stream";
+      }
+      {
         label = "phase5 CLI fork artifact progress";
-        needle = "CLI-replayable child reproduction artifact writing with separate model";
+        needle = "CLI-replayable child reproduction artifact writing whose\n  embedded seed remains the scenario-form seed plus fork-seed provenance output";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -120,8 +128,28 @@
         needle = "fork_oracle_validation";
       }
       {
-        label = "fork seed blocker";
-        needle = "fork --seed execution remains tracked by T-CLI-11";
+        label = "fork seed execution";
+        needle = "with_post_fork_seed";
+      }
+      {
+        label = "fork seed provenance";
+        needle = "fork_seed";
+      }
+      {
+        label = "fork seed output";
+        needle = "fn fork_seed_label";
+      }
+      {
+        label = "fork seeded savepoint divergence";
+        needle = "seed_again_outcome.terminal_savepoint";
+      }
+      {
+        label = "fork seeded virtual-time boundary";
+        needle = "child-seed-virtual";
+      }
+      {
+        label = "fork seeded artifact replay";
+        needle = "assert_fork_artifact_replays(&seed_cli, &seeded_outcome, inherited_seed)";
       }
       {
         label = "fork override lowering";

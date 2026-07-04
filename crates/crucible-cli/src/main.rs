@@ -1444,7 +1444,7 @@ struct ForkInvocationPlan {
     label: String,
     artifact_dir: PathBuf,
     decision_overrides: Vec<ForkDecisionOverride>,
-    explicit_seed_requested: bool,
+    fork_seed: Option<u64>,
     terminal_condition: RunTerminalCondition,
     max_virtual_time: Option<String>,
     max_virtual_time_ticks: Option<u64>,
@@ -2166,11 +2166,11 @@ fn resolve_resume_savepoint(savepoint: Option<&str>) -> Result<ResumeSavepointRe
 
 fn plan_fork_invocation(
     args: &ForkArgs,
-    explicit_seed_requested: bool,
+    fork_seed: Option<u64>,
     artifact_dir: &Path,
 ) -> Result<ForkInvocationPlan, CliError> {
     let source = resolve_savepoint_ref("fork", args.savepoint.as_deref())?;
-    if explicit_seed_requested && !args.overrides.is_empty() {
+    if fork_seed.is_some() && !args.overrides.is_empty() {
         return Err(usage_error(
             "fork does not accept both --seed and --override; choose one post-fork decision source",
         ));
@@ -2216,7 +2216,7 @@ fn plan_fork_invocation(
         label,
         artifact_dir: artifact_dir.to_path_buf(),
         decision_overrides,
-        explicit_seed_requested,
+        fork_seed,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
         max_virtual_time_ticks: args
@@ -2234,9 +2234,9 @@ fn plan_fork_invocation(
 #[cfg(test)]
 fn plan_fork_invocation_for_test(
     args: &ForkArgs,
-    explicit_seed_requested: bool,
+    fork_seed: Option<u64>,
 ) -> Result<ForkInvocationPlan, CliError> {
-    plan_fork_invocation(args, explicit_seed_requested, Path::new("./.crucible"))
+    plan_fork_invocation(args, fork_seed, Path::new("./.crucible"))
 }
 
 fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
@@ -4618,6 +4618,8 @@ struct ForkWorkflowReport {
 struct ForkReproductionArtifactReport {
     path: PathBuf,
     digest: String,
+    seed: u64,
+    fork_seed: Option<u64>,
     model_artifact: crucible::ContentHash,
     replay_state: crucible::ContentHash,
     schedule: crucible::ContentHash,
@@ -4890,6 +4892,8 @@ struct ResumeRecordingLifecycleLoop {
     fixture: ResumeRecordingFixture,
     fixture_emitted: bool,
     event_log_events: u64,
+    post_fork_seed: Option<crucible::Seed>,
+    post_fork_draws: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -4908,6 +4912,8 @@ impl ResumeRecordingLifecycleLoop {
             fixture: ResumeRecordingFixture::None,
             fixture_emitted: false,
             event_log_events: 0,
+            post_fork_seed: None,
+            post_fork_draws: 0,
         }
     }
 
@@ -4916,6 +4922,11 @@ impl ResumeRecordingLifecycleLoop {
             fixture: ResumeRecordingFixture::PropertyViolation { assertion },
             ..Self::new(frontier)
         }
+    }
+
+    fn with_post_fork_seed(mut self, seed: crucible::Seed) -> Self {
+        self.post_fork_seed = Some(seed);
+        self
     }
 
     fn selector_fixture_entry(
@@ -4953,15 +4964,27 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
             }
             self.fixture_emitted = true;
         }
-        let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-            at: frontier,
-            order: Vec::new(),
-        });
+        let decision = if let Some(seed) = self.post_fork_seed {
+            let stream = crucible::RngStreamId::new(
+                "crucible.cli.fork.reseed",
+                format!("post-fork-{}", self.post_fork_draws),
+            );
+            self.post_fork_draws = self.post_fork_draws.saturating_add(1);
+            crucible::Decision::RngDraw(crucible::RngDecision {
+                value: seed.stream_seed(&stream),
+                stream,
+            })
+        } else {
+            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: frontier,
+                order: Vec::new(),
+            })
+        };
         let configuration =
             crucible::try_step(&request.configuration, decision.clone()).map_err(|error| {
                 crucible::SchedulerError::BoundaryViolation {
                     message: format!(
-                        "resume lifecycle double could not record virtual-time decision: {error}"
+                        "resume lifecycle double could not record post-fork decision: {error}"
                     ),
                 }
             })?;
@@ -5477,11 +5500,6 @@ fn run_local_double_fork_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if fork_plan.explicit_seed_requested {
-        return Err(backend_error(
-            "fork --seed execution remains tracked by T-CLI-11; omit --seed for the current no-divergence local-double fork runner",
-        ));
-    }
     let evidence = fork_handle_evidence(fork_plan)?;
     let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
         ResumeInteractiveCommandDriver::Stdin
@@ -5525,9 +5543,6 @@ fn run_local_double_fork_workflow_with_interactive_commands(
     fork_plan: &ForkInvocationPlan,
     commands: &[SessionCommandKind],
 ) -> Result<BackendCommandOutcome, CliError> {
-    if fork_plan.explicit_seed_requested {
-        return run_local_double_fork_workflow(thin_plan, backend_plan, ergonomics_plan, fork_plan);
-    }
     let evidence = fork_handle_evidence(fork_plan)?;
     run_local_double_fork_workflow_with_driver(
         thin_plan,
@@ -5677,13 +5692,16 @@ fn fork_recording_loop_for_plan(
     evidence: &ResumeHandleEvidence,
     frontier: VirtualTime,
 ) -> Result<ResumeRecordingLifecycleLoop, CliError> {
-    if plan.terminal_condition == RunTerminalCondition::Property {
+    let loop_driver = if plan.terminal_condition == RunTerminalCondition::Property {
         let assertion = resume_property_fixture_assertion(&evidence.scenario_form)?;
-        return Ok(ResumeRecordingLifecycleLoop::with_property_violation(
-            frontier, assertion,
-        ));
+        ResumeRecordingLifecycleLoop::with_property_violation(frontier, assertion)
+    } else {
+        ResumeRecordingLifecycleLoop::new(frontier)
+    };
+    if let Some(seed) = plan.fork_seed {
+        return Ok(loop_driver.with_post_fork_seed(crucible::Seed::from_u64(seed)));
     }
-    Ok(ResumeRecordingLifecycleLoop::new(frontier))
+    Ok(loop_driver)
 }
 
 fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible::Decision> {
@@ -6726,12 +6744,13 @@ fn finish_fork_workflow_outcome(
     outcome.exit_code = report.run.status.exit_code();
     outcome.terminal_savepoint = report.run.terminal_savepoint;
     outcome.stdout.push(format!(
-        "fork-session\tcheckpoint={}\tbranch={}\tconfiguration={}\tscenario={}\tlabel={}\tfinal={}\toutcome={}\tfrontier_ticks={}\tquanta={}\tacks={}",
+        "fork-session\tcheckpoint={}\tbranch={}\tconfiguration={}\tscenario={}\tlabel={}\tfork_seed={}\tfinal={}\toutcome={}\tfrontier_ticks={}\tquanta={}\tacks={}",
         format_content_hash_ref(report.source_checkpoint),
         format_content_hash_ref(report.branch_checkpoint),
         format_content_hash_ref(report.branch_configuration),
         report.scenario_label,
         report.label,
+        fork_seed_label(fork_plan),
         report.run.final_state,
         terminal_outcome_label(report.run.outcome),
         report.run.final_frontier_ticks,
@@ -6739,9 +6758,11 @@ fn finish_fork_workflow_outcome(
         report.run.acknowledged_commands.len()
     ));
     outcome.stdout.push(format!(
-        "fork-artifact\tpath={}\tdigest={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
+        "fork-artifact\tpath={}\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
         artifact.path.display(),
         artifact.digest,
+        format_seed(artifact.seed),
+        format_optional_seed(artifact.fork_seed),
         format_content_hash_ref(artifact.model_artifact),
         format_content_hash_ref(artifact.replay_state),
         format_content_hash_ref(artifact.schedule),
@@ -6790,9 +6811,11 @@ fn finish_fork_workflow_outcome(
         node: String::from("artifact"),
         kind: String::from("fork_reproduction_artifact"),
         summary: format!(
-            "path={} digest={} model_artifact={} replay_state={} schedule={}",
+            "path={} digest={} seed={} fork_seed={} model_artifact={} replay_state={} schedule={}",
             artifact.path.display(),
             artifact.digest,
+            format_seed(artifact.seed),
+            format_optional_seed(artifact.fork_seed),
             format_content_hash_ref(artifact.model_artifact),
             format_content_hash_ref(artifact.replay_state),
             format_content_hash_ref(artifact.schedule)
@@ -6822,6 +6845,7 @@ fn write_fork_reproduction_artifact(
         ))
     })?;
     let canonical_log = fork_artifact_canonical_log(configuration);
+    let artifact_seed = seed_to_u64(scenario_form.seed());
     let instruction = u64::try_from(configuration.schedule.len()).map_err(|_| {
         CliError::Identity(format!(
             "fork artifact schedule length {} cannot be represented as an instruction index",
@@ -6835,7 +6859,7 @@ fn write_fork_reproduction_artifact(
         digest: content_address_bytes(format_content_hash_ref(finding.replay.state).as_bytes()),
     };
     let bytes = verify_reproduction_artifact_bytes(
-        seed_to_u64(scenario_form.seed()),
+        artifact_seed,
         backend,
         &scenario_form.scenario_def(),
         &canonical_log,
@@ -6852,11 +6876,22 @@ fn write_fork_reproduction_artifact(
     Ok(ForkReproductionArtifactReport {
         path,
         digest,
+        seed: artifact_seed,
+        fork_seed: plan.fork_seed,
         model_artifact: finding.artifact.id(),
         replay_state: finding.replay.state,
         schedule: finding.artifact.schedule().content_hash(),
         finding_fingerprint,
     })
+}
+
+fn fork_seed_label(plan: &ForkInvocationPlan) -> String {
+    format_optional_seed(plan.fork_seed)
+}
+
+fn format_optional_seed(seed: Option<u64>) -> String {
+    seed.map(format_seed)
+        .unwrap_or_else(|| String::from("inherited"))
 }
 
 fn fork_finding_fingerprint(
@@ -6869,6 +6904,11 @@ fn fork_finding_fingerprint(
         plan.label,
         format_content_hash_ref(configuration.id())
     );
+    if let Some(seed) = plan.fork_seed {
+        material.push_str("fork_seed=");
+        material.push_str(&format_seed(seed));
+        material.push('\n');
+    }
     for decision_override in &plan.decision_overrides {
         material.push_str("override=");
         material.push_str(&decision_override.decision);
@@ -10241,11 +10281,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         _ => None,
     };
     let fork_plan = match &cli.command {
-        Commands::Fork(args) => Some(plan_fork_invocation(
-            args,
-            cli.seed.is_some(),
-            &cli.artifact_dir,
-        )?),
+        Commands::Fork(args) => {
+            let fork_seed = if cli.seed.is_some() {
+                Some(
+                    ergonomics_plan
+                        .as_ref()
+                        .ok_or_else(|| backend_error("fork requires a resolved explicit seed"))?
+                        .seed
+                        .value,
+                )
+            } else {
+                None
+            };
+            Some(plan_fork_invocation(args, fork_seed, &cli.artifact_dir)?)
+        }
         _ => None,
     };
     let search_plan = match &cli.command {
@@ -13866,6 +13915,7 @@ mod tests {
     fn assert_fork_artifact_replays(
         cli: &Cli,
         outcome: &BackendCommandOutcome,
+        expected_seed: u64,
     ) -> Result<(), Box<dyn Error>> {
         let path = fork_artifact_path(outcome)?;
         let report = replay_reproduction_artifact(
@@ -13878,6 +13928,7 @@ mod tests {
         )?;
         assert_eq!(report.path, path);
         assert!(report.digest.starts_with(CONTENT_ADDRESS_PREFIX));
+        assert_eq!(report.seed, expected_seed);
         assert!(report.check.is_none());
         assert!(report.bisect.is_none());
         Ok(())
@@ -16529,7 +16580,7 @@ mod tests {
         let Commands::Fork(args) = &cli.command else {
             panic!("expected fork command");
         };
-        let plan = plan_fork_invocation_for_test(args, false)?;
+        let plan = plan_fork_invocation_for_test(args, None)?;
 
         assert!(matches!(plan.source, ResumeSavepointRef::Handle { .. }));
         assert_eq!(plan.source.checkpoint(), checkpoint);
@@ -16547,7 +16598,7 @@ mod tests {
                 },
             ]
         );
-        assert!(!plan.explicit_seed_requested);
+        assert_eq!(plan.fork_seed, None);
         assert_eq!(plan.terminal_condition, RunTerminalCondition::VirtualTime);
         assert_eq!(plan.max_virtual_time.as_deref(), Some("2ticks"));
         assert_eq!(plan.max_virtual_time_ticks, Some(2));
@@ -16574,10 +16625,10 @@ mod tests {
         let Commands::Fork(args) = &hash_cli.command else {
             panic!("expected fork command");
         };
-        let hash_plan = plan_fork_invocation_for_test(args, false)?;
+        let hash_plan = plan_fork_invocation_for_test(args, None)?;
         assert_eq!(hash_plan.source.checkpoint(), checkpoint);
         assert_eq!(hash_plan.label, "hash-child");
-        assert!(!hash_plan.explicit_seed_requested);
+        assert_eq!(hash_plan.fork_seed, None);
         assert_eq!(
             hash_plan.startup_commands,
             vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
@@ -16587,11 +16638,11 @@ mod tests {
         let Commands::Fork(args) = &seed_cli.command else {
             panic!("expected fork command");
         };
-        let seed_plan = plan_fork_invocation_for_test(args, true)?;
-        assert!(seed_plan.explicit_seed_requested);
+        let seed_plan = plan_fork_invocation_for_test(args, Some(2))?;
+        assert_eq!(seed_plan.fork_seed, Some(2));
 
         let missing = ForkArgs::default();
-        let error = match plan_fork_invocation_for_test(&missing, false) {
+        let error = match plan_fork_invocation_for_test(&missing, None) {
             Ok(_) => panic!("fork without savepoint must fail"),
             Err(error) => error,
         };
@@ -16604,7 +16655,7 @@ mod tests {
         let Commands::Fork(args) = &no_budget.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation_for_test(args, false) {
+        let error = match plan_fork_invocation_for_test(args, None) {
             Ok(_) => panic!("virtual-time fork requires a duration budget"),
             Err(error) => error,
         };
@@ -16617,7 +16668,7 @@ mod tests {
                 overrides: vec![String::from(malformed)],
                 ..ForkArgs::default()
             };
-            let error = match plan_fork_invocation_for_test(&args, false) {
+            let error = match plan_fork_invocation_for_test(&args, None) {
                 Ok(_) => panic!("malformed fork override `{malformed}` must fail"),
                 Err(error) => error,
             };
@@ -16637,7 +16688,7 @@ mod tests {
         let Commands::Fork(args) = &seed_conflict.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation_for_test(args, true) {
+        let error = match plan_fork_invocation_for_test(args, Some(1)) {
             Ok(_) => panic!("fork must reject explicit seed plus override"),
             Err(error) => error,
         };
@@ -16655,7 +16706,7 @@ mod tests {
         let Commands::Fork(args) = &malformed_cli.command else {
             panic!("expected fork command");
         };
-        let error = match plan_fork_invocation_for_test(args, false) {
+        let error = match plan_fork_invocation_for_test(args, None) {
             Ok(_) => panic!("malformed fork savepoint handle must fail"),
             Err(error) => error,
         };
@@ -16702,6 +16753,7 @@ mod tests {
         let artifact_dir = temp.path().join("fork-artifacts");
         let fixture = crucible::happy_path_scenario()?;
         let form = fixture.scenario;
+        let inherited_seed = seed_to_u64(form.seed());
         let scenario = form.scenario_def();
         let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
             crucible::DeliveryOrderDecision {
@@ -16742,7 +16794,7 @@ mod tests {
         let Commands::Fork(args) = &cli.command else {
             panic!("expected fork command");
         };
-        let fork_plan = plan_fork_invocation(args, false, &cli.artifact_dir)?;
+        let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir)?;
         let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
         let outcome = run_local_double_fork_workflow(
             &plan_cli_invocation(&cli),
@@ -16776,6 +16828,7 @@ mod tests {
         assert!(outcome.stdout.iter().any(|line| {
             line.starts_with("fork-artifact\t")
                 && line.contains("digest=crucible-hash:")
+                && line.contains(&format!("seed={}", format_seed(inherited_seed)))
                 && line.contains("model_artifact=blake3:")
                 && line.contains("replay_state=blake3:")
         }));
@@ -16798,7 +16851,7 @@ mod tests {
                 .any(|entry| entry.kind == "fork_reproduction_artifact")
         );
         assert!(fs::read_dir(&artifact_dir)?.next().is_some());
-        assert_fork_artifact_replays(&cli, &outcome)?;
+        assert_fork_artifact_replays(&cli, &outcome, inherited_seed)?;
 
         let quiescence_cli = Cli::parse_from([
             String::from("crucible"),
@@ -16815,7 +16868,7 @@ mod tests {
         let Commands::Fork(args) = &quiescence_cli.command else {
             panic!("expected fork command");
         };
-        let quiescence_plan = plan_fork_invocation(args, false, &quiescence_cli.artifact_dir)?;
+        let quiescence_plan = plan_fork_invocation(args, None, &quiescence_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&quiescence_cli)?.expect("fork should route to backend");
         let quiescence_outcome = run_local_double_fork_workflow(
@@ -16857,7 +16910,7 @@ mod tests {
         let Commands::Fork(args) = &interactive_cli.command else {
             panic!("expected fork command");
         };
-        let interactive_plan = plan_fork_invocation(args, false, &interactive_cli.artifact_dir)?;
+        let interactive_plan = plan_fork_invocation(args, None, &interactive_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&interactive_cli)?.expect("fork should route to backend");
         let interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
@@ -16889,12 +16942,123 @@ mod tests {
             String::from("fork"),
             handle_path.display().to_string(),
         ]);
-        let error = match dispatch(&seed_cli) {
-            Ok(_) => panic!("fork --seed execution must remain blocked"),
-            Err(error) => error,
+        let Commands::Fork(args) = &seed_cli.command else {
+            panic!("expected fork command");
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert!(error.to_string().contains("--seed"));
+        let seeded_plan = plan_fork_invocation(args, Some(7), &seed_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&seed_cli)?.expect("fork should route to backend");
+        let seeded_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&seed_cli),
+            &backend_plan,
+            None,
+            &seeded_plan,
+        )?;
+        assert_eq!(seeded_outcome.status, BackendCommandStatus::Passed);
+        assert!(seeded_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("checkpoint={expected_checkpoint}"))
+                && line.contains(&format!("fork_seed={}", format_seed(7)))
+                && line.contains("final=quiescent")
+                && line.contains("frontier_ticks=2")
+                && line.contains("quanta=1")
+        }));
+        let seeded_fork_line = seeded_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fork-session\t"))
+            .expect("seeded fork must emit a fork-session line");
+        assert!(
+            seeded_fork_line.contains(&format!("branch={expected_checkpoint}")),
+            "seeded fork must preserve the requested savepoint prefix"
+        );
+        assert!(seeded_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-artifact\t")
+                && line.contains(&format!("seed={}", format_seed(inherited_seed)))
+                && line.contains(&format!("fork_seed={}", format_seed(7)))
+        }));
+        assert!(seeded_outcome.canonical_log.iter().any(|entry| {
+            entry.kind == "fork_reproduction_artifact"
+                && entry
+                    .summary
+                    .contains(&format!("seed={}", format_seed(inherited_seed)))
+                && entry
+                    .summary
+                    .contains(&format!("fork_seed={}", format_seed(7)))
+        }));
+        assert_fork_artifact_replays(&seed_cli, &seeded_outcome, inherited_seed)?;
+
+        let seed_again_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("8"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+        ]);
+        let Commands::Fork(args) = &seed_again_cli.command else {
+            panic!("expected fork command");
+        };
+        let seed_again_plan = plan_fork_invocation(args, Some(8), &seed_again_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&seed_again_cli)?.expect("fork should route to backend");
+        let seed_again_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&seed_again_cli),
+            &backend_plan,
+            None,
+            &seed_again_plan,
+        )?;
+        assert_eq!(seed_again_outcome.status, BackendCommandStatus::Passed);
+        assert_ne!(
+            seeded_outcome.terminal_savepoint,
+            seed_again_outcome.terminal_savepoint
+        );
+
+        let seed_virtual_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("7"),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("child-seed-virtual"),
+        ]);
+        let Commands::Fork(args) = &seed_virtual_cli.command else {
+            panic!("expected fork command");
+        };
+        let seed_virtual_plan =
+            plan_fork_invocation(args, Some(7), &seed_virtual_cli.artifact_dir)?;
+        let backend_plan =
+            plan_backend_selection(&seed_virtual_cli)?.expect("fork should route to backend");
+        let seed_virtual_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&seed_virtual_cli),
+            &backend_plan,
+            None,
+            &seed_virtual_plan,
+        )?;
+        assert_eq!(seed_virtual_outcome.status, BackendCommandStatus::Passed);
+        assert!(seed_virtual_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains("label=child-seed-virtual")
+                && line.contains(&format!("fork_seed={}", format_seed(7)))
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+                && line.contains("quanta=1")
+        }));
+        assert_fork_artifact_replays(&seed_virtual_cli, &seed_virtual_outcome, inherited_seed)?;
 
         let override_cli = Cli::parse_from([
             String::from("crucible"),
@@ -16923,7 +17087,7 @@ mod tests {
         let Commands::Fork(args) = &override_cli.command else {
             panic!("expected fork command");
         };
-        let override_plan = plan_fork_invocation(args, false, &override_cli.artifact_dir)?;
+        let override_plan = plan_fork_invocation(args, None, &override_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&override_cli)?.expect("fork should route to backend");
         let override_outcome = run_local_double_fork_workflow(
@@ -16941,7 +17105,7 @@ mod tests {
         assert!(override_outcome.stdout.iter().any(|line| {
             line.starts_with("fork-artifact\t") && line.contains("model_artifact=blake3:")
         }));
-        assert_fork_artifact_replays(&override_cli, &override_outcome)?;
+        assert_fork_artifact_replays(&override_cli, &override_outcome, inherited_seed)?;
 
         let override_virtual_cli = Cli::parse_from([
             String::from("crucible"),
@@ -16965,7 +17129,7 @@ mod tests {
             panic!("expected fork command");
         };
         let override_virtual_plan =
-            plan_fork_invocation(args, false, &override_virtual_cli.artifact_dir)?;
+            plan_fork_invocation(args, None, &override_virtual_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&override_virtual_cli)?.expect("fork should route to backend");
         let override_virtual_outcome = run_local_double_fork_workflow(
@@ -17006,7 +17170,7 @@ mod tests {
             panic!("expected fork command");
         };
         let override_stopped_plan =
-            plan_fork_invocation(args, false, &override_stopped_cli.artifact_dir)?;
+            plan_fork_invocation(args, None, &override_stopped_cli.artifact_dir)?;
         let backend_plan =
             plan_backend_selection(&override_stopped_cli)?.expect("fork should route to backend");
         let override_stopped_outcome = run_local_double_fork_workflow(
@@ -17047,7 +17211,7 @@ mod tests {
             panic!("expected fork command");
         };
         let override_interactive_plan =
-            plan_fork_invocation(args, false, &override_interactive_cli.artifact_dir)?;
+            plan_fork_invocation(args, None, &override_interactive_cli.artifact_dir)?;
         let backend_plan = plan_backend_selection(&override_interactive_cli)?
             .expect("fork should route to backend");
         let override_interactive_outcome =

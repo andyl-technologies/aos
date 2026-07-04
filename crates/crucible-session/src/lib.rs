@@ -31,13 +31,14 @@ pub mod engine {
         FingerprintSample, GenesisCheckpoint, HAPPY_PATH_SCENARIO_NAME, Icount, LocalDagStore,
         MarkerId, MaterializationPolicy, MaterializationTrigger, MemoryDagStore, NodeId,
         OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome,
-        QuantumRequest, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError,
-        SchedulerEventLogEntry, SchedulerQuiescence, SchedulingPoint, SearchBudget,
-        SearchFailureOracle, SearchStrategy, Seed, SignaturePolicy, SignaturePolicyLevel,
-        SimBackend, SimDuration, SimulationBackend, TemporalGraph, TemporalGraphStoreError,
-        VirtualTime, WhiteBoxPolicy, World, built_in_example_corpus, crash_restart_scenario,
-        fault_campaign_family, happy_path_scenario, partition_recovery_scenario,
-        run_fault_campaign_example, try_step, verify_example_scenario_runs,
+        QuantumRequest, RngDecision, RngStreamId, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm,
+        Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, SchedulingPoint,
+        SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SignaturePolicy,
+        SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,
+        TemporalGraphStoreError, VirtualTime, WhiteBoxPolicy, World, built_in_example_corpus,
+        crash_restart_scenario, fault_campaign_family, happy_path_scenario,
+        partition_recovery_scenario, run_fault_campaign_example, try_step,
+        verify_example_scenario_runs,
     };
 }
 
