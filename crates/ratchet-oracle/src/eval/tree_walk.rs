@@ -67,6 +67,7 @@ use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
     repr::{AttrSetConstruction, AttrSetReprKind, AttrSetReprPolicy},
+    select::{AttrSelectError, AttrSelectOutcome, AttrSelectTarget, select_slow},
     telemetry::AttrTelemetry,
 };
 use crate::cache::{

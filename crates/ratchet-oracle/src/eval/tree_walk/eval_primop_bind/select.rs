@@ -138,13 +138,9 @@ impl TreeWalk {
                     )),
                 };
             }
-            let selected = {
-                let attrs = self.heap.get_attrs(current).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
-                attrs.get(key)
-            };
-            let Some(value) = selected else {
+            let AttrSelectOutcome::Hit { value, .. } =
+                self.select_slow_flat_attr(id, span, current, key)?
+            else {
                 return match default {
                     Some(default) => self.eval_node(default),
                     None => Err(TreeWalkError::new(
@@ -164,6 +160,23 @@ impl TreeWalk {
             TreeWalkErrorKind::InvalidAttrPath { id, path: path_id },
             span,
         ))
+    }
+
+    /// Selects from the active flat evaluator attrset through the representation dispatcher.
+    pub(in crate::eval::tree_walk) fn select_slow_flat_attr(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        select_slow(AttrSelectTarget::Flat(attrs), symbol).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+        })
     }
 
     /// Selects one attr from an already-forced attrset value.
@@ -189,13 +202,13 @@ impl TreeWalk {
                 span,
             ));
         }
-        let attrs = self
-            .heap
-            .get_attrs(attrs_value)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        attrs.get(symbol).ok_or_else(|| {
-            TreeWalkError::new(TreeWalkErrorKind::MissingAttribute { id, symbol }, span)
-        })
+        match self.select_slow_flat_attr(id, span, attrs_value, symbol)? {
+            AttrSelectOutcome::Hit { value, .. } => Ok(value),
+            AttrSelectOutcome::Missing { .. } => Err(TreeWalkError::new(
+                TreeWalkErrorKind::MissingAttribute { id, symbol },
+                span,
+            )),
+        }
     }
 
     /// Returns whether an already-forced attrset value contains one static attr.
@@ -221,10 +234,9 @@ impl TreeWalk {
                 span,
             ));
         }
-        let attrs = self
-            .heap
-            .get_attrs(attrs_value)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        Ok(Value::bool(attrs.contains_key(symbol)))
+        match self.select_slow_flat_attr(id, span, attrs_value, symbol)? {
+            AttrSelectOutcome::Hit { .. } => Ok(Value::bool(true)),
+            AttrSelectOutcome::Missing { .. } => Ok(Value::bool(false)),
+        }
     }
 }

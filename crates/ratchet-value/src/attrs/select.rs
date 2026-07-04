@@ -1,10 +1,10 @@
-//! Representation-dispatching attr selection for future `select_slow`.
+//! Representation-dispatching attr selection for `select_slow`.
 //!
 //! This module is the safe value-level substrate for RFC-0007 §09's slow
 //! resolver: selection dispatches over flat, HAMT, and shaped attrset storage
-//! and returns the selected runtime value without changing the active tree-walk
-//! evaluator. The final runtime helper will sit on the PIC miss path; this
-//! module only proves the representation-neutral lookup contract.
+//! and returns the selected runtime value. The active tree-walk evaluator uses
+//! the flat branch for lowered `Select`/`HasAttr`; native runtime helpers, PIC
+//! miss handling, and active HAMT/shaped evaluator storage remain future work.
 
 use thiserror::Error;
 

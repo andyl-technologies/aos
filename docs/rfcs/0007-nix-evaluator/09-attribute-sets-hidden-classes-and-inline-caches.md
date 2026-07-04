@@ -805,16 +805,16 @@ harness, never cut for scope.
       `ratchet-value::attrs::pic` exposes `ShapedSelectCache`, which guards
       one static key on `ShapedAttrs` by interned shape pointer, loads cached
       symbol slots on hits, resolves misses through the shape descriptor, and
-      widens through the PIC state machine. It does not alter tree-walk
-      `Select`, call the final runtime `select_slow`, handle HAMT values, or
-      affect `.drv` bytes.
+      widens through the PIC state machine. It does not install shaped fast
+      paths into tree-walk `Select`, call the final runtime `select_slow`,
+      handle HAMT values, or affect `.drv` bytes.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
-- [x] Current P1 direct flat selection substrate: the tree-walk
+- [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` path evaluates receivers, attr-path segments, and
       select defaults where present under the checked semantics in
-      [25](25-intermediate-representation.md) §4, then performs direct checked
-      lookup through `FlatAttrs::get` / `get_entry` binary search over
-      symbol-sorted entries. This claims no `InlineCache`, shape guard,
+      [25](25-intermediate-representation.md) §4, then selects active
+      `FlatAttrs` through the representation-dispatching `select_slow`
+      precursor. This claims no `InlineCache`, shape guard,
       constant-offset load, `aos_select_ic`, `select_slow` runtime helper, HAMT
       dispatch, PIC widening, or deopt/uncommon-trap edge.
 - [ ] Future P5 `select_slow` / IC resolver: representation-dispatching
@@ -824,9 +824,10 @@ harness, never cut for scope.
 - [x] Current `select_slow` precursor: `ratchet-value::attrs::select`
       dispatches slow selection over `FlatAttrs`, `HamtAttrs`, and `ShapedAttrs`.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
-      shape slot then load the value array. This helper is not called by
-      tree-walk `Select`, is not on the PIC miss path, and does not affect
-      runtime attr representation or `.drv` bytes.
+      shape slot then load the value array. Tree-walk `Select`/`HasAttr` now
+      route active flat attrsets through this dispatcher; the PIC miss path,
+      HAMT/shaped active evaluator storage, native runtime attr representation,
+      and `.drv` effects remain open.
 
 ### The update operator `//`
 

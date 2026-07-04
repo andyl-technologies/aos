@@ -261,13 +261,9 @@ impl TreeWalk {
             if current.tag() != ValueTag::Attrs {
                 return Ok(Value::bool(false));
             }
-            let selected = {
-                let attrs = self.heap.get_attrs(current).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                })?;
-                attrs.get(key)
-            };
-            let Some(value) = selected else {
+            let AttrSelectOutcome::Hit { value, .. } =
+                self.select_slow_flat_attr(id, node.span, current, key)?
+            else {
                 return Ok(Value::bool(false));
             };
             if index + 1 == segments {

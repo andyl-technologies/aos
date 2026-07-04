@@ -740,6 +740,25 @@ fn select_evaluates_nested_static_and_dynamic_paths() {
 }
 
 #[test]
+fn flat_slow_select_bridge_preserves_tree_walk_surface_semantics() {
+    assert_eq!(eval("({ b = 2; a = 1; }).a").as_int(), Ok(1));
+    assert_eq!(
+        eval(r#"let key = "b"; in ({ a = 1; b = 2; }).${key}"#).as_int(),
+        Ok(2)
+    );
+    assert_eq!(eval("({}).missing or 4").as_int(), Ok(4));
+    assert_eq!(eval("({ a = 1 / 0; } ? a)").as_bool(), Ok(true));
+    assert_eq!(eval("({ a = 1; } ? b)").as_bool(), Ok(false));
+
+    let ir = lower("({ a = 1; }).b");
+    let error = eval_whnf_owned(&ir).expect_err("missing select remains a tree-walk miss");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::MissingAttribute { .. }
+    ));
+}
+
+#[test]
 fn select_defaults_with_dynamic_keys_match_pinned_order() {
     assert_eq!(eval("({ a = 1; }).${\"a\"} or (1 / 0)").as_int(), Ok(1));
     assert_eq!(eval("({}).${\"a\"} or 2").as_int(), Ok(2));

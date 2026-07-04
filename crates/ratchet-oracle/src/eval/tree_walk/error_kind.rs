@@ -1173,6 +1173,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying attrset failure.
         source: AttrError,
     },
+    /// A representation-dispatching attribute selection failed.
+    #[error("attribute select_slow failed at node {id:?}: {source}")]
+    AttrSelect {
+        /// The select node id.
+        id: IrId,
+        /// The underlying representation-dispatch failure.
+        source: AttrSelectError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {
