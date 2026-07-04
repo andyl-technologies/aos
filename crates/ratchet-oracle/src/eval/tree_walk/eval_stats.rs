@@ -257,6 +257,18 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn record_flat_select_cache_site_telemetry(&mut self) {
+        for cache in self.flat_select_caches.values() {
+            if let Err(source) = self.attr_telemetry.record_flat_select_site(cache.state()) {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    error = %source,
+                    "skipping flat select-cache terminal-state telemetry after recording failure"
+                );
+            }
+        }
+    }
+
     pub(super) fn increment_inline_cache_hits(&mut self) {
         self.stats.inline_cache_hits = self.stats.inline_cache_hits.saturating_add(1);
     }

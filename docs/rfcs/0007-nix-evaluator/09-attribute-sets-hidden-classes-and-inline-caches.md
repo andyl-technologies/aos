@@ -830,9 +830,10 @@ harness, never cut for scope.
       dynamic segments, `with` scope probes, generic runtime keyed helpers, and
       shaped/HAMT/native storage paths remain on the shared slow dispatcher.
       Cached hits increment mirrored inline-cache hit stats; resolved lookups
-      and misses increment miss stats and preserve slow-select telemetry. This
-      is a flat/tree-walk bridge only, not the final shape-check/native
-      `aos_select_ic` lowering.
+      and misses increment miss stats and preserve slow-select telemetry;
+      successful `EvalOutcome` exits also record terminal flat select-cache
+      site states in `attr_telemetry`. This is a flat/tree-walk bridge only,
+      not the final shape-check/native `aos_select_ic` lowering.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 flat selection substrate: the tree-walk
       `Select`/`HasAttr` paths evaluate receivers, attr-path segments, and
@@ -962,8 +963,8 @@ harness, never cut for scope.
 - [ ] Shape census, IC terminal-state histogram, `//` size + chain-depth distribution, order-parity harness ([§8](#8-measure-first-validation-and-tuning-surface)) — P5; tuning surface (`N`, `Flat`↔`Hamt` thresholds) cannot alter produced bytes.
 - [x] Current in-process telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes byte-neutral counters/snapshots for shape census, slow-select
-      hit/miss outcomes by representation, generic/shaped/HAMT select-cache
-      state histograms and lookup paths, `//` operand-size,
+      hit/miss outcomes by representation, generic/flat/shaped/HAMT select-cache
+      terminal-state histograms, shaped/HAMT select-cache lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
       tree-walk evaluator now feeds this surface from flat slow-select
@@ -971,10 +972,11 @@ harness, never cut for scope.
       selected builtin result representation decisions, plus `//` update merges
       with syntactic update-chain depth, and exposes the captured samples
       through `EvalOutcome::attr_telemetry`; active static flat select-cache
-      hits use mirrored `EvalStats` inline-cache counters while unresolved
-      cache lookups keep slow-select telemetry. Runtime shape/PIC/HAMT
-      instrumentation, full AOS package-set measurements, C++ `NIX_SHOW_STATS`
-      comparison, and `.drv` differential proof remain open.
+      terminal states are recorded there too. Flat cache hits use mirrored
+      `EvalStats` inline-cache counters while unresolved cache lookups keep
+      slow-select telemetry. Runtime shape/PIC/HAMT instrumentation, full AOS
+      package-set measurements, C++ `NIX_SHOW_STATS` comparison, and `.drv`
+      differential proof remain open.
 
 ## References
 

@@ -15,8 +15,8 @@ use thiserror::Error;
 
 use super::hamt::HamtMergeSummary;
 use super::pic::{
-    HamtSelectCacheState, HamtSelectOutcome, HamtSelectSource, InlineCacheState,
-    ShapedSelectCacheState, ShapedSelectOutcome, ShapedSelectSource,
+    FlatSelectCacheState, HamtSelectCacheState, HamtSelectOutcome, HamtSelectSource,
+    InlineCacheState, ShapedSelectCacheState, ShapedSelectOutcome, ShapedSelectSource,
 };
 use super::repr::{AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprReason};
 use super::select::{AttrSelectOutcome, AttrSelectRepr, AttrSelectSource};
@@ -27,6 +27,7 @@ use super::shape::{ShapeFingerprint, ShapeHandle, ShapeId};
 pub struct AttrTelemetry {
     shapes: HashMap<ShapeId, ShapeCensusEntry>,
     inline_cache_states: InlineCacheStateCounts,
+    flat_select_states: InlineCacheStateCounts,
     shaped_select_states: InlineCacheStateCounts,
     hamt_select_states: HamtSelectStateCounts,
     slow_select_lookups: SlowSelectLookupCounts,
@@ -130,6 +131,19 @@ impl AttrTelemetry {
         state: &InlineCacheState,
     ) -> Result<(), AttrTelemetryError> {
         self.inline_cache_states.record_inline_cache(state)
+    }
+
+    /// Records the terminal state of one flat select-cache site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrTelemetryError::CounterOverflow`] if a state counter
+    /// cannot be incremented.
+    pub fn record_flat_select_site(
+        &mut self,
+        state: &FlatSelectCacheState,
+    ) -> Result<(), AttrTelemetryError> {
+        self.flat_select_states.record_flat_select(state)
     }
 
     /// Records the terminal state of one shaped select-cache site.
@@ -336,6 +350,7 @@ impl AttrTelemetry {
     pub const fn inline_cache_snapshot(&self) -> InlineCacheSnapshot {
         InlineCacheSnapshot {
             generic_sites: self.inline_cache_states,
+            flat_select_sites: self.flat_select_states,
             shaped_select_sites: self.shaped_select_states,
             hamt_select_sites: self.hamt_select_states,
             shaped_select_lookups: self.shaped_select_lookups,
@@ -399,7 +414,7 @@ pub struct ShapeMultiplicityBucket {
     pub shape_count: usize,
 }
 
-/// Terminal state counts for generic and shaped inline caches.
+/// Terminal state counts for generic, flat, and shaped inline caches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct InlineCacheStateCounts {
     /// Sites that observed no shape.
@@ -449,6 +464,27 @@ impl InlineCacheStateCounts {
         }
         Ok(())
     }
+
+    fn record_flat_select(
+        &mut self,
+        state: &FlatSelectCacheState,
+    ) -> Result<(), AttrTelemetryError> {
+        match state {
+            FlatSelectCacheState::Uninitialized => {
+                increment(&mut self.uninitialized, "flat select uninitialized")?
+            }
+            FlatSelectCacheState::Monomorphic { .. } => {
+                increment(&mut self.monomorphic, "flat select monomorphic")?
+            }
+            FlatSelectCacheState::Polymorphic { .. } => {
+                increment(&mut self.polymorphic, "flat select polymorphic")?
+            }
+            FlatSelectCacheState::Megamorphic => {
+                increment(&mut self.megamorphic, "flat select megamorphic")?
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Terminal state counts for HAMT select-policy sites.
@@ -484,6 +520,8 @@ impl HamtSelectStateCounts {
 pub struct InlineCacheSnapshot {
     /// Generic shape-id PIC terminal states.
     pub generic_sites: InlineCacheStateCounts,
+    /// Flat select-cache terminal states.
+    pub flat_select_sites: InlineCacheStateCounts,
     /// Shaped select-cache terminal states.
     pub shaped_select_sites: InlineCacheStateCounts,
     /// HAMT select-policy terminal states.

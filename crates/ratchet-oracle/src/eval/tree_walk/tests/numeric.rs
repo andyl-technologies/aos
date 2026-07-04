@@ -69,6 +69,22 @@ fn attr_path_auto_call_records_empty_arg_repr_decision() {
 }
 
 #[test]
+fn attr_path_outcome_records_flat_select_cache_terminal_states() {
+    let ir = lower("{ selected = let f = x: x.a; in (f { a = 1; }) + (f { a = 2; }); }");
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &[b"selected".to_vec()],
+        TreeWalkOptions::default(),
+        None,
+    )
+    .expect("attr path selected expression evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    let snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(snapshot.flat_select_sites.monomorphic, 1);
+}
+
+#[test]
 fn malformed_thunk_payloads_are_reported_through_list_children() {
     let root = IrId::new(0);
     let child = IrId::new(1);

@@ -739,6 +739,8 @@ fn repeated_static_select_site_uses_flat_inline_cache() {
     assert_eq!(outcome.value().as_int(), Ok(3));
     assert_eq!(outcome.stats().inline_cache_hits(), 1);
     assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 1);
     assert_eq!(counts.flat_misses, 0);
@@ -753,6 +755,8 @@ fn repeated_static_select_site_revalidates_stale_flat_slots() {
     assert_eq!(outcome.value().as_int(), Ok(3));
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 2);
     assert_eq!(counts.flat_misses, 0);
@@ -767,6 +771,8 @@ fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
     assert_eq!(outcome.value().as_int(), Ok(11));
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 1);
     assert_eq!(counts.flat_misses, 1);
@@ -781,6 +787,8 @@ fn repeated_static_select_defaults_preserve_miss_then_hit_semantics() {
     assert_eq!(outcome.value().as_int(), Ok(12));
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 1);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 1);
     assert_eq!(counts.flat_misses, 1);
@@ -795,6 +803,9 @@ fn dynamic_select_site_stays_on_slow_select_path() {
     assert_eq!(outcome.value().as_int(), Ok(3));
     assert_eq!(outcome.stats().inline_cache_hits(), 0);
     assert_eq!(outcome.stats().inline_cache_misses(), 0);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 0);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 2);
     assert_eq!(counts.flat_misses, 0);
@@ -809,6 +820,8 @@ fn multi_segment_static_select_caches_each_path_index_separately() {
     assert_eq!(outcome.value().as_int(), Ok(3));
     assert_eq!(outcome.stats().inline_cache_hits(), 2);
     assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 2);
     let counts = outcome.attr_telemetry().slow_select_snapshot();
     assert_eq!(counts.flat_hits, 2);
     assert_eq!(counts.flat_misses, 0);

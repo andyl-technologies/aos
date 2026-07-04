@@ -8598,8 +8598,10 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       shaped/HAMT/native storage paths remain on the existing slow dispatcher.
       Cached flat hits increment the mirrored inline-cache hit counter; resolved
       flat lookups and misses increment the inline-cache miss counter and keep
-      the prior slow-select telemetry. This is a flat/tree-walk bridge only, not
-      the final shape-check/native `aos_select_ic` lowering.
+      the prior slow-select telemetry; successful `EvalOutcome` exits also
+      record terminal flat select-cache site states in `attr_telemetry`. This
+      is a flat/tree-walk bridge only, not the final shape-check/native
+      `aos_select_ic` lowering.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
@@ -8690,8 +8692,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       (`S-13`).
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
-      slow-select hit/miss outcomes by representation, generic/shaped/HAMT
-      select-cache terminal-state histograms and lookup paths, `//`
+      slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
+      select-cache terminal-state histograms, shaped/HAMT select-cache lookup
+      paths, `//`
       operand-size, result-length-upper-bound, and override-chain-depth
       distributions, HAMT merge insert/replace totals, and order-parity
       outcomes. The active tree-walk evaluator now records flat slow-select
@@ -8699,11 +8702,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       selected builtin result representation decisions, plus `//` update-merge
       samples with syntactic update-chain depth through this telemetry surface
       and exposes them via `EvalOutcome::attr_telemetry`; active static flat
-      select-cache hits use mirrored `EvalStats` inline-cache counters while
-      unresolved cache lookups keep the slow-select telemetry. This does not
-      replace runtime shape/PIC/HAMT instrumentation, full package-set
-      measurements, C++ `NIX_SHOW_STATS` comparison, or `.drv` differential
-      proof.
+      select-cache terminal states are recorded there too. Flat cache hits use
+      mirrored `EvalStats` inline-cache counters while unresolved cache lookups
+      keep the slow-select telemetry. This does not replace runtime
+      shape/PIC/HAMT instrumentation, full package-set measurements, C++
+      `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**
 

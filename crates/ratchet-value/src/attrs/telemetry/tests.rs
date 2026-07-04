@@ -3,8 +3,8 @@
 use super::*;
 use crate::attrs::hamt::HamtAttrs;
 use crate::attrs::pic::{
-    HamtSelectCache, HamtSelectPolicy, InlineCache, InlineCacheEntry, InlineCacheShapeId,
-    ShapedSelectCache,
+    FlatSelectCache, HamtSelectCache, HamtSelectPolicy, InlineCache, InlineCacheEntry,
+    InlineCacheShapeId, ShapedSelectCache,
 };
 use crate::attrs::repr::AttrSetReprPolicy;
 use crate::attrs::select::{AttrSelectOutcome, AttrSelectSource, AttrSelectTarget, select_slow};
@@ -85,7 +85,13 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
         .intern_construction_order(&[ids[0]], &symbols)
         .expect("shape interns");
     let attrs = ShapedAttrs::from_source_order(shape, &[Value::int(7)]).expect("attrs builds");
+    let flat_attrs = FlatAttrs::new(vec![AttrEntry::new(ids[0], Value::int(7))], &symbols)
+        .expect("flat attrs build");
     let mut shaped_cache = ShapedSelectCache::new();
+    let mut flat_cache = FlatSelectCache::new();
+    flat_cache
+        .select(&flat_attrs, ids[0])
+        .expect("flat select resolves");
     let resolved = shaped_cache
         .select(&attrs, ids[0])
         .expect("first select resolves");
@@ -109,6 +115,9 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
         .record_inline_cache_site(generic_cache.state())
         .expect("generic IC site records");
     telemetry
+        .record_flat_select_site(flat_cache.state())
+        .expect("flat select site records");
+    telemetry
         .record_shaped_select_site(shaped_cache.state())
         .expect("shaped select site records");
     telemetry
@@ -124,6 +133,7 @@ fn inline_cache_histogram_separates_sites_from_lookup_outcomes() {
 
     let snapshot = telemetry.inline_cache_snapshot();
     assert_eq!(snapshot.generic_sites.megamorphic, 1);
+    assert_eq!(snapshot.flat_select_sites.monomorphic, 1);
     assert_eq!(snapshot.shaped_select_sites.monomorphic, 1);
     assert_eq!(snapshot.shaped_select_lookups.hits, 2);
     assert_eq!(snapshot.shaped_select_lookups.resolved_hits, 1);
