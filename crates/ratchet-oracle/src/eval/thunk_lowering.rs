@@ -285,6 +285,20 @@ mod tests {
         }
     }
 
+    fn malformed_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            facts: IrFacts::conservative(root.index() + 1),
+            symbols: SymbolTable::new(),
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
+    }
+
     #[test]
     fn demand_position_uses_single_entry_only_for_lazy_frame_local_once_thunks() {
         let ir = thunk_ir(ExprFacts {
@@ -375,6 +389,114 @@ mod tests {
                 BODY,
                 TreeWalkThunkUpdateReason::OrderSensitiveBindingAssembly,
             ))
+        );
+    }
+
+    #[test]
+    fn demand_position_rejects_missing_thunk_facts() {
+        let ir = thunk_ir_with_facts(IrFacts::conservative(1), None);
+
+        let error = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect_err("demand planning requires thunk facts");
+
+        assert_eq!(
+            error,
+            TreeWalkThunkAllocationError::Downgrade(FrameLocalThunkDowngradeError::MissingFact {
+                id: THUNK
+            })
+        );
+    }
+
+    #[test]
+    fn demand_position_rejects_non_thunk_nodes() {
+        let ir = malformed_ir(
+            BODY,
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )],
+        );
+
+        let error = tree_walk_thunk_allocation_plan(
+            &ir,
+            BODY,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect_err("non-thunk nodes reject");
+
+        assert_eq!(
+            error,
+            TreeWalkThunkAllocationError::Downgrade(FrameLocalThunkDowngradeError::NotThunkAlloc {
+                id: BODY,
+                kind: IrKind::Int,
+            })
+        );
+    }
+
+    #[test]
+    fn demand_position_rejects_malformed_thunk_payload() {
+        let ir = malformed_ir(
+            BODY,
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+        );
+
+        let error = tree_walk_thunk_allocation_plan(
+            &ir,
+            BODY,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect_err("malformed thunk payload rejects");
+
+        assert_eq!(
+            error,
+            TreeWalkThunkAllocationError::Downgrade(
+                FrameLocalThunkDowngradeError::InvalidPayload {
+                    id: BODY,
+                    expected: "thunk body"
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn demand_position_rejects_missing_thunk_body() {
+        let missing_body = IrId::new(99);
+        let ir = malformed_ir(
+            BODY,
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Node(missing_body),
+            )],
+        );
+
+        let error = tree_walk_thunk_allocation_plan(
+            &ir,
+            BODY,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect_err("missing thunk body rejects");
+
+        assert_eq!(
+            error,
+            TreeWalkThunkAllocationError::Downgrade(
+                FrameLocalThunkDowngradeError::MissingThunkBody {
+                    id: BODY,
+                    body: missing_body
+                }
+            )
         );
     }
 

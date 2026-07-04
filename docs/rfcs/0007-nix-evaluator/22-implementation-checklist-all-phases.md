@@ -7899,7 +7899,9 @@ nurseries build on the bump arena.
       frame-local single-entry admission, strict elision precedence,
       order-sensitive update fallback with present and missing facts,
       escaping-thunk update fallback, absent omission, and absent-strict conflict
-      rejection of elision. This is still a planning precursor only: it does not
+      rejection of elision, plus demand-position rejection for missing facts,
+      non-thunk nodes, malformed thunk payloads, and missing thunk bodies. This
+      is still a planning precursor only: it does not
       install a single-entry runtime representation, change `ThunkCell`,
       implement call-by-name lowering, remove absent bindings from frame layout,
       improve analysis precision, or close the loom/Miri/TSan audit.
