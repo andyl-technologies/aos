@@ -57,7 +57,7 @@
       }
       {
         label = "T-CLI-10 remote daemon resume progress";
-        needle = "resume over `ResumeSession` RPC for handle-backed virtual-time runs";
+        needle = "routes remote-daemon resume over";
       }
       {
         label = "T-CLI-10 terminal oracle progress";
@@ -220,8 +220,28 @@
         needle = "cli_resume_workflow_executes_remote_daemon_handle";
       }
       {
-        label = "resume remote watch blocker";
-        needle = "remote daemon resume --watch remains tracked by T-CLI-10";
+        label = "resume remote watch status";
+        needle = "run-watch\\tstate=stopped\\tfrontier_ticks=2";
+      }
+      {
+        label = "resume remote interactive command test";
+        needle = "run_remote_resume_workflow_with_interactive_commands";
+      }
+      {
+        label = "resume remote interactive final state";
+        needle = "remote_interactive_final";
+      }
+      {
+        label = "resume remote interactive stop final state";
+        needle = "remote_interactive_stop_final";
+      }
+      {
+        label = "resume terminal remote interactive error";
+        needle = "terminal state before terminal savepoint materialization";
+      }
+      {
+        label = "resume terminal remote interactive cleanup";
+        needle = "terminal remote interactive error should remove the dead session";
       }
       {
         label = "resume unverified evidence test";
