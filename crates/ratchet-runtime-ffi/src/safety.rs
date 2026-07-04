@@ -124,6 +124,23 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const WRITE_BARRIER_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeWriteBarrierNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, *mut c_void, Value);"
+    );
+    const WRITE_BARRIER_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const WRITE_BARRIER_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_gc_write_barrier("
+    );
+    const WRITE_BARRIER_ABORT_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_gc_write_barrier(rt, thunk, value) };");
     const BLACKHOLE_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeBlackholeCheckNativeFn = ",
         "uns",
@@ -267,6 +284,12 @@ mod tests {
                 let line = raw_lines[line_number];
                 for token in code_tokens(code) {
                     if is_allowed_env_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_write_barrier_wrapper_token(
+                            &source_root,
+                            &source_path,
+                            line,
+                            token,
+                        )
                         || is_allowed_force_wrapper_token(&source_root, &source_path, line, token)
                     {
                         continue;
@@ -373,6 +396,35 @@ mod tests {
                 || trimmed == FORCE_DEEP_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_write_barrier_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("barrier.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == WRITE_BARRIER_FN_TYPE_LINE
+                || trimmed == WRITE_BARRIER_EXPORT_ATTR_LINE
+                || trimmed == WRITE_BARRIER_FN_LINE
+                || trimmed == WRITE_BARRIER_ABORT_TEST_CALL_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == WRITE_BARRIER_FN_TYPE_LINE || trimmed == WRITE_BARRIER_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == WRITE_BARRIER_EXPORT_ATTR_LINE
         } else {
             false
         }
@@ -625,6 +677,8 @@ mod unchecked_cfg;
     fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let barrier = fs::read_to_string(source_root.join("barrier.rs"))
+            .expect("write-barrier FFI source file is readable");
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
 
@@ -667,6 +721,26 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&env, BINDING_TEST_CALL_LINE),
             1,
             "metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&barrier, WRITE_BARRIER_FN_TYPE_LINE),
+            1,
+            "write-barrier native function-pointer type must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&barrier, WRITE_BARRIER_EXPORT_ATTR_LINE),
+            1,
+            "write-barrier native wrapper export attribute must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&barrier, WRITE_BARRIER_FN_LINE),
+            1,
+            "aos_gc_write_barrier native wrapper must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&barrier, WRITE_BARRIER_ABORT_TEST_CALL_LINE),
+            1,
+            "write-barrier abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, BLACKHOLE_FN_TYPE_LINE),
@@ -783,9 +857,12 @@ mod unchecked_cfg;
     fn assert_reviewed_safety_comments(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let barrier = fs::read_to_string(source_root.join("barrier.rs"))
+            .expect("write-barrier FFI source file is readable");
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let lines = env.lines().collect::<Vec<_>>();
+        let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
 
         assert_has_safety_comment_before(
@@ -807,6 +884,11 @@ mod unchecked_cfg;
             &lines,
             BINDING_TEST_CALL_LINE,
             "metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &barrier_lines,
+            WRITE_BARRIER_ABORT_TEST_CALL_LINE,
+            "write-barrier abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -893,9 +975,12 @@ mod unchecked_cfg;
     fn assert_public_unsafe_docs(source_root: &Path) {
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let barrier = fs::read_to_string(source_root.join("barrier.rs"))
+            .expect("write-barrier FFI source file is readable");
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
         let lines = env.lines().collect::<Vec<_>>();
+        let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
 
         assert_has_safety_doc_before(
@@ -907,6 +992,16 @@ mod unchecked_cfg;
             &lines,
             ENV_GET_FN_LINE,
             "public native wrapper must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &barrier_lines,
+            WRITE_BARRIER_FN_TYPE_LINE,
+            "public write-barrier native function-pointer type must document # Safety",
+        );
+        assert_has_safety_doc_before(
+            &barrier_lines,
+            WRITE_BARRIER_FN_LINE,
+            "public write-barrier native wrapper must document # Safety",
         );
         assert_has_safety_doc_before(
             &force_lines,

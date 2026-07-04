@@ -15,6 +15,9 @@ use ratchet_oracle::runtime::helpers::{
     RuntimeSymbolNativeExportMissingBinding, RuntimeSymbolNativeExportPreflight,
     runtime_symbol_native_export_preflight, runtime_symbol_rust_callable_preflight,
 };
+use ratchet_runtime_ffi::barrier::{
+    RuntimeWriteBarrierNativeWrapperBinding, runtime_write_barrier_native_wrapper_bindings,
+};
 use ratchet_runtime_ffi::env::{
     RuntimeEnvAccessNativeWrapperBinding, runtime_env_access_native_wrapper_bindings,
 };
@@ -510,13 +513,13 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// Builds process-local JIT address candidates from runtime wrapper metadata.
 ///
 /// Most returned candidates intentionally use current-process Rust helper
-/// callable addresses, not exported native ABI wrappers. `aos_env_get` and the
-/// `aos_blackhole_check`, `aos_force`, and `aos_force_deep` forcing helpers are
-/// sourced from success-path `ratchet-runtime-ffi` native wrappers. This lets
-/// the bridge distinguish native-wrapper address provenance from the remaining
-/// native-export blockers. The candidates let integration code exercise JIT
-/// registration and relocation plumbing while keeping the actual native call
-/// boundary disabled.
+/// callable addresses, not exported native ABI wrappers. `aos_env_get`, the
+/// `aos_blackhole_check`, `aos_force`, and `aos_force_deep` forcing helpers,
+/// and the trap-only `aos_gc_write_barrier` helper are sourced from
+/// `ratchet-runtime-ffi` native wrappers. This lets the bridge distinguish
+/// native-wrapper address provenance from the remaining native-export blockers.
+/// The candidates let integration code exercise JIT registration and relocation
+/// plumbing while keeping the actual native call boundary disabled.
 ///
 /// # Errors
 ///
@@ -526,13 +529,14 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// binding violates the non-null address invariant before it reaches the JIT
 /// registration metadata. Returns
 /// [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
-/// if an `aos_env_get`, `aos_blackhole_check`, `aos_force`, or
-/// `aos_force_deep` runtime-FFI wrapper binding violates the non-null address
-/// invariant before it reaches the JIT registration metadata.
+/// if an `aos_env_get`, `aos_blackhole_check`, `aos_force`, `aos_force_deep`, or
+/// `aos_gc_write_barrier` runtime-FFI wrapper binding violates the non-null
+/// address invariant before it reaches the JIT registration metadata.
 pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightResult {
     let oracle_preflight = runtime_symbol_rust_callable_preflight()?;
     let env_native_wrappers = runtime_env_native_wrappers_by_symbol();
     let forcing_native_wrappers = runtime_forcing_native_wrappers_by_symbol();
+    let write_barrier_native_wrappers = runtime_write_barrier_native_wrappers_by_symbol();
     let mut address_candidates = Vec::new();
     let mut address_provenance = Vec::new();
 
@@ -541,6 +545,7 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
             binding,
             &env_native_wrappers,
             &forcing_native_wrappers,
+            &write_barrier_native_wrappers,
         )?;
         address_candidates.push(candidate);
         address_provenance.push(provenance);
@@ -672,6 +677,7 @@ fn jit_address_candidate_for_helper_binding(
     binding: RuntimeHelperRustCallableBinding,
     env_native_wrappers: &BTreeMap<&'static str, RuntimeEnvAccessNativeWrapperBinding>,
     forcing_native_wrappers: &BTreeMap<&'static str, RuntimeForcingNativeWrapperBinding>,
+    write_barrier_native_wrappers: &BTreeMap<&'static str, RuntimeWriteBarrierNativeWrapperBinding>,
 ) -> Result<
     (
         JitRuntimeSymbolAddressCandidate,
@@ -699,6 +705,20 @@ fn jit_address_candidate_for_helper_binding(
         let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
             native_wrapper.symbol_name(),
             RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+            native_wrapper.address().as_ptr(),
+        )?;
+        let provenance =
+            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
+        return Ok((candidate, provenance));
+    }
+
+    if let RuntimeHelperRustCallableBinding::WriteBarrier(write_barrier_binding) = binding
+        && let Some(native_wrapper) =
+            write_barrier_native_wrappers.get(write_barrier_binding.symbol_name())
+    {
+        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
+            native_wrapper.symbol_name(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier),
             native_wrapper.address().as_ptr(),
         )?;
         let provenance =
@@ -769,6 +789,14 @@ fn runtime_env_native_wrappers_by_symbol()
 fn runtime_forcing_native_wrappers_by_symbol()
 -> BTreeMap<&'static str, RuntimeForcingNativeWrapperBinding> {
     runtime_forcing_native_wrapper_bindings()
+        .into_iter()
+        .map(|binding| (binding.symbol_name(), binding))
+        .collect()
+}
+
+fn runtime_write_barrier_native_wrappers_by_symbol()
+-> BTreeMap<&'static str, RuntimeWriteBarrierNativeWrapperBinding> {
+    runtime_write_barrier_native_wrapper_bindings()
         .into_iter()
         .map(|binding| (binding.symbol_name(), binding))
         .collect()

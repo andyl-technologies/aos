@@ -13,6 +13,9 @@
 //! ratchet_runtime_ffi::force
 //!   aos_blackhole_check, aos_force, and aos_force_deep success-path wrappers
 //!   for frozen `(rt, Value)` forcing ABIs
+//! ratchet_runtime_ffi::barrier
+//!   aos_gc_write_barrier trap-only wrapper for the frozen
+//!   `(rt, thunk, Value)` write-barrier ABI
 //! ratchet_runtime_ffi::safety
 //!   unsafe-boundary manifest and source-token allowlist
 //! ```
@@ -24,6 +27,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod barrier;
 pub mod env;
 pub mod force;
 pub mod safety;

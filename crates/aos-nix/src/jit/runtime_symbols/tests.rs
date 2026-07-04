@@ -3,6 +3,7 @@ use ratchet_jit::{
     JitRuntimeSymbolRegistrationGap, jit_runtime_symbol_registration_preflight_with_candidates,
 };
 use ratchet_oracle::runtime::helpers::runtime_symbol_rust_callable_preflight;
+use ratchet_runtime_ffi::barrier::runtime_write_barrier_native_wrapper_bindings;
 use ratchet_runtime_ffi::env::runtime_env_access_native_wrapper_bindings;
 use ratchet_runtime_ffi::force::runtime_forcing_native_wrapper_bindings;
 
@@ -26,6 +27,7 @@ const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] =
     &["aos_blackhole_check", "aos_force", "aos_force_deep"];
 const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &[];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
+const EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 
 #[test]
 fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
@@ -101,6 +103,35 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
             .missing_binding_for("aos_blackhole_check")
             .is_none()
     );
+    let write_barrier = preflight
+        .address_candidate_for("aos_gc_write_barrier")
+        .expect("write-barrier helper has a native-wrapper address candidate");
+    assert_eq!(
+        write_barrier.kind(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier)
+    );
+    assert_eq!(
+        write_barrier.address().as_nonzero_usize().get(),
+        write_barrier_native_wrapper_address()
+    );
+    assert_ne!(
+        write_barrier.address().as_nonzero_usize().get(),
+        write_barrier_rust_callable_address()
+    );
+    assert!(
+        preflight
+            .address_provenance_for_symbol("aos_gc_write_barrier")
+            .is_some_and(|provenance| {
+                provenance.is_runtime_ffi_native_wrapper()
+                    && provenance.kind()
+                        == RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier)
+            })
+    );
+    assert!(
+        preflight
+            .missing_binding_for("aos_gc_write_barrier")
+            .is_none()
+    );
     let force = preflight
         .address_candidate_for("aos_force")
         .expect("force helper has a native-wrapper address candidate");
@@ -163,7 +194,8 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
             "aos_blackhole_check",
             "aos_env_get",
             "aos_force",
-            "aos_force_deep"
+            "aos_force_deep",
+            "aos_gc_write_barrier"
         ]
     );
     for symbol_name in EXPECTED_ATTRSET_ACCESS_SYMBOLS {
@@ -508,11 +540,23 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
     assert!(
+        candidates
+            .address_provenance_for_symbol("aos_gc_write_barrier")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
+    assert!(
         registration
             .address_provenance_gap_for_symbol("aos_env_get")
             .is_none()
     );
     for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
+    for symbol_name in EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS {
         assert!(
             registration
                 .address_provenance_gap_for_symbol(symbol_name)
@@ -695,6 +739,12 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
             .address_provenance_for_symbol("aos_force_deep")
             .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
     );
+    assert!(
+        preflight
+            .address_candidate_preflight()
+            .address_provenance_for_symbol("aos_gc_write_barrier")
+            .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+    );
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         assert!(
             preflight
@@ -714,6 +764,13 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
         );
     }
     for symbol_name in EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS {
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+    }
+    for symbol_name in EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS {
         assert!(
             preflight
                 .address_provenance_gap_for_symbol(symbol_name)
@@ -827,6 +884,15 @@ fn blackhole_native_wrapper_address() -> usize {
         .as_ptr() as usize
 }
 
+fn write_barrier_native_wrapper_address() -> usize {
+    runtime_write_barrier_native_wrapper_bindings()
+        .into_iter()
+        .find(|binding| binding.symbol_name() == "aos_gc_write_barrier")
+        .expect("runtime FFI write-barrier wrapper exists")
+        .address()
+        .as_ptr() as usize
+}
+
 fn env_rust_callable_address() -> usize {
     let binding = runtime_symbol_rust_callable_preflight()
         .expect("oracle Rust-callable preflight builds")
@@ -856,6 +922,23 @@ fn blackhole_rust_callable_address() -> usize {
     match binding {
         RuntimeHelperRustCallableBinding::Forcing(binding) => binding.address().as_ptr() as usize,
         _ => panic!("aos_blackhole_check is a forcing helper"),
+    }
+}
+
+fn write_barrier_rust_callable_address() -> usize {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_gc_write_barrier")
+        .expect("oracle write-barrier Rust callable exists");
+
+    match binding {
+        RuntimeHelperRustCallableBinding::WriteBarrier(binding) => {
+            binding.address().as_ptr() as usize
+        }
+        _ => panic!("aos_gc_write_barrier is a write-barrier helper"),
     }
 }
 
