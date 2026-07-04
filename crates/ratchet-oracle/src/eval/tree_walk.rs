@@ -318,6 +318,7 @@ mod options;
 mod outcome;
 mod toml_normalize;
 mod version;
+pub(in crate::eval) use api::eval_raw_bytes_with_evaluator;
 pub(crate) use api::{
     attr_path_segment_is_list_index, parse_attr_path_list_index,
     parse_attr_path_list_index_diagnostic,

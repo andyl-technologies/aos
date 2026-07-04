@@ -28,8 +28,7 @@ use super::{
     },
     thunk_cas::ParallelThunkWorkerId,
     tree_walk::{
-        EvalDerivation, TreeWalk, TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_options,
-        eval_raw_bytes_with_options_source,
+        EvalDerivation, TreeWalk, TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_evaluator,
     },
 };
 
@@ -415,7 +414,9 @@ fn preflight_parallel_tree_walk_drv_differential_options(
 /// Evaluates independent expression-style lowered roots through the safe L1 scheduler.
 ///
 /// This convenience entry point treats every root as source-less expression
-/// evaluation, matching [`eval_raw_bytes_with_options`]. Use
+/// evaluation, matching
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options).
+/// Use
 /// [`eval_raw_bytes_parallel_top_level_roots`] when file-backed roots need
 /// source provenance for `__curPos` or `builtins.unsafeGetAttrPos`.
 ///
@@ -450,7 +451,9 @@ where
 /// Evaluates independent expression-style lowered roots through Chase-Lev worker deques.
 ///
 /// This convenience entry point treats every root as source-less expression
-/// evaluation, matching [`eval_raw_bytes_with_options`]. Use
+/// evaluation, matching
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options).
+/// Use
 /// [`eval_raw_bytes_parallel_chase_lev_top_level_roots`] when file-backed roots
 /// need source provenance for `__curPos` or `builtins.unsafeGetAttrPos`.
 ///
@@ -486,10 +489,12 @@ where
 ///
 /// Each root is evaluated by a fresh tree-walk evaluator and rendered with the
 /// same raw strict syntax as the tree-walk raw renderer. Source-less roots use
-/// [`eval_raw_bytes_with_options`]; source-backed roots use
-/// [`eval_raw_bytes_with_options_source`] so position-sensitive builtins see
-/// the supplied source name and bytes. The supplied options are cloned for
-/// every task, then the active parallel thunk worker id is replaced with a
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options);
+/// source-backed roots use
+/// [`eval_raw_bytes_with_options_source`](crate::eval::tree_walk::eval_raw_bytes_with_options_source)
+/// so position-sensitive builtins see the supplied source name and bytes. The
+/// supplied options are cloned for every task, then the active parallel thunk
+/// worker id is replaced with a
 /// non-zero id derived from the scheduler worker that actually executes the
 /// root.
 ///
@@ -537,10 +542,12 @@ where
 ///
 /// Each root is evaluated by a fresh tree-walk evaluator and rendered with the
 /// same raw strict syntax as the tree-walk raw renderer. Source-less roots use
-/// [`eval_raw_bytes_with_options`]; source-backed roots use
-/// [`eval_raw_bytes_with_options_source`] so position-sensitive builtins see
-/// the supplied source name and bytes. The supplied options are cloned for
-/// every task, then the active parallel thunk worker id is replaced with a
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options);
+/// source-backed roots use
+/// [`eval_raw_bytes_with_options_source`](crate::eval::tree_walk::eval_raw_bytes_with_options_source)
+/// so position-sensitive builtins see the supplied source name and bytes. The
+/// supplied options are cloned for every task, then the active parallel thunk
+/// worker id is replaced with a
 /// non-zero id derived from the Chase-Lev scheduler worker that actually
 /// executes the root.
 ///
@@ -640,7 +647,8 @@ fn eval_raw_bytes_for_parallel_worker(
     let parallel_thunk_worker_id = worker_ids[context.worker_id()];
     let mut options = base_options.clone();
     options.set_parallel_thunk_worker_id(parallel_thunk_worker_id);
-    let raw_bytes = eval_raw_bytes_for_root(root, options)?;
+    let (raw_bytes, parallel_thunk_worker_id) =
+        eval_raw_bytes_for_root_with_worker_id(root, options)?;
 
     Ok(ParallelTreeWalkRawEvaluation {
         raw_bytes,
@@ -670,16 +678,24 @@ fn eval_raw_bytes_for_root(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
 ) -> Result<Vec<u8>, TreeWalkError> {
+    let (raw_bytes, _) = eval_raw_bytes_for_root_with_worker_id(root, options)?;
+    Ok(raw_bytes)
+}
+
+fn eval_raw_bytes_for_root_with_worker_id(
+    root: ParallelTreeWalkRoot,
+    options: TreeWalkOptions,
+) -> Result<(Vec<u8>, ParallelThunkWorkerId), TreeWalkError> {
     let ParallelTreeWalkRoot { ir, source } = root;
-    match source {
-        Some(source) => eval_raw_bytes_with_options_source(
-            &ir,
-            options,
-            source.source_name,
-            source.source_bytes,
-        ),
-        None => eval_raw_bytes_with_options(&ir, options),
-    }
+    let evaluator = match source {
+        Some(source) => {
+            TreeWalk::with_options_and_source(&ir, options, source.source_name, source.source_bytes)
+        }
+        None => TreeWalk::with_options(&ir, options),
+    };
+    let parallel_thunk_worker_id = evaluator.parallel_thunk_worker_id();
+    let raw_bytes = eval_raw_bytes_with_evaluator(&ir, evaluator)?;
+    Ok((raw_bytes, parallel_thunk_worker_id))
 }
 
 fn eval_drv_outputs_for_root(
@@ -1637,6 +1653,75 @@ mod tests {
             evaluation.parallel_thunk_worker_id().get()
                 == u64::try_from(outcome.worker_id()).expect("test worker id fits") + 1
         }));
+    }
+
+    #[test]
+    fn raw_eval_worker_bridge_installs_context_worker_id_in_evaluator() {
+        let worker_ids =
+            parallel_thunk_worker_ids_for_scheduler(workers(3)).expect("worker ids fit");
+        let sentinel_worker_id = ParallelThunkWorkerId::new(99).expect("valid worker id");
+        let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+        options.set_parallel_thunk_worker_id(sentinel_worker_id);
+
+        let evaluation = eval_raw_bytes_for_parallel_worker(
+            ParallelFallibleTaskContext::for_test(0, 0, 1, 3),
+            ParallelTreeWalkRoot::expression(lower("1 + 2")),
+            &options,
+            &worker_ids,
+        )
+        .expect("worker raw evaluation completes");
+
+        assert_eq!(evaluation.raw_bytes(), b"3");
+        assert_eq!(
+            evaluation.parallel_thunk_worker_id(),
+            ParallelThunkWorkerId::new(2).expect("valid worker id")
+        );
+        assert_ne!(
+            evaluation.parallel_thunk_worker_id(),
+            ParallelThunkWorkerId::FIRST
+        );
+        assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+    }
+
+    #[test]
+    fn chase_lev_parallel_raw_eval_overrides_base_worker_id_with_scheduler_worker_id() {
+        let roots = ["1 + 2", "let x = 4; in x * 2"]
+            .into_iter()
+            .map(|source| ParallelTreeWalkRoot::expression(lower(source)));
+        let sentinel_worker_id = ParallelThunkWorkerId::new(99).expect("valid worker id");
+        let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
+        options.set_parallel_thunk_worker_id(sentinel_worker_id);
+
+        let report = eval_raw_bytes_parallel_chase_lev_top_level_roots(
+            roots,
+            workers(1),
+            ParallelFailurePolicy::CollectAll,
+            options,
+        )
+        .expect("Chase-Lev raw evaluation completes");
+
+        assert_eq!(report.worker_count(), 1);
+        assert_eq!(report.task_count(), 2);
+        assert_eq!(report.completed_task_count(), 2);
+        assert_eq!(report.cancelled_before_start_count(), 0);
+        assert!(!report.cancelled());
+        assert_eq!(
+            report
+                .outcomes()
+                .iter()
+                .map(|outcome| {
+                    let evaluation = outcome.outcome().as_ref().expect("root succeeded");
+                    assert_eq!(outcome.worker_id(), 0);
+                    assert_eq!(
+                        evaluation.parallel_thunk_worker_id(),
+                        ParallelThunkWorkerId::FIRST
+                    );
+                    assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+                    evaluation.raw_bytes().to_vec()
+                })
+                .collect::<Vec<_>>(),
+            vec![b"3".to_vec(), b"8".to_vec()]
+        );
     }
 
     #[test]

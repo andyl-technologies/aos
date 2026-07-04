@@ -419,7 +419,7 @@ pub fn eval_raw_bytes_with_options_source(
     )
 }
 
-fn eval_raw_bytes_with_evaluator(
+pub(in crate::eval) fn eval_raw_bytes_with_evaluator(
     ir: &Ir,
     mut evaluator: TreeWalk,
 ) -> Result<Vec<u8>, TreeWalkError> {

@@ -7718,11 +7718,12 @@ nurseries build on the bump arena.
       id, and successful force-sidecar publication/replay with a non-default
       id. The independent-root raw and `.drv` tree-walk bridges now install a
       scheduler-derived thunk worker id in each fresh evaluator, including the
-      Chase-Lev `.drv` bridge. This is still only worker-identity plumbing for
-      independent-root evaluators: no shared thunk graph crosses worker heaps,
-      no scheduler executes thunk bodies through the sidecar wait path, no
-      worker-local evaluator state is attached beyond the configured id, and
-      the loom/Miri/TSan gates remain open.
+      Chase-Lev raw and `.drv` bridges, with deterministic non-default worker-id
+      helper coverage for both raw and `.drv` paths. This is still only
+      worker-identity plumbing for independent-root evaluators: no shared thunk
+      graph crosses worker heaps, no scheduler executes thunk bodies through the
+      sidecar wait path, no worker-local evaluator state is attached beyond the
+      configured id, and the loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload success-replay precursor:
       `TreeWalk::force_value` now checks an admitted
       `TreeWalkParallelThunkCell` for a successful terminal payload before
@@ -7934,12 +7935,13 @@ nurseries build on the bump arena.
       completion report. Tests cover stable raw-byte parity with serial
       tree-walk evaluation, source-provenance preservation, canonical tree-walk
       error selection by task order, fail-fast cancellation before later
-      task-boundary checks, and scheduler-worker to thunk-worker id bounds. This
-      is an independent-root bridge only: it does not share evaluator heaps or
-      thunk graphs between roots, allocate through live per-worker nurseries,
-      evaluate a full derivation closure, replace the serial tree-walk force
-      path, install the final Chase-Lev deque, or satisfy the full
-      differential/loom/Miri/TSan gates.
+      task-boundary checks, scheduler-worker to thunk-worker id bounds, and a
+      raw bridge helper path that observes a non-default scheduler worker id
+      installed in the fresh evaluator. This is an independent-root bridge only:
+      it does not share evaluator heaps or thunk graphs between roots, allocate
+      through live per-worker nurseries, evaluate a full derivation closure,
+      replace the serial tree-walk force path, install the final Chase-Lev
+      deque, or satisfy the full differential/loom/Miri/TSan gates.
 - [x] Current Chase-Lev-backed tree-walk raw-evaluation bridge:
       `ratchet-oracle::eval::eval_raw_bytes_parallel_chase_lev_top_level` runs
       independent lowered roots through the Chase-Lev fallible L1 executor,
@@ -7952,12 +7954,13 @@ nurseries build on the bump arena.
       each root. Tests cover stable raw-byte parity with serial tree-walk
       evaluation, source-provenance preservation, canonical observed tree-walk
       error selection, fail-fast cancellation before later task-boundary
-      checks, and scheduler-worker to thunk-worker id bounds. This is an
-      independent-root bridge only: it does not share evaluator heaps or thunk
-      graphs between roots, allocate through live per-worker nurseries,
-      evaluate a full derivation closure, replace the serial tree-walk force
-      path, wire ready-work park tokens or CAS wait integration, or satisfy the
-      full differential/loom/Miri/TSan gates.
+      checks, scheduler-worker to thunk-worker id bounds, and sentinel override
+      coverage proving the Chase-Lev raw entry point installs the scheduler id
+      in the fresh evaluator. This is an independent-root bridge only: it does
+      not share evaluator heaps or thunk graphs between roots, allocate through
+      live per-worker nurseries, evaluate a full derivation closure, replace the
+      serial tree-walk force path, wire ready-work park tokens or CAS wait
+      integration, or satisfy the full differential/loom/Miri/TSan gates.
 
 **Conformance (hold parity).**
 
