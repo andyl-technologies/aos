@@ -726,6 +726,12 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
                 "snapshot query is not supported by the RPC wire format",
             ))
         }
+        "breakpoint-firings" => {
+            reject_extra_query_field(fields.next())?;
+            Err(String::from(
+                "breakpoint-firing query is not supported by the RPC wire format",
+            ))
+        }
         "state" => {
             reject_extra_query_field(fields.next())?;
             Ok(QueryKind::State)
@@ -992,6 +998,7 @@ fn query_result_wire(result: Option<&QueryResult>) -> String {
             sample.fingerprint.hash.to_hex()
         ),
         Some(QueryResult::Snapshot(_)) => String::from("unsupported-snapshot"),
+        Some(QueryResult::BreakpointFirings(_)) => String::from("unsupported-breakpoint-firings"),
         None => String::from("none"),
     }
 }

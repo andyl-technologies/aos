@@ -17,7 +17,7 @@
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
     pub use crucible::{
-        CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, Configuration,
+        AssertionId, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, Configuration,
         ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig, DagStore, DagStoreError,
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugFailureFooterCommand,
         DebugGdbEndpoint, DebugReverseStepGrain, Decision, DeliveryOrderDecision,
@@ -878,6 +878,8 @@ pub struct SavepointInfo {
 pub enum QueryKind {
     /// Return the complete boundary snapshot.
     Snapshot,
+    /// Return the deterministic breakpoint-firing log.
+    BreakpointFirings,
     /// Return the compact lifecycle state.
     State,
     /// Return the canonical event-log length.
@@ -894,6 +896,8 @@ pub enum QueryKind {
 pub enum QueryResult {
     /// Complete boundary snapshot.
     Snapshot(EngineSnapshot),
+    /// Deterministic breakpoint-firing log.
+    BreakpointFirings(Vec<BreakpointFiring>),
     /// Compact lifecycle state.
     State(LifecycleStateKind),
     /// Canonical event-log length.
@@ -1045,6 +1049,15 @@ impl SessionCommand {
     pub fn query_snapshot() -> Self {
         Self::Query {
             kind: QueryKind::Snapshot,
+            reply: CommandReply::discard(),
+        }
+    }
+
+    /// Builds a discard-reply query for the deterministic breakpoint-firing log.
+    #[must_use]
+    pub fn query_breakpoint_firings() -> Self {
+        Self::Query {
+            kind: QueryKind::BreakpointFirings,
             reply: CommandReply::discard(),
         }
     }
@@ -4009,6 +4022,9 @@ impl<L: QuantumLoop> Engine<L> {
                 let snapshot = self.snapshot();
                 let result = match kind {
                     QueryKind::Snapshot => QueryResult::Snapshot(snapshot.clone()),
+                    QueryKind::BreakpointFirings => {
+                        QueryResult::BreakpointFirings(self.breakpoint_firings.clone())
+                    }
                     QueryKind::State => {
                         QueryResult::State(LifecycleStateKind::from(&snapshot.state))
                     }

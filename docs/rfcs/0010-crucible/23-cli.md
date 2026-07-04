@@ -1042,13 +1042,16 @@ branch on the verdict without parsing output:
   parses `save <SCENARIO>` with the required `--at` stop selector plus
   `--label <name>`, `--max-virtual-time <dur>`, `--property <assertion>`,
   `--marker <name>`, and `--out <path>`, runs quiescence and virtual-time
-  saves to paused session boundaries, issues a
-  label-bearing `create_savepoint`, validates the returned materialized
-  checkpoint with the replay oracle (`fat==thin`) before export, writes the
-  validated `.crucible-savepoint` handle, parses property and marker selector
-  syntax, and fails selector execution and local QEMU saves clearly until their
-  proof paths land. Full closure remains blocked on property/marker
-  selector-specific breakpoint proof and real-QEMU savepoint coverage.
+  saves to paused session boundaries, issues a label-bearing
+  `create_savepoint`, validates the returned materialized checkpoint with the
+  replay oracle (`fat==thin`) before export, writes the validated
+  `.crucible-savepoint` handle, parses property and marker selector syntax,
+  validates property selector names against declared assertions, exposes typed
+  in-process breakpoint-id and breakpoint-firing-query plumbing for the future
+  selector proof path, and fails selector execution and local QEMU saves clearly
+  until their proof paths land. Full closure remains blocked on
+  property/marker selector-specific breakpoint proof and real-QEMU savepoint
+  coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.

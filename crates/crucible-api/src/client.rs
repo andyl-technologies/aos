@@ -1305,16 +1305,21 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
 }
 
 fn validate_rpc_send_request(request: &SendRequest) -> Result<(), ControlClientError> {
-    if matches!(
-        &request.command,
-        SessionCommand::Query {
-            kind: QueryKind::Snapshot,
-            ..
+    if let SessionCommand::Query { kind, .. } = &request.command {
+        let message = match kind {
+            QueryKind::Snapshot => Some("snapshot query is not supported by the RPC wire format"),
+            QueryKind::BreakpointFirings => {
+                Some("breakpoint-firing query is not supported by the RPC wire format")
+            }
+            QueryKind::State
+            | QueryKind::EventLogLength
+            | QueryKind::ExecutionFingerprint { .. } => None,
+        };
+        if let Some(message) = message {
+            return Err(ControlClientError::UnsupportedRpcCommand {
+                message: String::from(message),
+            });
         }
-    ) {
-        return Err(ControlClientError::UnsupportedRpcCommand {
-            message: String::from("snapshot query is not supported by the RPC wire format"),
-        });
     }
     Ok(())
 }
@@ -1322,6 +1327,7 @@ fn validate_rpc_send_request(request: &SendRequest) -> Result<(), ControlClientE
 fn query_kind_request_wire(kind: &QueryKind) -> String {
     match kind {
         QueryKind::Snapshot => String::from("snapshot"),
+        QueryKind::BreakpointFirings => String::from("breakpoint-firings"),
         QueryKind::State => String::from("state"),
         QueryKind::EventLogLength => String::from("event-log-length"),
         QueryKind::ExecutionFingerprint { node } => {
@@ -1633,6 +1639,7 @@ fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError>
         },
         state_update,
         query_result,
+        breakpoint_id: None,
         savepoint_info: None,
     })
 }
