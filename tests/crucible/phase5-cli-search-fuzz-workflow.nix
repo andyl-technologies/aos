@@ -15,6 +15,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  searchStrategiesTest = builtins.readFile ../../crates/crucible/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -56,12 +58,20 @@
         needle = "accepts explicit `--on-violation`";
       }
       {
+        label = "T-CLI-13 local-double sampled API progress";
+        needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
+      }
+      {
         label = "T-CLI-13 local-double depth progress";
         needle = "honors `--max-depth` as a bounded\n  decision-depth search run";
       }
       {
         label = "T-CLI-13 local-double budget status progress";
         needle = "RFC §13 status mapping for discovered failures, stop-mode\n  budget exhaustion";
+      }
+      {
+        label = "T-CLI-13 local-double replay oracle sampling progress";
+        needle = "1/1 replay-oracle sampling counts over fat search materializations";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -74,12 +84,20 @@
         needle = "`search-run` output with `failure_oracle=none`";
       }
       {
+        label = "phase5 CLI local-double sampled API progress";
+        needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
+      }
+      {
         label = "phase5 CLI local-double depth progress";
         needle = "bounded decision-depth execution for\n  `--max-depth`";
       }
       {
         label = "phase5 CLI local-double budget status progress";
         needle = "RFC §13 status mapping\n  for discovered failures, stop-mode budget exhaustion";
+      }
+      {
+        label = "phase5 CLI local-double replay oracle sampling progress";
+        needle = "1/1 replay-oracle\n  sampling counts over fat search materializations";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -120,6 +138,10 @@
         needle = "fn run_local_double_search_workflow";
       }
       {
+        label = "local-double injectable graph runner";
+        needle = "fn run_local_double_search_workflow_with_graph";
+      }
+      {
         label = "local-double search output";
         needle = "search-run";
       }
@@ -134,6 +156,10 @@
       {
         label = "local-double bounded search budget";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth";
+      }
+      {
+        label = "local-double sampled search runner";
+        needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
       {
         label = "local-double search canonical log";
@@ -160,12 +186,28 @@
         needle = "budget_exhausted={}";
       }
       {
+        label = "local-double replay oracle sampling output";
+        needle = "replay_oracle_sampling=1/1";
+      }
+      {
+        label = "local-double sampled replay oracle count";
+        needle = "replay_oracle_sampled={}";
+      }
+      {
+        label = "local-double positive sampled replay oracle regression";
+        needle = "replay_oracle_sampled=1";
+      }
+      {
         label = "local-double budget timeout test";
         needle = "local_double_search_status(false, false, SearchOnViolationArg::Stop)";
       }
       {
-        label = "local-double non-exhausted outcome regression";
-        needle = "apply_local_double_search_report(\n            &mut timeout_outcome";
+        label = "local-double search frontier fixture";
+        needle = "write_search_frontier_scenario";
+      }
+      {
+        label = "local-double non-exhausted workflow regression";
+        needle = "run_local_double_search_workflow_with_graph(\n            &plan_cli_invocation(&frontier_cli)";
       }
       {
         label = "fuzz runner blocker";
@@ -186,6 +228,38 @@
       {
         label = "search fuzz fuzz-blocker test";
         needle = "cli_search_fuzz_workflow_rejects_fuzz_execution_until_driver_exists";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+      {
+        label = "sampled strategy search wrapper";
+        needle = "struct TemporalGraphSampledSearchRun";
+      }
+      {
+        label = "sampled bounded strategy search API";
+        needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
+      }
+      {
+        label = "sampled strategy report aggregation";
+        needle = "merge_search_replay_oracle_sampling_report";
+      }
+      {
+        label = "sampled search-wide sequence offset";
+        needle = "sampling_sequence_offset";
+      }
+      {
+        label = "sampled search sequence offset bisection test";
+        needle = "sampled_search_offset_localizes_bisection_sequence";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_search_strategies.rs" searchStrategiesTest [
+      {
+        label = "sampled search strategy gate";
+        needle = "gate_search_strategies_sample_replay_oracle_checks";
+      }
+      {
+        label = "sampled search strategy config";
+        needle = "SearchReplayOracleSamplingConfig::new";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -15157,6 +15157,7 @@ impl TemporalGraph {
             materialization_policy,
             trigger,
             None,
+            0,
         )
     }
 
@@ -15252,6 +15253,8 @@ impl TemporalGraph {
             None,
             &failure_oracle,
             None,
+            None,
+            None,
         )
     }
 
@@ -15300,6 +15303,8 @@ impl TemporalGraph {
             Some(scenario),
             failure_oracle,
             None,
+            None,
+            None,
         )
     }
 
@@ -15341,7 +15346,62 @@ impl TemporalGraph {
             Some(scenario),
             failure_oracle,
             max_depth,
+            None,
+            None,
         )
+    }
+
+    /// Searches with a failure oracle, depth bound, and replay-oracle sampling.
+    ///
+    /// This is the strategy-search analogue of
+    /// [`Self::search_with_replay_oracle_sampling`]: every explored child
+    /// materialized as a fat checkpoint by the supplied policy is considered by
+    /// `sampling_config`, and sampled checkpoints are immediately replayed
+    /// through the thin oracle path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::search_with_strategy_and_failure_oracle_bounded_depth`], plus
+    /// [`EngineError::SearchReplayOracleMismatch`] when a sampled fat checkpoint
+    /// differs from its thin reconstruction.
+    pub fn search_with_strategy_and_failure_oracle_bounded_depth_sampled(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+        max_depth: Option<u64>,
+        sampling_config: &SearchReplayOracleSamplingConfig,
+    ) -> Result<TemporalGraphSampledSearchRun, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+        let mut replay_oracle_sampling = SearchReplayOracleSamplingReport::default();
+        let run = self.search_with_strategy_inner(
+            root,
+            strategy,
+            budget,
+            FrontierReductionPolicy::none(),
+            materialization_policy,
+            trigger,
+            Some(scenario),
+            failure_oracle,
+            max_depth,
+            Some(sampling_config),
+            Some(&mut replay_oracle_sampling),
+        )?;
+        Ok(TemporalGraphSampledSearchRun {
+            run,
+            replay_oracle_sampling,
+        })
     }
 
     /// Searches with a deterministic shared-worklist fleet model.
@@ -15495,6 +15555,8 @@ impl TemporalGraph {
             None,
             &failure_oracle,
             None,
+            None,
+            None,
         )
     }
 
@@ -15509,6 +15571,8 @@ impl TemporalGraph {
         scenario: Option<&ScenarioDefForm>,
         failure_oracle: &SearchFailureOracle,
         max_depth: Option<u64>,
+        sampling_config: Option<&SearchReplayOracleSamplingConfig>,
+        mut sampling_report: Option<&mut SearchReplayOracleSamplingReport>,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
         let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
         let mut scheduled = BTreeSet::from([root.id()]);
@@ -15517,6 +15581,7 @@ impl TemporalGraph {
         let mut expansions = Vec::new();
         let mut discovered_failures = Vec::new();
         let mut discovered_failure_configurations = BTreeSet::new();
+        let mut sampling_sequence_offset = 0;
         record_search_discovered_failure(
             root,
             scenario,
@@ -15536,12 +15601,32 @@ impl TemporalGraph {
                 continue;
             }
 
-            let search = self.search(
-                &candidate.configuration,
-                reduction_policy.clone(),
-                materialization_policy,
-                trigger,
-            )?;
+            let search = match sampling_config {
+                Some(config) => self.search_with_replay_oracle_sampling_offset(
+                    &candidate.configuration,
+                    reduction_policy.clone(),
+                    materialization_policy,
+                    trigger,
+                    config,
+                    sampling_sequence_offset,
+                )?,
+                None => self.search(
+                    &candidate.configuration,
+                    reduction_policy.clone(),
+                    materialization_policy,
+                    trigger,
+                )?,
+            };
+            if let (Some(total), Some(frontier_report)) = (
+                sampling_report.as_deref_mut(),
+                search.replay_oracle_sampling.as_ref(),
+            ) {
+                merge_search_replay_oracle_sampling_report(total, frontier_report);
+            }
+            if sampling_config.is_some() {
+                sampling_sequence_offset =
+                    sampling_sequence_offset.saturating_add(search.materialized.len() as u64);
+            }
             for child in &search.frontier_report.explored {
                 let child_id = child.configuration.id();
                 explored_graph.insert(child_id);
@@ -15623,6 +15708,26 @@ impl TemporalGraph {
             materialization_policy,
             trigger,
             Some(sampling_config),
+            0,
+        )
+    }
+
+    fn search_with_replay_oracle_sampling_offset(
+        &mut self,
+        frontier: &Configuration,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        sampling_config: &SearchReplayOracleSamplingConfig,
+        sampling_sequence_offset: u64,
+    ) -> Result<TemporalGraphSearch, EngineError> {
+        self.search_inner(
+            frontier,
+            reduction_policy,
+            materialization_policy,
+            trigger,
+            Some(sampling_config),
+            sampling_sequence_offset,
         )
     }
 
@@ -15633,6 +15738,7 @@ impl TemporalGraph {
         materialization_policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
         sampling_config: Option<&SearchReplayOracleSamplingConfig>,
+        sampling_sequence_offset: u64,
     ) -> Result<TemporalGraphSearch, EngineError> {
         let frontier_runtime = self.resume(frontier)?;
         let frontier_id = frontier_runtime.configuration;
@@ -15643,7 +15749,7 @@ impl TemporalGraph {
         let mut replay_oracle_sampling =
             sampling_config.map(|_| SearchReplayOracleSamplingReport::default());
         for (sequence, child) in frontier_report.explored.iter().enumerate() {
-            let sequence = sequence as u64;
+            let sequence = sampling_sequence_offset + sequence as u64;
             let checkpoint = match self.materialize_hot_checkpoint(
                 &child.configuration,
                 materialization_policy,
@@ -18703,6 +18809,15 @@ pub struct TemporalGraphSearchRun {
     pub discovered_failures: Vec<SearchDiscoveredFailure>,
     /// Whether the work-list was exhausted before the budget stopped the run.
     pub exhausted: bool,
+}
+
+/// Result of a strategy-driven graph search with replay-oracle sampling.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphSampledSearchRun {
+    /// Deterministic strategy-search result.
+    pub run: TemporalGraphSearchRun,
+    /// Aggregate replay-oracle sampling report across every expanded frontier.
+    pub replay_oracle_sampling: SearchReplayOracleSamplingReport,
 }
 
 /// Result of a graph-level save operation.
@@ -25015,6 +25130,18 @@ fn sample_search_replay_oracle_checkpoint(
         .replay_checkpoint(configuration, checkpoint)
         .map(|_| ())
         .map_err(|error| search_replay_oracle_error(sequence, error))
+}
+
+fn merge_search_replay_oracle_sampling_report(
+    total: &mut SearchReplayOracleSamplingReport,
+    frontier: &SearchReplayOracleSamplingReport,
+) {
+    total.considered += frontier.considered;
+    total.sampled += frontier.sampled;
+    total.skipped += frontier.skipped;
+    total
+        .sampled_checkpoints
+        .extend(frontier.sampled_checkpoints.iter().copied());
 }
 
 fn search_replay_oracle_error(sequence: u64, error: EngineError) -> EngineError {
@@ -35195,4 +35322,112 @@ fn bytes_hex(bytes: &[u8]) -> String {
         encoded.push(HEX[usize::from(*byte & 0x0f)] as char);
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampled_search_offset_localizes_bisection_sequence() -> Result<(), EngineError> {
+        let node = NodeId {
+            name: String::from("sampled-offset-node"),
+        };
+        let world = World::from_nodes(vec![WorldNode {
+            id: node.clone(),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::from("sampled-search-offset"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 222 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }])?;
+        let scenario = world.scenario_def();
+        let genesis = Configuration::genesis(scenario.clone());
+        let decision = Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("sampled-offset/decision"),
+            value: 42,
+        });
+        let baked = baked_genesis_with_search_frontier(&world, vec![decision.clone()])?;
+        let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+        let child = try_step(&genesis, decision)?;
+        let corrupt_checkpoint = Checkpoint::from_recorded_configuration(
+            &child,
+            Some(&genesis),
+            VirtualTime::default(),
+            BTreeMap::from([(
+                node.clone(),
+                Icount {
+                    retired: 222 + child.schedule.len() as u64,
+                },
+            )]),
+            CheckpointKind::Fat,
+            BTreeMap::from([(
+                node,
+                NodeBlobRef::baked(ContentHash::from_canonical_material(
+                    "crucible.test.sampled-search-offset.v1",
+                    "wrong-fat-vm-blob",
+                )),
+            )]),
+        )?;
+        graph.cache_snapshot(&child, corrupt_checkpoint)?;
+        let config = SearchReplayOracleSamplingConfig::new(
+            1,
+            1,
+            "sampled-search-offset-localizes-bisection-sequence",
+        )?;
+
+        let error = match graph.search_with_replay_oracle_sampling_offset(
+            &genesis,
+            FrontierReductionPolicy::none(),
+            MaterializationPolicy::with_budget(1),
+            MaterializationTrigger::RepeatedForkSource,
+            &config,
+            3,
+        ) {
+            Ok(_) => panic!("sampled corrupt search materialization should fail with bisection"),
+            Err(error) => error,
+        };
+        let EngineError::SearchReplayOracleMismatch { bisection, .. } = error else {
+            panic!("sampled corrupt search materialization should request bisection");
+        };
+
+        assert_eq!(bisection.sequence, 3);
+        assert_eq!(bisection.checkpoint, child.id());
+        assert_eq!(
+            bisection.reason,
+            "sampled fat checkpoint differs from thin reconstruction"
+        );
+        Ok(())
+    }
+
+    fn baked_genesis_with_search_frontier(
+        world: &World,
+        decisions: Vec<Decision>,
+    ) -> Result<GenesisCheckpoint, EngineError> {
+        let mut baked = bake(world)?;
+        let state = baked.checkpoint.state.as_ref().ok_or(
+            EngineError::CheckpointMaterializedStateIncomplete {
+                checkpoint: baked.checkpoint.id,
+                reason: "missing-test-genesis-state",
+            },
+        )?;
+        let mut scheduler = state.scheduler.clone();
+        scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+        baked.checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
+            state.vm_snapshots.clone(),
+            state.device_overlays.clone(),
+            scheduler,
+            state.decision_rng.clone(),
+            state.event_log,
+            state.event_log_segments.clone(),
+        ));
+        Ok(baked)
+    }
 }
