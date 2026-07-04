@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::ir::{
     Cardinality, Ir, IrAttrPathSegment, IrBinding, IrBindingSlice, IrData, IrId, IrKind, Strictness,
 };
+use crate::syntax::Symbol;
 
 /// Builds the dead-binding elimination plan for every `let` binding in `ir`.
 ///
@@ -89,11 +90,18 @@ fn retention_reason(
         .get(binding.value)
         .ok_or(DeadBindingEliminationError::MissingFact { id: binding.value })?;
 
-    if let IrAttrPathSegment::Dynamic(key) = binding.key {
-        ir.arena
-            .node(key)
-            .ok_or(DeadBindingEliminationError::InvalidNode { id: key })?;
-        return Ok(Some(DeadBindingRetentionReason::DynamicBindingKey { key }));
+    match binding.key {
+        IrAttrPathSegment::Static(symbol) => {
+            if ir.symbols.resolve(symbol).is_none() {
+                return Err(DeadBindingEliminationError::InvalidSymbol { symbol });
+            }
+        }
+        IrAttrPathSegment::Dynamic(key) => {
+            ir.arena
+                .node(key)
+                .ok_or(DeadBindingEliminationError::InvalidNode { id: key })?;
+            return Ok(Some(DeadBindingRetentionReason::DynamicBindingKey { key }));
+        }
     }
 
     if facts.cardinality != Cardinality::Absent {
@@ -266,6 +274,12 @@ pub enum DeadBindingEliminationError {
         id: IrId,
         /// The invalid binding slice.
         slice: IrBindingSlice,
+    },
+    /// A static binding-key symbol did not resolve through the symbol table.
+    #[error("invalid static binding-key symbol {symbol:?}")]
+    InvalidSymbol {
+        /// The unresolved static binding-key symbol.
+        symbol: Symbol,
     },
     /// A node's payload did not match its node kind.
     #[error("invalid payload for {kind:?} node {id:?}: expected {expected}")]

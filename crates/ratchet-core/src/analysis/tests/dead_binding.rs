@@ -252,6 +252,63 @@ fn dead_binding_plan_rejects_missing_dynamic_key_value_facts() {
 }
 
 #[test]
+fn dead_binding_plan_rejects_invalid_static_key_symbols() {
+    let value = IrId::new(0);
+    let root = IrId::new(1);
+    let symbol = crate::syntax::Symbol::new(99);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::Let,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::Let {
+                    bindings: IrBindingSlice::new(0, 1),
+                    body: value,
+                    frame: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    set_facts(
+        &mut ir,
+        value,
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        },
+    );
+
+    let error = dead_binding_elimination_plan(&ir).expect_err("invalid static key rejects");
+
+    assert_eq!(error, DeadBindingEliminationError::InvalidSymbol { symbol });
+}
+
+#[test]
 fn dead_binding_plan_rejects_invalid_dynamic_key_value_nodes() {
     let key = IrId::new(0);
     let value = IrId::new(99);

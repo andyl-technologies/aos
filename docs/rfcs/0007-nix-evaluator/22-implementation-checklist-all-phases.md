@@ -8202,8 +8202,9 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `dead_binding_elimination_plan` now validates each `let` body reference
       before cardinality facts can license binding elimination, so malformed
       raw/imported IR cannot produce an omission plan under forged absent facts.
-      This is still a planner-boundary check; it does not rewrite IR or improve
-      usage precision.
+      It also rejects unresolved static binding-key symbols before absent facts
+      can license key-preserving omission. This is still a planner-boundary
+      check; it does not rewrite IR or improve usage precision.
 - [x] Current single-entry-thunk preflight hardening:
       `ratchet-core::analysis::thunk_sharing` rejects self-referential
       `ThunkAlloc` payloads before facts can license a frame-local single-entry
