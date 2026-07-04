@@ -117,6 +117,10 @@
         needle = "raw guest-address\n  coverage, physical-address/register memory samples";
       }
       {
+        label = "phase5 CLI retained-log resolution progress";
+        needle = "resolution context for symbolic coverage and virtual/symbolic memory leaves";
+      }
+      {
         label = "phase5 CLI local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -495,6 +499,14 @@
         needle = "pub fn from_search_assertion_violations_with_retained_logs";
       }
       {
+        label = "search assertion retained-log resolution helper";
+        needle = "pub fn from_search_assertion_violations_with_retained_logs_and_resolutions";
+      }
+      {
+        label = "search assertion retained-log resolution type";
+        needle = "pub struct SearchRetainedLogPredicateResolutions";
+      }
+      {
         label = "search assertion named truth-table scope";
         needle = "SearchAssertionPredicateScope::ScheduleAndNamedTruths";
       }
@@ -516,7 +528,19 @@
       }
       {
         label = "search assertion retained-log symbolic coverage unsupported";
-        needle = "Predicate::CoveragePoint { .. } => false";
+        needle = "resolves_code_point(node, point)";
+      }
+      {
+        label = "search assertion retained-log resolved memory allowlist";
+        needle = "resolves_mem_place(node, place)";
+      }
+      {
+        label = "offline assertion checker code point resolutions";
+        needle = "with_resolved_code_points";
+      }
+      {
+        label = "offline assertion checker memory resolutions";
+        needle = "with_resolved_mem_places";
       }
       {
         label = "search assertion retained-log unsupported quiescence";
@@ -581,6 +605,14 @@
         needle = "unsupported_symbol_coverage_oracle";
       }
       {
+        label = "search assertion retained-log resolved symbolic coverage regression";
+        needle = "resolved_symbol_coverage_oracle";
+      }
+      {
+        label = "search assertion retained-log nonmatching symbolic coverage regression";
+        needle = "nonmatching_symbol_coverage_oracle";
+      }
+      {
         label = "search assertion retained-log physical memory regression";
         needle = "retained_physical_memory_oracle";
       }
@@ -597,8 +629,24 @@
         needle = "unsupported_symbol_memory_oracle";
       }
       {
+        label = "search assertion retained-log resolved symbolic memory regression";
+        needle = "resolved_symbol_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log nonmatching symbolic memory regression";
+        needle = "nonmatching_symbol_memory_oracle";
+      }
+      {
         label = "search assertion retained-log virtual memory regression";
         needle = "unsupported_virtual_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log resolved virtual memory regression";
+        needle = "resolved_virtual_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log nonmatching virtual memory regression";
+        needle = "nonmatching_virtual_memory_oracle";
       }
       {
         label = "search assertion retained-log observable helper";

@@ -11,9 +11,10 @@ use crucible::{
     FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath, GenesisCheckpoint, Icount,
     MarkerId, MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth,
     NodeFault, NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate,
-    Properties, Property, ReadyPoint, RecordedAssertionLog, ResolvedMemPlace, RngDecision,
-    RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulingPoint,
-    SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
+    Properties, Property, ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    RngDecision, RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
+    SearchReplayOracleSamplingConfig, SearchRetainedLogPredicateResolutions,
     SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
     TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake,
     try_step,
@@ -490,6 +491,54 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(unsupported_symbol_coverage_oracle.is_empty());
 
+    let nonmatching_symbol_coverage_resolutions = SearchRetainedLogPredicateResolutions::new()
+        .with_code_point(
+            node_id("other-node"),
+            CodePoint::symbol("needs-symbol-resolution"),
+            ResolvedCodePoint::guest_address(0x4010),
+        )
+        .with_code_point(
+            node_id("search-node"),
+            CodePoint::symbol("other-symbol"),
+            ResolvedCodePoint::guest_address(0x4010),
+        );
+    let nonmatching_symbol_coverage_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_symbol_coverage_scenario,
+            &unsupported_symbol_coverage_root,
+            &unsupported_symbol_coverage_run,
+            &nonmatching_symbol_coverage_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_coverage_root.id())
+                    .then(|| unsupported_symbol_coverage_log.clone())
+            },
+        )?;
+
+    assert!(nonmatching_symbol_coverage_oracle.is_empty());
+
+    let symbol_coverage_resolutions = SearchRetainedLogPredicateResolutions::new().with_code_point(
+        node_id("search-node"),
+        CodePoint::symbol("needs-symbol-resolution"),
+        ResolvedCodePoint::guest_address(0x4010),
+    );
+    let resolved_symbol_coverage_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_symbol_coverage_scenario,
+            &unsupported_symbol_coverage_root,
+            &unsupported_symbol_coverage_run,
+            &symbol_coverage_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_coverage_root.id())
+                    .then(|| unsupported_symbol_coverage_log.clone())
+            },
+        )?;
+
+    assert!(
+        resolved_symbol_coverage_oracle
+            .failure_for(unsupported_symbol_coverage_root.id())
+            .is_some()
+    );
+
     let physical_memory_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::not(Predicate::memory_predicate(
             node_id("search-node"),
@@ -598,6 +647,49 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(unsupported_symbol_memory_oracle.is_empty());
 
+    let nonmatching_symbol_memory_resolutions = SearchRetainedLogPredicateResolutions::new()
+        .with_mem_place(
+            node_id("search-node"),
+            MemPlace::symbol("other-memory-symbol", MemoryWidth::U8),
+            ResolvedMemPlace::virtual_address(0x7000, 1),
+        );
+    let nonmatching_symbol_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_symbol_memory_scenario,
+            &unsupported_symbol_memory_root,
+            &unsupported_symbol_memory_run,
+            &nonmatching_symbol_memory_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_memory_root.id())
+                    .then(|| unsupported_symbol_memory_log.clone())
+            },
+        )?;
+
+    assert!(nonmatching_symbol_memory_oracle.is_empty());
+
+    let symbol_memory_resolutions = SearchRetainedLogPredicateResolutions::new().with_mem_place(
+        node_id("search-node"),
+        MemPlace::symbol("needs-memory-resolution", MemoryWidth::U8),
+        ResolvedMemPlace::virtual_address(0x7000, 1),
+    );
+    let resolved_symbol_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_symbol_memory_scenario,
+            &unsupported_symbol_memory_root,
+            &unsupported_symbol_memory_run,
+            &symbol_memory_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_memory_root.id())
+                    .then(|| unsupported_symbol_memory_log.clone())
+            },
+        )?;
+
+    assert!(
+        resolved_symbol_memory_oracle
+            .failure_for(unsupported_symbol_memory_root.id())
+            .is_some()
+    );
+
     let unsupported_virtual_memory_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::not(Predicate::memory_predicate(
             node_id("search-node"),
@@ -629,6 +721,49 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
         )?;
 
     assert!(unsupported_virtual_memory_oracle.is_empty());
+
+    let nonmatching_virtual_memory_resolutions = SearchRetainedLogPredicateResolutions::new()
+        .with_mem_place(
+            node_id("search-node"),
+            MemPlace::virtual_address(0x7001, MemoryWidth::U8),
+            ResolvedMemPlace::virtual_address(0x7000, 1),
+        );
+    let nonmatching_virtual_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_virtual_memory_scenario,
+            &unsupported_virtual_memory_root,
+            &unsupported_virtual_memory_run,
+            &nonmatching_virtual_memory_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_virtual_memory_root.id())
+                    .then(|| unsupported_virtual_memory_log.clone())
+            },
+        )?;
+
+    assert!(nonmatching_virtual_memory_oracle.is_empty());
+
+    let virtual_memory_resolutions = SearchRetainedLogPredicateResolutions::new().with_mem_place(
+        node_id("search-node"),
+        MemPlace::virtual_address(0x7000, MemoryWidth::U8),
+        ResolvedMemPlace::virtual_address(0x7000, 1),
+    );
+    let resolved_virtual_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs_and_resolutions(
+            &unsupported_virtual_memory_scenario,
+            &unsupported_virtual_memory_root,
+            &unsupported_virtual_memory_run,
+            &virtual_memory_resolutions,
+            |configuration| {
+                (configuration.id() == unsupported_virtual_memory_root.id())
+                    .then(|| unsupported_virtual_memory_log.clone())
+            },
+        )?;
+
+    assert!(
+        resolved_virtual_memory_oracle
+            .failure_for(unsupported_virtual_memory_root.id())
+            .is_some()
+    );
 
     let unsupported_quiescence_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::Quiescent,

@@ -3532,6 +3532,8 @@ impl ExternalFormalTraceExporter {
 pub struct OfflineAssertionChecker {
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     guest_assertion_catalog: Vec<GuestAssertionMarker>,
+    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
 
 impl OfflineAssertionChecker {
@@ -3569,6 +3571,26 @@ impl OfflineAssertionChecker {
         catalog: impl IntoIterator<Item = GuestAssertionMarker>,
     ) -> Self {
         self.guest_assertion_catalog = catalog.into_iter().collect();
+        self
+    }
+
+    /// Adds host-side code point resolutions visible to coverage predicates.
+    #[must_use]
+    pub fn with_resolved_code_points(
+        mut self,
+        code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
+    ) -> Self {
+        self.code_points = code_points.into_iter().collect();
+        self
+    }
+
+    /// Adds host-side memory place resolutions visible to memory predicates.
+    #[must_use]
+    pub fn with_resolved_mem_places(
+        mut self,
+        mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
+    ) -> Self {
+        self.mem_places = mem_places.into_iter().collect();
         self
     }
 
@@ -3637,7 +3659,17 @@ impl OfflineAssertionChecker {
     {
         let mut evaluator = HostAssertionEvaluator::new(properties)
             .with_white_box_policies(self.white_box_policies.clone())
-            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone());
+            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone())
+            .with_resolved_code_points(
+                self.code_points
+                    .iter()
+                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
+            )
+            .with_resolved_mem_places(
+                self.mem_places
+                    .iter()
+                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
+            );
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
 
@@ -3898,6 +3930,8 @@ pub struct HostAssertionEvaluator {
     guest_marker_states: Vec<GuestMarkerAssertionState>,
     once_latches: Vec<Condition>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     last_prefix: Option<ConditionEventLogPrefix>,
 }
 
@@ -3914,6 +3948,8 @@ impl HostAssertionEvaluator {
             guest_marker_states: Vec::new(),
             once_latches: Vec::new(),
             white_box_policies: BTreeMap::new(),
+            code_points: BTreeMap::new(),
+            mem_places: BTreeMap::new(),
             last_prefix: None,
         }
     }
@@ -3951,6 +3987,26 @@ impl HostAssertionEvaluator {
         self
     }
 
+    /// Adds host-side code point resolutions visible to coverage predicates.
+    #[must_use]
+    pub fn with_resolved_code_points(
+        mut self,
+        code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
+    ) -> Self {
+        self.code_points = code_points.into_iter().collect();
+        self
+    }
+
+    /// Adds host-side memory place resolutions visible to memory predicates.
+    #[must_use]
+    pub fn with_resolved_mem_places(
+        mut self,
+        mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
+    ) -> Self {
+        self.mem_places = mem_places.into_iter().collect();
+        self
+    }
+
     /// Observes one checked event-log prefix and returns newly terminal outcomes.
     pub fn observe_prefix<O>(
         &mut self,
@@ -3970,6 +4026,8 @@ impl HostAssertionEvaluator {
                 oracle,
                 once_latches,
                 &self.white_box_policies,
+                &self.code_points,
+                &self.mem_places,
             ) {
                 outcomes.push(outcome);
             }
@@ -4049,6 +4107,8 @@ impl HostAssertionEvaluator {
                     oracle,
                     once_latches,
                     &self.white_box_policies,
+                    &self.code_points,
+                    &self.mem_places,
                 ) {
                     outcomes.push(outcome);
                 }
@@ -4075,6 +4135,8 @@ impl HostAssertionEvaluator {
                 oracle,
                 once_latches,
                 &self.white_box_policies,
+                &self.code_points,
+                &self.mem_places,
             );
         }
         for state in &mut self.guest_marker_states {
@@ -4384,6 +4446,8 @@ fn observe_host_assertion_state<O>(
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -4401,8 +4465,15 @@ where
             }
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
-            {
+            if host_condition_is_true(
+                prefix,
+                &predicate,
+                oracle,
+                once_latches,
+                white_box_policies,
+                code_points,
+                mem_places,
+            ) {
                 None
             } else {
                 state.terminal_with_evidence(
@@ -4429,6 +4500,8 @@ where
                 once_latches,
                 &mut leaf_cache,
                 white_box_policies,
+                code_points,
+                mem_places,
             );
             let distance = host_condition_distance_to_satisfaction(
                 prefix,
@@ -4437,6 +4510,8 @@ where
                 once_latches,
                 &mut leaf_cache,
                 white_box_policies,
+                code_points,
+                mem_places,
             );
             state.observe_proximity(prefix, distance);
             if satisfied {
@@ -4465,6 +4540,8 @@ where
                 once_latches,
                 &mut leaf_cache,
                 white_box_policies,
+                code_points,
+                mem_places,
             )
         }
         Property::AfterQuiescence { .. } => None,
@@ -4477,6 +4554,8 @@ where
             oracle,
             once_latches,
             white_box_policies,
+            code_points,
+            mem_places,
             &predicate,
             expectation,
         ),
@@ -4493,6 +4572,8 @@ fn observe_eventually_assertion<O>(
     once_latches: &mut Vec<Condition>,
     leaf_cache: &mut HostConditionEvaluationCache,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -4533,6 +4614,8 @@ where
             once_latches,
             leaf_cache,
             white_box_policies,
+            code_points,
+            mem_places,
         )
     {
         state.eventually_triggered = true;
@@ -4551,6 +4634,8 @@ where
             once_latches,
             leaf_cache,
             white_box_policies,
+            code_points,
+            mem_places,
         );
     if !state.pending_eventually.is_empty() {
         let distance = host_condition_distance_to_satisfaction(
@@ -4560,6 +4645,8 @@ where
             once_latches,
             leaf_cache,
             white_box_policies,
+            code_points,
+            mem_places,
         );
         state.observe_proximity(prefix, distance);
     }
@@ -4599,6 +4686,8 @@ fn observe_eventually_deadline_state<O>(
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -4620,6 +4709,8 @@ where
         once_latches,
         &mut leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -4633,6 +4724,8 @@ where
         once_latches,
         &mut leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     );
     state.observe_proximity(prefix, distance);
 
@@ -4666,6 +4759,8 @@ fn observe_reachability_assertion<O>(
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     predicate: &Condition,
     expectation: ReachabilityExpectation,
 ) -> Option<HostAssertionOutcome>
@@ -4682,6 +4777,8 @@ where
         once_latches,
         &mut leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     );
     if matches!(expectation, ReachabilityExpectation::Reachable { .. }) {
         let distance = host_condition_distance_to_satisfaction(
@@ -4691,6 +4788,8 @@ where
             once_latches,
             &mut leaf_cache,
             white_box_policies,
+            code_points,
+            mem_places,
         );
         state.observe_proximity(prefix, distance);
     }
@@ -4724,6 +4823,8 @@ fn finalize_host_assertion_state<O>(
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) where
     O: HostAssertionOracle + ?Sized,
 {
@@ -4768,8 +4869,15 @@ fn finalize_host_assertion_state<O>(
             finalize_eventually_assertion(state, prefix, &trigger, &property, white_box_policies);
         }
         Property::AfterQuiescence { predicate } => {
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
-            {
+            if host_condition_is_true(
+                prefix,
+                &predicate,
+                oracle,
+                once_latches,
+                white_box_policies,
+                code_points,
+                mem_places,
+            ) {
                 state.terminal(
                     HostAssertionOutcomeKind::Passed,
                     at,
@@ -7138,6 +7246,8 @@ struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     once_latches: &'state mut Vec<Condition>,
     leaf_cache: &'state mut HostConditionEvaluationCache,
     white_box_policies: &'state BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &'state BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &'state BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
 
 type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
@@ -7210,6 +7320,30 @@ where
             self.once_latches.push(condition.clone());
         }
     }
+
+    fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
+        match point {
+            CodePoint::GuestAddress { address } => Some(ResolvedCodePoint::guest_address(*address)),
+            CodePoint::Symbol { .. } => self
+                .code_points
+                .get(&(node.clone(), point.clone()))
+                .copied(),
+        }
+    }
+
+    fn resolve_mem_place(&self, node: &NodeId, place: &MemPlace) -> Option<ResolvedMemPlace> {
+        match place {
+            MemPlace::PhysicalAddress { address, width } => {
+                Some(ResolvedMemPlace::physical_address(*address, width.bytes()))
+            }
+            MemPlace::Register { name, width } => {
+                Some(ResolvedMemPlace::register(name.clone(), width.bytes()))
+            }
+            MemPlace::VirtualAddress { .. } | MemPlace::Symbol { .. } => {
+                self.mem_places.get(&(node.clone(), place.clone())).cloned()
+            }
+        }
+    }
 }
 
 fn host_condition_is_true<O>(
@@ -7218,6 +7352,8 @@ fn host_condition_is_true<O>(
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> bool
 where
     O: HostAssertionOracle + ?Sized,
@@ -7230,6 +7366,8 @@ where
         once_latches,
         &mut leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     )
 }
 
@@ -7240,6 +7378,8 @@ fn host_condition_is_true_with_cache<O>(
     once_latches: &mut Vec<Condition>,
     leaf_cache: &mut HostConditionEvaluationCache,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> bool
 where
     O: HostAssertionOracle + ?Sized,
@@ -7250,6 +7390,8 @@ where
         once_latches,
         leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     };
     evaluate_condition(&mut evaluator, condition)
 }
@@ -7290,6 +7432,8 @@ fn host_condition_distance_to_satisfaction<O>(
     once_latches: &[Condition],
     leaf_cache: &mut HostConditionEvaluationCache,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+    code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 ) -> u128
 where
     O: HostAssertionOracle + ?Sized,
@@ -7301,6 +7445,8 @@ where
         once_latches: &mut local_once_latches,
         leaf_cache,
         white_box_policies,
+        code_points,
+        mem_places,
     };
     condition_distance_to_satisfaction(&mut evaluator, condition)
 }
