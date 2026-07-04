@@ -53,7 +53,7 @@
       }
       {
         label = "T-CLI-11 local child runner progress";
-        needle = "no-divergence local-double forks through an independent child session";
+        needle = "store-backed no-divergence local-double forks through an independent child";
       }
       {
         label = "T-CLI-11 override execution progress";
@@ -188,8 +188,8 @@
         needle = "cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs";
       }
       {
-        label = "fork bare-hash blocker test";
-        needle = "cli_fork_workflow_rejects_bare_hash_until_closure_loader_exists";
+        label = "fork bare-hash store loader test";
+        needle = "cli_fork_workflow_executes_local_double_bare_hash_from_store";
       }
       {
         label = "fork execution test";

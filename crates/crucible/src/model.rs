@@ -188,6 +188,13 @@ pub enum DagStoreError {
         /// The operation that needed the poisoned lock.
         operation: &'static str,
     },
+    /// A local checkpoint lookup sidecar was malformed or self-inconsistent.
+    CorruptIndex {
+        /// The checkpoint whose lookup index was being read.
+        checkpoint: ContentHash,
+        /// Human-readable corruption reason.
+        reason: String,
+    },
     /// The backend could not complete a filesystem operation.
     Io {
         /// The operation being performed.
@@ -209,6 +216,13 @@ impl fmt::Display for DagStoreError {
             Self::StorePoisoned { operation } => {
                 write!(f, "DAG store lock was poisoned during {operation}")
             }
+            Self::CorruptIndex { checkpoint, reason } => {
+                write!(
+                    f,
+                    "DAG store checkpoint index for {} is corrupt: {reason}",
+                    ContentAddressedBlobRef::from_hash(*checkpoint).to_uri()
+                )
+            }
             Self::Io {
                 operation, path, ..
             } => {
@@ -226,9 +240,10 @@ impl Error for DagStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::NotFound { .. } | Self::ContentMismatch { .. } | Self::StorePoisoned { .. } => {
-                None
-            }
+            Self::NotFound { .. }
+            | Self::ContentMismatch { .. }
+            | Self::StorePoisoned { .. }
+            | Self::CorruptIndex { .. } => None,
         }
     }
 }
@@ -364,6 +379,19 @@ pub struct LocalDagStore {
     root: PathBuf,
 }
 
+/// Local lookup record from a checkpoint id to its persisted closure artifact.
+///
+/// The record itself is stored as normal content-addressed bytes. The local
+/// store keeps only a sidecar pointer from checkpoint id to this record so CLI
+/// commands can resolve `blake3:<checkpoint>` without scanning the whole store.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LocalCheckpointClosureIndex {
+    /// Checkpoint/configuration id accepted by resume and fork commands.
+    pub checkpoint: ContentHash,
+    /// Store key for the self-contained `(seed, scenario, schedule)` artifact.
+    pub reproduction_artifact: ContentHash,
+}
+
 impl LocalDagStore {
     /// Builds a local DAG store rooted at `root`.
     #[must_use]
@@ -384,6 +412,88 @@ impl LocalDagStore {
     pub fn object_path(&self, key: &ContentHash) -> PathBuf {
         let hex = key.to_hex();
         self.root.join(&hex[0..2]).join(hex)
+    }
+
+    /// Writes a checkpoint lookup record and returns its content-addressed key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when the record cannot be stored or when the
+    /// local sidecar pointer cannot be written.
+    pub fn write_checkpoint_closure_index(
+        &self,
+        checkpoint: ContentHash,
+        reproduction_artifact: ContentHash,
+    ) -> Result<ContentHash, DagStoreError> {
+        let bytes = checkpoint_closure_index_bytes(checkpoint, reproduction_artifact);
+        let index_key = self.put(&bytes)?;
+        let path = self.checkpoint_closure_index_path(&checkpoint);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| DagStoreError::Io {
+                operation: "create-dir",
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let temp_path = local_store_temp_path(&path, &index_key);
+        fs::write(
+            &temp_path,
+            format!(
+                "{}\n",
+                ContentAddressedBlobRef::from_hash(index_key).to_uri()
+            ),
+        )
+        .map_err(|source| DagStoreError::Io {
+            operation: "write",
+            path: temp_path.clone(),
+            source,
+        })?;
+        if let Err(source) = fs::rename(&temp_path, &path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(DagStoreError::Io {
+                operation: "rename",
+                path,
+                source,
+            });
+        }
+        Ok(index_key)
+    }
+
+    /// Reads a checkpoint lookup record previously written by this store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError::NotFound`] when no lookup exists for
+    /// `checkpoint`. Returns [`DagStoreError::CorruptIndex`] when the sidecar or
+    /// content-addressed record is malformed or names a different checkpoint.
+    pub fn read_checkpoint_closure_index(
+        &self,
+        checkpoint: ContentHash,
+    ) -> Result<LocalCheckpointClosureIndex, DagStoreError> {
+        let path = self.checkpoint_closure_index_path(&checkpoint);
+        let sidecar = fs::read_to_string(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                DagStoreError::NotFound { key: checkpoint }
+            } else {
+                DagStoreError::Io {
+                    operation: "read",
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        let index_key = parse_checkpoint_closure_index_sidecar(checkpoint, &sidecar)?;
+        let bytes = self.get(&index_key)?;
+        parse_checkpoint_closure_index_bytes(checkpoint, &bytes)
+    }
+
+    fn checkpoint_closure_index_path(&self, checkpoint: &ContentHash) -> PathBuf {
+        let hex = checkpoint.to_hex();
+        self.root
+            .join("_indexes")
+            .join("checkpoint-closures")
+            .join(&hex[0..2])
+            .join(hex)
     }
 }
 
@@ -34882,6 +34992,111 @@ fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
         CowDeltaKind::DeviceOverlay => "device-overlay",
         CowDeltaKind::ScheduleDelta => "schedule-delta",
         CowDeltaKind::EventLogSegment => "event-log-segment",
+    }
+}
+
+fn checkpoint_closure_index_bytes(
+    checkpoint: ContentHash,
+    reproduction_artifact: ContentHash,
+) -> Vec<u8> {
+    format!(
+        "crucible.local-dag-store.checkpoint-closure-index.v1\ncheckpoint={}\nreproduction_artifact={}\n",
+        ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
+        ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri()
+    )
+    .into_bytes()
+}
+
+fn parse_checkpoint_closure_index_sidecar(
+    checkpoint: ContentHash,
+    sidecar: &str,
+) -> Result<ContentHash, DagStoreError> {
+    let trimmed = sidecar.trim();
+    if trimmed.is_empty() || trimmed.lines().count() != 1 {
+        return Err(corrupt_checkpoint_index(
+            checkpoint,
+            "sidecar must contain exactly one index reference",
+        ));
+    }
+    ContentAddressedBlobRef::parse("checkpoint closure index", trimmed)
+        .map(ContentAddressedBlobRef::hash)
+        .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
+}
+
+fn parse_checkpoint_closure_index_bytes(
+    expected_checkpoint: ContentHash,
+    bytes: &[u8],
+) -> Result<LocalCheckpointClosureIndex, DagStoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        corrupt_checkpoint_index(
+            expected_checkpoint,
+            format!("index bytes are not UTF-8: {error}"),
+        )
+    })?;
+    let mut lines = text.lines();
+    match lines.next() {
+        Some("crucible.local-dag-store.checkpoint-closure-index.v1") => {}
+        Some(other) => {
+            return Err(corrupt_checkpoint_index(
+                expected_checkpoint,
+                format!("unsupported schema `{other}`"),
+            ));
+        }
+        None => {
+            return Err(corrupt_checkpoint_index(
+                expected_checkpoint,
+                "index record is empty",
+            ));
+        }
+    }
+    let checkpoint = parse_checkpoint_index_field(expected_checkpoint, lines.next(), "checkpoint")?;
+    if checkpoint != expected_checkpoint {
+        return Err(corrupt_checkpoint_index(
+            expected_checkpoint,
+            format!(
+                "record names checkpoint {}, expected {}",
+                ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
+                ContentAddressedBlobRef::from_hash(expected_checkpoint).to_uri()
+            ),
+        ));
+    }
+    let reproduction_artifact =
+        parse_checkpoint_index_field(expected_checkpoint, lines.next(), "reproduction_artifact")?;
+    if let Some(extra) = lines.next() {
+        return Err(corrupt_checkpoint_index(
+            expected_checkpoint,
+            format!("unexpected extra line `{extra}`"),
+        ));
+    }
+    Ok(LocalCheckpointClosureIndex {
+        checkpoint,
+        reproduction_artifact,
+    })
+}
+
+fn parse_checkpoint_index_field(
+    checkpoint: ContentHash,
+    line: Option<&str>,
+    field: &'static str,
+) -> Result<ContentHash, DagStoreError> {
+    let line = line
+        .ok_or_else(|| corrupt_checkpoint_index(checkpoint, format!("missing `{field}` line")))?;
+    let expected_prefix = format!("{field}=");
+    let Some(value) = line.strip_prefix(&expected_prefix) else {
+        return Err(corrupt_checkpoint_index(
+            checkpoint,
+            format!("expected `{field}` line, got `{line}`"),
+        ));
+    };
+    ContentAddressedBlobRef::parse(field, value)
+        .map(ContentAddressedBlobRef::hash)
+        .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
+}
+
+fn corrupt_checkpoint_index(checkpoint: ContentHash, reason: impl Into<String>) -> DagStoreError {
+    DagStoreError::CorruptIndex {
+        checkpoint,
+        reason: reason.into(),
     }
 }
 

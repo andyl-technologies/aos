@@ -1380,6 +1380,7 @@ struct SaveInvocationPlan {
     at: SaveAtArg,
     label: String,
     output: SaveOutputTarget,
+    store_root: PathBuf,
     selector: Option<SaveAtSelector>,
     run_plan: RunInvocationPlan,
 }
@@ -1428,6 +1429,7 @@ impl SaveOutputTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResumeInvocationPlan {
     savepoint: ResumeSavepointRef,
+    store_root: PathBuf,
     terminal_condition: RunTerminalCondition,
     max_virtual_time: Option<String>,
     max_virtual_time_ticks: Option<u64>,
@@ -1443,6 +1445,7 @@ struct ForkInvocationPlan {
     source: ResumeSavepointRef,
     label: String,
     artifact_dir: PathBuf,
+    store_root: PathBuf,
     decision_overrides: Vec<ForkDecisionOverride>,
     fork_seed: Option<u64>,
     terminal_condition: RunTerminalCondition,
@@ -2045,6 +2048,7 @@ fn plan_save_invocation(
         at,
         label,
         output,
+        store_root: store_root.to_path_buf(),
         selector,
         run_plan,
     })
@@ -2112,7 +2116,10 @@ fn plan_nonempty_label(label: Option<&str>, default: &'static str) -> Result<Str
     Ok(label.to_string())
 }
 
-fn plan_resume_invocation(args: &ResumeArgs) -> Result<ResumeInvocationPlan, CliError> {
+fn plan_resume_invocation(
+    args: &ResumeArgs,
+    store_root: &Path,
+) -> Result<ResumeInvocationPlan, CliError> {
     let savepoint = resolve_resume_savepoint(args.savepoint.as_deref())?;
     if let Some(duration) = &args.max_virtual_time {
         if parse_run_duration_budget_ticks(duration).is_none() {
@@ -2146,6 +2153,7 @@ fn plan_resume_invocation(args: &ResumeArgs) -> Result<ResumeInvocationPlan, Cli
 
     Ok(ResumeInvocationPlan {
         savepoint,
+        store_root: store_root.to_path_buf(),
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
         max_virtual_time_ticks: args
@@ -2168,6 +2176,7 @@ fn plan_fork_invocation(
     args: &ForkArgs,
     fork_seed: Option<u64>,
     artifact_dir: &Path,
+    store_root: &Path,
 ) -> Result<ForkInvocationPlan, CliError> {
     let source = resolve_savepoint_ref("fork", args.savepoint.as_deref())?;
     if fork_seed.is_some() && !args.overrides.is_empty() {
@@ -2215,6 +2224,7 @@ fn plan_fork_invocation(
         source,
         label,
         artifact_dir: artifact_dir.to_path_buf(),
+        store_root: store_root.to_path_buf(),
         decision_overrides,
         fork_seed,
         terminal_condition,
@@ -2236,7 +2246,12 @@ fn plan_fork_invocation_for_test(
     args: &ForkArgs,
     fork_seed: Option<u64>,
 ) -> Result<ForkInvocationPlan, CliError> {
-    plan_fork_invocation(args, fork_seed, Path::new("./.crucible"))
+    plan_fork_invocation(
+        args,
+        fork_seed,
+        Path::new("./.crucible"),
+        Path::new("./.crucible/store"),
+    )
 }
 
 fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
@@ -5555,33 +5570,41 @@ fn run_local_double_fork_workflow_with_interactive_commands(
 }
 
 fn resume_handle_evidence(plan: &ResumeInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
-    savepoint_handle_evidence("resume", &plan.savepoint, "T-CLI-10")
+    savepoint_evidence("resume", &plan.savepoint, &plan.store_root)
 }
 
 fn fork_handle_evidence(plan: &ForkInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
-    savepoint_handle_evidence("fork", &plan.source, "T-CLI-11")
+    savepoint_evidence("fork", &plan.source, &plan.store_root)
+}
+
+fn savepoint_evidence(
+    command_name: &'static str,
+    savepoint: &ResumeSavepointRef,
+    store_root: &Path,
+) -> Result<ResumeHandleEvidence, CliError> {
+    match savepoint {
+        ResumeSavepointRef::CheckpointHash(checkpoint) => {
+            savepoint_store_evidence(command_name, *checkpoint, store_root)
+        }
+        ResumeSavepointRef::Handle { handle, .. } => {
+            savepoint_handle_evidence(command_name, handle)
+        }
+    }
 }
 
 fn savepoint_handle_evidence(
     command_name: &'static str,
-    savepoint: &ResumeSavepointRef,
-    task_id: &'static str,
+    handle: &SavepointHandle,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    let ResumeSavepointRef::Handle { handle, .. } = savepoint else {
-        return Err(backend_error(format!(
-            "{command_name} from bare checkpoint {} requires a savepoint handle carrying scenario and schedule evidence; DAG-store checkpoint closure loading remains tracked by {task_id}",
-            format_content_hash_ref(savepoint.checkpoint())
-        )));
-    };
     if handle.materialization != "create-savepoint:reply" {
         return Err(artifact_error(format!(
-            "savepoint handle materialization `{}` is not accepted for resume; expected `create-savepoint:reply`",
+            "savepoint handle materialization `{}` is not accepted for {command_name}; expected `create-savepoint:reply`",
             handle.materialization
         )));
     }
     if handle.oracle_status != "fat==thin-passed" {
         return Err(artifact_error(format!(
-            "savepoint handle oracle status `{}` is not accepted for resume; expected `fat==thin-passed`",
+            "savepoint handle oracle status `{}` is not accepted for {command_name}; expected `fat==thin-passed`",
             handle.oracle_status
         )));
     }
@@ -5613,6 +5636,88 @@ fn savepoint_handle_evidence(
     }
     let frontier = validate_resume_handle_frontier(&schedule, handle.frontier_ticks)?;
     let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    Ok(ResumeHandleEvidence {
+        scenario_form,
+        scenario,
+        schedule,
+        configuration,
+        checkpoint,
+    })
+}
+
+fn savepoint_store_evidence(
+    command_name: &'static str,
+    checkpoint: crucible::ContentHash,
+    store_root: &Path,
+) -> Result<ResumeHandleEvidence, CliError> {
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+    let index = store
+        .read_checkpoint_closure_index(checkpoint)
+        .map_err(|error| {
+            artifact_error(format!(
+                "{command_name} checkpoint {} could not be loaded from DAG store {}: {error}; pass a .crucible-savepoint handle or use the same --store used when saving",
+                format_content_hash_ref(checkpoint),
+                store.root().display()
+            ))
+        })?;
+    let artifact_bytes = store.get(&index.reproduction_artifact).map_err(|error| {
+        artifact_error(format!(
+            "{command_name} checkpoint {} index referenced missing artifact {} in DAG store {}: {error}",
+            format_content_hash_ref(checkpoint),
+            format_content_hash_ref(index.reproduction_artifact),
+            store.root().display()
+        ))
+    })?;
+    let artifact =
+        crucible::ReproductionArtifact::from_compact_binary(&artifact_bytes).map_err(|error| {
+            artifact_error(format!(
+                "{command_name} checkpoint {} closure artifact {} is malformed: {error}",
+                format_content_hash_ref(checkpoint),
+                format_content_hash_ref(index.reproduction_artifact)
+            ))
+        })?;
+    if artifact.id() != index.reproduction_artifact {
+        return Err(artifact_error(format!(
+            "{command_name} checkpoint {} closure artifact id {} did not match indexed key {}",
+            format_content_hash_ref(checkpoint),
+            format_content_hash_ref(artifact.id()),
+            format_content_hash_ref(index.reproduction_artifact)
+        )));
+    }
+    artifact.replay().map_err(|error| {
+        artifact_error(format!(
+            "{command_name} checkpoint {} closure artifact {} failed replay validation: {error}",
+            format_content_hash_ref(checkpoint),
+            format_content_hash_ref(index.reproduction_artifact)
+        ))
+    })?;
+    let scenario_form = artifact.scenario_form().clone();
+    let scenario = artifact.scenario_def();
+    let schedule = artifact.schedule().clone();
+    let configuration = crucible::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    if configuration.id() != checkpoint {
+        return Err(artifact_error(format!(
+            "{command_name} checkpoint closure reconstructed {}, expected {}",
+            format_content_hash_ref(configuration.id()),
+            format_content_hash_ref(checkpoint)
+        )));
+    }
+    let frontier_ticks = u64::try_from(schedule.len()).map_err(|_| {
+        artifact_error(format!(
+            "{command_name} checkpoint closure schedule length {} cannot be represented as virtual time",
+            schedule.len()
+        ))
+    })?;
+    let frontier = validate_resume_handle_frontier(&schedule, frontier_ticks)?;
+    let checkpoint =
+        checkpoint_for_resume_configuration(&configuration, frontier).map_err(|error| {
+            artifact_error(format!(
+                "{command_name} checkpoint closure could not build checkpoint metadata: {error}"
+            ))
+        })?;
     Ok(ResumeHandleEvidence {
         scenario_form,
         scenario,
@@ -10277,7 +10382,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         _ => None,
     };
     let resume_plan = match &cli.command {
-        Commands::Resume(args) => Some(plan_resume_invocation(args)?),
+        Commands::Resume(args) => Some(plan_resume_invocation(args, &run_store_root)?),
         _ => None,
     };
     let fork_plan = match &cli.command {
@@ -10293,7 +10398,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             } else {
                 None
             };
-            Some(plan_fork_invocation(args, fork_seed, &cli.artifact_dir)?)
+            Some(plan_fork_invocation(
+                args,
+                fork_seed,
+                &cli.artifact_dir,
+                &run_store_root,
+            )?)
         }
         _ => None,
     };
@@ -10838,6 +10948,7 @@ fn export_savepoint_handle(
         .savepoint_oracle
         .as_ref()
         .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
+    let store_report = persist_savepoint_closure_artifact(plan, savepoint, oracle)?;
     let checkpoint = format_content_hash_ref(savepoint);
     let handle = savepoint_handle_bytes(plan, &checkpoint, outcome, oracle);
     let handle_digest = content_address_bytes(&handle);
@@ -10850,6 +10961,12 @@ fn export_savepoint_handle(
         "save-handle\tcheckpoint={checkpoint}\tlabel={}\tout={}\tdigest={handle_digest}",
         plan.label,
         path.display()
+    ));
+    outcome.stdout.push(format!(
+        "save-store\tcheckpoint={checkpoint}\tartifact={}\tindex={}\tstore={}",
+        format_content_hash_ref(store_report.artifact),
+        format_content_hash_ref(store_report.index),
+        plan.store_root.display()
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -10866,7 +10983,74 @@ fn export_savepoint_handle(
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("cli"),
+        kind: String::from("save_store_index"),
+        summary: format!(
+            "checkpoint={} artifact={} index={} store={}",
+            checkpoint,
+            format_content_hash_ref(store_report.artifact),
+            format_content_hash_ref(store_report.index),
+            plan.store_root.display()
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavepointClosureStoreReport {
+    artifact: crucible::ContentHash,
+    index: crucible::ContentHash,
+}
+
+fn persist_savepoint_closure_artifact(
+    plan: &SaveInvocationPlan,
+    savepoint: crucible::ContentHash,
+    oracle: &SavepointOracleProof,
+) -> Result<SavepointClosureStoreReport, CliError> {
+    if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint closure checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
+            format_content_hash_ref(savepoint),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint)
+        )));
+    }
+    let artifact = crucible::ReproductionArtifact::capture(
+        plan.run_plan.scenario.scenario_form(),
+        &oracle.schedule,
+    )
+    .map_err(|error| {
+        artifact_error(format!(
+            "savepoint closure artifact capture failed for {}: {error}",
+            format_content_hash_ref(savepoint)
+        ))
+    })?;
+    let configuration = crucible::Configuration {
+        def: artifact.scenario_def(),
+        schedule: artifact.schedule().clone(),
+    };
+    if configuration.id() != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint closure artifact reconstructed {}, expected {}",
+            format_content_hash_ref(configuration.id()),
+            format_content_hash_ref(savepoint)
+        )));
+    }
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let artifact_key = store
+        .put(&artifact.to_compact_binary())
+        .map_err(CliError::Store)?;
+    let index_key = store
+        .write_checkpoint_closure_index(savepoint, artifact_key)
+        .map_err(CliError::Store)?;
+    Ok(SavepointClosureStoreReport {
+        artifact: artifact_key,
+        index: index_key,
+    })
 }
 
 fn savepoint_handle_bytes(
@@ -13899,6 +14083,27 @@ mod tests {
         Ok(path)
     }
 
+    fn write_checkpoint_closure_fixture(
+        store_root: &Path,
+        form: &crucible::ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<crucible::ContentHash, Box<dyn Error>> {
+        let checkpoint = crucible::Configuration {
+            def: form.scenario_def(),
+            schedule: schedule.clone(),
+        }
+        .id();
+        let artifact = crucible::ReproductionArtifact::capture(form, schedule)?;
+        let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+        let artifact_key = store.put(&artifact.to_compact_binary())?;
+        let index = store.write_checkpoint_closure_index(checkpoint, artifact_key)?;
+        let loaded = store.read_checkpoint_closure_index(checkpoint)?;
+        assert_eq!(loaded.checkpoint, checkpoint);
+        assert_eq!(loaded.reproduction_artifact, artifact_key);
+        assert!(store.exists(&index)?);
+        Ok(artifact_key)
+    }
+
     fn fork_artifact_path(outcome: &BackendCommandOutcome) -> Result<PathBuf, Box<dyn Error>> {
         let line = outcome
             .stdout
@@ -15227,6 +15432,12 @@ mod tests {
                 .any(|line| line.starts_with("save-handle\tcheckpoint=blake3:")
                     && line.contains("label=release candidate"))
         );
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("save-store\tcheckpoint=blake3:")
+                && line.contains("artifact=blake3:")
+                && line.contains("index=blake3:")
+                && line.contains(&format!("store={}", temp.path().display()))
+        }));
         assert!(
             outcome
                 .canonical_log
@@ -15246,6 +15457,12 @@ mod tests {
                 .iter()
                 .any(|entry| entry.kind == "save_export")
         );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "save_store_index")
+        );
 
         let handles = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
         assert_eq!(handles.len(), 1);
@@ -15264,6 +15481,82 @@ mod tests {
         assert!(handle.contains("at\tquiescence\n"));
         assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
         assert!(handle.contains("oracle\tfat==thin-passed\n"));
+
+        let saved_checkpoint = outcome
+            .terminal_savepoint
+            .expect("save workflow should expose a terminal savepoint");
+        let saved_checkpoint_ref = format_content_hash_ref(saved_checkpoint);
+        let resume_saved_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            temp.path().display().to_string(),
+            String::from("resume"),
+            saved_checkpoint_ref.clone(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+        ]);
+        let Commands::Resume(args) = &resume_saved_cli.command else {
+            panic!("expected resume command");
+        };
+        let resume_saved_plan = plan_resume_invocation(args, temp.path())?;
+        let backend_plan =
+            plan_backend_selection(&resume_saved_cli)?.expect("resume should route to backend");
+        let resume_saved_outcome = run_local_double_resume_workflow(
+            &plan_cli_invocation(&resume_saved_cli),
+            &backend_plan,
+            None,
+            &resume_saved_plan,
+        )?;
+        assert_eq!(resume_saved_outcome.status, BackendCommandStatus::Passed);
+        assert!(resume_saved_outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains(&format!("checkpoint={saved_checkpoint_ref}"))
+                && line.contains("final=virtual-time")
+        }));
+
+        let fork_saved_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            temp.path().display().to_string(),
+            String::from("fork"),
+            saved_checkpoint_ref.clone(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("from-save-store"),
+        ]);
+        let Commands::Fork(args) = &fork_saved_cli.command else {
+            panic!("expected fork command");
+        };
+        let fork_saved_plan =
+            plan_fork_invocation(args, None, &fork_saved_cli.artifact_dir, temp.path())?;
+        let backend_plan =
+            plan_backend_selection(&fork_saved_cli)?.expect("fork should route to backend");
+        let fork_saved_outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&fork_saved_cli),
+            &backend_plan,
+            None,
+            &fork_saved_plan,
+        )?;
+        assert_eq!(fork_saved_outcome.status, BackendCommandStatus::Passed);
+        assert!(fork_saved_outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("checkpoint={saved_checkpoint_ref}"))
+                && line.contains("label=from-save-store")
+                && line.contains("final=virtual-time")
+        }));
 
         let explicit = temp.path().join("explicit.crucible-savepoint");
         let dispatch_cli = Cli::parse_from([
@@ -15291,6 +15584,8 @@ mod tests {
         let virtual_time_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -15316,6 +15611,8 @@ mod tests {
         let property_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -15342,6 +15639,8 @@ mod tests {
         let split_property_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -15368,6 +15667,8 @@ mod tests {
         let marker_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -15394,6 +15695,8 @@ mod tests {
         let no_source_marker_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
             String::from("--seed"),
@@ -15480,6 +15783,8 @@ mod tests {
         let qemu_dispatch_out = temp.path().join("qemu-dispatch.crucible-savepoint");
         let qemu_dispatch_cli = Cli::parse_from([
             String::from("crucible"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("qemu"),
             String::from("--qemu"),
@@ -15828,7 +16133,7 @@ mod tests {
         let Commands::Resume(args) = &cli.command else {
             panic!("expected resume command");
         };
-        let plan = plan_resume_invocation(args)?;
+        let plan = plan_resume_invocation(args, temp.path())?;
 
         assert!(matches!(plan.savepoint, ResumeSavepointRef::Handle { .. }));
         assert_eq!(plan.savepoint.checkpoint(), checkpoint);
@@ -15868,7 +16173,7 @@ mod tests {
         let Commands::Resume(args) = &hash_cli.command else {
             panic!("expected resume command");
         };
-        let hash_plan = plan_resume_invocation(args)?;
+        let hash_plan = plan_resume_invocation(args, temp.path())?;
         assert_eq!(hash_plan.savepoint.checkpoint(), checkpoint);
         assert_eq!(
             hash_plan.terminal_condition,
@@ -15877,7 +16182,7 @@ mod tests {
         assert_eq!(hash_plan.max_virtual_time_ticks, Some(1));
 
         let missing = ResumeArgs::default();
-        let error = match plan_resume_invocation(&missing) {
+        let error = match plan_resume_invocation(&missing, temp.path()) {
             Ok(_) => panic!("resume without savepoint must fail"),
             Err(error) => error,
         };
@@ -15889,7 +16194,7 @@ mod tests {
         let Commands::Resume(args) = &no_budget.command else {
             panic!("expected resume command");
         };
-        let error = match plan_resume_invocation(args) {
+        let error = match plan_resume_invocation(args, temp.path()) {
             Ok(_) => panic!("virtual-time resume requires a duration budget"),
             Err(error) => error,
         };
@@ -15906,7 +16211,7 @@ mod tests {
         let Commands::Resume(args) = &malformed_cli.command else {
             panic!("expected resume command");
         };
-        let error = match plan_resume_invocation(args) {
+        let error = match plan_resume_invocation(args, temp.path()) {
             Ok(_) => panic!("malformed savepoint handle must fail"),
             Err(error) => error,
         };
@@ -15918,29 +16223,103 @@ mod tests {
     }
 
     #[test]
-    fn cli_resume_workflow_rejects_bare_hash_until_closure_loader_exists()
-    -> Result<(), Box<dyn Error>> {
-        let checkpoint = crucible::ContentHash::from_bytes(b"resume-execution");
+    fn cli_resume_workflow_executes_local_double_bare_hash_from_store() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let store_root = temp.path().join("store");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
         let cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
             String::from("--backend"),
             String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
+            String::from("resume"),
+            format_content_hash_ref(checkpoint),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+        ]);
+        let Commands::Resume(args) = &cli.command else {
+            panic!("expected resume command");
+        };
+        let resume_plan = plan_resume_invocation(args, &store_root)?;
+        assert!(matches!(
+            resume_plan.savepoint,
+            ResumeSavepointRef::CheckpointHash(_)
+        ));
+        let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
+        let outcome = run_local_double_resume_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &resume_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains(&format!(
+                    "checkpoint={}",
+                    format_content_hash_ref(checkpoint)
+                ))
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+        }));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-oracle\t") && line.contains("status=fat==thin-passed")
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let checkpoint = crucible::ContentHash::from_bytes(b"missing-resume-store-index");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            temp.path().join("store").display().to_string(),
             String::from("resume"),
             format_content_hash_ref(checkpoint),
         ]);
         let error = match dispatch(&cli) {
-            Ok(_) => panic!("resume from a bare hash must not silently pass without closure data"),
+            Ok(_) => panic!("resume from a missing store index must fail as artifact input"),
             Err(error) => error,
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("savepoint handle"));
-        assert!(error.to_string().contains("T-CLI-10"));
+        assert!(matches!(error, CliError::Artifact(_)));
+        assert_eq!(error.exit_code(), 5);
         assert!(
             error
                 .to_string()
                 .contains(&format_content_hash_ref(checkpoint))
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("could not be loaded from DAG store")
         );
 
         Ok(())
@@ -16157,7 +16536,7 @@ mod tests {
         let Commands::Resume(args) = &cli.command else {
             panic!("expected resume command");
         };
-        let resume_plan = plan_resume_invocation(args)?;
+        let resume_plan = plan_resume_invocation(args, temp.path())?;
         let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
         let outcome = run_local_double_resume_workflow(
             &plan_cli_invocation(&cli),
@@ -16207,7 +16586,7 @@ mod tests {
         let Commands::Resume(args) = &interactive_cli.command else {
             panic!("expected resume command");
         };
-        let interactive_plan = plan_resume_invocation(args)?;
+        let interactive_plan = plan_resume_invocation(args, temp.path())?;
         assert_eq!(
             interactive_plan.execution_mode,
             RunExecutionMode::Interactive
@@ -16297,7 +16676,7 @@ mod tests {
         let Commands::Resume(args) = &property_cli.command else {
             panic!("expected resume command");
         };
-        let property_plan = plan_resume_invocation(args)?;
+        let property_plan = plan_resume_invocation(args, temp.path())?;
         let backend_plan =
             plan_backend_selection(&property_cli)?.expect("resume should route to backend");
         let property_outcome = run_local_double_resume_workflow(
@@ -16374,7 +16753,7 @@ mod tests {
         let Commands::Resume(args) = &cli.command else {
             panic!("expected resume command");
         };
-        let resume_plan = plan_resume_invocation(args)?;
+        let resume_plan = plan_resume_invocation(args, temp.path())?;
         let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
         assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
 
@@ -16428,7 +16807,7 @@ mod tests {
         let Commands::Resume(args) = &watch_cli.command else {
             panic!("expected resume command");
         };
-        let watch_plan = plan_resume_invocation(args)?;
+        let watch_plan = plan_resume_invocation(args, temp.path())?;
         let backend_plan =
             plan_backend_selection(&watch_cli)?.expect("resume should route to backend");
         let error = match run_remote_resume_workflow(
@@ -16490,7 +16869,7 @@ mod tests {
         let Commands::Resume(args) = &cli.command else {
             panic!("expected resume command");
         };
-        let resume_plan = plan_resume_invocation(args)?;
+        let resume_plan = plan_resume_invocation(args, temp.path())?;
         let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
         let outcome = run_local_double_resume_workflow(
             &plan_cli_invocation(&cli),
@@ -16717,32 +17096,76 @@ mod tests {
     }
 
     #[test]
-    fn cli_fork_workflow_rejects_bare_hash_until_closure_loader_exists()
-    -> Result<(), Box<dyn Error>> {
-        let checkpoint = crucible::ContentHash::from_bytes(b"fork-execution");
+    fn cli_fork_workflow_executes_local_double_bare_hash_from_store() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("fork-artifacts");
+        let store_root = temp.path().join("store");
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let inherited_seed = seed_to_u64(form.seed());
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
         let cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
             String::from("--backend"),
             String::from("double"),
+            String::from("--store"),
+            store_root.display().to_string(),
             String::from("fork"),
             format_content_hash_ref(checkpoint),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
             String::from("--label"),
             String::from("branch-a"),
         ]);
-        let error = match dispatch(&cli) {
-            Ok(_) => panic!("fork from a bare hash must not silently pass without closure data"),
-            Err(error) => error,
+        let Commands::Fork(args) = &cli.command else {
+            panic!("expected fork command");
         };
-        assert!(matches!(error, CliError::Backend(_)));
-        assert_eq!(error.exit_code(), 4);
-        assert!(error.to_string().contains("T-CLI-11"));
-        assert!(error.to_string().contains("savepoint handle"));
-        assert!(
-            error
-                .to_string()
-                .contains(&format_content_hash_ref(checkpoint))
-        );
+        let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir, &store_root)?;
+        assert!(matches!(
+            fork_plan.source,
+            ResumeSavepointRef::CheckpointHash(_)
+        ));
+        let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
+        let outcome = run_local_double_fork_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &fork_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        let expected_checkpoint = format_content_hash_ref(checkpoint);
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains(&format!("checkpoint={expected_checkpoint}"))
+                && line.contains(&format!("branch={expected_checkpoint}"))
+                && line.contains("label=branch-a")
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+        }));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-oracle\t") && line.contains("status=fat==thin-passed")
+        }));
+        assert_fork_artifact_replays(&cli, &outcome, inherited_seed)?;
 
         Ok(())
     }
@@ -16751,6 +17174,7 @@ mod tests {
     fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let artifact_dir = temp.path().join("fork-artifacts");
+        let store_root = temp.path().join("store");
         let fixture = crucible::happy_path_scenario()?;
         let form = fixture.scenario;
         let inherited_seed = seed_to_u64(form.seed());
@@ -16794,7 +17218,7 @@ mod tests {
         let Commands::Fork(args) = &cli.command else {
             panic!("expected fork command");
         };
-        let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir)?;
+        let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir, &store_root)?;
         let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
         let outcome = run_local_double_fork_workflow(
             &plan_cli_invocation(&cli),
@@ -16868,7 +17292,8 @@ mod tests {
         let Commands::Fork(args) = &quiescence_cli.command else {
             panic!("expected fork command");
         };
-        let quiescence_plan = plan_fork_invocation(args, None, &quiescence_cli.artifact_dir)?;
+        let quiescence_plan =
+            plan_fork_invocation(args, None, &quiescence_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&quiescence_cli)?.expect("fork should route to backend");
         let quiescence_outcome = run_local_double_fork_workflow(
@@ -16910,7 +17335,8 @@ mod tests {
         let Commands::Fork(args) = &interactive_cli.command else {
             panic!("expected fork command");
         };
-        let interactive_plan = plan_fork_invocation(args, None, &interactive_cli.artifact_dir)?;
+        let interactive_plan =
+            plan_fork_invocation(args, None, &interactive_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&interactive_cli)?.expect("fork should route to backend");
         let interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
@@ -16945,7 +17371,7 @@ mod tests {
         let Commands::Fork(args) = &seed_cli.command else {
             panic!("expected fork command");
         };
-        let seeded_plan = plan_fork_invocation(args, Some(7), &seed_cli.artifact_dir)?;
+        let seeded_plan = plan_fork_invocation(args, Some(7), &seed_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&seed_cli)?.expect("fork should route to backend");
         let seeded_outcome = run_local_double_fork_workflow(
@@ -17003,7 +17429,8 @@ mod tests {
         let Commands::Fork(args) = &seed_again_cli.command else {
             panic!("expected fork command");
         };
-        let seed_again_plan = plan_fork_invocation(args, Some(8), &seed_again_cli.artifact_dir)?;
+        let seed_again_plan =
+            plan_fork_invocation(args, Some(8), &seed_again_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&seed_again_cli)?.expect("fork should route to backend");
         let seed_again_outcome = run_local_double_fork_workflow(
@@ -17040,7 +17467,7 @@ mod tests {
             panic!("expected fork command");
         };
         let seed_virtual_plan =
-            plan_fork_invocation(args, Some(7), &seed_virtual_cli.artifact_dir)?;
+            plan_fork_invocation(args, Some(7), &seed_virtual_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&seed_virtual_cli)?.expect("fork should route to backend");
         let seed_virtual_outcome = run_local_double_fork_workflow(
@@ -17087,7 +17514,8 @@ mod tests {
         let Commands::Fork(args) = &override_cli.command else {
             panic!("expected fork command");
         };
-        let override_plan = plan_fork_invocation(args, None, &override_cli.artifact_dir)?;
+        let override_plan =
+            plan_fork_invocation(args, None, &override_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&override_cli)?.expect("fork should route to backend");
         let override_outcome = run_local_double_fork_workflow(
@@ -17129,7 +17557,7 @@ mod tests {
             panic!("expected fork command");
         };
         let override_virtual_plan =
-            plan_fork_invocation(args, None, &override_virtual_cli.artifact_dir)?;
+            plan_fork_invocation(args, None, &override_virtual_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&override_virtual_cli)?.expect("fork should route to backend");
         let override_virtual_outcome = run_local_double_fork_workflow(
@@ -17170,7 +17598,7 @@ mod tests {
             panic!("expected fork command");
         };
         let override_stopped_plan =
-            plan_fork_invocation(args, None, &override_stopped_cli.artifact_dir)?;
+            plan_fork_invocation(args, None, &override_stopped_cli.artifact_dir, &store_root)?;
         let backend_plan =
             plan_backend_selection(&override_stopped_cli)?.expect("fork should route to backend");
         let override_stopped_outcome = run_local_double_fork_workflow(
@@ -17210,8 +17638,12 @@ mod tests {
         let Commands::Fork(args) = &override_interactive_cli.command else {
             panic!("expected fork command");
         };
-        let override_interactive_plan =
-            plan_fork_invocation(args, None, &override_interactive_cli.artifact_dir)?;
+        let override_interactive_plan = plan_fork_invocation(
+            args,
+            None,
+            &override_interactive_cli.artifact_dir,
+            &store_root,
+        )?;
         let backend_plan = plan_backend_selection(&override_interactive_cli)?
             .expect("fork should route to backend");
         let override_interactive_outcome =

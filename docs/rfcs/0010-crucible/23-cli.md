@@ -1066,21 +1066,21 @@ branch on the verdict without parsing output:
   Work in progress under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
   parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
   `--interactive`, and `--watch`, decodes `.crucible-savepoint` handles exported
-  by `save`, validates their compact scenario and schedule evidence, rejects bare
-  `blake3:<hash>` checkpoint references until DAG-store closure loading exists,
-  validates malformed handles as artifact errors, and executes handle-backed
-  local-double resume to quiescence, virtual-time, interactive command driving,
-  or a declared property violation by rebuilding the temporal graph, validating
+  by `save`, validates their compact scenario and schedule evidence, loads bare
+  `blake3:<hash>` checkpoint references from the local DAG-store checkpoint
+  closure index, validates malformed handles as artifact errors, and executes
+  handle- or store-backed local-double resume to quiescence, virtual-time,
+  interactive command driving, or a declared property violation by rebuilding
+  the temporal graph, validating
   property-stop breakpoint firing evidence when requested, stopping with a
   terminal savepoint, and replay-oracle-validating that terminal
   materialization. The same check also routes non-interactive remote-daemon
   resume over `ResumeSession` RPC for handle-backed virtual-time runs,
   instantiating the checkpoint through the session resume API, advancing the
   resumed actor, stopping with a terminal savepoint, and replay-oracle-validating
-  that terminal materialization. Full closure remains blocked on bare-hash
-  checkpoint closure loading, remote interactive command driving, remote
-  `--watch` status streaming, real-QEMU coverage, and full replay-oracle coverage
-  across those runners.
+  that terminal materialization. Full closure remains blocked on remote
+  interactive command driving, remote `--watch` status streaming, real-QEMU
+  coverage, and full replay-oracle coverage across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
@@ -1088,11 +1088,12 @@ branch on the verdict without parsing output:
   parses `fork <SAVEPOINT>` with global `--seed`, repeatable `--override
   decision=value`, `--until`, `--max-virtual-time`, `--label`, `--interactive`,
   and `--watch`; resolves `.crucible-savepoint` handles and direct
-  `blake3:<hash>` checkpoint references through the shared savepoint decoder;
-  validates override pairs, virtual-time budgets, malformed handles, and
+  `blake3:<hash>` checkpoint references through the shared savepoint evidence
+  loader, including local DAG-store checkpoint closure indexes; validates
+  override pairs, virtual-time budgets, malformed handles, and
   conflicting explicit `--seed` plus `--override`; executes handle-backed
-  no-divergence local-double forks through an independent child session to
-  quiescence, virtual-time, or interactive command boundaries; applies
+  and store-backed no-divergence local-double forks through an independent child
+  session to quiescence, virtual-time, or interactive command boundaries; applies
   repeatable post-fork `--override` decisions through the session fork path;
   applies explicit post-fork `--seed` in the local double by deriving the child's
   post-fork decision stream from that seed while preserving the requested
@@ -1102,8 +1103,7 @@ branch on the verdict without parsing output:
   embedded seed remains the scenario-form seed while CLI output reports the fork
   seed provenance, separate model artifact/replay-state evidence for the same
   child configuration, and terminal child savepoint replay-oracle validation.
-  Full closure remains blocked on bare-hash checkpoint closure loading and
-  real-QEMU coverage.
+  Full closure remains blocked on real-QEMU coverage.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
