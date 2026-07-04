@@ -1328,6 +1328,11 @@ mod loom_model_tests {
             self.publish_terminal(owner, ParallelThunkTerminalState::Forced);
         }
 
+        fn publish_failure(&self, owner: ParallelThunkWorkerId, error: u64) {
+            self.write_failed_payload(error);
+            self.publish_terminal(owner, ParallelThunkTerminalState::Failed);
+        }
+
         fn publish_terminal(
             &self,
             owner: ParallelThunkWorkerId,
@@ -1407,6 +1412,13 @@ mod loom_model_tests {
         ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
     }
 
+    fn bounded_three_worker_model() -> loom::model::Builder {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.max_permutations = Some(2048);
+        builder
+    }
+
     fn assert_waiters_were_not_stranded(thunk: &LoomThunk) {
         let (registrations, notifications) = thunk.waiter_stats();
         if registrations > 0 {
@@ -1414,6 +1426,12 @@ mod loom_model_tests {
                 notifications > 0,
                 "waiter registered but no terminal wakeup notification was observed"
             );
+        }
+    }
+
+    fn wait_until_waiter_registered(thunk: &LoomThunk) {
+        while thunk.waiter_stats().0 == 0 {
+            thread::yield_now();
         }
     }
 
@@ -1444,9 +1462,7 @@ mod loom_model_tests {
 
     #[test]
     fn loom_bounded_three_racing_claimants_have_one_body_owner() {
-        let mut builder = loom::model::Builder::new();
-        builder.preemption_bound = Some(2);
-        builder.max_permutations = Some(2048);
+        let builder = bounded_three_worker_model();
         builder.check(|| {
             let thunk = Arc::new(LoomThunk::new());
             let mut handles = Vec::new();
@@ -1477,6 +1493,71 @@ mod loom_model_tests {
             assert_eq!(thunk.body_runs(), 1);
             assert_eq!(thunk.state(), ParallelThunkState::Forced);
             assert!(matches!(thunk.read_forced_payload(), 10 | 20 | 30));
+        });
+    }
+
+    #[test]
+    fn loom_bounded_three_workers_replay_one_published_value() {
+        let builder = bounded_three_worker_model();
+        builder.check(|| {
+            let thunk = Arc::new(LoomThunk::new());
+            assert_eq!(thunk.try_claim(worker(1)), LoomClaim::Claimed);
+            thunk.run_body_once();
+
+            let mut handles = Vec::new();
+            for raw_worker in 2..=3 {
+                let thunk = Arc::clone(&thunk);
+                handles.push(thread::spawn(move || {
+                    thunk.force_success(worker(raw_worker), raw_worker * 10)
+                }));
+            }
+            wait_until_waiter_registered(&thunk);
+            thunk.publish_success(worker(1), 10);
+
+            let mut results = Vec::new();
+            for handle in handles {
+                results.push(handle.join().expect("worker joins"));
+            }
+
+            assert!(results.iter().all(Result::is_ok));
+            assert!(results.windows(2).all(|pair| pair[0] == pair[1]));
+            assert_eq!(results[0], Ok(10));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Forced);
+            assert!(thunk.waiter_stats().0 > 0);
+            assert_waiters_were_not_stranded(&thunk);
+        });
+    }
+
+    #[test]
+    fn loom_bounded_three_workers_replay_one_failed_payload() {
+        let builder = bounded_three_worker_model();
+        builder.check(|| {
+            let thunk = Arc::new(LoomThunk::new());
+            assert_eq!(thunk.try_claim(worker(1)), LoomClaim::Claimed);
+            thunk.run_body_once();
+
+            let mut handles = Vec::new();
+            for raw_worker in 2..=3 {
+                let thunk = Arc::clone(&thunk);
+                handles.push(thread::spawn(move || {
+                    thunk.force_failure(worker(raw_worker), raw_worker * 100)
+                }));
+            }
+            wait_until_waiter_registered(&thunk);
+            thunk.publish_failure(worker(1), 100);
+
+            let mut results = Vec::new();
+            for handle in handles {
+                results.push(handle.join().expect("worker joins"));
+            }
+
+            assert!(results.windows(2).all(|pair| pair[0] == pair[1]));
+            assert_eq!(results[0], Err(LoomForceError::Failed(100)));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Failed);
+            assert!(thunk.waiter_stats().0 > 0);
+            assert_waiters_were_not_stranded(&thunk);
         });
     }
 

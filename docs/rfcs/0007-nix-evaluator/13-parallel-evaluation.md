@@ -1025,16 +1025,17 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       Tests exhaustively cover two racing workers forcing and replaying one
       published value, failed-terminal replay of the same captured error payload
       to a waiter, later already-failed replay, and same-worker self-reentry
-      without a body run; a bounded three-worker claimant model covers the
-      single-owner CAS race without the expensive waiter state space. Assertions
-      pin no stranded waiter
+      without a body run; bounded three-worker models cover the single-owner CAS
+      race, success replay after an observed waiter registration, and
+      failed-payload replay after an observed waiter registration without the
+      expensive full waiter state space. Assertions pin no stranded waiter
       registration, no double body execution, no invalid/torn state-word decode,
       self-cycle progress, and acquire/release visibility of the pre-publish
       success or failure payload. This is still a model precursor: the full
-      three-worker waiter/replay state space is not exhaustive, the production
-      wait-cell is not rewritten to loom shims directly, scheduler park tokens
-      and the final lock-free waiter list are not modeled, and the Miri/TSan
-      portions of `R-4` remain open.
+      unbounded three-worker waiter/replay state space is not exhaustive, the
+      production wait-cell is not rewritten to loom shims directly, scheduler
+      park tokens and the final lock-free waiter list are not modeled, and the
+      Miri/TSan portions of `R-4` remain open.
 - [ ] Miri over the safe tree-walk oracle + small parallel harnesses (UB + data-race checking) and ThreadSanitizer over the *actual* parallel binary (scheduler glue, shared insert-or-get tables, fiber runtime) (§3.6) — **P3.5**, `R-4`/`S-17`.
 
 ### Parallel GC × thunk mutation (§5)
