@@ -1160,7 +1160,9 @@ branch on the verdict without parsing output:
   `RecordedAssertionLog` for each reached configuration; configuration-bound
   retained-log evidence bundles can pair those logs with host-resolution tables,
   and an explicit resolution context admits symbolic coverage and
-  virtual/symbolic memory leaves only when their host resolutions are supplied.
+  virtual/symbolic memory leaves only when their host resolutions are supplied;
+  terminal quiescence evidence on those bundles admits retained
+  after-quiescence violations over quiescent predicates.
   The default CLI path intentionally excludes absence-based existential/liveness
   failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,
@@ -1180,7 +1182,7 @@ branch on the verdict without parsing output:
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage, backend wiring
   that feeds backend-retained evidence bundles to the retained-log provider,
-  quiescence support, and non-prefix assertion classes.
+  and remaining non-prefix assertion classes.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

@@ -12,10 +12,11 @@ use crucible::{
     FrontierChild, FrontierReductionReport, GenesisCheckpoint, Icount, MarkerId,
     MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault,
     NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
-    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
-    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
+    ReachabilityExpectation, ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    RngDecision, RngStreamId, RuntimeState, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerState, SchedulingPoint,
+    SearchBudget, SearchExpansion, SearchFailureOracle, SearchFrontierChoices,
+    SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
     SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
     SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
     TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
@@ -927,6 +928,82 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
         )?;
 
     assert!(unsupported_quiescence_oracle.is_empty());
+
+    let unsupported_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_quiescence_scenario,
+            &unsupported_quiescence_root,
+            &unsupported_quiescence_run,
+            |configuration| {
+                (configuration.id() == unsupported_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(unsupported_quiescence_with_terminal_quiescence_oracle.is_empty());
+
+    let unreachable_quiescence_scenario = assertion_lowering_scenario(Property::Reachable {
+        predicate: Predicate::not(Predicate::Quiescent),
+        expectation: ReachabilityExpectation::Unreachable,
+    })?;
+    let unreachable_quiescence_root =
+        Configuration::genesis(unreachable_quiescence_scenario.scenario_def());
+    let unreachable_quiescence_run = empty_search_run_for_root(&unreachable_quiescence_root);
+    let unreachable_quiescence_log = retained_boundary_log(time(1))?;
+    let unreachable_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unreachable_quiescence_scenario,
+            &unreachable_quiescence_root,
+            &unreachable_quiescence_run,
+            |configuration| {
+                (configuration.id() == unreachable_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unreachable_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(unreachable_quiescence_with_terminal_quiescence_oracle.is_empty());
+
+    let after_quiescence_scenario = assertion_lowering_scenario(Property::AfterQuiescence {
+        predicate: Predicate::not(Predicate::Quiescent),
+    })?;
+    let after_quiescence_root = Configuration::genesis(after_quiescence_scenario.scenario_def());
+    let after_quiescence_run = empty_search_run_for_root(&after_quiescence_root);
+    let after_quiescence_log = retained_boundary_log(time(40))?;
+    let after_quiescence_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &after_quiescence_scenario,
+            &after_quiescence_root,
+            &after_quiescence_run,
+            |configuration| {
+                (configuration.id() == after_quiescence_root.id())
+                    .then(|| SearchRetainedLogAssertionEvidence::new(after_quiescence_log.clone()))
+            },
+        )?;
+
+    assert!(after_quiescence_without_terminal_quiescence_oracle.is_empty());
+
+    let after_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &after_quiescence_scenario,
+            &after_quiescence_root,
+            &after_quiescence_run,
+            |configuration| {
+                (configuration.id() == after_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(after_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        after_quiescence_with_terminal_quiescence_oracle
+            .failure_for(after_quiescence_root.id())
+            .is_some()
+    );
 
     Ok(())
 }

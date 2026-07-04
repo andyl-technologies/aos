@@ -125,6 +125,10 @@
         needle = "configuration-bound retained-log evidence bundles";
       }
       {
+        label = "phase5 CLI retained-log terminal quiescence progress";
+        needle = "terminal quiescence evidence";
+      }
+      {
         label = "phase5 CLI local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -515,6 +519,10 @@
         needle = "pub struct SearchRetainedLogAssertionEvidence";
       }
       {
+        label = "search assertion retained-log terminal quiescence builder";
+        needle = "with_terminal_scheduler_quiescence";
+      }
+      {
         label = "search assertion retained-log resolution type";
         needle = "pub struct SearchRetainedLogPredicateResolutions";
       }
@@ -555,8 +563,12 @@
         needle = "with_resolved_mem_places";
       }
       {
-        label = "search assertion retained-log unsupported quiescence";
-        needle = "Predicate::Quiescent => false";
+        label = "search assertion retained-log terminal quiescence allowlist";
+        needle = "allow_terminal_quiescence_predicates";
+      }
+      {
+        label = "search assertion retained-log after-quiescence allowlist";
+        needle = "AssertionQuantifierKind::AfterQuiescence";
       }
       {
         label = "search assertion named truth-table type";
@@ -691,6 +703,22 @@
       {
         label = "search assertion retained-log unsupported quiescence regression";
         needle = "unsupported_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence regression";
+        needle = "after_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log missing terminal quiescence regression";
+        needle = "after_quiescence_without_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence always guard";
+        needle = "unsupported_quiescence_with_terminal_quiescence_oracle";
+      }
+      {
+        label = "search assertion retained-log terminal quiescence reachability guard";
+        needle = "unreachable_quiescence_with_terminal_quiescence_oracle";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
