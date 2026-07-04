@@ -1591,6 +1591,7 @@ dependencies = [
  "crucible-session",
  "libc",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",
