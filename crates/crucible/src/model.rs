@@ -19064,9 +19064,10 @@ impl SearchFailureOracle {
     /// must contain the exact retained log for that configuration and any
     /// host-resolution facts that were valid when the log was captured.
     /// Terminal scheduler-quiescence evidence is used for retained
-    /// `after-quiescence` assertions and terminal retained `sometimes`
-    /// violations only when it proves quiescence; it does not make quiescence
-    /// predicates admissible for prefix or reachability properties.
+    /// `after-quiescence` assertions and terminal retained `sometimes`/
+    /// `eventually` violations only when it proves quiescence; it does not make
+    /// quiescence predicates admissible for prefix, reachability, or terminal
+    /// `sometimes`/`eventually` properties.
     ///
     /// # Errors
     ///
@@ -24277,7 +24278,9 @@ fn prefix_safe_search_assertion_failure(
         && terminal_quiescent
         && matches!(
             outcome.quantifier,
-            AssertionQuantifierKind::AfterQuiescence | AssertionQuantifierKind::Sometimes
+            AssertionQuantifierKind::AfterQuiescence
+                | AssertionQuantifierKind::Sometimes
+                | AssertionQuantifierKind::Eventually
         );
     let supported_quantifier = matches!(
         outcome.quantifier,
@@ -24340,7 +24343,21 @@ fn property_uses_only_search_schedule_predicates(
             resolutions,
             allow_terminal_quiescence_predicates,
         ),
-        Property::Eventually { .. } => false,
+        Property::Eventually {
+            trigger, property, ..
+        } => {
+            predicate_uses_only_search_schedule_predicates(
+                trigger,
+                predicate_scope,
+                resolutions,
+                false,
+            ) && predicate_uses_only_search_schedule_predicates(
+                property,
+                predicate_scope,
+                resolutions,
+                false,
+            )
+        }
     }
 }
 

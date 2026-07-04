@@ -1093,6 +1093,133 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(sometimes_quiescence_with_terminal_quiescence_oracle.is_empty());
 
+    let retained_eventually_marker = MarkerId::from_name("never-eventually-marker");
+    let retained_eventually_scenario = assertion_lowering_scenario_with_world(
+        Property::Eventually {
+            trigger: Predicate::at(time(70)),
+            property: Predicate::guest_marker(retained_eventually_marker),
+            deadline: time(5),
+        },
+        single_node_world_with_white_box(
+            "retained-log-eventually-lowering",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let retained_eventually_root =
+        Configuration::genesis(retained_eventually_scenario.scenario_def());
+    let retained_eventually_run = empty_search_run_for_root(&retained_eventually_root);
+    let retained_eventually_log = retained_boundary_log(time(70))?;
+    let retained_eventually_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_eventually_scenario,
+            &retained_eventually_root,
+            &retained_eventually_run,
+            |configuration| {
+                (configuration.id() == retained_eventually_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_eventually_log.clone())
+                })
+            },
+        )?;
+
+    assert!(retained_eventually_without_terminal_quiescence_oracle.is_empty());
+
+    let retained_eventually_with_blocked_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_eventually_scenario,
+            &retained_eventually_root,
+            &retained_eventually_run,
+            |configuration| {
+                (configuration.id() == retained_eventually_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_eventually_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence {
+                            blockers: vec![SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                                target: node_id("search-node"),
+                            }],
+                        })
+                })
+            },
+        )?;
+
+    assert!(retained_eventually_with_blocked_terminal_quiescence_oracle.is_empty());
+
+    let retained_eventually_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &retained_eventually_scenario,
+            &retained_eventually_root,
+            &retained_eventually_run,
+            |configuration| {
+                (configuration.id() == retained_eventually_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(retained_eventually_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        retained_eventually_with_terminal_quiescence_oracle
+            .failure_for(retained_eventually_root.id())
+            .is_some()
+    );
+
+    let eventually_quiescence_scenario = assertion_lowering_scenario(Property::Eventually {
+        trigger: Predicate::at(time(80)),
+        property: Predicate::Quiescent,
+        deadline: time(5),
+    })?;
+    let eventually_quiescence_root =
+        Configuration::genesis(eventually_quiescence_scenario.scenario_def());
+    let eventually_quiescence_run = empty_search_run_for_root(&eventually_quiescence_root);
+    let eventually_quiescence_log = retained_boundary_log(time(80))?;
+    let eventually_quiescence_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &eventually_quiescence_scenario,
+            &eventually_quiescence_root,
+            &eventually_quiescence_run,
+            |configuration| {
+                (configuration.id() == eventually_quiescence_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(eventually_quiescence_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(eventually_quiescence_with_terminal_quiescence_oracle.is_empty());
+
+    let eventually_quiescence_trigger_marker =
+        MarkerId::from_name("eventually-quiescence-trigger-marker");
+    let eventually_quiescence_trigger_scenario = assertion_lowering_scenario_with_world(
+        Property::Eventually {
+            trigger: Predicate::not(Predicate::Quiescent),
+            property: Predicate::guest_marker(eventually_quiescence_trigger_marker),
+            deadline: time(5),
+        },
+        single_node_world_with_white_box(
+            "retained-log-eventually-trigger-guard",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let eventually_quiescence_trigger_root =
+        Configuration::genesis(eventually_quiescence_trigger_scenario.scenario_def());
+    let eventually_quiescence_trigger_run =
+        empty_search_run_for_root(&eventually_quiescence_trigger_root);
+    let eventually_quiescence_trigger_log = retained_boundary_log(time(90))?;
+    let eventually_quiescence_trigger_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &eventually_quiescence_trigger_scenario,
+            &eventually_quiescence_trigger_root,
+            &eventually_quiescence_trigger_run,
+            |configuration| {
+                (configuration.id() == eventually_quiescence_trigger_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(
+                        eventually_quiescence_trigger_log.clone(),
+                    )
+                    .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(eventually_quiescence_trigger_with_terminal_quiescence_oracle.is_empty());
+
     Ok(())
 }
 
