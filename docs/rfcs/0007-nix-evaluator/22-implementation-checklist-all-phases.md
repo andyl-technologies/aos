@@ -8074,15 +8074,17 @@ nurseries build on the bump arena.
       same-worker self-reentry without a body run; a bounded three-worker
       claimant model covers the single-owner CAS race, and exhaustive
       owner-plus-two-waiter three-worker models cover success replay and
-      failed-payload replay after an observed waiter registration. Assertions
-      pin no stranded waiter registration, no double body execution, no
-      invalid/torn state-word decode, self-cycle progress, and acquire/release
-      visibility of the pre-publish success or failure payload. This remains
-      only a model precursor: the full unbounded three-racing-worker combined
-      claim/wait/replay state space is not exhaustive, the production wait-cell
-      is not rewritten to loom shims directly, scheduler park tokens and the
-      final lock-free waiter list are not modeled, and the Miri/TSan portions of
-      `R-4` remain open.
+      failed-payload replay after an observed waiter registration; bounded
+      combined three-racing-worker force models now cover success and failure
+      paths where the owner and waiter replay outcomes are selected by the
+      interleaving. Assertions pin no stranded waiter registration, no double
+      body execution, no invalid/torn state-word decode, self-cycle progress,
+      and acquire/release visibility of the pre-publish success or failure
+      payload. This remains only a model precursor: the full unbounded
+      three-racing-worker combined claim/wait/replay state space is not
+      exhaustive, the production wait-cell is not rewritten to loom shims
+      directly, scheduler park tokens and the final lock-free waiter list are
+      not modeled, and the Miri/TSan portions of `R-4` remain open.
 
 **Decisions closed/measured.**
 

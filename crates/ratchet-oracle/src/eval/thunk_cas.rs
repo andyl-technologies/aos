@@ -1109,6 +1109,11 @@ mod tests {
 
 #[cfg(test)]
 mod loom_model_tests {
+    use std::sync::{
+        Arc as StdArc,
+        atomic::{AtomicBool, Ordering as StdOrdering},
+    };
+
     use loom::{
         sync::{
             Arc, Condvar, Mutex,
@@ -1416,6 +1421,7 @@ mod loom_model_tests {
         let mut builder = loom::model::Builder::new();
         builder.preemption_bound = Some(2);
         builder.max_permutations = Some(2048);
+        builder.checkpoint_interval = 1;
         builder
     }
 
@@ -1436,6 +1442,19 @@ mod loom_model_tests {
                 "waiter registered but no terminal wakeup notification was observed"
             );
         }
+    }
+
+    fn record_waiter_coverage(thunk: &LoomThunk, observed_waiter: &AtomicBool) {
+        if thunk.waiter_stats().0 > 0 {
+            observed_waiter.store(true, StdOrdering::Relaxed);
+        }
+    }
+
+    fn assert_combined_model_exercised_waiter_path(observed_waiter: &AtomicBool) {
+        assert!(
+            observed_waiter.load(StdOrdering::Relaxed),
+            "bounded three-worker force model did not exercise a waiter/replay path"
+        );
     }
 
     fn wait_until_waiter_registered(thunk: &LoomThunk) {
@@ -1503,6 +1522,73 @@ mod loom_model_tests {
             assert_eq!(thunk.state(), ParallelThunkState::Forced);
             assert!(matches!(thunk.read_forced_payload(), 10 | 20 | 30));
         });
+    }
+
+    #[test]
+    fn loom_bounded_three_racing_workers_force_once_and_replay_published_value() {
+        let builder = bounded_three_worker_claimant_model();
+        let observed_waiter = StdArc::new(AtomicBool::new(false));
+        let observed_waiter_for_model = StdArc::clone(&observed_waiter);
+        builder.check(move || {
+            let thunk = Arc::new(LoomThunk::new());
+            let mut handles = Vec::new();
+
+            for raw_worker in 1..=3 {
+                let thunk = Arc::clone(&thunk);
+                handles.push(thread::spawn(move || {
+                    thunk.force_success(worker(raw_worker), raw_worker * 10)
+                }));
+            }
+
+            let mut results = Vec::new();
+            for handle in handles {
+                results.push(handle.join().expect("worker joins"));
+            }
+
+            let winner = results[0];
+            assert!(results.iter().all(|result| *result == winner));
+            assert!(matches!(winner, Ok(10 | 20 | 30)));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Forced);
+            assert_waiters_were_not_stranded(&thunk);
+            record_waiter_coverage(&thunk, &observed_waiter_for_model);
+        });
+        assert_combined_model_exercised_waiter_path(&observed_waiter);
+    }
+
+    #[test]
+    fn loom_bounded_three_racing_workers_replay_one_failed_payload() {
+        let builder = bounded_three_worker_claimant_model();
+        let observed_waiter = StdArc::new(AtomicBool::new(false));
+        let observed_waiter_for_model = StdArc::clone(&observed_waiter);
+        builder.check(move || {
+            let thunk = Arc::new(LoomThunk::new());
+            let mut handles = Vec::new();
+
+            for raw_worker in 1..=3 {
+                let thunk = Arc::clone(&thunk);
+                handles.push(thread::spawn(move || {
+                    thunk.force_failure(worker(raw_worker), raw_worker * 100)
+                }));
+            }
+
+            let mut results = Vec::new();
+            for handle in handles {
+                results.push(handle.join().expect("worker joins"));
+            }
+
+            let winner = results[0];
+            assert!(results.iter().all(|result| *result == winner));
+            assert!(matches!(
+                winner,
+                Err(LoomForceError::Failed(100 | 200 | 300))
+            ));
+            assert_eq!(thunk.body_runs(), 1);
+            assert_eq!(thunk.state(), ParallelThunkState::Failed);
+            assert_waiters_were_not_stranded(&thunk);
+            record_waiter_coverage(&thunk, &observed_waiter_for_model);
+        });
+        assert_combined_model_exercised_waiter_path(&observed_waiter);
     }
 
     #[test]
