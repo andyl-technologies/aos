@@ -164,19 +164,22 @@ impl TreeWalk {
 
     /// Selects from the active flat evaluator attrset through the representation dispatcher.
     pub(in crate::eval::tree_walk) fn select_slow_flat_attr(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         attrs_value: Value,
         symbol: Symbol,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
-        let attrs = self
-            .heap
-            .get_attrs(attrs_value)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        select_slow(AttrSelectTarget::Flat(attrs), symbol).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
-        })
+        let outcome = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            select_slow(AttrSelectTarget::Flat(attrs), symbol).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+            })?
+        };
+        self.record_slow_select_telemetry(id, span, &outcome);
+        Ok(outcome)
     }
 
     /// Selects one attr from an already-forced attrset value.

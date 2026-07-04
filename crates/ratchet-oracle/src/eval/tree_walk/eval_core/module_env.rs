@@ -518,7 +518,7 @@ impl TreeWalk {
     }
 
     pub(in crate::eval::tree_walk) fn eval_global_fallback(
-        &self,
+        &mut self,
         id: IrId,
         symbol: Symbol,
         span: Span,
@@ -542,7 +542,7 @@ impl TreeWalk {
     }
 
     pub(in crate::eval::tree_walk) fn scoped_global_value(
-        &self,
+        &mut self,
         id: IrId,
         symbol: Symbol,
         span: Span,
@@ -554,7 +554,8 @@ impl TreeWalk {
             ));
         }
 
-        for scope in self.scoped_globals.iter().rev().copied() {
+        for index in (0..self.scoped_globals.len()).rev() {
+            let scope = self.scoped_globals[index];
             if scope.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -588,30 +589,33 @@ impl TreeWalk {
                 node.span,
             ));
         };
-        if name == CUR_POS_ATTR {
+        let is_current_position = name == CUR_POS_ATTR;
+        let is_nix_path = name == NIX_PATH_ATTR;
+        let is_builtins = name == b"builtins";
+        let is_unshadowable_global = is_unshadowable_global_name(name);
+        let available_builtin = is_unshadowable_global
+            .then(|| lookup_builtin(name).filter(|builtin| builtin.is_available(self)))
+            .flatten();
+
+        if is_current_position {
             return self.eval_current_position(id, node.span);
         }
-        if name == NIX_PATH_ATTR {
+        if is_nix_path {
             return self.eval_nix_path_value(id, node.span);
         }
         if let Some(value) = self.scoped_global_value(id, symbol, node.span)? {
             return Ok(value);
         }
-        if !self.scoped_globals.is_empty()
-            && name != b"builtins"
-            && !is_unshadowable_global_name(name)
-        {
+        if !self.scoped_globals.is_empty() && !is_builtins && !is_unshadowable_global {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnresolvedWithVar { id, symbol },
                 node.span,
             ));
         }
-        if name == b"builtins" {
+        if is_builtins {
             return self.eval_builtins_attrset(id, node.span);
         }
-        if is_unshadowable_global_name(name)
-            && let Some(builtin) = lookup_builtin(name).filter(|builtin| builtin.is_available(self))
-        {
+        if let Some(builtin) = available_builtin {
             return self.eval_builtin_attrset_value(id, node.span, symbol, builtin);
         }
         Err(TreeWalkError::new(

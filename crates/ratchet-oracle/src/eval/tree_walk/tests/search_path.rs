@@ -155,6 +155,34 @@ fn scoped_import_injects_globals_and_bypasses_result_cache() {
 }
 
 #[test]
+fn scoped_import_global_probe_records_slow_select_telemetry() {
+    let root = fs::canonicalize(unique_temp_dir("scoped-import-telemetry"))
+        .expect("temp directory canonicalizes");
+    fs::write(root.join("value.nix"), b"x").expect("value writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    let outcome = eval_owned_with_options(
+        "builtins.scopedImport { x = 7; } ./value.nix",
+        options.clone(),
+    );
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 1);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.hamt_hits, 0);
+    assert_eq!(counts.hamt_misses, 0);
+    assert_eq!(counts.shaped_hits, 0);
+    assert_eq!(counts.shaped_misses, 0);
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn nix_path_value_reflects_configured_search_path() {
     let (root, nixpkgs, _subdir) = search_path_fixture();
     let options = search_path_options(b"nixpkgs", &nixpkgs);

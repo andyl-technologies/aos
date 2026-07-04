@@ -654,10 +654,10 @@ byte-neutral accumulator for shape census rows, representation-dispatching
 slow-select hit/miss outcomes by backing representation, IC terminal-state and
 lookup histograms, `//` operand-size/result-length-upper-bound/chain-depth
 histograms, HAMT merge insert/replace counts, and order-parity check outcomes.
-The active tree-walk evaluator feeds it from successful `//` update merges with
-syntactic update-chain depth, but shape/PIC/HAMT runtime hooks remain open; it
-does not collect full AOS package-set data and does not replace the `.drv`
-differential acceptance gate.
+The active tree-walk evaluator feeds it from flat slow-select outcomes and
+successful `//` update merges with syntactic update-chain depth, but
+shape/PIC/HAMT runtime hooks remain open; it does not collect full AOS
+package-set data and does not replace the `.drv` differential acceptance gate.
 
 The tuning surface exposed by this subsystem is therefore: the polymorphic cap
 `N`; the `Flat`→`Hamt` size threshold and chain-depth trigger; whether the

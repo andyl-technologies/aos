@@ -251,6 +251,30 @@ fn attr_update_records_active_merge_telemetry() {
 }
 
 #[test]
+fn active_flat_selects_record_slow_select_telemetry() {
+    let ir = lower(
+        "builtins.deepSeq [
+            ({ a = 1; }).a
+            (({}).missing or 2)
+            ({ a = 1; } ? a)
+            ({} ? missing)
+            (with { a = 1; }; a)
+        ] 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("active flat selects evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 3);
+    assert_eq!(counts.flat_misses, 2);
+    assert_eq!(counts.hamt_hits, 0);
+    assert_eq!(counts.hamt_misses, 0);
+    assert_eq!(counts.shaped_hits, 0);
+    assert_eq!(counts.shaped_misses, 0);
+}
+
+#[test]
 fn attr_update_telemetry_tracks_projected_hamt_left_state() {
     let ir = lower(
         "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; }).f",

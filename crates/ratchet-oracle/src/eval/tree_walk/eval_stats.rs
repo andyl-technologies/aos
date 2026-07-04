@@ -186,6 +186,24 @@ impl TreeWalk {
             .insert((self.current_module.as_u32(), id.as_u32()), result_state);
     }
 
+    pub(super) fn record_slow_select_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        outcome: &AttrSelectOutcome,
+    ) {
+        if let Err(source) = self.attr_telemetry.record_slow_select_lookup(outcome) {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping attr slow-select telemetry after recording failure"
+            );
+        }
+    }
+
     pub(super) fn increment_thunks_allocated(&mut self) {
         self.stats.thunks_allocated = self.stats.thunks_allocated.saturating_add(1);
     }
