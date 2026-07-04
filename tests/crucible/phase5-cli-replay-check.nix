@@ -67,6 +67,10 @@
         label = "replay inline store validation progress";
         needle = "validates declared DAG-store references against inline payloads";
       }
+      {
+        label = "replay to synopsis";
+        needle = "--to <savepoint>        Validate a target savepoint handle or checkpoint hash.";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -160,8 +164,48 @@
         needle = "--bisect <other-artifact>";
       }
       {
-        label = "future replay --to remains rejected";
-        needle = "\"--to\", \"savepoint\"";
+        label = "replay to savepoint flag";
+        needle = "to: Option<String>";
+      }
+      {
+        label = "replay to savepoint implementation";
+        needle = "fn replay_to_savepoint";
+      }
+      {
+        label = "replay to savepoint evidence validation";
+        needle = "savepoint_evidence(\"replay --to\"";
+      }
+      {
+        label = "replay to savepoint oracle validation";
+        needle = "let oracle = validate_checkpoint_with_replay_oracle";
+      }
+      {
+        label = "replay to savepoint prefix check";
+        needle = "savepoint frontier has {target_decisions} decisions";
+      }
+      {
+        label = "replay to savepoint target validation output";
+        needle = "status=target-validated";
+      }
+      {
+        label = "replay help advertises to";
+        needle = "--to <savepoint>";
+      }
+      {
+        label = "replay to savepoint positive test";
+        needle = "cli_replay_to_savepoint_validates_artifact_prefix_and_oracle";
+      }
+      {
+        label = "replay to checkpoint hash test";
+        needle = "write_checkpoint_closure_fixture(&store_root";
+      }
+      {
+        label = "replay to savepoint scenario mismatch test";
+        needle = "cli_replay_to_savepoint_rejects_scenario_mismatch";
+      }
+      {
+        label = "replay to savepoint prefix overrun test";
+        needle = "cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix";
       }
       {
         label = "replay bisect divergence test";
