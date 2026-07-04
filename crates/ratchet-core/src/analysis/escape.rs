@@ -471,8 +471,10 @@ fn count_binding_references(
     let mut count = 0usize;
     for binding in bindings {
         if let IrAttrPathSegment::Dynamic(key) = binding.key {
+            validate_node(ir, key)?;
             count += count_id(key, target);
         }
+        validate_node(ir, binding.value)?;
         count += count_id(binding.value, target);
     }
     Ok(count)
@@ -488,19 +490,27 @@ fn count_attr_path_references(
         .attr_paths
         .get(path.index())
         .ok_or(EscapeAnalysisError::InvalidAttrPath { id, path })?;
-    Ok(segments
-        .iter()
-        .map(|segment| match segment {
-            IrAttrPathSegment::Static(_) => 0,
-            IrAttrPathSegment::Dynamic(dynamic) => count_id(*dynamic, target),
-        })
-        .sum())
+    let mut count = 0usize;
+    for segment in segments {
+        if let IrAttrPathSegment::Dynamic(dynamic) = segment {
+            validate_node(ir, *dynamic)?;
+            count += count_id(*dynamic, target);
+        }
+    }
+    Ok(count)
 }
 
 fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], EscapeAnalysisError> {
     ir.arena
         .child_slice(slice)
         .ok_or(EscapeAnalysisError::InvalidChildSlice { id, slice })
+}
+
+fn validate_node(ir: &Ir, id: IrId) -> Result<(), EscapeAnalysisError> {
+    ir.arena
+        .node(id)
+        .ok_or(EscapeAnalysisError::InvalidNode { id })?;
+    Ok(())
 }
 
 fn count_ids(ids: &[IrId], target: IrId) -> usize {

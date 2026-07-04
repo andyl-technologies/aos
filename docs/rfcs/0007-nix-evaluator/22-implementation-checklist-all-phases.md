@@ -8244,6 +8244,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       cannot retain stale `NoEscape` records outside the arena. This is still a
       fact-substrate validation check; it does not add aggregate escape
       inference or new scalar-replacement cases.
+- [x] Current escape aggregate-reference validation hardening:
+      `annotate_escape` now rejects malformed side-table references while
+      rechecking strict aggregate uniqueness for scalar-result primop consumers:
+      dangling aggregate binding values, dangling dynamic binding keys, and
+      dangling dynamic attr-path segment ids. This is an analyzer-boundary check
+      only; it does not expand the aggregate escape surface or add optimized
+      storage lowering.
 - [x] Current scalar replacement planning precursor:
       `ratchet-core::analysis::scalar_replacement` consumes strictness and
       escape facts and returns the immediate scalar nodes whose current facts

@@ -1321,6 +1321,217 @@ fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
 }
 
 #[test]
+fn escape_rejects_malformed_aggregate_binding_value_references() {
+    let attrset = IrId::new(0);
+    let key_node = IrId::new(1);
+    let primop = IrId::new(2);
+    let missing_value = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"a").expect("key symbol interns");
+    let symbol = symbols.intern(b"hasAttr").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::AttrSet,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::AttrSet {
+                    shape: crate::ir::IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Str,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Symbol(key),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 2),
+                },
+            ),
+        ],
+        vec![key_node, attrset],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(3),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([IrBinding {
+            key: IrAttrPathSegment::Static(key),
+            position: None,
+            value: missing_value,
+        }]),
+        shapes: Box::new([IrShape::new(Box::new([key]))]),
+    };
+    ir.facts
+        .get_mut(attrset)
+        .expect("attrset fact exists")
+        .strictness = Strictness::Strict;
+
+    let error = annotate_escape(&mut ir).expect_err("malformed binding value rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidNode { id: missing_value }
+    );
+}
+
+#[test]
+fn escape_rejects_malformed_dynamic_binding_key_references() {
+    let attrset = IrId::new(0);
+    let value = IrId::new(1);
+    let key_node = IrId::new(2);
+    let primop = IrId::new(3);
+    let missing_key = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"a").expect("key symbol interns");
+    let symbol = symbols.intern(b"hasAttr").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::AttrSet,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::AttrSet {
+                    shape: crate::ir::IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: true,
+                    frame: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(4, 5),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::Str,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Symbol(key),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 2),
+                },
+            ),
+        ],
+        vec![key_node, attrset],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(4),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([IrBinding {
+            key: IrAttrPathSegment::Dynamic(missing_key),
+            position: None,
+            value,
+        }]),
+        shapes: Box::new([IrShape::new(Box::new([]))]),
+    };
+    ir.facts
+        .get_mut(attrset)
+        .expect("attrset fact exists")
+        .strictness = Strictness::Strict;
+
+    let error = annotate_escape(&mut ir).expect_err("malformed dynamic key rejects");
+
+    assert_eq!(error, EscapeAnalysisError::InvalidNode { id: missing_key });
+}
+
+#[test]
+fn escape_rejects_malformed_dynamic_attr_path_segment_references() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let receiver = IrId::new(2);
+    let path = IrAttrPathId::new(0);
+    let missing_segment = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::Null,
+                Span::new(3, 7),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::HasAttr,
+                Span::new(0, 7),
+                EffectClass::pure(),
+                IrData::HasAttr {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver,
+                    path,
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(4),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Dynamic(missing_segment)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+
+    let error = annotate_escape(&mut ir).expect_err("malformed attr path segment rejects");
+
+    assert_eq!(
+        error,
+        EscapeAnalysisError::InvalidNode {
+            id: missing_segment
+        }
+    );
+}
+
+#[test]
 fn escape_rejects_fact_table_length_mismatches() {
     let arena = IrArena::from_raw_parts(
         vec![IrNode::new(
