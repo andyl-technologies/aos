@@ -8053,9 +8053,10 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
-      array. Tree-walk `Select`/`HasAttr` now route active flat attrsets through
-      this dispatcher; the PIC miss path, HAMT/shaped active evaluator storage,
-      native runtime attr representation, and `.drv` effects remain open.
+      array. Tree-walk `Select`/`HasAttr` and `WithVar` scope probes now route
+      active flat attrsets through this dispatcher; the PIC miss path,
+      HAMT/shaped active evaluator storage, native runtime attr representation,
+      and `.drv` effects remain open.
 - [x] Current shaped update precursor: `ratchet-value` exposes
       `ShapedUpdatePlan`, which computes a small shaped `//` result shape
       through the transition tree and instantiates a shaped value array with the

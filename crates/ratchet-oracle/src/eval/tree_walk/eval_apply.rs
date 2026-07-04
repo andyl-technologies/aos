@@ -124,15 +124,12 @@ impl TreeWalk {
                     scope_span,
                 ));
             }
-            let selected = {
-                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                })?;
-                attrs.get(symbol)
+            let AttrSelectOutcome::Hit { value, .. } =
+                self.select_slow_flat_attr(id, node.span, attrs_value, symbol)?
+            else {
+                continue;
             };
-            if let Some(value) = selected {
-                return Ok(value);
-            }
+            return Ok(value);
         }
 
         self.eval_global_fallback(id, symbol, node.span)

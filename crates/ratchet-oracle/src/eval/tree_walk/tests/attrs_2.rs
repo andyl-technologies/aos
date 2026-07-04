@@ -322,6 +322,36 @@ fn with_scopes_probe_dynamic_attrs_lazily() {
 }
 
 #[test]
+fn flat_slow_select_bridge_preserves_with_var_scope_probe_semantics() {
+    assert_eq!(eval("with { b = 2; a = 1; }; a").as_int(), Ok(1));
+    assert_eq!(eval("with { a = 1; }; with { b = 2; }; a").as_int(), Ok(1));
+    assert_eq!(eval("with { a = 1; }; with { a = 2; }; a").as_int(), Ok(2));
+
+    let missing = lower("with {}; missing");
+    let IrData::Pair {
+        second: missing_var,
+        ..
+    } = missing
+        .arena
+        .node(missing.root)
+        .expect("missing root exists")
+        .data
+    else {
+        panic!("with root has pair payload");
+    };
+    let missing_symbol = symbol_for(&missing, b"missing");
+    let error = eval_whnf(&missing).expect_err("missing with name remains unresolved");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::UnresolvedWithVar {
+            id: missing_var,
+            symbol: missing_symbol,
+        }
+    );
+}
+
+#[test]
 fn with_scopes_capture_lexical_environments() {
     assert_eq!(
         eval("let x = 1; f = y: with { a = x + y; }; a; in let x = 10; in f x").as_int(),
