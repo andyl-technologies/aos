@@ -7858,9 +7858,11 @@ nurseries build on the bump arena.
       count, completed-outcome vector length, and completed-plus-skipped
       accounting before assigning allocation nurseries from each completing
       worker. Tests cover complete collect-all fallible reports, cancelled
-      fail-fast reports, worker-count mismatch rejection, and internally
-      malformed completed-outcome count rejection, under-accounted report
-      rejection, and skipped-without-cancellation rejection. This is the
+      fail-fast reports, worker-count and task-count mismatch rejection, and
+      internally malformed completed-outcome count rejection, under-accounted
+      and over-accounted report rejection, skipped-without-cancellation rejection,
+      initial-worker mismatch rejection, unknown task/worker rejection, and
+      duplicate task-outcome rejection. This is the
       fallible report bridge only: it does not embed ownership records into the
       fallible report, allocate through live worker-local `EvalHeap` instances,
       attach cancellation causes to missing ownership records, interrupt

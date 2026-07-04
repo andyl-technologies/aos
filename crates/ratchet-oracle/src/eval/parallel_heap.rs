@@ -773,7 +773,10 @@ impl fmt::Display for ParallelWorkerNurseryPlan {
 mod tests {
     use super::super::{
         parallel::execute_parallel_top_level,
-        parallel_failure::{ParallelFailurePolicy, execute_parallel_top_level_fallible},
+        parallel_failure::{
+            ParallelFailurePolicy, ParallelFallibleTopLevelReport, ParallelTaskOutcome,
+            execute_parallel_top_level_fallible,
+        },
     };
     use super::*;
 
@@ -792,6 +795,32 @@ mod tests {
 
     const fn execution(task_index: usize, executing_worker: usize) -> ParallelTaskNurseryExecution {
         ParallelTaskNurseryExecution::new(task_index, executing_worker)
+    }
+
+    fn outcome(
+        task_index: usize,
+        initial_worker: usize,
+        worker_id: usize,
+    ) -> ParallelTaskOutcome<usize, &'static str> {
+        ParallelTaskOutcome::for_test(task_index, initial_worker, worker_id, Ok(task_index))
+    }
+
+    fn fallible_report(
+        worker_count: usize,
+        task_count: usize,
+        completed_task_count: usize,
+        cancelled_before_start_count: usize,
+        cancelled: bool,
+        outcomes: Vec<ParallelTaskOutcome<usize, &'static str>>,
+    ) -> ParallelFallibleTopLevelReport<usize, &'static str> {
+        ParallelFallibleTopLevelReport::for_test(
+            worker_count,
+            task_count,
+            completed_task_count,
+            cancelled_before_start_count,
+            cancelled,
+            outcomes,
+        )
     }
 
     #[test]
@@ -1154,6 +1183,165 @@ mod tests {
                 planned_worker_count: 2,
                 reported_worker_count: 3
             }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_task_count_mismatch() {
+        let worker_count = workers(2);
+        let report = execute_parallel_top_level_fallible(
+            0..3,
+            worker_count,
+            ParallelFailurePolicy::CollectAll,
+            |value| Ok::<_, &'static str>(value),
+        )
+        .expect("fallible execution succeeds");
+        let plan = parallel_worker_nursery_plan(2, worker_count);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("task count mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::TaskCountMismatch {
+                planned_task_count: 2,
+                reported_task_count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_completed_outcome_count_mismatch() {
+        let plan = parallel_worker_nursery_plan(2, workers(1));
+        let report = fallible_report(1, 2, 1, 1, true, vec![outcome(0, 0, 0), outcome(1, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("completed outcome count mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::CompletedOutcomeCountMismatch {
+                completed_task_count: 1,
+                outcome_count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_under_accounted_report() {
+        let plan = parallel_worker_nursery_plan(2, workers(1));
+        let report = fallible_report(1, 2, 1, 0, false, vec![outcome(0, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("under-accounted report rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::FallibleTaskAccountingMismatch {
+                task_count: 2,
+                completed_task_count: 1,
+                cancelled_before_start_count: 0
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_over_accounted_report() {
+        let plan = parallel_worker_nursery_plan(2, workers(1));
+        let report = fallible_report(1, 2, 2, 1, true, vec![outcome(0, 0, 0), outcome(1, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("over-accounted report rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::FallibleTaskAccountingMismatch {
+                task_count: 2,
+                completed_task_count: 2,
+                cancelled_before_start_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_skipped_without_cancellation() {
+        let plan = parallel_worker_nursery_plan(2, workers(1));
+        let report = fallible_report(1, 2, 1, 1, false, vec![outcome(0, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("skipped without cancellation rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::SkippedTasksWithoutCancellation {
+                cancelled_before_start_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_initial_worker_mismatch() {
+        let plan = parallel_worker_nursery_plan(1, workers(2));
+        let report = fallible_report(2, 1, 1, 0, false, vec![outcome(0, 1, 1)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("initial worker mismatch rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::InitialWorkerMismatch {
+                task_index: 0,
+                planned_worker: 0,
+                reported_worker: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_unknown_task() {
+        let plan = parallel_worker_nursery_plan(1, workers(1));
+        let report = fallible_report(1, 1, 1, 0, false, vec![outcome(1, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("unknown task rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::UnknownTask {
+                task_index: 1,
+                task_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_unknown_worker() {
+        let plan = parallel_worker_nursery_plan(1, workers(1));
+        let report = fallible_report(1, 1, 1, 0, false, vec![outcome(0, 0, 1)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("unknown worker rejects");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::UnknownWorker {
+                worker_id: 1,
+                worker_count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn nursery_ownership_from_fallible_report_rejects_duplicate_task_outcomes() {
+        let plan = parallel_worker_nursery_plan(2, workers(1));
+        let report = fallible_report(1, 2, 2, 0, false, vec![outcome(0, 0, 0), outcome(0, 0, 0)]);
+
+        let error = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+            .expect_err("duplicate task outcomes reject");
+
+        assert_eq!(
+            error,
+            ParallelNurseryOwnershipError::DuplicateTaskExecution { task_index: 0 }
         );
     }
 

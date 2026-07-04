@@ -593,6 +593,22 @@ pub struct ParallelTaskOutcome<R, E> {
 }
 
 impl<R, E> ParallelTaskOutcome<R, E> {
+    /// Builds a task outcome for malformed-report unit tests.
+    #[cfg(test)]
+    pub(super) fn for_test(
+        task_index: usize,
+        initial_worker: usize,
+        worker_id: usize,
+        outcome: Result<R, E>,
+    ) -> Self {
+        Self {
+            task_index,
+            initial_worker,
+            worker_id,
+            outcome,
+        }
+    }
+
     /// Returns the stable top-level task index.
     pub const fn task_index(&self) -> usize {
         self.task_index
@@ -692,6 +708,29 @@ pub struct ParallelFallibleTopLevelReport<R, E> {
 }
 
 impl<R, E> ParallelFallibleTopLevelReport<R, E> {
+    /// Builds a fallible report for malformed-report unit tests.
+    #[cfg(test)]
+    pub(super) fn for_test(
+        worker_count: usize,
+        task_count: usize,
+        completed_task_count: usize,
+        cancelled_before_start_count: usize,
+        cancelled: bool,
+        outcomes: Vec<ParallelTaskOutcome<R, E>>,
+    ) -> Self {
+        Self {
+            worker_count,
+            task_count,
+            completed_task_count,
+            cancelled_before_start_count,
+            cancelled,
+            outcomes,
+            worker_reports: (0..worker_count)
+                .map(ParallelFailureWorkerReport::new)
+                .collect(),
+        }
+    }
+
     /// Returns the number of workers used for this execution.
     pub const fn worker_count(&self) -> usize {
         self.worker_count
@@ -1084,114 +1123,6 @@ mod tests {
                 .map(|worker| worker.task_boundary_cancellations())
                 .sum::<usize>(),
             1
-        );
-    }
-
-    #[test]
-    fn nursery_ownership_bridge_rejects_inconsistent_completed_outcome_count() {
-        let report = ParallelFallibleTopLevelReport {
-            worker_count: 2,
-            task_count: 2,
-            completed_task_count: 2,
-            cancelled_before_start_count: 0,
-            cancelled: false,
-            outcomes: vec![ParallelTaskOutcome {
-                task_index: 0,
-                initial_worker: 0,
-                worker_id: 0,
-                outcome: Ok::<_, &'static str>(10),
-            }],
-            worker_reports: vec![
-                ParallelFailureWorkerReport::new(0),
-                ParallelFailureWorkerReport::new(1),
-            ],
-        };
-        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(2, workers(2));
-
-        let error =
-            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
-                &plan, &report,
-            )
-            .expect_err("inconsistent completed outcome count rejects");
-
-        assert_eq!(
-            error,
-            super::super::parallel_heap::ParallelNurseryOwnershipError::CompletedOutcomeCountMismatch {
-                completed_task_count: 2,
-                outcome_count: 1
-            }
-        );
-    }
-
-    #[test]
-    fn nursery_ownership_bridge_rejects_under_accounted_fallible_report() {
-        let report = ParallelFallibleTopLevelReport {
-            worker_count: 2,
-            task_count: 5,
-            completed_task_count: 1,
-            cancelled_before_start_count: 0,
-            cancelled: false,
-            outcomes: vec![ParallelTaskOutcome {
-                task_index: 0,
-                initial_worker: 0,
-                worker_id: 0,
-                outcome: Ok::<_, &'static str>(10),
-            }],
-            worker_reports: vec![
-                ParallelFailureWorkerReport::new(0),
-                ParallelFailureWorkerReport::new(1),
-            ],
-        };
-        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(5, workers(2));
-
-        let error =
-            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
-                &plan, &report,
-            )
-            .expect_err("under-accounted fallible report rejects");
-
-        assert_eq!(
-            error,
-            super::super::parallel_heap::ParallelNurseryOwnershipError::FallibleTaskAccountingMismatch {
-                task_count: 5,
-                completed_task_count: 1,
-                cancelled_before_start_count: 0
-            }
-        );
-    }
-
-    #[test]
-    fn nursery_ownership_bridge_rejects_skips_without_cancellation() {
-        let report = ParallelFallibleTopLevelReport {
-            worker_count: 2,
-            task_count: 2,
-            completed_task_count: 1,
-            cancelled_before_start_count: 1,
-            cancelled: false,
-            outcomes: vec![ParallelTaskOutcome {
-                task_index: 0,
-                initial_worker: 0,
-                worker_id: 0,
-                outcome: Ok::<_, &'static str>(10),
-            }],
-            worker_reports: vec![
-                ParallelFailureWorkerReport::new(0),
-                ParallelFailureWorkerReport::new(1),
-            ],
-        };
-        let plan = super::super::parallel_heap::parallel_worker_nursery_plan(2, workers(2));
-
-        let error =
-            super::super::parallel_heap::parallel_task_nursery_ownership_from_fallible_top_level_report(
-                &plan, &report,
-            )
-            .expect_err("non-cancelled skipped tasks reject");
-
-        assert_eq!(
-            error,
-            super::super::parallel_heap::ParallelNurseryOwnershipError::SkippedTasksWithoutCancellation {
-                cancelled_before_start_count: 1
-            }
         );
     }
 
