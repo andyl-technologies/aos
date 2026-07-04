@@ -8024,19 +8024,21 @@ nurseries build on the bump arena.
       baseline. It preflights worker-count encodability before serial
       evaluation, rejects persistent parse/eval cache roots, uses collect-all
       execution, and reports serial or parallel root-local derivation-surface
-      failures with stable task indexes. Tests cover 1/3 worker-count parity
-      over roots that force real `derivation` `.drvPath` materialization, empty
-      roots, deep `.drvPath` root contexts, single-output `outPath` root
-      contexts, non-string roots with forced derivation materialization but empty
-      root context, empty worker-count rejection, worker-count preflight before
-      serial evaluation, parse/eval persistent cache-root rejection, and serial
-      root failure reporting. This is an independent-root materialized
-      derivation-snapshot differential only: it does not run a full derivation
-      closure, force every lazy derivation attrset, force non-string roots to
-      discover nested or lazy string contexts, compare store writes, prove
-      shared-thunk graph scheduling, audit all nondeterministic attrset
-      iteration, wire ready-work park tokens or CAS wait integration, or satisfy
-      the full parallel-evaluator parity gate above.
+      failures with stable task indexes. The standard `.drv` convenience
+      harness runs the RFC worker-count matrix `{1, 2, 8, N}` where `N` is host
+      available parallelism (deduplicated with a fallback when unavailable).
+      Tests cover that matrix over roots that force real `derivation` `.drvPath`
+      materialization, empty roots, deep `.drvPath` root contexts, single-output
+      `outPath` root contexts, non-string roots with forced derivation
+      materialization but empty root context, empty worker-count rejection,
+      worker-count preflight before serial evaluation, parse/eval persistent
+      cache-root rejection, and serial root failure reporting. This is an
+      independent-root materialized derivation-snapshot differential only: it
+      does not run a full derivation closure, force every lazy derivation
+      attrset, force non-string roots to discover nested or lazy string
+      contexts, compare store writes, prove shared-thunk graph scheduling, audit
+      all nondeterministic attrset iteration, wire ready-work park tokens or CAS
+      wait integration, or satisfy the full parallel-evaluator parity gate above.
 - [ ] **`loom`/Miri memory-ordering audit (R-4) is green** before the parallel
       tier is trusted. *No data races, ever.*
 - [x] Current CAS memory-ordering audit precursor:

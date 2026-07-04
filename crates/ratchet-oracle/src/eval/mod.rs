@@ -78,11 +78,13 @@ pub use parallel_tree_walk::{
     ParallelTreeWalkRawEvaluation, ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot,
     ParallelTreeWalkRootSource, ParallelTreeWalkTopLevelError,
     compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts,
+    compare_parallel_tree_walk_drv_outputs_chase_lev_standard_worker_counts,
     compare_parallel_tree_walk_raw_across_worker_counts,
     compare_parallel_tree_walk_raw_chase_lev_across_worker_counts,
     eval_drv_outputs_parallel_chase_lev_top_level_roots,
     eval_raw_bytes_parallel_chase_lev_top_level, eval_raw_bytes_parallel_chase_lev_top_level_roots,
     eval_raw_bytes_parallel_top_level, eval_raw_bytes_parallel_top_level_roots,
+    parallel_tree_walk_standard_differential_worker_counts,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,

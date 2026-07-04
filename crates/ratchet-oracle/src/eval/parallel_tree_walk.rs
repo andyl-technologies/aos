@@ -225,6 +225,69 @@ where
     })
 }
 
+/// Compares Chase-Lev-backed `.drv` surfaces over the RFC standard worker matrix.
+///
+/// This convenience entry point uses
+/// [`parallel_tree_walk_standard_differential_worker_counts`] for the requested
+/// worker counts. It otherwise has the same serial oracle, cache-option
+/// preflight, collect-all execution, collation, and divergence behavior as
+/// [`compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts`].
+///
+/// # Errors
+///
+/// Returns the same errors as
+/// [`compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts`].
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped scheduler
+/// worker threads. Task panics are caught and returned as
+/// [`ParallelTreeWalkDrvDifferentialError::Scheduler`].
+pub fn compare_parallel_tree_walk_drv_outputs_chase_lev_standard_worker_counts<I>(
+    roots: I,
+    options: TreeWalkOptions,
+) -> Result<ParallelTreeWalkDrvDifferentialReport, ParallelTreeWalkDrvDifferentialError>
+where
+    I: IntoIterator<Item = ParallelTreeWalkRoot>,
+{
+    compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+        roots,
+        parallel_tree_walk_standard_differential_worker_counts(),
+        options,
+    )
+}
+
+/// Returns the standard worker-count matrix for parallel tree-walk differentials.
+///
+/// The matrix follows RFC0007's `{1, 2, 8, N}` shape, where `N` is the host
+/// available parallelism reported by [`std::thread::available_parallelism`].
+/// Duplicate counts are removed while preserving matrix order. If the host does
+/// not report available parallelism, `4` is used as a deterministic fallback for
+/// `N`.
+pub fn parallel_tree_walk_standard_differential_worker_counts() -> Vec<NonZeroUsize> {
+    let mut counts = Vec::with_capacity(4);
+    push_standard_worker_count(&mut counts, 1);
+    push_standard_worker_count(&mut counts, 2);
+    push_standard_worker_count(&mut counts, 8);
+    match std::thread::available_parallelism() {
+        Ok(count) => push_unique_worker_count(&mut counts, count),
+        Err(_) => push_standard_worker_count(&mut counts, 4),
+    }
+    counts
+}
+
+fn push_standard_worker_count(counts: &mut Vec<NonZeroUsize>, count: usize) {
+    if let Some(count) = NonZeroUsize::new(count) {
+        push_unique_worker_count(counts, count);
+    }
+}
+
+fn push_unique_worker_count(counts: &mut Vec<NonZeroUsize>, count: NonZeroUsize) {
+    if counts.iter().all(|existing| *existing != count) {
+        counts.push(count);
+    }
+}
+
 fn compare_parallel_tree_walk_raw_across_worker_counts_with<I, W, S, F>(
     roots: I,
     worker_counts: W,
@@ -1412,6 +1475,25 @@ mod tests {
     }
 
     #[test]
+    fn standard_parallel_tree_walk_differential_worker_counts_follow_rfc_matrix_order() {
+        let counts = parallel_tree_walk_standard_differential_worker_counts()
+            .iter()
+            .map(|count| count.get())
+            .collect::<Vec<_>>();
+
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[1], 2);
+        assert_eq!(counts[2], 8);
+        assert!(counts.len() <= 4);
+        for (index, count) in counts.iter().enumerate() {
+            assert!(!counts[..index].contains(count));
+        }
+        if let Ok(available) = std::thread::available_parallelism() {
+            assert!(counts.contains(&available.get()));
+        }
+    }
+
+    #[test]
     fn parallel_raw_eval_matches_serial_raw_bytes_in_stable_task_order() {
         let sources = [
             "1 + 2",
@@ -1711,15 +1793,21 @@ mod tests {
             derivation_root("parallel-drv-gamma"),
         ];
 
-        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts(
+        let expected_worker_counts = parallel_tree_walk_standard_differential_worker_counts()
+            .iter()
+            .map(|count| count.get())
+            .collect::<Vec<_>>();
+        let report = compare_parallel_tree_walk_drv_outputs_chase_lev_standard_worker_counts(
             roots,
-            [workers(1), workers(3)],
             TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
         )
         .expect("Chase-Lev .drv differential matches serial");
 
         assert_eq!(report.task_count(), 3);
-        assert_eq!(report.worker_counts(), &[1, 3]);
+        assert_eq!(report.worker_counts(), expected_worker_counts.as_slice());
+        assert!(report.worker_counts().contains(&1));
+        assert!(report.worker_counts().contains(&2));
+        assert!(report.worker_counts().contains(&8));
         assert_eq!(report.collation().fragment_count(), 3);
         assert_eq!(report.collation().drv_output_count(), 3);
         assert_eq!(report.collation().string_context().len(), 3);
