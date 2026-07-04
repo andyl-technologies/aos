@@ -7398,6 +7398,21 @@ nurseries build on the bump arena.
       scheduler, cannot prove the caller exhausted real worker deques or peer
       steals, does not hold a scheduler park token, and still uses the blocking
       wait-cell precursor rather than a lock-free waiter list.
+- [x] Current fallible wait-or-steal hook precursor:
+      `ParallelThunkWaitCell::claim_or_try_run_ready_then_wait` preserves the
+      same wait-or-steal ordering as the infallible hook while allowing the
+      ready-work hook to return a typed error before the wait-cell path
+      continues. Wait-cell failures and ready-work failures are separated by
+      `ParallelThunkReadyWorkWaitError`, so later scheduler-backed hooks can
+      propagate queue errors without panicking inside the hook. Tests prove that
+      successful fallible local/stolen work keeps the same contention counters
+      and no-wait-registration behavior as the infallible path, and that a
+      ready-work error returns before waiter registration while leaving the
+      original owner able to publish the terminal state. This is still only a
+      safe wait-cell ordering precursor: it does not install the final
+      Chase-Lev deque, hold a scheduler park token, validate scheduler
+      exhaustion, replace the blocking waiter path with a lock-free waiter list,
+      or satisfy the loom/Miri/TSan gate.
 - [x] Current scheduler-backed ready-work queue bridge:
       `ratchet-oracle::eval::parallel_ready_work_queues` seeds worker-local
       ready-work queues with the same deterministic round-robin placement as the

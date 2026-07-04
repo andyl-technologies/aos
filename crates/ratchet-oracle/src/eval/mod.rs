@@ -83,9 +83,9 @@ pub use thunk_payload::{
     TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait, TreeWalkParallelThunkWorkWait,
 };
 pub use thunk_wait::{
-    ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkWait,
-    ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard, ParallelThunkWaitStats,
-    ParallelThunkWorkWait,
+    ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,
+    ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard,
+    ParallelThunkWaitStats, ParallelThunkWorkWait,
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
