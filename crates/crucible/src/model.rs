@@ -11762,6 +11762,27 @@ impl Predicate {
         predicate_material(self)
     }
 
+    /// Serializes this predicate as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(PREDICATE_BINARY_MAGIC);
+        write_predicate_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses a compact predicate payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the payload has an
+    /// unknown predicate tag, malformed embedded data, or trailing bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PREDICATE_BINARY_MAGIC)?;
+        let predicate = read_predicate_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(predicate)
+    }
+
     /// Builds a named host-side predicate with no declared node references.
     #[must_use]
     pub fn named(name: impl Into<String>) -> Self {
@@ -11889,6 +11910,53 @@ impl Predicate {
         Self::Not {
             predicate: Box::new(predicate),
         }
+    }
+}
+
+impl Action {
+    /// Serializes this event action as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(ACTION_BINARY_MAGIC);
+        write_action_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses a compact event action payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the payload has an
+    /// unknown action tag, malformed embedded data, or trailing bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, ACTION_BINARY_MAGIC)?;
+        let action = read_action_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(action)
+    }
+}
+
+impl ControlOperationKind {
+    /// Serializes this scheduler control kind as compact canonical bytes.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(CONTROL_OPERATION_KIND_BINARY_MAGIC);
+        write_control_operation_kind_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses a compact scheduler control kind payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the payload has an
+    /// unknown control-operation tag, malformed embedded data, or trailing
+    /// bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, CONTROL_OPERATION_KIND_BINARY_MAGIC)?;
+        let kind = read_control_operation_kind_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(kind)
     }
 }
 
@@ -27570,6 +27638,9 @@ const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
 const WORLD_BINARY_MAGIC: &[u8] = b"crucible.world.v1\0";
 const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
 const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
+const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
+const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
+const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] = b"crucible.control-operation-kind.v1\0";
 const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
 const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v1\0";
 const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
@@ -31580,6 +31651,58 @@ fn read_action_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Action, E
             Ok(Action::Group(actions))
         }
         _ => Err(scenario_serialization_error("invalid action tag")),
+    }
+}
+
+fn write_control_operation_kind_binary(
+    kind: &ControlOperationKind,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match kind {
+        ControlOperationKind::Pause => writer.write_u8(0),
+        ControlOperationKind::Resume => writer.write_u8(1),
+        ControlOperationKind::Step => writer.write_u8(2),
+        ControlOperationKind::Snapshot => writer.write_u8(3),
+        ControlOperationKind::Fork => writer.write_u8(4),
+        ControlOperationKind::Inject => writer.write_u8(5),
+        ControlOperationKind::InjectFault { tag, fault } => {
+            writer.write_u8(6);
+            writer.write_string(&tag.name);
+            write_fault_binary(fault, writer);
+        }
+        ControlOperationKind::HealFault { tag } => {
+            writer.write_u8(7);
+            writer.write_string(&tag.name);
+        }
+        ControlOperationKind::Query => writer.write_u8(8),
+    }
+}
+
+fn read_control_operation_kind_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ControlOperationKind, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(ControlOperationKind::Pause),
+        1 => Ok(ControlOperationKind::Resume),
+        2 => Ok(ControlOperationKind::Step),
+        3 => Ok(ControlOperationKind::Snapshot),
+        4 => Ok(ControlOperationKind::Fork),
+        5 => Ok(ControlOperationKind::Inject),
+        6 => Ok(ControlOperationKind::InjectFault {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_fault_binary(reader)?,
+        }),
+        7 => Ok(ControlOperationKind::HealFault {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
+        8 => Ok(ControlOperationKind::Query),
+        _ => Err(scenario_serialization_error(
+            "invalid control-operation-kind tag",
+        )),
     }
 }
 

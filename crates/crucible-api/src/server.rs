@@ -18,8 +18,9 @@ use axum::routing::post;
 use bytes::Bytes;
 use crucible::{ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, Seed};
 use crucible_session::{
-    EngineState, LifecycleStateKind, LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind,
-    QueryResult, SessionCommand, SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointPolicy, BreakpointSpec, EngineState, LifecycleStateKind,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
 };
 use futures_util::stream;
 use tokio::net::TcpListener;
@@ -613,30 +614,59 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let expected_epoch = parse_optional_epoch_line(lines.next(), "expected-epoch=")?;
     let command_id = parse_u64_line(lines.next(), "command-id=")?;
     let command_line = lines.next();
-    let next_line = lines.next();
-    let (query_line, savepoint_label_line, step_duration_line, trailing_line) = match next_line {
-        Some(line) if line.starts_with("query=") => (Some(line), None, None, lines.next()),
-        Some(line) if line.starts_with("savepoint-label=") => {
-            (None, Some(line), None, lines.next())
+    let mut query_line = None;
+    let mut savepoint_label_line = None;
+    let mut step_duration_line = None;
+    let mut breakpoint_predicate_line = None;
+    let mut breakpoint_disposition_line = None;
+    let mut breakpoint_policy_line = None;
+    for line in lines {
+        if line.starts_with("query=") {
+            set_unique_payload_line(&mut query_line, line, "query")?;
+        } else if line.starts_with("savepoint-label=") {
+            set_unique_payload_line(&mut savepoint_label_line, line, "savepoint label")?;
+        } else if line.starts_with("step-duration-nanos=") {
+            set_unique_payload_line(&mut step_duration_line, line, "step duration")?;
+        } else if line.starts_with("breakpoint-predicate=") {
+            set_unique_payload_line(&mut breakpoint_predicate_line, line, "breakpoint predicate")?;
+        } else if line.starts_with("breakpoint-disposition=") {
+            set_unique_payload_line(
+                &mut breakpoint_disposition_line,
+                line,
+                "breakpoint disposition",
+            )?;
+        } else if line.starts_with("breakpoint-policy=") {
+            set_unique_payload_line(&mut breakpoint_policy_line, line, "breakpoint policy")?;
+        } else {
+            return Err(format!("unexpected trailing RPC request field `{line}`"));
         }
-        Some(line) if line.starts_with("step-duration-nanos=") => {
-            (None, None, Some(line), lines.next())
-        }
-        line => (None, None, None, line),
-    };
+    }
     let command = parse_session_command(
         command_line,
         "command=",
         query_line,
         savepoint_label_line,
         step_duration_line,
+        breakpoint_predicate_line,
+        breakpoint_disposition_line,
+        breakpoint_policy_line,
     )?;
-    reject_extra_line(trailing_line)?;
     let mut request = SendRequest::new(session, command_id, command);
     if let Some(expected_epoch) = expected_epoch {
         request = request.with_expected_epoch(expected_epoch);
     }
     Ok(request)
+}
+
+fn set_unique_payload_line<'a>(
+    slot: &mut Option<&'a str>,
+    line: &'a str,
+    label: &'static str,
+) -> Result<(), String> {
+    if slot.replace(line).is_some() {
+        return Err(format!("duplicate {label} payload"));
+    }
+    Ok(())
 }
 
 fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
@@ -706,6 +736,9 @@ fn parse_session_command(
     query_line: Option<&str>,
     savepoint_label_line: Option<&str>,
     step_duration_line: Option<&str>,
+    breakpoint_predicate_line: Option<&str>,
+    breakpoint_disposition_line: Option<&str>,
+    breakpoint_policy_line: Option<&str>,
 ) -> Result<SessionCommand, String> {
     let command_kind_wire = parse_wire_line(line, prefix)?;
     let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
@@ -721,6 +754,12 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a step duration"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let query_line = query_line
             .ok_or_else(|| format!("command `{command_kind_wire}` requires a query payload"))?;
         return Ok(SessionCommand::Query {
@@ -738,6 +777,12 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a step duration"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let label = match savepoint_label_line {
             Some(line) => parse_hex_string_field(
                 Some(parse_wire_line(Some(line), "savepoint-label=")?),
@@ -760,12 +805,44 @@ fn parse_session_command(
                 "command `{command_kind_wire}` does not accept a savepoint label"
             ));
         }
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
         let nanos = match step_duration_line {
             Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
             None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
         };
         return Ok(SessionCommand::Step {
             mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+        });
+    } else if command_kind == SessionCommandKind::SetBreakpoint {
+        if query_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a query payload"
+            ));
+        }
+        if savepoint_label_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a savepoint label"
+            ));
+        }
+        if step_duration_line.is_some() {
+            return Err(format!(
+                "command `{command_kind_wire}` does not accept a step duration"
+            ));
+        }
+        let spec = parse_breakpoint_spec_lines(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
+        return Ok(SessionCommand::SetBreakpoint {
+            spec,
+            reply: crucible_session::CommandReply::discard(),
         });
     } else if query_line.is_some() {
         return Err(format!(
@@ -779,10 +856,89 @@ fn parse_session_command(
         return Err(format!(
             "command `{command_kind_wire}` does not accept a step duration"
         ));
+    } else {
+        reject_breakpoint_payload_fields(
+            command_kind_wire,
+            breakpoint_predicate_line,
+            breakpoint_disposition_line,
+            breakpoint_policy_line,
+        )?;
     }
     command_kind
         .representative_command()
         .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
+}
+
+fn reject_breakpoint_payload_fields(
+    command_kind_wire: &str,
+    breakpoint_predicate_line: Option<&str>,
+    breakpoint_disposition_line: Option<&str>,
+    breakpoint_policy_line: Option<&str>,
+) -> Result<(), String> {
+    if breakpoint_predicate_line.is_some()
+        || breakpoint_disposition_line.is_some()
+        || breakpoint_policy_line.is_some()
+    {
+        return Err(format!(
+            "command `{command_kind_wire}` does not accept a breakpoint payload"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_breakpoint_spec_lines(
+    command_kind_wire: &str,
+    predicate_line: Option<&str>,
+    disposition_line: Option<&str>,
+    policy_line: Option<&str>,
+) -> Result<BreakpointSpec, String> {
+    let predicate_line = predicate_line
+        .ok_or_else(|| format!("command `{command_kind_wire}` requires a breakpoint predicate"))?;
+    let disposition_line = disposition_line.ok_or_else(|| {
+        format!("command `{command_kind_wire}` requires a breakpoint disposition")
+    })?;
+    let policy_line = policy_line
+        .ok_or_else(|| format!("command `{command_kind_wire}` requires a breakpoint policy"))?;
+    let predicate = parse_breakpoint_predicate_line(Some(predicate_line))?;
+    let disposition = parse_breakpoint_disposition_line(Some(disposition_line))?;
+    let policy = parse_breakpoint_policy_line(Some(policy_line))?;
+    Ok(BreakpointSpec {
+        predicate,
+        disposition,
+        policy,
+    })
+}
+
+fn parse_breakpoint_predicate_line(line: Option<&str>) -> Result<crucible::Predicate, String> {
+    let value = parse_wire_line(line, "breakpoint-predicate=")?;
+    let bytes = parse_hex_bytes(value)?;
+    crucible::Predicate::from_compact_binary(&bytes)
+        .map_err(|error| format!("invalid breakpoint predicate: {error}"))
+}
+
+fn parse_breakpoint_disposition_line(line: Option<&str>) -> Result<BreakpointDisposition, String> {
+    let value = parse_wire_line(line, "breakpoint-disposition=")?;
+    if value == "suspend" {
+        return Ok(BreakpointDisposition::Suspend);
+    }
+    if value == "trace" {
+        return Ok(BreakpointDisposition::Trace);
+    }
+    let Some(action) = value.strip_prefix("action:") else {
+        return Err(format!("invalid breakpoint disposition `{value}`"));
+    };
+    let bytes = parse_hex_bytes(action)?;
+    let action = crucible::Action::from_compact_binary(&bytes)
+        .map_err(|error| format!("invalid breakpoint action disposition: {error}"))?;
+    Ok(BreakpointDisposition::Action(action))
+}
+
+fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, String> {
+    match parse_wire_line(line, "breakpoint-policy=")? {
+        "one-shot" => Ok(BreakpointPolicy::OneShot),
+        "repeatable" => Ok(BreakpointPolicy::Repeatable),
+        value => Err(format!("invalid breakpoint policy `{value}`")),
+    }
 }
 
 fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
@@ -798,9 +954,7 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
         }
         "breakpoint-firings" => {
             reject_extra_query_field(fields.next())?;
-            Err(String::from(
-                "breakpoint-firing query is not supported by the RPC wire format",
-            ))
+            Ok(QueryKind::BreakpointFirings)
         }
         "state" => {
             reject_extra_query_field(fields.next())?;
@@ -1052,6 +1206,11 @@ fn encode_send_response(response: &SendResponse) -> String {
     );
     push_wire_line(
         &mut output,
+        "breakpoint-id",
+        &breakpoint_id_wire(response.breakpoint_id),
+    );
+    push_wire_line(
+        &mut output,
         "savepoint-info",
         &savepoint_info_wire(response.savepoint_info.as_ref()),
     );
@@ -1091,9 +1250,49 @@ fn query_result_wire(result: Option<&QueryResult>) -> String {
                 terminal
             )
         }
-        Some(QueryResult::BreakpointFirings(_)) => String::from("unsupported-breakpoint-firings"),
+        Some(QueryResult::BreakpointFirings(firings)) => breakpoint_firings_wire(firings),
         None => String::from("none"),
     }
+}
+
+fn breakpoint_firings_wire(firings: &[crucible_session::BreakpointFiring]) -> String {
+    let mut output = format!("breakpoint-firings|{}", firings.len());
+    for firing in firings {
+        output.push('|');
+        output.push_str(&firing.sequence.to_string());
+        output.push('|');
+        output.push_str(&firing.id.to_string());
+        output.push('|');
+        output.push_str(&firing.frontier.ticks.to_string());
+        output.push('|');
+        output.push_str(&firing.quanta.to_string());
+        output.push('|');
+        output.push_str(&hex_encode(&firing.predicate.to_compact_binary()));
+        output.push('|');
+        output.push_str(&breakpoint_disposition_wire(&firing.disposition));
+        output.push('|');
+        output.push_str(&firing.scheduler_controls.len().to_string());
+        for control in &firing.scheduler_controls {
+            output.push('|');
+            output.push_str(&hex_encode(&control.to_compact_binary()));
+        }
+    }
+    output
+}
+
+fn breakpoint_disposition_wire(disposition: &BreakpointDisposition) -> String {
+    match disposition {
+        BreakpointDisposition::Suspend => String::from("suspend"),
+        BreakpointDisposition::Trace => String::from("trace"),
+        BreakpointDisposition::Action(action) => {
+            format!("action:{}", hex_encode(&action.to_compact_binary()))
+        }
+    }
+}
+
+fn breakpoint_id_wire(id: Option<crucible_session::BreakpointId>) -> String {
+    id.map(|id| id.to_string())
+        .unwrap_or_else(|| String::from("none"))
 }
 
 fn savepoint_info_wire(info: Option<&crucible_session::SavepointInfo>) -> String {
