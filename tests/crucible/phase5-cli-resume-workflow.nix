@@ -52,8 +52,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
-        label = "T-CLI-10 handle-backed resume progress";
-        needle = "local-double resume to quiescence, virtual-time, interactive command driving";
+        label = "T-CLI-10 local resume progress";
+        needle = "handle- or store-backed local-double resume";
       }
       {
         label = "T-CLI-10 remote daemon resume progress";
@@ -204,8 +204,8 @@
         needle = "struct ResumeRecordingLifecycleLoop";
       }
       {
-        label = "bare checkpoint closure blocker";
-        needle = "DAG-store checkpoint closure loading remains tracked by {task_id}";
+        label = "bare checkpoint closure loader";
+        needle = "fn savepoint_store_evidence";
       }
       {
         label = "resume planning test";
@@ -232,8 +232,12 @@
         needle = "cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound";
       }
       {
-        label = "resume bare hash blocker test";
-        needle = "cli_resume_workflow_rejects_bare_hash_until_closure_loader_exists";
+        label = "resume bare hash store loader test";
+        needle = "cli_resume_workflow_executes_local_double_bare_hash_from_store";
+      }
+      {
+        label = "resume bare hash missing index artifact test";
+        needle = "cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

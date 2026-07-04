@@ -441,24 +441,25 @@ long-held locks.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
-  checkpoint reference parsing and rejection until DAG-store closure loading
-  exists, virtual-time budget validation, malformed-handle artifact errors, and
-  executable handle-backed local-double resume to quiescence, virtual-time,
-  interactive command driving, or a declared property violation through the
-  session checkpoint-resume API with breakpoint-firing proof for the property
-  stop and replay-oracle validation for terminal savepoints, plus
+  checkpoint reference parsing and local DAG-store checkpoint closure loading,
+  virtual-time budget validation, malformed-handle artifact errors, and
+  executable handle- or store-backed local-double resume to quiescence,
+  virtual-time, interactive command driving, or a declared property violation
+  through the session checkpoint-resume API with breakpoint-firing proof for the
+  property stop and replay-oracle validation for terminal savepoints, plus
   non-interactive remote-daemon handle-backed virtual-time resume over
   `ResumeSession` RPC with terminal savepoint replay-oracle validation; full
-  closure waits for bare-hash checkpoint closure loading, remote interactive
-  command driving, remote `--watch` status streaming, real-QEMU coverage, and
-  full replay-oracle coverage across those runners.
+  closure waits for remote interactive command driving, remote `--watch` status
+  streaming, real-QEMU coverage, and full replay-oracle coverage across those
+  runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
   virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
-  `blake3:<hash>` checkpoint references, malformed-handle artifact errors,
-  seed/override conflict usage errors, handle-backed no-divergence local-double
-  fork execution through an independent child session, repeatable post-fork
+  `blake3:<hash>` checkpoint references loaded from the local DAG-store
+  checkpoint closure index, malformed-handle artifact errors, seed/override
+  conflict usage errors, handle- and store-backed no-divergence local-double fork
+  execution through an independent child session, repeatable post-fork
   `--override` decision application, explicit post-fork `--seed` execution in
   the local double by deriving the child's post-fork decision stream from the
   explicit seed while preserving the requested savepoint prefix, distinct-seed
@@ -466,8 +467,7 @@ long-held locks.
   command driving, CLI-replayable child reproduction artifact writing whose
   embedded seed remains the scenario-form seed plus fork-seed provenance output
   and separate model artifact/replay-state evidence, and terminal savepoint
-  replay-oracle validation; full closure waits for bare-hash checkpoint closure
-  loading and real-QEMU coverage.
+  replay-oracle validation; full closure waits for real-QEMU coverage.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch with
