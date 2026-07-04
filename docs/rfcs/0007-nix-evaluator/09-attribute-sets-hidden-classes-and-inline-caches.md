@@ -942,11 +942,11 @@ harness, never cut for scope.
       state histograms and lookup paths, `//` operand-size,
       result-length-upper-bound, and override-chain-depth distributions, HAMT
       merge insert/replace totals, and order-parity outcomes. The active
-      tree-walk evaluator now feeds this surface from `//` update merges with
-      syntactic update-chain depth and exposes the captured samples through
-      `EvalOutcome::attr_telemetry`; runtime shape/PIC/HAMT instrumentation,
-      full AOS package-set measurements, C++ `NIX_SHOW_STATS` comparison, and
-      `.drv` differential proof remain open.
+      tree-walk evaluator now feeds this surface from flat slow-select outcomes
+      and `//` update merges with syntactic update-chain depth, and exposes the
+      captured samples through `EvalOutcome::attr_telemetry`; runtime
+      shape/PIC/HAMT instrumentation, full AOS package-set measurements, C++
+      `NIX_SHOW_STATS` comparison, and `.drv` differential proof remain open.
 
 ## References
 
