@@ -509,8 +509,10 @@ long-held locks.
   network/console/I/O/node/assertion-state observables, raw guest-address
   coverage, physical-address/register memory samples, guest markers, and
   schedule fault-active facts when the caller supplies the exact
-  `RecordedAssertionLog` for each reached configuration, with an explicit
-  resolution context for symbolic coverage and virtual/symbolic memory leaves;
+  `RecordedAssertionLog` for each reached configuration, with
+  configuration-bound retained-log evidence bundles that pair logs with
+  host-resolution tables and an explicit resolution context for symbolic
+  coverage and virtual/symbolic memory leaves;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
@@ -519,9 +521,9 @@ long-held locks.
   output with generated-mutant/admission/retained-entry/store-put/
   replay-validation counts, and explicit backend errors for missing/corrupt
   stored family objects and unsupported fuzz targets; full closure waits for
-  real-QEMU coverage, backend wiring that supplies configuration-bound retained
-  logs and host-resolution tables to the retained-log provider, quiescence
-  support, and non-prefix assertion classes.
+  real-QEMU coverage, backend wiring that feeds backend-retained evidence
+  bundles to the retained-log provider, quiescence support, and non-prefix
+  assertion classes.
   `T-CLI-17` remains open. `checks.crucible.phase5.cliTriageWorkflow`
   currently covers the thin `triage <FINDINGS>` parser/planner, empty stored and
   path findings ledgers through the local DagStore, deterministic report/result
