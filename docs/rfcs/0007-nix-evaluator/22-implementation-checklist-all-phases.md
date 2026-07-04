@@ -8549,8 +8549,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       edge caching. The active tree-walk evaluator now projects successful flat
       attr heap allocations through a process-local shape table for
       shape-census telemetry, the mirrored uncached shape-transition counter,
-      and per-heap-record projected shape metadata only. Global/shared table
-      behavior, lock-free reads, shaped heap allocation, select-site use, and
+      and per-heap-record projected shape metadata. Select/`WithVar` use is
+      limited to the transient tree-walk bridge below. Global/shared table
+      behavior, lock-free reads, shaped heap allocation, native storage, and
       `.drv` effects remain open.
 - [x] Current shaped-instance precursor: `ratchet-value` exposes `ShapedAttrs`,
       a safe `{ ShapeHandle, values_by_symbol }` flat instance that validates
@@ -8597,15 +8598,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       state because flat attrsets have no stable absent slot. Native runtime
       helper dispatch, shaped/HAMT active storage replacement, and `.drv`
       effects remain open.
-- [x] Current active projected-shape static-select IC bridge: the tree-walk
+- [x] Current active projected-shape select/with IC bridge: the tree-walk
       evaluator keeps per-run flat, shaped, and HAMT select-cache cells keyed by
-      module, select-site id, and attr-path segment index. Active flat heap
+      module, select-site id, and attr-path segment or with-chain depth. Active flat heap
       values carrying projected shape metadata use a transient `ShapedAttrs`
-      view and `ShapedSelectCache` for static `Select`/`HasAttr` path segments;
-      unprojected flat values keep the key-validated `FlatSelectCache`
+      view and `ShapedSelectCache` for static `Select`/`HasAttr` path segments
+      and active `WithVar` scope probes; unprojected flat values keep the key-validated `FlatSelectCache`
       fallback; projected-HAMT values use the HAMT policy cache described
-      below. Builtin static-select shortcuts, dynamic path segments, `with`
-      scope probes, generic runtime keyed helpers, and native storage paths
+      below. Builtin static-select shortcuts, dynamic path segments,
+      scoped-global fallback probes, generic runtime keyed helpers, and native storage paths
       remain on the existing slow dispatcher. Cached shaped/flat/HAMT hits
       increment the mirrored inline-cache hit counter; resolved lookups and
       misses increment the inline-cache miss counter and keep
@@ -8617,9 +8618,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
       lookup, and shaped attrs resolve a shape slot before loading the value
-      array. Tree-walk `Select`/`HasAttr` and `WithVar` scope probes now route
-      active flat attrsets through this dispatcher; scoped-global fallback
-      probes now use it for scoped-import overlays too. `FlatSelectCache`,
+      array. Tree-walk dynamic path segments and scoped-global fallback probes
+      route active flat attrsets through this dispatcher. `FlatSelectCache`,
       `ShapedSelectCache`, and `HamtSelectCache` also use it for slow
       resolution in their respective precursor paths. HAMT/shaped active
       evaluator storage, native runtime attr representation, full shaped/native

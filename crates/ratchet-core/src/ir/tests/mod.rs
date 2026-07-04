@@ -100,7 +100,9 @@ pub(super) fn manual_resolved_ast(root: NodeId, nodes: Vec<Node>) -> ResolvedAst
 
 pub(super) fn lookup_site(ir: &Ir, id: IrId) -> IrInlineCacheSiteId {
     match node(ir, id).data {
-        IrData::Select { site, .. } | IrData::HasAttr { site, .. } => site,
+        IrData::Select { site, .. }
+        | IrData::HasAttr { site, .. }
+        | IrData::DialectScopeVar { site, .. } => site,
         _ => panic!("lookup payload expected"),
     }
 }

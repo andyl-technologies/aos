@@ -727,6 +727,7 @@ fn full_laziness_rejects_invalid_with_chains() {
             EffectClass::pure(),
             IrData::DialectScopeVar {
                 op: TEST_WITH_VAR_OP,
+                site: IrInlineCacheSiteId::new(0),
                 symbol,
                 chain: 7,
             },
@@ -769,6 +770,7 @@ fn full_laziness_validates_with_chain_scope_nodes() {
                 EffectClass::pure(),
                 IrData::DialectScopeVar {
                     op: TEST_WITH_VAR_OP,
+                    site: IrInlineCacheSiteId::new(0),
                     symbol,
                     chain: 0,
                 },

@@ -654,10 +654,11 @@ byte-neutral accumulator for shape census rows, representation-dispatching
 slow-select hit/miss outcomes by backing representation, IC terminal-state and
 lookup histograms, `//` operand-size/result-length-upper-bound/chain-depth
 histograms, HAMT merge insert/replace counts, and order-parity check outcomes.
-The active tree-walk evaluator feeds it from flat slow-select outcomes, static
-and dynamic attrset-node representation decisions, selected builtin result
-representation decisions, and successful `//` update merges with syntactic
-update-chain depth, but shape/PIC/HAMT runtime hooks remain open; it does not
+The active tree-walk evaluator feeds it from slow-select outcomes by
+representation, flat/shaped/HAMT select-cache lookup outcomes, static and dynamic
+attrset-node representation decisions, selected builtin result representation
+decisions, and successful `//` update merges with syntactic update-chain depth,
+but native shape/PIC/HAMT runtime hooks remain open; it does not
 collect full AOS package-set data and does not replace the `.drv` differential
 acceptance gate.
 
@@ -777,9 +778,10 @@ harness, never cut for scope.
       on the parent record. The active tree-walk evaluator now projects
       successful flat attr heap allocations through a process-local shape table
       for shape-census telemetry, the mirrored uncached shape-transition
-      counter, and per-heap-record projected shape metadata only. This is not a
+      counter, and per-heap-record projected shape metadata. Select/`WithVar`
+      use is limited to the transient tree-walk bridge below; this is not a
       global/shared shape table, does not provide lock-free reads, and is not
-      wired into shaped heap allocation, select sites, or `.drv`-observable
+      wired into shaped heap allocation, native storage, or `.drv`-observable
       behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [x] Current static-shape-plan precursor: `ratchet-value::attrs::shape`
@@ -830,15 +832,16 @@ harness, never cut for scope.
       attrsets have no stable absent slot. This does not replace active flat
       attr storage with shaped/native layouts, call the native runtime helper,
       or affect `.drv` bytes.
-- [x] Current active projected-shape static-select IC bridge:
+- [x] Current active projected-shape select/with IC bridge:
       the tree-walk evaluator stores per-run flat, shaped, and HAMT select-cache
-      cells by module, select-site id, and attr-path segment index. Active flat
+      cells by module, select-site id, and attr-path segment or with-chain
+      depth. Active flat
       heap values carrying projected shape metadata use a transient
       `ShapedAttrs` view and `ShapedSelectCache` for static `Select`/`HasAttr`
-      segments; unprojected flat values keep the key-validated `FlatSelectCache`
+      segments and active `WithVar` scope probes; unprojected flat values keep the key-validated `FlatSelectCache`
       fallback; projected-HAMT values use the HAMT policy cache described
-      below. Builtin static-select shortcuts, dynamic segments, `with` scope
-      probes, generic runtime keyed helpers, and native storage paths remain on
+      below. Builtin static-select shortcuts, dynamic segments,
+      scoped-global fallback probes, generic runtime keyed helpers, and native storage paths remain on
       the shared slow dispatcher. Cached hits increment mirrored inline-cache
       hit stats; resolved lookups and misses increment miss stats and preserve
       representation-specific slow-select telemetry; successful `EvalOutcome`
@@ -851,13 +854,13 @@ harness, never cut for scope.
       select defaults where present under the checked semantics in
       [25](25-intermediate-representation.md) §4, while `WithVar` probes
       active scopes in lowered with-chain order and scoped-global fallback
-      probes walk scoped-import overlays innermost-first. These active flat
-      lookups use the representation-dispatching `select_slow` precursor, with
-      static `Select`/`HasAttr` segments now routed through the flat
-      key-validated cache bridge described above. This still claims no shape
-      guard, constant-offset load, `aos_select_ic`, `select_slow` runtime
-      helper, HAMT dispatch, shaped/native PIC widening, or deopt/uncommon-trap
-      edge.
+      probes walk scoped-import overlays innermost-first. Dynamic path segments
+      and scoped-global fallback probes use the representation-dispatching
+      `select_slow` precursor; static `Select`/`HasAttr` segments and active
+      `WithVar` probes use the checked flat/shaped/HAMT cache bridge described
+      above when metadata permits. This still claims no native `aos_select_ic`,
+      `select_slow` runtime helper, active shaped/HAMT storage replacement, or
+      deopt/uncommon-trap edge.
 - [ ] Future P5 `select_slow` / IC resolver: representation-dispatching
       runtime helper for `Flat` binary search and `Hamt` lookup, reached from
       the PIC miss/slow path and native `aos_select_ic` machinery
@@ -865,9 +868,9 @@ harness, never cut for scope.
 - [x] Current `select_slow` precursor: `ratchet-value::attrs::select`
       dispatches slow selection over `FlatAttrs`, `HamtAttrs`, and `ShapedAttrs`.
       Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
-      shape slot then load the value array. Tree-walk `Select`/`HasAttr` and
-      `WithVar` scope probes plus scoped-global fallback probes now route active
-      flat attrsets through this dispatcher; `FlatSelectCache`,
+      shape slot then load the value array. Tree-walk dynamic path segments and
+      scoped-global fallback probes route active flat attrsets through this
+      dispatcher; `FlatSelectCache`,
       `ShapedSelectCache`, and `HamtSelectCache` also use this value-level
       dispatcher for slow resolution. HAMT/shaped active evaluator storage,
       native runtime attr representation, full shaped/native PIC integration,

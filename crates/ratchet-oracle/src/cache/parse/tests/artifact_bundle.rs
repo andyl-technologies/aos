@@ -19,7 +19,7 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
     let decoded = ParseArtifactBundle::decode(&encoded).expect("artifact bundle decodes");
 
     assert_eq!(decoded, bundle);
-    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 8"));
+    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 9"));
     let meta = decoded.decode_meta().expect("bundle metadata decodes");
     assert_eq!(meta.schema_version, cache.schema_version());
     assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));

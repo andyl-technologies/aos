@@ -159,11 +159,17 @@ impl IrLowerer {
             ));
         };
         let chain = self.lower_with_chain(chain, node.span)?;
+        let site = self.next_inline_cache_site(node.span)?;
         self.push_with_effect(
             IrKind::PrimOp,
             node.span,
             (self.options.dialect_op_effect_of())(op),
-            IrData::DialectScopeVar { op, symbol, chain },
+            IrData::DialectScopeVar {
+                op,
+                site,
+                symbol,
+                chain,
+            },
         )
     }
 

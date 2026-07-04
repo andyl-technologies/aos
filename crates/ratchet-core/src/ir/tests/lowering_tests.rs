@@ -264,12 +264,13 @@ fn with_var_chains_point_to_lowered_scopes_inner_first() {
     else {
         panic!("inner with payload expected");
     };
-    let IrData::DialectScopeVar { chain, .. } = node(&ir, body).data else {
+    let IrData::DialectScopeVar { chain, site, .. } = node(&ir, body).data else {
         panic!("with-var payload expected");
     };
 
     let chain = &ir.with_chains[chain as usize];
     assert_eq!(chain.scopes.as_ref(), &[inner, outer]);
+    assert_eq!(site.as_u32(), 0);
 }
 
 #[test]
@@ -285,10 +286,34 @@ fn with_scrutinees_are_explicit_lazy_scope_nodes() {
     assert_eq!(node(&ir, scope).kind, IrKind::ThunkAlloc);
     assert_eq!(node(&ir, thunk_inner(&ir, scope)).kind, IrKind::AttrSet);
 
-    let IrData::DialectScopeVar { chain, .. } = node(&ir, body).data else {
+    let IrData::DialectScopeVar { chain, site, .. } = node(&ir, body).data else {
         panic!("with-var payload expected");
     };
     assert_eq!(ir.with_chains[chain as usize].scopes.as_ref(), &[scope]);
+    assert_eq!(site.as_u32(), 0);
+}
+
+#[test]
+fn with_var_select_and_has_attr_sites_share_one_monotonic_namespace() {
+    let ir = lowered_nix("with { a = 1; }; if ({ b = 2; } ? b) then a + ({ c = 3; }).c else 0");
+    let IrData::Pair { second: body, .. } = root_node(&ir).data else {
+        panic!("with payload expected");
+    };
+    let IrData::Triple {
+        first: condition,
+        second: then_branch,
+        ..
+    } = node(&ir, body).data
+    else {
+        panic!("if payload expected");
+    };
+    let IrData::Binary { lhs, rhs, .. } = node(&ir, then_branch).data else {
+        panic!("then branch is addition");
+    };
+
+    assert_eq!(lookup_site(&ir, condition).as_u32(), 0);
+    assert_eq!(lookup_site(&ir, lhs).as_u32(), 1);
+    assert_eq!(lookup_site(&ir, rhs).as_u32(), 2);
 }
 
 #[test]

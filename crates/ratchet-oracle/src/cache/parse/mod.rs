@@ -45,7 +45,7 @@ use crate::syntax::{
 use aos_nix_dialect::nix_lower;
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 8;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 9;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const LOWERED_IR_FINGERPRINT_DOMAIN: &[u8] = b"aos-nix-lowered-ir-fingerprint-v1";

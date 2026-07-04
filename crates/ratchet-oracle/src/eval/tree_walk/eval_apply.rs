@@ -100,7 +100,13 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        let IrData::DialectScopeVar { symbol, chain, .. } = node.data else {
+        let IrData::DialectScopeVar {
+            site,
+            symbol,
+            chain,
+            ..
+        } = node.data
+        else {
             return Err(self.invalid_payload(id, node, "with-var payload"));
         };
         if self.symbols.resolve(symbol).is_none() {
@@ -130,8 +136,14 @@ impl TreeWalk {
                     scope_span,
                 ));
             }
-            let AttrSelectOutcome::Hit { value, .. } =
-                self.select_slow_flat_attr(id, node.span, attrs_value, symbol)?
+            let AttrSelectOutcome::Hit { value, .. } = self.select_static_attr_with_cache(
+                id,
+                node.span,
+                attrs_value,
+                symbol,
+                site,
+                index as usize,
+            )?
             else {
                 continue;
             };

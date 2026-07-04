@@ -352,6 +352,52 @@ fn flat_slow_select_bridge_preserves_with_var_scope_probe_semantics() {
 }
 
 #[test]
+fn repeated_with_var_probe_uses_shaped_inline_cache_for_projected_flat_scopes() {
+    let ir = lower("let f = x: with x; a; in (f { a = 1; }) + (f { a = 2; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated with-var probe evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 0);
+}
+
+#[test]
+fn repeated_with_var_probe_uses_hamt_inline_cache_for_projected_hamt_scopes() {
+    let ir = lower(
+        "let base = ((((({ z = 6; } // { a = 1; }) // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; });
+             lookup = x: with x; z;
+         in (lookup base) + (lookup base)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("repeated HAMT with-var probe evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(12));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 1);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.hamt_select_sites.distinguished_hamt, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.hamt_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.hamt_select_lookups.cached_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.shaped_hits, 0);
+    assert_eq!(counts.hamt_hits, 2);
+}
+
+#[test]
 fn with_scopes_capture_lexical_environments() {
     assert_eq!(
         eval("let x = 1; f = y: with { a = x + y; }; a; in let x = 10; in f x").as_int(),

@@ -373,7 +373,9 @@ fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
             dialect_node_effect(op)?;
             check_ir_id(ir, argument, "dialect op argument")
         }
-        IrData::DialectScopeVar { op, symbol, chain } => {
+        IrData::DialectScopeVar {
+            op, symbol, chain, ..
+        } => {
             dialect_scope_var_effect(op)?;
             check_ir_symbol(ir, symbol)?;
             let chain = usize::try_from(chain).map_err(|_| "with-chain id overflow".to_owned())?;

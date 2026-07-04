@@ -15,6 +15,7 @@ fn invalid_with_chain_metadata_is_reported() {
             span,
             IrData::DialectScopeVar {
                 op: aos_nix_dialect::NIX_OP_WITH_VAR,
+                site: IrInlineCacheSiteId::new(0),
                 symbol: missing,
                 chain: 0,
             },
@@ -39,6 +40,7 @@ fn invalid_with_chain_metadata_is_reported() {
                 span,
                 IrData::DialectScopeVar {
                     op: aos_nix_dialect::NIX_OP_WITH_VAR,
+                    site: IrInlineCacheSiteId::new(0),
                     symbol: missing,
                     chain: 0,
                 },

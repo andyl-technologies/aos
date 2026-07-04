@@ -631,6 +631,8 @@ pub enum IrData {
     DialectScopeVar {
         /// The dialect-owned operation key.
         op: IrDialectOp,
+        /// The stable inline-cache site for dynamic-scope probes.
+        site: IrInlineCacheSiteId,
         /// The unresolved symbol to probe.
         symbol: Symbol,
         /// The resolver dynamic-scope chain id.

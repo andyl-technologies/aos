@@ -385,8 +385,14 @@ impl TreeWalk {
                 )?,
                 args,
             }),
-            IrData::DialectScopeVar { op, symbol, chain } => Ok(IrData::DialectScopeVar {
+            IrData::DialectScopeVar {
                 op,
+                site,
+                symbol,
+                chain,
+            } => Ok(IrData::DialectScopeVar {
+                op,
+                site,
                 symbol: Self::remap_cached_symbol(
                     argument,
                     argument_span,

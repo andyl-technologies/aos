@@ -773,7 +773,7 @@ $AOS_NIX_CACHE/parse/
 
 ```toml
 # meta.toml — diagnostic metadata only; never part of the cache key's identity.
-schema_version = 8
+schema_version = 9
 source_hint    = "pkgs/foo/default.nix"
 node_count     = 3194
 symbol_count   = 412

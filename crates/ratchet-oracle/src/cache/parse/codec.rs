@@ -120,9 +120,15 @@ pub(super) fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
             write_u32(out, u32::from(op.as_u16()));
             write_u32(out, argument.as_u32());
         }
-        IrData::DialectScopeVar { op, symbol, chain } => {
+        IrData::DialectScopeVar {
+            op,
+            site,
+            symbol,
+            chain,
+        } => {
             out.push(24);
             write_u32(out, u32::from(op.as_u16()));
+            write_u32(out, site.as_u32());
             write_u32(out, symbol.as_u32());
             write_u32(out, chain);
         }
@@ -274,6 +280,7 @@ pub(super) fn decode_ir_data(reader: &mut BinaryReader<'_>) -> Result<IrData, St
         }),
         24 => Ok(IrData::DialectScopeVar {
             op: decode_ir_dialect_op(reader.read_u32()?)?,
+            site: IrInlineCacheSiteId::new(reader.read_u32()?),
             symbol: Symbol::new(reader.read_u32()?),
             chain: reader.read_u32()?,
         }),
