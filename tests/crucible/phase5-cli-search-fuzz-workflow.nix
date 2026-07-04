@@ -121,6 +121,10 @@
         needle = "resolution context for symbolic coverage and virtual/symbolic memory leaves";
       }
       {
+        label = "phase5 CLI retained-log evidence-bundle progress";
+        needle = "configuration-bound retained-log evidence bundles";
+      }
+      {
         label = "phase5 CLI local-double sampled API progress";
         needle = "search_with_strategy_and_failure_oracle_bounded_depth_sampled";
       }
@@ -503,6 +507,14 @@
         needle = "pub fn from_search_assertion_violations_with_retained_logs_and_resolutions";
       }
       {
+        label = "search assertion retained-log evidence helper";
+        needle = "pub fn from_search_assertion_violations_with_retained_log_evidence";
+      }
+      {
+        label = "search assertion retained-log evidence type";
+        needle = "pub struct SearchRetainedLogAssertionEvidence";
+      }
+      {
         label = "search assertion retained-log resolution type";
         needle = "pub struct SearchRetainedLogPredicateResolutions";
       }
@@ -609,6 +621,14 @@
         needle = "resolved_symbol_coverage_oracle";
       }
       {
+        label = "search assertion retained-log evidence symbolic coverage regression";
+        needle = "evidence_symbol_coverage_oracle";
+      }
+      {
+        label = "search assertion retained-log per-configuration evidence regression";
+        needle = "evidence_per_configuration_oracle";
+      }
+      {
         label = "search assertion retained-log nonmatching symbolic coverage regression";
         needle = "nonmatching_symbol_coverage_oracle";
       }
@@ -637,6 +657,14 @@
         needle = "nonmatching_symbol_memory_oracle";
       }
       {
+        label = "search assertion retained-log evidence symbolic memory regression";
+        needle = "evidence_symbol_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log nonmatching evidence symbolic memory regression";
+        needle = "evidence_nonmatching_symbol_memory_oracle";
+      }
+      {
         label = "search assertion retained-log virtual memory regression";
         needle = "unsupported_virtual_memory_oracle";
       }
@@ -647,6 +675,14 @@
       {
         label = "search assertion retained-log nonmatching virtual memory regression";
         needle = "nonmatching_virtual_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log evidence virtual memory regression";
+        needle = "evidence_virtual_memory_oracle";
+      }
+      {
+        label = "search assertion retained-log nonmatching evidence virtual memory regression";
+        needle = "evidence_nonmatching_virtual_memory_oracle";
       }
       {
         label = "search assertion retained-log observable helper";

@@ -1157,10 +1157,12 @@ branch on the verdict without parsing output:
   time/timers, network/console/I/O/node/assertion-state observables, raw
   guest-address coverage, physical-address/register memory samples, guest
   markers, and schedule fault-active facts when the caller supplies the exact
-  `RecordedAssertionLog` for each reached configuration; an explicit
-  resolution context admits symbolic coverage and virtual/symbolic memory leaves
-  only when their host resolutions are supplied. The default CLI path
-  intentionally excludes absence-based existential/liveness failures,
+  `RecordedAssertionLog` for each reached configuration; configuration-bound
+  retained-log evidence bundles can pair those logs with host-resolution tables,
+  and an explicit resolution context admits symbolic coverage and
+  virtual/symbolic memory leaves only when their host resolutions are supplied.
+  The default CLI path intentionally excludes absence-based existential/liveness
+  failures,
   time/timer/quiescence predicates, observable-event/guest-marker predicates,
   and named host predicates unless explicit schedule-named truth data is
   supplied. It also
@@ -1177,9 +1179,8 @@ branch on the verdict without parsing output:
   and replay-oracle validation counts. Missing/corrupt stored family objects and
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage, backend wiring
-  that supplies configuration-bound retained logs and host-resolution tables to
-  the retained-log provider, quiescence support, and non-prefix assertion
-  classes.
+  that feeds backend-retained evidence bundles to the retained-log provider,
+  quiescence support, and non-prefix assertion classes.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

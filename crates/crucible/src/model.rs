@@ -18815,6 +18815,43 @@ impl SearchRetainedLogPredicateResolutions {
     }
 }
 
+/// Configuration-bound retained-log assertion evidence for search lowering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchRetainedLogAssertionEvidence {
+    recorded_log: RecordedAssertionLog,
+    resolutions: SearchRetainedLogPredicateResolutions,
+}
+
+impl SearchRetainedLogAssertionEvidence {
+    /// Builds retained-log evidence with no host-resolution table.
+    #[must_use]
+    pub fn new(recorded_log: RecordedAssertionLog) -> Self {
+        Self {
+            recorded_log,
+            resolutions: SearchRetainedLogPredicateResolutions::new(),
+        }
+    }
+
+    /// Adds host-resolution facts to this retained-log evidence.
+    #[must_use]
+    pub fn with_resolutions(mut self, resolutions: SearchRetainedLogPredicateResolutions) -> Self {
+        self.resolutions = resolutions;
+        self
+    }
+
+    /// Returns the retained assertion log bound to one configuration.
+    #[must_use]
+    pub const fn recorded_log(&self) -> &RecordedAssertionLog {
+        &self.recorded_log
+    }
+
+    /// Returns host-resolution facts bound to the retained assertion log.
+    #[must_use]
+    pub const fn resolutions(&self) -> &SearchRetainedLogPredicateResolutions {
+        &self.resolutions
+    }
+}
+
 /// Read-only failure input for strategy-driven graph search.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SearchFailureOracle {
@@ -18935,6 +18972,10 @@ impl SearchFailureOracle {
     /// require a separate explicit oracle path; host-resolution-dependent
     /// coverage or memory predicates require
     /// [`Self::from_search_assertion_violations_with_retained_logs_and_resolutions`].
+    /// For backend integrations that have both logs and host-resolution facts,
+    /// prefer
+    /// [`Self::from_search_assertion_violations_with_retained_log_evidence`]
+    /// so each reached configuration carries its own evidence bundle.
     ///
     /// # Errors
     ///
@@ -18946,18 +18987,18 @@ impl SearchFailureOracle {
         scenario: &ScenarioDefForm,
         root: &Configuration,
         run: &TemporalGraphSearchRun,
-        retained_log_for: F,
+        mut retained_log_for: F,
     ) -> Result<Self, EngineError>
     where
         F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
     {
-        let resolutions = SearchRetainedLogPredicateResolutions::new();
-        Self::from_search_assertion_violations_with_retained_logs_internal(
+        Self::from_search_assertion_violations_with_retained_log_evidence(
             scenario,
             root,
             run,
-            &resolutions,
-            retained_log_for,
+            move |configuration| {
+                retained_log_for(configuration).map(SearchRetainedLogAssertionEvidence::new)
+            },
         )
     }
 
@@ -18966,7 +19007,9 @@ impl SearchFailureOracle {
     /// This extends [`Self::from_search_assertion_violations_with_retained_logs`]
     /// by admitting symbolic coverage and virtual/symbolic memory predicates
     /// only when `resolutions` contains an exact leaf resolution for the
-    /// predicate's node and host-side reference.
+    /// predicate's node and host-side reference. Use
+    /// [`Self::from_search_assertion_violations_with_retained_log_evidence`]
+    /// when those resolutions differ by reached configuration.
     ///
     /// # Errors
     ///
@@ -18979,29 +19022,47 @@ impl SearchFailureOracle {
         root: &Configuration,
         run: &TemporalGraphSearchRun,
         resolutions: &SearchRetainedLogPredicateResolutions,
-        retained_log_for: F,
-    ) -> Result<Self, EngineError>
-    where
-        F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
-    {
-        Self::from_search_assertion_violations_with_retained_logs_internal(
-            scenario,
-            root,
-            run,
-            resolutions,
-            retained_log_for,
-        )
-    }
-
-    fn from_search_assertion_violations_with_retained_logs_internal<F>(
-        scenario: &ScenarioDefForm,
-        root: &Configuration,
-        run: &TemporalGraphSearchRun,
-        resolutions: &SearchRetainedLogPredicateResolutions,
         mut retained_log_for: F,
     ) -> Result<Self, EngineError>
     where
         F: FnMut(&Configuration) -> Option<RecordedAssertionLog>,
+    {
+        let resolutions = resolutions.clone();
+        Self::from_search_assertion_violations_with_retained_log_evidence(
+            scenario,
+            root,
+            run,
+            move |configuration| {
+                retained_log_for(configuration).map(|recorded_log| {
+                    SearchRetainedLogAssertionEvidence::new(recorded_log)
+                        .with_resolutions(resolutions.clone())
+                })
+            },
+        )
+    }
+
+    /// Builds a retained-log assertion oracle from configuration-bound evidence.
+    ///
+    /// `evidence_for` is consulted for every configuration reached by `run`.
+    /// Configurations without evidence are skipped. This is the backend-facing
+    /// retained-log boundary: every returned [`SearchRetainedLogAssertionEvidence`]
+    /// must contain the exact retained log for that configuration and any
+    /// host-resolution facts that were valid when the log was captured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not match `root` or a reached configuration. Returns
+    /// [`EngineError::ScenarioSerialization`] when a supplied retained assertion
+    /// log cannot be checked.
+    pub fn from_search_assertion_violations_with_retained_log_evidence<F>(
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        run: &TemporalGraphSearchRun,
+        mut evidence_for: F,
+    ) -> Result<Self, EngineError>
+    where
+        F: FnMut(&Configuration) -> Option<SearchRetainedLogAssertionEvidence>,
     {
         let scenario_def = scenario.scenario_def();
         if scenario_def.id != root.def.id {
@@ -19019,14 +19080,14 @@ impl SearchFailureOracle {
                     actual: configuration.def.id,
                 });
             }
-            let Some(recorded) = retained_log_for(&configuration) else {
+            let Some(evidence) = evidence_for(&configuration) else {
                 continue;
             };
             if let Some(fingerprint) = search_assertion_failure_fingerprint_from_retained_log(
                 scenario,
                 &configuration,
-                &recorded,
-                resolutions,
+                evidence.recorded_log(),
+                evidence.resolutions(),
             )? {
                 failure_oracle = failure_oracle.with_failure(configuration.id(), fingerprint);
             }

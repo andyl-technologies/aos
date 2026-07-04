@@ -2,22 +2,24 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
     AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash,
-    ControlFaultAction, ControlFaultDecision, Decision, EngineError, Fault, FaultDecision, FaultId,
-    FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath, GenesisCheckpoint, Icount,
-    MarkerId, MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth,
-    NodeFault, NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate,
-    Properties, Property, ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
-    RngDecision, RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
-    SearchReplayOracleSamplingConfig, SearchRetainedLogPredicateResolutions,
-    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
-    TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake,
-    try_step,
+    ControlFaultAction, ControlFaultDecision, Decision, EngineError, EventLogOffset, Fault,
+    FaultDecision, FaultId, FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath,
+    FrontierChild, FrontierReductionReport, GenesisCheckpoint, Icount, MarkerId,
+    MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault,
+    NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
+    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
+    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
+    SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
+    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
+    TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    bake, try_step,
 };
 
 #[test]
@@ -539,6 +541,79 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
             .is_some()
     );
 
+    let evidence_symbol_coverage_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_symbol_coverage_scenario,
+            &unsupported_symbol_coverage_root,
+            &unsupported_symbol_coverage_run,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_coverage_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_symbol_coverage_log.clone())
+                        .with_resolutions(symbol_coverage_resolutions.clone())
+                })
+            },
+        )?;
+
+    assert!(
+        evidence_symbol_coverage_oracle
+            .failure_for(unsupported_symbol_coverage_root.id())
+            .is_some()
+    );
+
+    let evidence_child_coverage_log = retained_observable_log(ObservableEvent::coverage_block(
+        icount(13),
+        node_id("search-node"),
+        0x5000,
+        0x20,
+    ))?;
+    let evidence_child_coverage_resolutions = SearchRetainedLogPredicateResolutions::new()
+        .with_code_point(
+            node_id("search-node"),
+            CodePoint::symbol("needs-symbol-resolution"),
+            ResolvedCodePoint::guest_address(0x5010),
+        );
+    let (evidence_child_configuration, evidence_multi_configuration_run) =
+        search_run_for_root_decision(
+            &unsupported_symbol_coverage_root,
+            fault_decision("search-evidence/child", true),
+        )?;
+    let evidence_per_configuration_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_symbol_coverage_scenario,
+            &unsupported_symbol_coverage_root,
+            &evidence_multi_configuration_run,
+            |configuration| {
+                if configuration.id() == unsupported_symbol_coverage_root.id() {
+                    Some(
+                        SearchRetainedLogAssertionEvidence::new(
+                            unsupported_symbol_coverage_log.clone(),
+                        )
+                        .with_resolutions(symbol_coverage_resolutions.clone()),
+                    )
+                } else if configuration.id() == evidence_child_configuration.id() {
+                    Some(
+                        SearchRetainedLogAssertionEvidence::new(
+                            evidence_child_coverage_log.clone(),
+                        )
+                        .with_resolutions(evidence_child_coverage_resolutions.clone()),
+                    )
+                } else {
+                    None
+                }
+            },
+        )?;
+
+    assert!(
+        evidence_per_configuration_oracle
+            .failure_for(unsupported_symbol_coverage_root.id())
+            .is_some()
+    );
+    assert!(
+        evidence_per_configuration_oracle
+            .failure_for(evidence_child_configuration.id())
+            .is_some()
+    );
+
     let physical_memory_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::not(Predicate::memory_predicate(
             node_id("search-node"),
@@ -690,6 +765,40 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
             .is_some()
     );
 
+    let evidence_nonmatching_symbol_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_symbol_memory_scenario,
+            &unsupported_symbol_memory_root,
+            &unsupported_symbol_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_memory_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_symbol_memory_log.clone())
+                        .with_resolutions(nonmatching_symbol_memory_resolutions.clone())
+                })
+            },
+        )?;
+
+    assert!(evidence_nonmatching_symbol_memory_oracle.is_empty());
+
+    let evidence_symbol_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_symbol_memory_scenario,
+            &unsupported_symbol_memory_root,
+            &unsupported_symbol_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_symbol_memory_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_symbol_memory_log.clone())
+                        .with_resolutions(symbol_memory_resolutions.clone())
+                })
+            },
+        )?;
+
+    assert!(
+        evidence_symbol_memory_oracle
+            .failure_for(unsupported_symbol_memory_root.id())
+            .is_some()
+    );
+
     let unsupported_virtual_memory_scenario = assertion_lowering_scenario(Property::Always {
         predicate: Predicate::not(Predicate::memory_predicate(
             node_id("search-node"),
@@ -761,6 +870,40 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(
         resolved_virtual_memory_oracle
+            .failure_for(unsupported_virtual_memory_root.id())
+            .is_some()
+    );
+
+    let evidence_nonmatching_virtual_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_virtual_memory_scenario,
+            &unsupported_virtual_memory_root,
+            &unsupported_virtual_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_virtual_memory_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_virtual_memory_log.clone())
+                        .with_resolutions(nonmatching_virtual_memory_resolutions.clone())
+                })
+            },
+        )?;
+
+    assert!(evidence_nonmatching_virtual_memory_oracle.is_empty());
+
+    let evidence_virtual_memory_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &unsupported_virtual_memory_scenario,
+            &unsupported_virtual_memory_root,
+            &unsupported_virtual_memory_run,
+            |configuration| {
+                (configuration.id() == unsupported_virtual_memory_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(unsupported_virtual_memory_log.clone())
+                        .with_resolutions(virtual_memory_resolutions.clone())
+                })
+            },
+        )?;
+
+    assert!(
+        evidence_virtual_memory_oracle
             .failure_for(unsupported_virtual_memory_root.id())
             .is_some()
     );
@@ -1081,6 +1224,53 @@ fn empty_search_run_for_root(root: &Configuration) -> TemporalGraphSearchRun {
         discovered_failures: Vec::new(),
         exhausted: true,
     }
+}
+
+fn search_run_for_root_decision(
+    root: &Configuration,
+    decision: Decision,
+) -> Result<(Configuration, TemporalGraphSearchRun), EngineError> {
+    let child = try_step(root, decision.clone())?;
+    let runtime = RuntimeState {
+        id: root.id(),
+        configuration: root.id(),
+        node_blobs: BTreeMap::new(),
+        node_icounts: BTreeMap::new(),
+        scheduler: SchedulerState::empty(),
+        event_log: EventLogOffset::default(),
+    };
+    let run = TemporalGraphSearchRun {
+        root: root.id(),
+        strategy: SearchStrategy::BreadthFirst,
+        budget: SearchBudget::new(1),
+        explored_graph: BTreeSet::from([root.id(), child.id()]),
+        expansions: vec![SearchExpansion {
+            sequence: 0,
+            frontier: root.id(),
+            depth: root.schedule.len(),
+            search: TemporalGraphSearch {
+                frontier: root.id(),
+                frontier_runtime: TemporalGraphRuntime {
+                    configuration: root.id(),
+                    checkpoint: root.id(),
+                    runtime,
+                },
+                frontier_report: FrontierReductionReport {
+                    explored: vec![FrontierChild {
+                        decision,
+                        configuration: child.clone(),
+                        already_recorded: false,
+                    }],
+                    covered: Vec::new(),
+                },
+                materialized: Vec::new(),
+                replay_oracle_sampling: None,
+            },
+        }],
+        discovered_failures: Vec::new(),
+        exhausted: true,
+    };
+    Ok((child, run))
 }
 
 fn control_fault_inject_decision(tag: FaultTag) -> Decision {
