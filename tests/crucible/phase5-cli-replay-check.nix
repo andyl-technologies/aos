@@ -52,8 +52,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliReplayCheck`";
       }
       {
-        label = "replay check still bounded";
-        needle = "`--to`/`--bisect` rejected";
+        label = "replay bisect progress";
+        needle = "artifact-to-artifact `--bisect <other-artifact>`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -68,8 +68,20 @@
         needle = "check: Option<PathBuf>";
       }
       {
+        label = "replay bisect flag";
+        needle = "bisect: Option<PathBuf>";
+      }
+      {
         label = "replay canonical log reconstruction";
         needle = "let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);";
+      }
+      {
+        label = "replay bisect implementation";
+        needle = "fn replay_bisect_artifacts";
+      }
+      {
+        label = "replay bisect divergence error";
+        needle = "replay --bisect divergence";
       }
       {
         label = "dedicated replay check error";
@@ -112,12 +124,20 @@
         needle = "--check <original-log>";
       }
       {
+        label = "replay help advertises bisect";
+        needle = "--bisect <other-artifact>";
+      }
+      {
         label = "future replay --to remains rejected";
         needle = "\"--to\", \"savepoint\"";
       }
       {
-        label = "future replay --bisect remains rejected";
-        needle = "\"other.crucible\"";
+        label = "replay bisect divergence test";
+        needle = "cli_replay_bisects_artifact_divergence";
+      }
+      {
+        label = "replay bisect identical test";
+        needle = "cli_replay_bisect_accepts_identical_artifacts";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -185,7 +205,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
-              cli_replay_check \
+              cli_replay \
               -- --test-threads=1
             cargo test \
               --frozen \

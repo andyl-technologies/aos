@@ -458,10 +458,11 @@ long-held locks.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch with
-  deterministic first-difference byte localization, and continued rejection of
-  `--to`/`--bisect`; full closure waits for content-addressed component
-  resolution, replay-to-savepoint, artifact-to-artifact `--bisect`, and
-  machine-independent backend replay coverage.
+  deterministic first-difference byte localization, artifact-to-artifact
+  `--bisect <other-artifact>` over validated matching replay inputs with
+  canonical-log/fingerprint divergence localization, and continued rejection of
+  `--to`; full closure waits for content-addressed component resolution,
+  replay-to-savepoint, and machine-independent backend replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,

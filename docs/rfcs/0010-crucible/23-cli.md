@@ -625,12 +625,15 @@ store (06 §7.1), verifies the pinned engine/ABI/QEMU identities match the host
 else — then `reduce`s `(ScenarioDef, Schedule)` to the recorded state ([INV-1]).
 With `--check`, it asserts the replayed canonical log equals the supplied
 original byte-for-byte and exits non-zero on any difference, feeding the diff to
-bisection (24 §5).
+bisection (24 §5). With `--bisect <other-artifact>`, it compares two replayable
+artifacts with matching replay inputs and exits non-zero when the canonical log
+or fingerprint stream diverges.
 
 **Exit codes.** `0` = replayed successfully (and, with `--check`, byte-identical);
-`1` = `--check` mismatch (the divergence is bisected and reported, §4); `3` =
-pinned-identity mismatch (engine/ABI/QEMU; [HARN-28]) or backend error; `5` =
-malformed/unresolvable artifact; `4` = discovery/config; `64` = usage.
+`1` = `--check` mismatch or `--bisect` divergence (the divergence is bisected
+and reported, §4); `3` = pinned-identity mismatch (engine/ABI/QEMU; [HARN-28])
+or backend error; `5` = malformed/unresolvable artifact; `4` =
+discovery/config; `64` = usage.
 
 - **[CLI-22]** `crucible replay <artifact>` MUST resolve the artifact's
   content-addressed components (06 §7.1), verify the pinned engine/ABI/QEMU
@@ -875,7 +878,7 @@ branch on the verdict without parsing output:
   ────   ───────────────────────────────────────────────────────────────────
    0     success / Passed / deterministic / all gates green / clean shutdown
    1     Failed (property violation) / verify divergence / replay --check mismatch /
-         counterexample found
+         replay --bisect divergence / counterexample found
    2     Timeout (virtual-time or quantum budget reached, 20 §2)
    3     Crashed / backend error / replay-oracle violation / pinned-identity mismatch
    4     discovery or configuration error (QEMU/plugin/store/daemon; §5)
@@ -1092,10 +1095,13 @@ branch on the verdict without parsing output:
   Work in progress under `checks.crucible.phase5.cliReplayCheck`: the CLI now
   accepts `replay --check <original-log>`, validates the artifact through the
   pinned identity path, reconstructs the replay canonical log, returns exit 1 on
-  byte mismatch with deterministic first-difference byte localization, and keeps
-  `--to`/`--bisect` rejected until those behaviors are implemented. Full closure
-  remains blocked on content-addressed component resolution, replay-to-savepoint,
-  artifact-to-artifact `--bisect`, and machine-independent backend replay
+  byte mismatch with deterministic first-difference byte localization, and
+  supports artifact-to-artifact `--bisect <other-artifact>` by validating both
+  artifacts, requiring matching replay inputs, localizing the first differing
+  canonical-log/fingerprint coordinate, and returning the replay-check failure
+  exit path on divergence. `--to` remains rejected until replay-to-savepoint is
+  implemented. Full closure remains blocked on content-addressed component
+  resolution, replay-to-savepoint, and machine-independent backend replay
   coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
