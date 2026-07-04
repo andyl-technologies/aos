@@ -408,10 +408,12 @@ long-held locks.
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
   `T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently
   covers shell completion generation, `--version`, the current non-overclaiming
-  help surface, and rejection of future flags whose command behavior is not
-  implemented yet; full closure waits for the command-behavior gates
-  `T-CLI-7 … T-CLI-13` so the final help text can be certified in sync with
-  behavior.
+  help surface, process-level `--help`, `--version`, bash completion, and
+  missing-shell usage coverage for the real binary, hidden gate-only flag
+  exclusion from help, and rejection of future flags whose command behavior is
+  not implemented yet; full closure waits for the remaining command-behavior
+  gates `T-CLI-9 … T-CLI-13` so the final help text can be certified in sync
+  with behavior.
   `T-CLI-8` is green through `checks.crucible.phase5.cliSelftest`, which covers
   the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
   validation for supported selftest runners, malformed/unsupported selection

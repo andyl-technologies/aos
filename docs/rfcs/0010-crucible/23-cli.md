@@ -1249,10 +1249,12 @@ branch on the verdict without parsing output:
   §6–§14 and stays in sync with flag behavior. — satisfies [CLI-6]; spec §2.1.
   Work in progress under `checks.crucible.phase5.cliCompletionsHelp`: the CLI
   now generates shell completions, renders `--version`, regression-tests the
-  current non-overclaiming help surface, and rejects future flags whose command
-  behavior is not implemented yet. Full closure remains blocked on the
-  command-behavior gates (`T-CLI-7 … T-CLI-13`) so the final help text can be
-  certified in sync with behavior.
+  current non-overclaiming help surface, process-tests the real binary's
+  top-level `--help`, `--version`, bash completion script, missing-shell usage
+  failure, and hidden gate-only flag exclusion, and rejects future flags whose
+  command behavior is not implemented yet. Full closure remains blocked on the
+  remaining command-behavior gates (`T-CLI-9 … T-CLI-13`) so the final help text
+  can be certified in sync with behavior.
 - [x] **T-CLI-17** Implement `triage` as a thin driver over the triage engine (34):
   cluster findings by signature, elect + optionally minimize a representative per
   cluster (each a self-contained, replayable/debuggable artifact), emit a report
