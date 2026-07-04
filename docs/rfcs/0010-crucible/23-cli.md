@@ -1067,9 +1067,10 @@ branch on the verdict without parsing output:
   or a declared property violation by rebuilding the temporal graph,
   instantiating the checkpoint through the session resume API, advancing the
   resumed actor, validating property-stop breakpoint firing evidence when
-  requested, and stopping with a terminal savepoint. Full closure remains
-  blocked on bare-hash checkpoint closure loading, remote daemon and real-QEMU
-  coverage, and full replay-oracle coverage across those runners.
+  requested, stopping with a terminal savepoint, and replay-oracle-validating
+  that terminal materialization. Full closure remains blocked on bare-hash
+  checkpoint closure loading, remote daemon and real-QEMU coverage, and full
+  replay-oracle coverage across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

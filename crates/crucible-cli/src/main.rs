@@ -4575,6 +4575,7 @@ struct ResumeWorkflowReport {
     source_checkpoint: crucible::ContentHash,
     resumed_configuration: crucible::ContentHash,
     scenario_label: String,
+    terminal_oracle: SavepointOracleProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5162,18 +5163,34 @@ fn resume_handle_evidence(plan: &ResumeInvocationPlan) -> Result<ResumeHandleEvi
             format_content_hash_ref(handle.checkpoint)
         )));
     }
-    let checkpoint = checkpoint_for_resume_configuration(
-        &configuration,
-        VirtualTime {
-            ticks: handle.frontier_ticks,
-        },
-    )?;
+    let frontier = validate_resume_handle_frontier(&schedule, handle.frontier_ticks)?;
+    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
     Ok(ResumeHandleEvidence {
         scenario_form,
         scenario,
         schedule,
         configuration,
         checkpoint,
+    })
+}
+
+fn validate_resume_handle_frontier(
+    schedule: &Schedule,
+    frontier_ticks: u64,
+) -> Result<VirtualTime, CliError> {
+    let schedule_ticks = u64::try_from(schedule.len()).map_err(|_| {
+        CliError::Identity(format!(
+            "savepoint schedule length {} cannot be represented as virtual time",
+            schedule.len()
+        ))
+    })?;
+    if frontier_ticks != schedule_ticks {
+        return Err(CliError::Identity(format!(
+            "savepoint handle frontier {frontier_ticks} did not match schedule-derived frontier {schedule_ticks}"
+        )));
+    }
+    Ok(VirtualTime {
+        ticks: frontier_ticks,
     })
 }
 
@@ -5419,6 +5436,8 @@ async fn run_resumed_savepoint_actor_with_driver_async(
         .await
         .map_err(|error| backend_error(format!("resume actor task failed to join: {error}")))?
         .map_err(|error| backend_error(format!("resume actor failed: {error}")))?;
+    let terminal_oracle =
+        validate_resume_terminal_savepoint(&evidence, &actor_report.final_snapshot)?;
     let final_view = live.read();
     state_updates.push(format!("{:?}", final_view.state_kind).to_ascii_lowercase());
     let final_state = if matches!(plan.execution_mode, RunExecutionMode::Interactive) {
@@ -5467,6 +5486,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
         source_checkpoint,
         resumed_configuration,
         scenario_label: plan.savepoint.label(),
+        terminal_oracle,
     })
 }
 
@@ -5777,6 +5797,7 @@ fn finish_resume_workflow_outcome(
     report: ResumeWorkflowReport,
 ) -> Result<BackendCommandOutcome, CliError> {
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    let oracle = report.terminal_oracle.clone();
     outcome.status = report.run.status;
     outcome.exit_code = report.run.status.exit_code();
     outcome.terminal_savepoint = report.run.terminal_savepoint;
@@ -5794,6 +5815,13 @@ fn finish_resume_workflow_outcome(
     for status in &report.run.watch_statuses {
         outcome.stdout.push(format!("run-watch\t{status}"));
     }
+    outcome.stdout.push(format!(
+        "resume-oracle\tstatus={}\tconfiguration={}\tfat={}\tthin={}",
+        oracle.status_label(),
+        format_content_hash_ref(oracle.configuration),
+        format_content_hash_ref(oracle.fat_checkpoint),
+        format_content_hash_ref(oracle.thin_checkpoint)
+    ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -5806,7 +5834,21 @@ fn finish_resume_workflow_outcome(
             resume_plan.terminal_condition.label()
         ),
     });
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("replay-oracle"),
+        kind: String::from("resume_oracle_validation"),
+        summary: format!(
+            "status={} configuration={} fat={} thin={}",
+            oracle.status_label(),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint),
+            format_content_hash_ref(oracle.thin_checkpoint)
+        ),
+    });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    outcome.savepoint_oracle = Some(oracle);
     Ok(outcome)
 }
 
@@ -7569,46 +7611,205 @@ fn validate_savepoint_checkpoint(
     checkpoint: &Checkpoint,
     boundary: crucible::VirtualTime,
 ) -> Result<SavepointOracleProof, CliError> {
-    let mut graph = save_validation_graph(save_plan.run_plan.scenario.scenario_def())?;
-    if checkpoint.configuration != configuration.id() {
-        return Err(CliError::Identity(format!(
-            "save checkpoint {} named configuration {}, expected {}",
-            format_content_hash_ref(checkpoint.id),
-            format_content_hash_ref(checkpoint.configuration),
-            format_content_hash_ref(configuration.id())
-        )));
+    validate_checkpoint_with_replay_oracle(
+        "save",
+        save_plan.run_plan.scenario.scenario_def(),
+        configuration,
+        checkpoint,
+        boundary,
+    )
+}
+
+fn validate_resume_terminal_savepoint(
+    evidence: &ResumeHandleEvidence,
+    final_snapshot: &crucible_session::EngineSnapshot,
+) -> Result<SavepointOracleProof, CliError> {
+    let checkpoint = final_snapshot.terminal_savepoint.as_ref().ok_or_else(|| {
+        backend_error("resume completed without a terminal savepoint for replay-oracle validation")
+    })?;
+    let mut graph = save_validation_graph(&evidence.scenario)?;
+    validate_resume_terminal_source_ancestor(evidence, &final_snapshot.configuration)?;
+    if !evidence.configuration.is_genesis() {
+        graph
+            .cache_snapshot(&evidence.configuration, evidence.checkpoint.clone())
+            .map_err(|error| {
+                CliError::Identity(format!(
+                    "resume source checkpoint cache admission failed: {error}"
+                ))
+            })?;
     }
-    if checkpoint.kind != CheckpointKind::Fat {
+    validate_resume_replay_anchor(&graph, evidence, &final_snapshot.configuration)?;
+    validate_checkpoint_metadata(
+        "resume",
+        &final_snapshot.configuration,
+        checkpoint,
+        final_snapshot.frontier,
+    )?;
+    let replay = graph
+        .replay_checkpoint(&final_snapshot.configuration, checkpoint)
+        .map_err(|error| {
+            CliError::Identity(format!(
+                "resume replay-oracle fat==thin validation failed: {error}"
+            ))
+        })?;
+    if replay.fat_checkpoint != checkpoint.id || replay.thin_checkpoint != checkpoint.id {
         return Err(CliError::Identity(format!(
-            "save checkpoint {} was not materialized as fat",
+            "resume replay-oracle mismatch: fat={} thin={} saved={}",
+            format_content_hash_ref(replay.fat_checkpoint),
+            format_content_hash_ref(replay.thin_checkpoint),
             format_content_hash_ref(checkpoint.id)
         )));
     }
-    if checkpoint.virtual_time != boundary {
+    Ok(SavepointOracleProof {
+        configuration: replay.configuration,
+        fat_checkpoint: replay.fat_checkpoint,
+        thin_checkpoint: replay.thin_checkpoint,
+        frontier: checkpoint.virtual_time,
+        schedule: final_snapshot.configuration.schedule.clone(),
+        store_objects: 0,
+    })
+}
+
+fn validate_resume_terminal_source_ancestor(
+    evidence: &ResumeHandleEvidence,
+    final_configuration: &crucible::Configuration,
+) -> Result<(), CliError> {
+    if final_configuration.def.id() != evidence.scenario.id() {
         return Err(CliError::Identity(format!(
-            "save checkpoint {} virtual time {} did not match boundary {}",
-            format_content_hash_ref(checkpoint.id),
-            checkpoint.virtual_time.ticks,
-            boundary.ticks
+            "resume terminal scenario {} did not match source scenario {}",
+            final_configuration.def.id().to_hex(),
+            evidence.scenario.id().to_hex()
         )));
     }
+    if final_configuration.schedule.len() < evidence.schedule.len() {
+        return Err(CliError::Identity(format!(
+            "resume terminal schedule length {} is shorter than source schedule length {}",
+            final_configuration.schedule.len(),
+            evidence.schedule.len()
+        )));
+    }
+    let source_prefix = final_configuration
+        .schedule
+        .prefix(evidence.schedule.len())
+        .map_err(|error| {
+            CliError::Identity(format!("resume terminal source prefix failed: {error}"))
+        })?;
+    if source_prefix != evidence.schedule {
+        return Err(CliError::Identity(format!(
+            "resume terminal schedule is not descended from source checkpoint {}",
+            format_content_hash_ref(evidence.checkpoint.id)
+        )));
+    }
+    let source_configuration = crucible::Configuration {
+        def: final_configuration.def.clone(),
+        schedule: source_prefix,
+    };
+    if source_configuration.id() != evidence.configuration.id() {
+        return Err(CliError::Identity(format!(
+            "resume terminal source prefix reconstructed {}, expected {}",
+            format_content_hash_ref(source_configuration.id()),
+            format_content_hash_ref(evidence.configuration.id())
+        )));
+    }
+    validate_checkpoint_metadata(
+        "resume source",
+        &evidence.configuration,
+        &evidence.checkpoint,
+        validate_resume_handle_frontier(
+            &evidence.schedule,
+            evidence.checkpoint.virtual_time.ticks,
+        )?,
+    )
+}
+
+fn validate_resume_replay_anchor(
+    graph: &TemporalGraph,
+    evidence: &ResumeHandleEvidence,
+    final_configuration: &crucible::Configuration,
+) -> Result<(), CliError> {
+    if evidence.configuration.is_genesis()
+        || final_configuration.id() == evidence.configuration.id()
+    {
+        return Ok(());
+    }
+    let ancestor = graph
+        .nearest_cached_ancestor(final_configuration)
+        .map_err(|error| {
+            CliError::Identity(format!("resume replay anchor lookup failed: {error}"))
+        })?
+        .ok_or_else(|| {
+            CliError::Identity(format!(
+                "resume replay did not find cached source checkpoint {} as an ancestor",
+                format_content_hash_ref(evidence.checkpoint.id)
+            ))
+        })?;
+    if ancestor.id() != evidence.configuration.id() {
+        return Err(CliError::Identity(format!(
+            "resume replay anchor {} did not match source checkpoint {}",
+            format_content_hash_ref(ancestor.id()),
+            format_content_hash_ref(evidence.checkpoint.id)
+        )));
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_with_replay_oracle(
+    operation: &'static str,
+    scenario: &crucible::ScenarioDef,
+    configuration: &crucible::Configuration,
+    checkpoint: &Checkpoint,
+    boundary: crucible::VirtualTime,
+) -> Result<SavepointOracleProof, CliError> {
+    validate_checkpoint_with_replay_oracle_anchored(
+        operation,
+        scenario,
+        [],
+        configuration,
+        checkpoint,
+        boundary,
+    )
+}
+
+fn validate_checkpoint_with_replay_oracle_anchored<'a>(
+    operation: &'static str,
+    scenario: &crucible::ScenarioDef,
+    anchors: impl IntoIterator<Item = (&'a crucible::Configuration, &'a Checkpoint)>,
+    configuration: &crucible::Configuration,
+    checkpoint: &Checkpoint,
+    boundary: crucible::VirtualTime,
+) -> Result<SavepointOracleProof, CliError> {
+    let mut graph = save_validation_graph(scenario)?;
+    for (anchor_configuration, anchor_checkpoint) in anchors {
+        if !anchor_configuration.is_genesis() {
+            graph
+                .cache_snapshot(anchor_configuration, anchor_checkpoint.clone())
+                .map_err(|error| {
+                    CliError::Identity(format!(
+                        "{operation} source checkpoint cache admission failed: {error}"
+                    ))
+                })?;
+        }
+    }
+    validate_checkpoint_metadata(operation, configuration, checkpoint, boundary)?;
     if !configuration.is_genesis() {
         graph
             .cache_snapshot(configuration, checkpoint.clone())
             .map_err(|error| {
-                CliError::Identity(format!("save checkpoint cache admission failed: {error}"))
+                CliError::Identity(format!(
+                    "{operation} checkpoint cache admission failed: {error}"
+                ))
             })?;
     }
     let replay = graph
         .replay_checkpoint(configuration, checkpoint)
         .map_err(|error| {
             CliError::Identity(format!(
-                "save replay-oracle fat==thin validation failed: {error}"
+                "{operation} replay-oracle fat==thin validation failed: {error}"
             ))
         })?;
     if replay.fat_checkpoint != checkpoint.id || replay.thin_checkpoint != checkpoint.id {
         return Err(CliError::Identity(format!(
-            "save replay-oracle mismatch: fat={} thin={} saved={}",
+            "{operation} replay-oracle mismatch: fat={} thin={} saved={}",
             format_content_hash_ref(replay.fat_checkpoint),
             format_content_hash_ref(replay.thin_checkpoint),
             format_content_hash_ref(checkpoint.id)
@@ -7627,6 +7828,37 @@ fn validate_savepoint_checkpoint(
         schedule: configuration.schedule.clone(),
         store_objects,
     })
+}
+
+fn validate_checkpoint_metadata(
+    operation: &'static str,
+    configuration: &crucible::Configuration,
+    checkpoint: &Checkpoint,
+    boundary: crucible::VirtualTime,
+) -> Result<(), CliError> {
+    if checkpoint.configuration != configuration.id() {
+        return Err(CliError::Identity(format!(
+            "{operation} checkpoint {} named configuration {}, expected {}",
+            format_content_hash_ref(checkpoint.id),
+            format_content_hash_ref(checkpoint.configuration),
+            format_content_hash_ref(configuration.id())
+        )));
+    }
+    if checkpoint.kind != CheckpointKind::Fat {
+        return Err(CliError::Identity(format!(
+            "{operation} checkpoint {} was not materialized as fat",
+            format_content_hash_ref(checkpoint.id)
+        )));
+    }
+    if checkpoint.virtual_time != boundary {
+        return Err(CliError::Identity(format!(
+            "{operation} checkpoint {} virtual time {} did not match boundary {}",
+            format_content_hash_ref(checkpoint.id),
+            checkpoint.virtual_time.ticks,
+            boundary.ticks
+        )));
+    }
+    Ok(())
 }
 
 fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<TemporalGraph, CliError> {
@@ -13759,6 +13991,111 @@ mod tests {
     }
 
     #[test]
+    fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "resume-source",
+            &form,
+            &schedule,
+            configuration.id(),
+            1,
+            &content_address_bytes(b"resume-log"),
+        )?;
+        let tampered_path = temp.path().join("bad-frontier.crucible-savepoint");
+        fs::write(
+            &tampered_path,
+            fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("resume"),
+            tampered_path.display().to_string(),
+        ]);
+        let error = match dispatch(&cli) {
+            Ok(_) => panic!("resume must reject a tampered savepoint frontier"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("schedule-derived frontier"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot() -> Result<(), Box<dyn Error>> {
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let scenario = form.scenario_def();
+        let source_schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let source_configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: source_schedule.clone(),
+        };
+        let source_checkpoint =
+            checkpoint_for_resume_configuration(&source_configuration, VirtualTime { ticks: 1 })?;
+        let evidence = ResumeHandleEvidence {
+            scenario_form: form,
+            scenario: scenario.clone(),
+            schedule: source_schedule,
+            configuration: source_configuration,
+            checkpoint: source_checkpoint,
+        };
+        let sibling_schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 2 },
+                order: Vec::new(),
+            },
+        ));
+        let final_configuration = crucible::Configuration {
+            def: scenario,
+            schedule: sibling_schedule,
+        };
+        let final_checkpoint =
+            checkpoint_for_resume_configuration(&final_configuration, VirtualTime { ticks: 1 })?;
+        let snapshot = crucible_session::EngineSnapshot {
+            state: crucible_session::EngineState::Stopped {
+                outcome: crucible_session::Outcome::Passed,
+            },
+            configuration: final_configuration,
+            terminal_savepoint: Some(final_checkpoint),
+            frontier: VirtualTime { ticks: 1 },
+            event_log_len: 0,
+            quanta: 0,
+        };
+        let error = match validate_resume_terminal_savepoint(&evidence, &snapshot) {
+            Ok(_) => panic!("resume oracle must reject a non-descendant terminal snapshot"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Identity(_)));
+        assert!(error.to_string().contains("not descended"));
+
+        Ok(())
+    }
+
+    #[test]
     fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let fixture = crucible::happy_path_scenario()?;
@@ -13811,16 +14148,29 @@ mod tests {
         assert_eq!(outcome.status, BackendCommandStatus::Passed);
         assert_eq!(outcome.exit_code, 0);
         assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
         assert!(outcome.stdout.iter().any(|line| {
             line.starts_with("resume-session\t")
                 && line.contains("final=virtual-time")
                 && line.contains("frontier_ticks=2")
+        }));
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-oracle\t")
+                && line.contains("status=fat==thin-passed")
+                && line.contains("fat=blake3:")
+                && line.contains("thin=blake3:")
         }));
         assert!(
             outcome
                 .canonical_log
                 .iter()
                 .any(|entry| entry.kind == "resume_checkpoint")
+        );
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_oracle_validation")
         );
 
         let interactive_cli = Cli::parse_from([
@@ -13858,6 +14208,7 @@ mod tests {
         assert_eq!(interactive_outcome.status, BackendCommandStatus::Passed);
         assert_eq!(interactive_outcome.exit_code, 0);
         assert!(interactive_outcome.terminal_savepoint.is_some());
+        assert!(interactive_outcome.savepoint_oracle.is_some());
         assert!(interactive_outcome.stdout.iter().any(|line| {
             line.starts_with("resume-session\t")
                 && line.contains("final=interactive")
@@ -13937,10 +14288,14 @@ mod tests {
         assert_eq!(property_outcome.status, BackendCommandStatus::Failed);
         assert_eq!(property_outcome.exit_code, 1);
         assert!(property_outcome.terminal_savepoint.is_some());
+        assert!(property_outcome.savepoint_oracle.is_some());
         assert!(property_outcome.stdout.iter().any(|line| {
             line.starts_with("resume-session\t")
                 && line.contains("final=property-failed")
                 && line.contains("outcome=failed")
+        }));
+        assert!(property_outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-oracle\t") && line.contains("status=fat==thin-passed")
         }));
         assert!(
             property_outcome
