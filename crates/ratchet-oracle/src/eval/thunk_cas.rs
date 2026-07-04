@@ -1412,10 +1412,19 @@ mod loom_model_tests {
         ParallelThunkWorkerId::new(raw).expect("test worker id is encodable")
     }
 
-    fn bounded_three_worker_model() -> loom::model::Builder {
+    fn bounded_three_worker_claimant_model() -> loom::model::Builder {
         let mut builder = loom::model::Builder::new();
         builder.preemption_bound = Some(2);
         builder.max_permutations = Some(2048);
+        builder
+    }
+
+    fn exhaustive_three_worker_waiter_model() -> loom::model::Builder {
+        let mut builder = loom::model::Builder::new();
+        builder.max_permutations = None;
+        builder.max_duration = None;
+        builder.preemption_bound = None;
+        builder.checkpoint_file = None;
         builder
     }
 
@@ -1462,7 +1471,7 @@ mod loom_model_tests {
 
     #[test]
     fn loom_bounded_three_racing_claimants_have_one_body_owner() {
-        let builder = bounded_three_worker_model();
+        let builder = bounded_three_worker_claimant_model();
         builder.check(|| {
             let thunk = Arc::new(LoomThunk::new());
             let mut handles = Vec::new();
@@ -1497,8 +1506,8 @@ mod loom_model_tests {
     }
 
     #[test]
-    fn loom_bounded_three_workers_replay_one_published_value() {
-        let builder = bounded_three_worker_model();
+    fn loom_three_workers_replay_one_published_value_after_waiter_registration() {
+        let builder = exhaustive_three_worker_waiter_model();
         builder.check(|| {
             let thunk = Arc::new(LoomThunk::new());
             assert_eq!(thunk.try_claim(worker(1)), LoomClaim::Claimed);
@@ -1530,8 +1539,8 @@ mod loom_model_tests {
     }
 
     #[test]
-    fn loom_bounded_three_workers_replay_one_failed_payload() {
-        let builder = bounded_three_worker_model();
+    fn loom_three_workers_replay_one_failed_payload_after_waiter_registration() {
+        let builder = exhaustive_three_worker_waiter_model();
         builder.check(|| {
             let thunk = Arc::new(LoomThunk::new());
             assert_eq!(thunk.try_claim(worker(1)), LoomClaim::Claimed);
