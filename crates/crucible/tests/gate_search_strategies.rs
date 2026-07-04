@@ -9,9 +9,10 @@ use crucible::{
     AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash,
     ControlFaultAction, ControlFaultDecision, Decision, EngineError, EventLogOffset, Fault,
     FaultDecision, FaultId, FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath,
-    FrontierChild, FrontierReductionReport, GenesisCheckpoint, Icount, MarkerId,
-    MaterializationPolicy, MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault,
-    NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
+    FrontierChild, FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail,
+    GuestAssertionKind, GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy,
+    MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault, NodeId, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
     ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
     ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, RuntimeState, ScenarioDefForm,
     Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
@@ -1346,6 +1347,240 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     assert!(reachable_quiescence_with_terminal_quiescence_oracle.is_empty());
 
+    let guest_marker_scenario = assertion_lowering_scenario_with_world(
+        Property::Always {
+            predicate: Predicate::not(Predicate::fault_active(FaultTag::from_name(
+                "guest-marker-host-guard",
+            ))),
+        },
+        single_node_world_with_white_box(
+            "retained-log-guest-assertion-lowering",
+            WhiteBoxPolicy::Enabled,
+        )?,
+    )?;
+    let guest_marker_root = Configuration::genesis(guest_marker_scenario.scenario_def());
+    let guest_marker_run = empty_search_run_for_root(&guest_marker_root);
+    let guest_always_false_log = retained_guest_assertion_marker_log(
+        "guest-always-false",
+        GuestAssertionKind::Always,
+        false,
+        true,
+    )?;
+    let guest_always_false_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id())
+                    .then(|| guest_always_false_log.clone())
+            },
+        )?;
+
+    assert!(
+        guest_always_false_oracle
+            .failure_for(guest_marker_root.id())
+            .is_some()
+    );
+
+    let guest_unreachable_true_log = retained_guest_assertion_marker_log(
+        "guest-unreachable-true",
+        GuestAssertionKind::Unreachable,
+        true,
+        true,
+    )?;
+    let guest_unreachable_true_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_logs(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id())
+                    .then(|| guest_unreachable_true_log.clone())
+            },
+        )?;
+
+    assert!(
+        guest_unreachable_true_oracle
+            .failure_for(guest_marker_root.id())
+            .is_some()
+    );
+
+    let guest_sometimes_false_log = retained_guest_assertion_marker_log(
+        "guest-sometimes-false",
+        GuestAssertionKind::Sometimes,
+        false,
+        true,
+    )?;
+    let guest_sometimes_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(guest_sometimes_false_log.clone())
+                })
+            },
+        )?;
+
+    assert!(guest_sometimes_without_terminal_quiescence_oracle.is_empty());
+
+    let guest_sometimes_with_blocked_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(guest_sometimes_false_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence {
+                            blockers: vec![SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                                target: node_id("search-node"),
+                            }],
+                        })
+                })
+            },
+        )?;
+
+    assert!(guest_sometimes_with_blocked_terminal_quiescence_oracle.is_empty());
+
+    let guest_sometimes_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(guest_sometimes_false_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        guest_sometimes_with_terminal_quiescence_oracle
+            .failure_for(guest_marker_root.id())
+            .is_some()
+    );
+
+    let guest_reachable_required_false_log = retained_guest_assertion_marker_log(
+        "guest-reachable-required-false",
+        GuestAssertionKind::Reachable,
+        false,
+        true,
+    )?;
+    let guest_reachable_required_without_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(
+                        guest_reachable_required_false_log.clone(),
+                    )
+                })
+            },
+        )?;
+
+    assert!(guest_reachable_required_without_terminal_quiescence_oracle.is_empty());
+
+    let guest_reachable_kind_mismatch_log = retained_observable_events_log(vec![
+        guest_assertion_marker_event(
+            7,
+            "guest-reachable-kind-mismatch",
+            GuestAssertionKind::Reachable,
+            false,
+            true,
+        ),
+        guest_assertion_marker_event(
+            8,
+            "guest-reachable-kind-mismatch",
+            GuestAssertionKind::Always,
+            false,
+            true,
+        ),
+    ])?;
+    let guest_reachable_kind_mismatch_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(
+                        guest_reachable_kind_mismatch_log.clone(),
+                    )
+                })
+            },
+        )?;
+
+    assert!(guest_reachable_kind_mismatch_oracle.is_empty());
+
+    let guest_reachable_required_with_blocked_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(
+                        guest_reachable_required_false_log.clone(),
+                    )
+                    .with_terminal_scheduler_quiescence(SchedulerQuiescence {
+                        blockers: vec![SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                            target: node_id("search-node"),
+                        }],
+                    })
+                })
+            },
+        )?;
+
+    assert!(guest_reachable_required_with_blocked_terminal_quiescence_oracle.is_empty());
+
+    let guest_reachable_required_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(
+                        guest_reachable_required_false_log.clone(),
+                    )
+                    .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(
+        guest_reachable_required_with_terminal_quiescence_oracle
+            .failure_for(guest_marker_root.id())
+            .is_some()
+    );
+
+    let guest_reachable_warn_false_log = retained_guest_assertion_marker_log(
+        "guest-reachable-warn-false",
+        GuestAssertionKind::Reachable,
+        false,
+        false,
+    )?;
+    let guest_reachable_warn_with_terminal_quiescence_oracle =
+        SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+            &guest_marker_scenario,
+            &guest_marker_root,
+            &guest_marker_run,
+            |configuration| {
+                (configuration.id() == guest_marker_root.id()).then(|| {
+                    SearchRetainedLogAssertionEvidence::new(guest_reachable_warn_false_log.clone())
+                        .with_terminal_scheduler_quiescence(SchedulerQuiescence::default())
+                })
+            },
+        )?;
+
+    assert!(guest_reachable_warn_with_terminal_quiescence_oracle.is_empty());
+
     Ok(())
 }
 
@@ -1602,16 +1837,65 @@ fn retained_guest_marker_log(marker: MarkerId) -> Result<RecordedAssertionLog, E
     ))
 }
 
-fn retained_observable_log(event: ObservableEvent) -> Result<RecordedAssertionLog, EngineError> {
-    let boundary_at = time(event.at().ticks.saturating_add(1));
-    let segment = vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &event),
-        crucible::test_support::condition_boundary_entry_for_test(
-            1,
-            boundary_at,
-            SchedulerEvaluationBoundaryKind::Quantum,
+fn retained_guest_assertion_marker_log(
+    id: &str,
+    kind: GuestAssertionKind,
+    condition: bool,
+    must_hit: bool,
+) -> Result<RecordedAssertionLog, EngineError> {
+    retained_observable_log(guest_assertion_marker_event(
+        7, id, kind, condition, must_hit,
+    ))
+}
+
+fn guest_assertion_marker_event(
+    at: u64,
+    id: &str,
+    kind: GuestAssertionKind,
+    condition: bool,
+    must_hit: bool,
+) -> ObservableEvent {
+    ObservableEvent::guest_assertion_marker(
+        icount(at),
+        node_id("search-node"),
+        GuestAssertionMarker::new(
+            AssertionId::from_name(id),
+            format!("guest assertion marker {id}"),
+            kind,
+            condition,
+            must_hit,
+            vec![GuestAssertionDetail::new("case", id)],
+            "gate_search_strategies.rs:guest-marker",
         ),
-    ];
+    )
+}
+
+fn retained_observable_log(event: ObservableEvent) -> Result<RecordedAssertionLog, EngineError> {
+    retained_observable_events_log(vec![event])
+}
+
+fn retained_observable_events_log(
+    events: Vec<ObservableEvent>,
+) -> Result<RecordedAssertionLog, EngineError> {
+    let boundary_at = time(
+        events
+            .iter()
+            .map(|event| event.at().ticks)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1),
+    );
+    let mut segment = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        segment.push(
+            crucible::test_support::condition_observation_entry_for_test(index as u64, event),
+        );
+    }
+    segment.push(crucible::test_support::condition_boundary_entry_for_test(
+        segment.len() as u64,
+        boundary_at,
+        SchedulerEvaluationBoundaryKind::Quantum,
+    ));
     RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("search retained assertion log failed: {source}"),

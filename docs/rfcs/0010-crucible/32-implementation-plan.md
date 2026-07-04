@@ -514,7 +514,9 @@ long-held locks.
   host-resolution tables and an explicit resolution context for symbolic
   coverage and virtual/symbolic memory leaves, plus terminal quiescence evidence
   for retained after-quiescence, `sometimes`, `eventually`, and
-  expected-reachable failures;
+  expected-reachable failures, terminal `sometimes` and required `reachable`
+  guest assertion marker failures, and event-backed `always` false or
+  `unreachable` true guest marker failures;
   file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
   `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
