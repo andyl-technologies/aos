@@ -7992,6 +7992,28 @@ nurseries build on the bump arena.
       shared-thunk graph scheduling, audit all nondeterministic attrset
       iteration, wire ready-work park tokens or CAS wait integration, or satisfy
       the full parallel-evaluator parity gate above.
+- [x] Current Chase-Lev-backed `.drv` surface differential precursor:
+      `ratchet-oracle::eval::compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts`
+      evaluates independent roots serially to the tree-walk derivation snapshot
+      and then re-evaluates those roots through the Chase-Lev-backed tree-walk
+      bridge under every requested worker count. It extracts `.drv` absolute
+      paths and serialized ATerm bytes materialized during each root evaluation,
+      collates fragments with the canonical `parallel_output` rules, and
+      compares the path-sorted content-only SHA-256 collation against the serial
+      baseline. It preflights worker-count encodability before serial
+      evaluation, rejects persistent parse/eval cache roots, uses collect-all
+      execution, and reports serial or parallel root-local derivation-surface
+      failures with stable task indexes. Tests cover 1/3 worker-count parity
+      over roots that force real `derivation` `.drvPath` materialization, empty
+      roots, empty worker-count rejection, worker-count preflight before serial
+      evaluation, parse/eval persistent cache-root rejection, and serial root
+      failure reporting. This is an independent-root materialized
+      derivation-snapshot differential only: it does not run a full derivation
+      closure, force every lazy derivation attrset, compare store writes,
+      include user output string-context parity, prove shared-thunk graph
+      scheduling, audit all nondeterministic attrset iteration, wire ready-work
+      park tokens or CAS wait integration, or satisfy the full
+      parallel-evaluator parity gate above.
 - [ ] **`loom`/Miri memory-ordering audit (R-4) is green** before the parallel
       tier is trusted. *No data races, ever.*
 - [x] Current CAS memory-ordering audit precursor:

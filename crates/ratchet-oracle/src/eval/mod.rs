@@ -70,10 +70,15 @@ pub use parallel_output::{
 pub use parallel_tree_walk::{
     ParallelTreeWalkCanonicalError, ParallelTreeWalkCanonicalOutcome,
     ParallelTreeWalkDifferentialError, ParallelTreeWalkDifferentialReport,
-    ParallelTreeWalkEvaluationError, ParallelTreeWalkRawEvaluation,
-    ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot, ParallelTreeWalkRootSource,
-    ParallelTreeWalkTopLevelError, compare_parallel_tree_walk_raw_across_worker_counts,
+    ParallelTreeWalkDrvDifferentialError, ParallelTreeWalkDrvDifferentialReport,
+    ParallelTreeWalkDrvEvaluation, ParallelTreeWalkDrvEvaluationError,
+    ParallelTreeWalkDrvEvaluationReport, ParallelTreeWalkEvaluationError,
+    ParallelTreeWalkRawEvaluation, ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot,
+    ParallelTreeWalkRootSource, ParallelTreeWalkTopLevelError,
+    compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts,
+    compare_parallel_tree_walk_raw_across_worker_counts,
     compare_parallel_tree_walk_raw_chase_lev_across_worker_counts,
+    eval_drv_outputs_parallel_chase_lev_top_level_roots,
     eval_raw_bytes_parallel_chase_lev_top_level, eval_raw_bytes_parallel_chase_lev_top_level_roots,
     eval_raw_bytes_parallel_top_level, eval_raw_bytes_parallel_top_level_roots,
 };

@@ -1003,6 +1003,28 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       nondeterministic attrset iteration, wire ready-work park tokens or CAS wait
       integration, or satisfy the full parallel evaluator parity gate (§4.4) —
       **P3.5** precursor, `C-12`/`S-13`.
+- [x] Current Chase-Lev-backed `.drv` surface differential precursor:
+      `ratchet-oracle::eval::compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts`
+      evaluates independent roots serially to the tree-walk derivation snapshot,
+      re-evaluates the same roots through the Chase-Lev-backed tree-walk bridge
+      for each requested worker count, extracts every `.drv` path and serialized
+      ATerm byte stream materialized during root evaluation, collates the
+      fragments with `parallel_output`, and compares the path-sorted
+      content-only SHA-256 collation to the serial baseline. It preflights
+      worker-count encodability before serial evaluation, rejects persistent
+      parse/eval cache roots, and reports serial or parallel root-local
+      derivation-surface failures with stable task indexes. Tests cover 1/3
+      worker-count parity over roots that force real `derivation` `.drvPath`
+      materialization, empty roots, empty worker-count rejection, oversized
+      worker-count preflight before serial evaluation, parse/eval persistent
+      cache-root rejection, and serial root failure reporting. This is an
+      independent-root materialized derivation-snapshot differential only: it
+      does not run a full closure, force every lazy derivation attrset, compare
+      store writes, include user output string-context parity, prove
+      shared-thunk graph scheduling, audit all nondeterministic attrset
+      iteration, wire ready-work park tokens or CAS wait integration, or satisfy
+      the full parallel evaluator parity gate (§4.4) — **P3.5** precursor,
+      `C-12`/`S-13`.
 
 ### Concurrency runtime — rayon, fibers, tokio (§5.5)
 

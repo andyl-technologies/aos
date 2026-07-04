@@ -660,7 +660,7 @@ impl TreeWalk {
         })
     }
 
-    pub(super) fn derivation_snapshot(&self) -> Result<Vec<EvalDerivation>, TreeWalkError> {
+    pub(crate) fn derivation_snapshot(&self) -> Result<Vec<EvalDerivation>, TreeWalkError> {
         self.known_derivations
             .iter()
             .map(|(drv_path, known)| {
