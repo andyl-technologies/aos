@@ -7427,6 +7427,18 @@ nurseries build on the bump arena.
       only: it does not replace the serial tree-walk thunk cell, execute thunk
       bodies through the parallel scheduler, install the final lock-free waiter
       list, wire scheduler parking, or satisfy the loom/Miri/TSan audit.
+- [x] Current tree-walk parallel thunk force-body bridge:
+      `TreeWalkParallelThunkCell::force_or_wait_with` runs a caller-supplied
+      tree-walk thunk body only for the worker that wins the claim, publishes
+      the resulting `Ok(Value)` or `Err(TreeWalkError)` through the
+      evaluator-native payload bridge, and returns the same replayable result to
+      waiters and later callers. Self-cycle classification returns without
+      running the body. Tests cover exact-once body execution with a blocked
+      waiter wakeup, body-error publication and replay, and self-cycle no-body
+      behavior. This is still a force-body adapter only: it does not call the
+      serial `TreeWalk::force_value` path, replace `EvalThunk` storage, drain
+      scheduler work before parking, install the final lock-free waiter list, or
+      satisfy the loom/Miri/TSan audit.
 - [x] Current semantic WHNF tag-test precursor:
       `ratchet-oracle::eval::whnf_tag` defines the active-ABI fast-path
       boundary for force entry. `classify_whnf_tag_fast_path` returns every
