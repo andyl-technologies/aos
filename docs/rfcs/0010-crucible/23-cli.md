@@ -1175,12 +1175,19 @@ branch on the verdict without parsing output:
   `sometimes`/`eventually` violations plus expected-reachable failures over
   retained-log predicates, plus terminal `sometimes` and required `reachable`
   guest assertion marker failures, while event-backed guest marker failures are
-  limited to `always` false and `unreachable` true records.
+  limited to `always` false and `unreachable` true records. The local-double CLI
+  path now has a hidden retained-evidence fixture input that validates
+  `crucible.search-retained-evidence.v1` TOML, currently accepts
+  `guest-marker` retained events for white-box-enabled nodes on the root or an
+  explicit configuration hash, feeds the resulting configuration-bound
+  `SearchRetainedLogAssertionEvidence` into the trusted retained-log provider,
+  and records the retained evidence source digest and payload in `search-run`
+  provenance and replayable reproduction artifacts.
   The default CLI path intentionally excludes absence-based existential/liveness
   failures,
-  time/timer/quiescence predicates, observable-event/guest-marker predicates,
-  and named host predicates unless explicit schedule-named truth data is
-  supplied. It also
+  time/timer/quiescence predicates, observable-event predicates, and named host
+  predicates unless explicit schedule-named truth data is supplied; guest-marker
+  predicates also require the local-double retained-evidence fixture today. It also
   parses `fuzz <FAMILY>` / `fuzz --family
   <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
   campaign seed into
@@ -1193,9 +1200,9 @@ branch on the verdict without parsing output:
   `fuzz-run` output with generated-mutant, admission, retained-entry, store-put,
   and replay-oracle validation counts. Missing/corrupt stored family objects and
   unsupported backend targets fail explicitly until the remaining policy runners
-  are wired. Full closure remains blocked on real-QEMU coverage, backend wiring
-  that feeds backend-retained evidence bundles to the retained-log provider,
-  and remaining non-prefix assertion classes.
+  are wired. Full closure remains blocked on real-QEMU coverage that produces
+  backend-retained evidence bundles beyond the local-double fixture path and
+  remaining non-prefix assertion classes.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

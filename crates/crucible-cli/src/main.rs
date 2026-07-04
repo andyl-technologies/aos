@@ -40,9 +40,10 @@ use crucible_session::{
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, GenesisCheckpoint, MaterializationPolicy,
-        MaterializationTrigger, MemoryDagStore, OverrideDecision, Schedule, SchedulingPoint,
-        SearchDiscoveredFailure, SearchFailureOracle, SimDuration, TemporalGraph,
-        TemporalGraphStoreError, VirtualTime,
+        MaterializationTrigger, MemoryDagStore, OverrideDecision, RecordedAssertionLog, Schedule,
+        SchedulingPoint, SearchDiscoveredFailure, SearchFailureOracle,
+        SearchRetainedLogAssertionEvidence, SimDuration, TemporalGraph, TemporalGraphStoreError,
+        VirtualTime,
     },
 };
 use serde::Deserialize;
@@ -53,6 +54,9 @@ const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reprodu
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-schedule-named-truths+toml";
+const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
+const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.search-retained-evidence+toml";
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
@@ -478,6 +482,9 @@ struct SearchArgs {
     /// Load schedule-named assertion truth data.
     #[arg(long, value_name = "path")]
     schedule_named_truths: Option<PathBuf>,
+    /// Load backend-retained assertion evidence.
+    #[arg(long, value_name = "path", hide = true)]
+    retained_evidence: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -1490,6 +1497,7 @@ struct SearchDriverPlan {
     on_violation: SearchOnViolationArg,
     explicit_on_violation: bool,
     schedule_named_truths: Option<SearchScheduleNamedTruthsPlan>,
+    retained_evidence: Option<SearchRetainedEvidencePlan>,
     delegates_policy_to_advanced_engine: bool,
     opportunistic_replay_oracle_sampling: bool,
     counterexamples_are_self_contained: bool,
@@ -1504,6 +1512,14 @@ struct SearchScheduleNamedTruthsPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchRetainedEvidencePlan {
+    path: PathBuf,
+    digest: String,
+    material: Vec<u8>,
+    evidence: BTreeMap<crucible::ContentHash, SearchRetainedLogAssertionEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct LocalDoubleSearchReport {
     root: crucible::ContentHash,
     expansions: usize,
@@ -1513,6 +1529,8 @@ struct LocalDoubleSearchReport {
     failure_oracle: String,
     schedule_named_truths: String,
     schedule_named_truths_digest: String,
+    retained_evidence: String,
+    retained_evidence_digest: String,
     counterexample: Option<LocalDoubleSearchCounterexample>,
     replay_oracle_considered: usize,
     replay_oracle_sampled: usize,
@@ -1608,6 +1626,27 @@ struct CliSearchScheduleNamedTruthToml {
     nodes: Vec<String>,
     #[serde(default)]
     active_fault_tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliSearchRetainedEvidenceToml {
+    schema: String,
+    #[serde(default)]
+    evidence: Vec<CliSearchRetainedEvidenceEntryToml>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliSearchRetainedEvidenceEntryToml {
+    configuration: String,
+    kind: String,
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    marker: Option<String>,
+    #[serde(default)]
+    retired_icount: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -2436,10 +2475,20 @@ fn plan_search_invocation(
     let budget = crucible::SearchBudget::new(args.max_states);
     let explicit_on_violation = args.on_violation.is_some();
     let on_violation = args.on_violation.unwrap_or(SearchOnViolationArg::Stop);
+    if args.schedule_named_truths.is_some() && args.retained_evidence.is_some() {
+        return Err(backend_error(
+            "search --retained-evidence cannot be combined with --schedule-named-truths yet",
+        ));
+    }
     let schedule_named_truths = args
         .schedule_named_truths
         .as_deref()
         .map(|path| load_search_schedule_named_truths_file(path, scenario.scenario_form()))
+        .transpose()?;
+    let retained_evidence = args
+        .retained_evidence
+        .as_deref()
+        .map(|path| load_search_retained_evidence_file(path, scenario.scenario_form()))
         .transpose()?;
 
     Ok(SearchDriverPlan {
@@ -2452,6 +2501,7 @@ fn plan_search_invocation(
         on_violation,
         explicit_on_violation,
         schedule_named_truths,
+        retained_evidence,
         delegates_policy_to_advanced_engine: true,
         opportunistic_replay_oracle_sampling: true,
         counterexamples_are_self_contained: true,
@@ -2550,6 +2600,144 @@ fn load_search_schedule_named_truths_toml(
         truths.insert_truth(key, truth.value);
     }
     Ok(truths)
+}
+
+fn load_search_retained_evidence_file(
+    path: &Path,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<SearchRetainedEvidencePlan, CliError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        backend_error(format!(
+            "search retained evidence `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let evidence =
+        load_search_retained_evidence_toml(&format!("file `{}`", path.display()), &text, scenario)?;
+    Ok(SearchRetainedEvidencePlan {
+        path: path.to_path_buf(),
+        digest: content_address_bytes(text.as_bytes()),
+        material: text.into_bytes(),
+        evidence,
+    })
+}
+
+fn load_search_retained_evidence_toml(
+    label: &str,
+    text: &str,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<BTreeMap<crucible::ContentHash, SearchRetainedLogAssertionEvidence>, CliError> {
+    let authored = toml::from_str::<CliSearchRetainedEvidenceToml>(text).map_err(|error| {
+        backend_error(format!(
+            "search retained evidence {label} is not valid TOML: {error}"
+        ))
+    })?;
+    if authored.schema != SEARCH_RETAINED_EVIDENCE_SCHEMA {
+        return Err(backend_error(format!(
+            "search retained evidence {label} uses unsupported schema `{}`; expected `{SEARCH_RETAINED_EVIDENCE_SCHEMA}`",
+            authored.schema
+        )));
+    }
+
+    let scenario_nodes = scenario
+        .world()
+        .nodes()
+        .iter()
+        .map(|node| {
+            (
+                node.id.name.as_str(),
+                node.white_box == crucible::WhiteBoxPolicy::Enabled,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let root = crucible::Configuration::genesis(scenario.scenario_def());
+    let mut entries_by_configuration = BTreeMap::new();
+    for (index, entry) in authored.evidence.into_iter().enumerate() {
+        let configuration = parse_search_retained_evidence_configuration(
+            label,
+            index,
+            &entry.configuration,
+            root.id(),
+        )?;
+        if entry.kind != "guest-marker" {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} uses unsupported kind `{}`; expected `guest-marker`",
+                entry.kind
+            )));
+        }
+        let Some(node) = entry.node else {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} kind `guest-marker` is missing node"
+            )));
+        };
+        let Some(white_box_enabled) = scenario_nodes.get(node.as_str()) else {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} references unknown node `{node}`"
+            )));
+        };
+        if !*white_box_enabled {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} guest-marker node `{node}` is not white-box enabled"
+            )));
+        }
+        let Some(marker) = entry.marker else {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} kind `guest-marker` is missing marker"
+            )));
+        };
+        if marker.is_empty() {
+            return Err(backend_error(format!(
+                "search retained evidence {label} entry {index} kind `guest-marker` has an empty marker"
+            )));
+        }
+        let retained_icount = entry.retired_icount.unwrap_or(1);
+        let entries = entries_by_configuration
+            .entry(configuration)
+            .or_insert_with(Vec::new);
+        let sequence = u64::try_from(entries.len()).map_err(|_| {
+            backend_error(format!(
+                "search retained evidence {label} entry {index} sequence index overflowed"
+            ))
+        })?;
+        entries.push(crucible::SchedulerEventLogEntry::guest_marker_observation(
+            sequence,
+            crucible::Icount {
+                retired: retained_icount,
+            },
+            crucible::NodeId { name: node },
+            crucible::MarkerId::from_name(marker),
+        ));
+    }
+
+    Ok(entries_by_configuration
+        .into_iter()
+        .map(|(configuration, entries)| {
+            (
+                configuration,
+                SearchRetainedLogAssertionEvidence::new(RecordedAssertionLog::from_entries(
+                    entries,
+                )),
+            )
+        })
+        .collect())
+}
+
+fn parse_search_retained_evidence_configuration(
+    label: &str,
+    index: usize,
+    value: &str,
+    root: crucible::ContentHash,
+) -> Result<crucible::ContentHash, CliError> {
+    if value == "root" {
+        return Ok(root);
+    }
+    crucible::ContentAddressedBlobRef::parse("configuration", value)
+        .map(crucible::ContentAddressedBlobRef::hash)
+        .map_err(|error| {
+            backend_error(format!(
+                "search retained evidence {label} entry {index} has invalid configuration `{value}`: {error}"
+            ))
+        })
 }
 
 fn plan_fuzz_invocation(
@@ -12408,24 +12596,62 @@ fn run_local_double_search_workflow_with_graph(
             plan.max_depth,
         )
         .map_err(|error| backend_error(format!("local-double assertion search failed: {error}")))?;
-    let failure_oracle = match &plan.schedule_named_truths {
-        Some(named_truths) => {
+    let failure_oracle = match (&plan.schedule_named_truths, &plan.retained_evidence) {
+        (None, Some(retained_evidence)) => {
+            let schedule_oracle = SearchFailureOracle::from_search_assertion_violations(
+                plan.scenario.scenario_form(),
+                root,
+                &assertion_discovery_run,
+            )
+            .map_err(|error| {
+                backend_error(format!("local-double assertion lowering failed: {error}"))
+            })?;
+            let retained_oracle =
+                SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
+                    plan.scenario.scenario_form(),
+                    root,
+                    &assertion_discovery_run,
+                    |configuration| retained_evidence.evidence.get(&configuration.id()).cloned(),
+                )
+                .map_err(|error| {
+                    backend_error(format!("local-double assertion lowering failed: {error}"))
+                })?;
+            merge_search_failure_oracles(
+                std::iter::once(root.id())
+                    .chain(assertion_discovery_run.explored_graph.iter().copied()),
+                &schedule_oracle,
+                &retained_oracle,
+            )
+        }
+        (Some(named_truths), None) => {
             SearchFailureOracle::from_search_assertion_violations_with_named_predicates(
                 plan.scenario.scenario_form(),
                 root,
                 &assertion_discovery_run,
                 &named_truths.truths,
             )
+            .map_err(|error| {
+                backend_error(format!("local-double assertion lowering failed: {error}"))
+            })?
         }
-        None => SearchFailureOracle::from_search_assertion_violations(
+        (None, None) => SearchFailureOracle::from_search_assertion_violations(
             plan.scenario.scenario_form(),
             root,
             &assertion_discovery_run,
-        ),
-    }
-    .map_err(|error| backend_error(format!("local-double assertion lowering failed: {error}")))?;
+        )
+        .map_err(|error| {
+            backend_error(format!("local-double assertion lowering failed: {error}"))
+        })?,
+        (Some(_), Some(_)) => {
+            return Err(backend_error(
+                "local-double search retained evidence cannot be combined with schedule-named truths",
+            ));
+        }
+    };
     let failure_oracle_label = if failure_oracle.is_empty() {
         "none"
+    } else if plan.retained_evidence.is_some() {
+        "scenario-assertions+retained-evidence"
     } else if plan.schedule_named_truths.is_some() {
         "scenario-assertions+schedule-named-truths"
     } else {
@@ -12441,6 +12667,26 @@ fn run_local_double_search_workflow_with_graph(
         &failure_oracle,
         failure_oracle_label,
     )
+}
+
+fn merge_search_failure_oracles<I>(
+    reached: I,
+    schedule_oracle: &SearchFailureOracle,
+    retained_oracle: &SearchFailureOracle,
+) -> SearchFailureOracle
+where
+    I: IntoIterator<Item = crucible::ContentHash>,
+{
+    let mut merged = SearchFailureOracle::none();
+    for configuration in reached {
+        if let Some(fingerprint) = schedule_oracle.failure_for(configuration) {
+            merged = merged.with_failure(configuration, fingerprint);
+        }
+        if let Some(fingerprint) = retained_oracle.failure_for(configuration) {
+            merged = merged.with_failure(configuration, fingerprint);
+        }
+    }
+    merged
 }
 
 fn run_local_double_search_workflow_with_graph_and_failure_oracle(
@@ -12501,6 +12747,16 @@ fn run_local_double_search_workflow_with_graph_and_failure_oracle(
             .as_ref()
             .map(|source| source.digest.clone())
             .unwrap_or_else(|| String::from("none")),
+        retained_evidence: plan
+            .retained_evidence
+            .as_ref()
+            .map(|source| source.path.display().to_string())
+            .unwrap_or_else(|| String::from("none")),
+        retained_evidence_digest: plan
+            .retained_evidence
+            .as_ref()
+            .map(|source| source.digest.clone())
+            .unwrap_or_else(|| String::from("none")),
         counterexample,
         replay_oracle_considered: sampled.replay_oracle_sampling.considered,
         replay_oracle_sampled: sampled.replay_oracle_sampling.sampled,
@@ -12528,7 +12784,7 @@ fn search_failure_reproduction_artifact_bytes(
     failure: &SearchDiscoveredFailure,
 ) -> Result<Vec<u8>, CliError> {
     let mut canonical_log = canonical_log_entries_from_search_failure(failure);
-    let extra_payloads = search_schedule_named_truths_artifact_payloads(plan, &mut canonical_log);
+    let extra_payloads = search_extra_artifact_payloads(plan, &mut canonical_log);
     let fingerprint_digest = cli_digest_from_engine_hash(failure.fingerprint);
     let fingerprint_samples = vec![VerifyFingerprintSample {
         index: 0,
@@ -12546,31 +12802,52 @@ fn search_failure_reproduction_artifact_bytes(
     )
 }
 
-fn search_schedule_named_truths_artifact_payloads(
+fn search_extra_artifact_payloads(
     plan: &SearchDriverPlan,
     canonical_log: &mut Vec<CanonicalLogEntry>,
 ) -> Vec<ReproductionArtifactComponentPayload> {
-    let Some(source) = &plan.schedule_named_truths else {
-        return Vec::new();
-    };
-    canonical_log.push(CanonicalLogEntry {
-        sequence: canonical_log.len() as u64,
-        virtual_time_ticks: canonical_log.len() as u64,
-        node: String::from("search"),
-        kind: String::from("search-schedule-named-truths"),
-        summary: format!(
-            "schema={} source={} digest={}",
-            SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA,
-            source.path.display(),
-            source.digest
-        ),
-    });
-    vec![ReproductionArtifactComponentPayload {
-        kind: String::from("search_schedule_named_truths"),
-        name: String::from("schedule-named-truths.toml"),
-        media_type: String::from(SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE),
-        bytes: source.material.clone(),
-    }]
+    let mut payloads = Vec::new();
+    if let Some(source) = &plan.schedule_named_truths {
+        canonical_log.push(CanonicalLogEntry {
+            sequence: canonical_log.len() as u64,
+            virtual_time_ticks: canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("search-schedule-named-truths"),
+            summary: format!(
+                "schema={} source={} digest={}",
+                SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA,
+                source.path.display(),
+                source.digest
+            ),
+        });
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("search_schedule_named_truths"),
+            name: String::from("schedule-named-truths.toml"),
+            media_type: String::from(SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE),
+            bytes: source.material.clone(),
+        });
+    }
+    if let Some(source) = &plan.retained_evidence {
+        canonical_log.push(CanonicalLogEntry {
+            sequence: canonical_log.len() as u64,
+            virtual_time_ticks: canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("search-retained-evidence"),
+            summary: format!(
+                "schema={} source={} digest={}",
+                SEARCH_RETAINED_EVIDENCE_SCHEMA,
+                source.path.display(),
+                source.digest
+            ),
+        });
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("search_retained_evidence"),
+            name: String::from("retained-evidence.toml"),
+            media_type: String::from(SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE),
+            bytes: source.material.clone(),
+        });
+    }
+    payloads
 }
 
 fn canonical_log_entries_from_search_failure(
@@ -12642,7 +12919,7 @@ fn apply_local_double_search_report(
     let (counterexample_stdout, counterexample_summary) =
         local_double_search_counterexample_fields(report.counterexample.as_ref());
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\tschedule_named_truths={}\tschedule_named_truths_digest={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\tschedule_named_truths={}\tschedule_named_truths_digest={}\tretained_evidence={}\tretained_evidence_digest={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
         format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
@@ -12653,6 +12930,8 @@ fn apply_local_double_search_report(
         report.failure_oracle,
         report.schedule_named_truths,
         report.schedule_named_truths_digest,
+        report.retained_evidence,
+        report.retained_evidence_digest,
         report.replay_oracle_considered,
         report.replay_oracle_sampled,
         report.replay_oracle_skipped,
@@ -12671,7 +12950,7 @@ fn apply_local_double_search_report(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle={} schedule_named_truths={} schedule_named_truths_digest={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle={} schedule_named_truths={} schedule_named_truths_digest={} retained_evidence={} retained_evidence_digest={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
             format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
@@ -12681,6 +12960,8 @@ fn apply_local_double_search_report(
             report.failure_oracle,
             report.schedule_named_truths,
             report.schedule_named_truths_digest,
+            report.retained_evidence,
+            report.retained_evidence_digest,
             report.replay_oracle_considered,
             report.replay_oracle_sampled,
             report.replay_oracle_skipped,
@@ -15866,6 +16147,13 @@ mod tests {
         Ok(path)
     }
 
+    fn write_search_retained_evidence_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let form = search_retained_evidence_scenario_form()?;
+        let path = temp.path().join("search-retained-evidence-scenario.toml");
+        fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
     fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
         let world = search_frontier_world()?;
         let properties = ::crucible::Properties::from_assertions_for_world(
@@ -15883,6 +16171,29 @@ mod tests {
             &::crucible::Plan::empty(),
             &properties,
             ::crucible::Seed::from_u64(0x5151),
+        )?)
+    }
+
+    fn search_retained_evidence_scenario_form()
+    -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+        let world = search_retained_evidence_world()?;
+        let properties = ::crucible::Properties::from_assertions_for_world(
+            &world,
+            vec![::crucible::AssertionDef {
+                id: ::crucible::AssertionId::from_name("cli-search-retained-evidence"),
+                message: String::from("CLI search retained evidence marker must not appear"),
+                property: ::crucible::Property::Always {
+                    predicate: ::crucible::Predicate::not(::crucible::Predicate::guest_marker(
+                        ::crucible::MarkerId::from_name("forbidden-search-marker"),
+                    )),
+                },
+            }],
+        )?;
+        Ok(::crucible::ScenarioDefForm::from_components(
+            &world,
+            &::crucible::Plan::empty(),
+            &properties,
+            ::crucible::Seed::from_u64(0x5252),
         )?)
     }
 
@@ -15906,6 +16217,26 @@ mod tests {
 [[truth]]
 name = "cli-search/named-truth"
 value = {value}
+"#
+        )
+    }
+
+    fn write_search_retained_evidence(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp.path().join("search-retained-evidence.toml");
+        fs::write(&path, valid_search_retained_evidence_toml("root"))?;
+        Ok(path)
+    }
+
+    fn valid_search_retained_evidence_toml(configuration: &str) -> String {
+        format!(
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "{configuration}"
+kind = "guest-marker"
+node = "cli-search-retained-node"
+marker = "forbidden-search-marker"
+retired_icount = 7
 "#
         )
     }
@@ -16017,6 +16348,28 @@ finding.0.detail=synthetic signed finding evidence
                     icount: ::crucible::Icount { retired: 100 },
                 },
                 white_box: ::crucible::WhiteBoxPolicy::Disabled,
+                smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+                icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+                kernel: None,
+                root_image: None,
+                initrd: None,
+            },
+        ])?)
+    }
+
+    fn search_retained_evidence_world() -> Result<::crucible::World, Box<dyn Error>> {
+        Ok(::crucible::World::from_nodes(vec![
+            ::crucible::WorldNode {
+                id: ::crucible::NodeId {
+                    name: String::from("cli-search-retained-node"),
+                },
+                arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
+                memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+                cmdline: String::from("crucible-cli-search-retained"),
+                ready_point: ::crucible::ReadyPoint::FixedIcount {
+                    icount: ::crucible::Icount { retired: 100 },
+                },
+                white_box: ::crucible::WhiteBoxPolicy::Enabled,
                 smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
                 icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
@@ -20566,6 +20919,32 @@ finding.0.detail=synthetic signed finding evidence
         assert!(search_plan.opportunistic_replay_oracle_sampling);
         assert!(search_plan.counterexamples_are_self_contained);
 
+        let retained_scenario = write_search_retained_evidence_scenario(&temp)?;
+        let retained_evidence = write_search_retained_evidence(&temp)?;
+        let retained_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("search"),
+            retained_scenario.display().to_string(),
+            String::from("--retained-evidence"),
+            retained_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &retained_cli.command else {
+            panic!("expected search command");
+        };
+        let retained_plan = plan_search_invocation(args, temp.path())?;
+        let retained_source = retained_plan
+            .retained_evidence
+            .as_ref()
+            .expect("search plan should load retained evidence");
+        assert_eq!(retained_source.path, retained_evidence);
+        assert_eq!(
+            retained_source.digest,
+            content_address_bytes(valid_search_retained_evidence_toml("root").as_bytes())
+        );
+        let retained_root =
+            ::crucible::Configuration::genesis(retained_plan.scenario.scenario_def().clone());
+        assert!(retained_source.evidence.contains_key(&retained_root.id()));
+
         for args in [
             SearchArgs {
                 scenario: Some(scenario.display().to_string()),
@@ -20648,6 +21027,104 @@ active_fault_tags = ["network-partition"]
         };
         assert!(
             matches!(error, CliError::Backend(ref message) if message.contains("duplicates canonical entry 0"))
+        );
+        assert_eq!(error.exit_code(), 4);
+
+        let malformed_retained_evidence = temp.path().join("bad-search-retained-evidence.toml");
+        fs::write(&malformed_retained_evidence, "schema = \"wrong.schema\"\n")?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(retained_scenario.display().to_string()),
+                max_states: 1,
+                retained_evidence: Some(malformed_retained_evidence),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("malformed retained evidence must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Backend(_)));
+        assert_eq!(error.exit_code(), 4);
+
+        let unknown_node_retained_evidence = temp
+            .path()
+            .join("unknown-node-search-retained-evidence.toml");
+        fs::write(
+            &unknown_node_retained_evidence,
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "root"
+kind = "guest-marker"
+node = "missing-node"
+marker = "forbidden-search-marker"
+"#,
+        )?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(retained_scenario.display().to_string()),
+                max_states: 1,
+                retained_evidence: Some(unknown_node_retained_evidence),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("retained evidence with unknown node must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("unknown node `missing-node`"))
+        );
+        assert_eq!(error.exit_code(), 4);
+
+        let disabled_node_retained_evidence = temp
+            .path()
+            .join("disabled-node-search-retained-evidence.toml");
+        fs::write(
+            &disabled_node_retained_evidence,
+            r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "root"
+kind = "guest-marker"
+node = "cli-search-node"
+marker = "forbidden-search-marker"
+"#,
+        )?;
+        let disabled_node_scenario = write_search_frontier_scenario(&temp)?;
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(disabled_node_scenario.display().to_string()),
+                max_states: 1,
+                retained_evidence: Some(disabled_node_retained_evidence),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("guest-marker retained evidence must require white-box nodes"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("not white-box enabled"))
+        );
+        assert_eq!(error.exit_code(), 4);
+
+        let error = match plan_search_invocation(
+            &SearchArgs {
+                scenario: Some(retained_scenario.display().to_string()),
+                max_states: 1,
+                schedule_named_truths: Some(named_truths.clone()),
+                retained_evidence: Some(write_search_retained_evidence(&temp)?),
+                ..SearchArgs::default()
+            },
+            temp.path(),
+        ) {
+            Ok(_) => panic!("mixed retained evidence and schedule-named truths must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Backend(ref message) if message.contains("cannot be combined"))
         );
         assert_eq!(error.exit_code(), 4);
 
@@ -21120,6 +21597,93 @@ active_fault_tags = ["network-partition"]
                     .iter()
                     .any(|payload| payload.digest == decision.payload_digest)
         }));
+
+        let retained_scenario = write_search_retained_evidence_scenario(&temp)?;
+        let retained_evidence = write_search_retained_evidence(&temp)?;
+        let retained_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("search"),
+            retained_scenario.display().to_string(),
+            String::from("--max-states"),
+            String::from("1"),
+            String::from("--retained-evidence"),
+            retained_evidence.display().to_string(),
+        ]);
+        let Commands::Search(args) = &retained_cli.command else {
+            panic!("expected search command");
+        };
+        let retained_plan = plan_search_invocation(args, temp.path())?;
+        let retained_backend =
+            plan_backend_selection(&retained_cli)?.expect("retained-evidence search should route");
+        let retained_outcome = run_local_double_search_workflow(
+            &plan_cli_invocation(&retained_cli),
+            &retained_backend,
+            None,
+            &retained_plan,
+        )?;
+        assert_eq!(retained_outcome.status, BackendCommandStatus::Failed);
+        assert_eq!(retained_outcome.exit_code, 1);
+        let retained_line = retained_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("search-run\t"))
+            .expect("retained-evidence search workflow must emit a search-run line");
+        assert!(retained_line.contains("failure_oracle=scenario-assertions+retained-evidence"));
+        assert!(retained_line.contains(&format!(
+            "retained_evidence={}",
+            retained_evidence.display()
+        )));
+        let retained_evidence_material = valid_search_retained_evidence_toml("root");
+        let retained_evidence_digest = content_address_bytes(retained_evidence_material.as_bytes());
+        assert!(retained_line.contains(&format!(
+            "retained_evidence_digest={retained_evidence_digest}"
+        )));
+        assert!(retained_line.contains("failures=1"));
+        assert!(retained_line.contains("status=failed"));
+        let retained_artifact = decode_reproduction_artifact(
+            retained_outcome
+                .reproduction_artifact
+                .as_deref()
+                .expect("retained-evidence failure should emit a reproduction artifact"),
+        )?;
+        assert!(retained_artifact.components.iter().any(|component| {
+            component.kind == "search_retained_evidence"
+                && component.name == "retained-evidence.toml"
+                && component.digest == retained_evidence_digest
+                && component.media_type == SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE
+        }));
+        assert!(retained_artifact.payloads.iter().any(|payload| {
+            payload.digest == retained_evidence_digest
+                && payload.bytes.as_slice() == retained_evidence_material.as_bytes()
+        }));
+        assert!(retained_artifact.decisions.iter().any(|decision| {
+            decision.kind == "search-retained-evidence"
+                && retained_artifact
+                    .payloads
+                    .iter()
+                    .any(|payload| payload.digest == decision.payload_digest)
+        }));
+
+        let schedule_only_configuration =
+            ::crucible::ContentHash::from_bytes(b"schedule-only-configuration");
+        let schedule_only_fingerprint =
+            ::crucible::ContentHash::from_bytes(b"schedule-only-fingerprint");
+        let schedule_oracle = SearchFailureOracle::none()
+            .with_failure(schedule_only_configuration, schedule_only_fingerprint);
+        let retained_oracle = SearchFailureOracle::none();
+        let merged_oracle = merge_search_failure_oracles(
+            [schedule_only_configuration],
+            &schedule_oracle,
+            &retained_oracle,
+        );
+        assert_eq!(
+            merged_oracle.failure_for(schedule_only_configuration),
+            Some(schedule_only_fingerprint),
+            "retained evidence must not suppress schedule-only failures"
+        );
 
         let outcome = run_local_double_search_workflow(
             &plan_cli_invocation(&search_cli),
