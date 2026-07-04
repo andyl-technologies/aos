@@ -1,7 +1,7 @@
 use ratchet_core::{EffectClass, IrArena, IrData, IrId, IrKind, IrNode, syntax::Span};
 use ratchet_jit::{
-    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCraneliftModuleSetupError, JitTier, JitTieredCodeSlot,
-    TierUpCounter, TierUpDemandHint, TierUpPolicy,
+    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, JitTieredCodeSlot, TierUpCounter,
+    TierUpDemandHint, TierUpPolicy,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
 };
 
@@ -320,7 +320,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_promotes_literals() 
 }
 
 #[test]
-fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_force_finalization_guard() {
+fn nix_jit_force_aware_registered_tier1_promotion_preflight_installs_forced_env_slot() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
     assert!(
@@ -343,37 +343,57 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_reports_force_finali
         Vec::new(),
     );
 
-    let result = nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
+    let promotion = nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
         JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
         IrId::new(0),
-    );
-    let Err(error) = result else {
-        panic!("force-aware env-slot promotion is guarded before finalization");
-    };
+    )
+    .expect("force-aware env-slot promotion finalizes with oracle helper candidates");
 
-    assert!(error.decision().should_promote());
+    assert!(promotion.decision().should_promote());
     assert_eq!(
-        error.slot().invocation_counter().invocations(),
+        promotion.slot().invocation_counter().invocations(),
         DEFAULT_TIER1_INVOCATION_THRESHOLD
     );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    assert!(error.slot().tier1_code_ptr().is_none());
-    let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
-        panic!("expected Cranelift promotion failure");
-    };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-        source.setup_error()
-    else {
-        panic!("expected force helper finalization guard");
-    };
-    assert_eq!(symbol_names, &["aos_force".to_owned()]);
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(promotion.did_compile());
+    let promoted = promotion
+        .promoted_preflight()
+        .expect("promotion owns registered preflight");
+    assert_eq!(
+        promotion.slot().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_force")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_force")
+                    .expect("force candidate exists")
+                    .address())
+    );
+    assert!(promotion.owns_encapsulated_module());
 }
 
 #[test]
-fn nix_jit_force_aware_promotion_reports_force_finalization_guard_for_wrapped_slot() {
+fn nix_jit_force_aware_promotion_installs_wrapped_forced_env_slot() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
     let arena = IrArena::from_raw_parts(
         vec![
             IrNode::new(
@@ -392,33 +412,51 @@ fn nix_jit_force_aware_promotion_reports_force_finalization_guard_for_wrapped_sl
         Vec::new(),
     );
 
-    let result = nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
+    let promotion = nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
         JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
         IrId::new(0),
-    );
-    let Err(error) = result else {
-        panic!("wrapped force-aware env-slot promotion is guarded before finalization");
-    };
+    )
+    .expect("wrapped force-aware env-slot promotion finalizes with oracle helper candidates");
 
-    assert!(error.decision().should_promote());
+    assert!(promotion.decision().should_promote());
     assert_eq!(
-        error.slot().invocation_counter().invocations(),
+        promotion.slot().invocation_counter().invocations(),
         DEFAULT_TIER1_INVOCATION_THRESHOLD
     );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    assert!(error.slot().tier1_code_ptr().is_none());
-    let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
-        panic!("expected Cranelift promotion failure");
-    };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-        source.setup_error()
-    else {
-        panic!("expected force helper finalization guard");
-    };
-    assert_eq!(symbol_names, &["aos_force".to_owned()]);
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(promotion.did_compile());
+    let promoted = promotion
+        .promoted_preflight()
+        .expect("promotion owns registered preflight");
+    assert_eq!(
+        promotion.slot().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_force")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_force")
+                    .expect("force candidate exists")
+                    .address())
+    );
+    assert!(promotion.owns_encapsulated_module());
 }
 
 #[test]
@@ -562,7 +600,9 @@ fn nix_jit_force_aware_registered_tier1_install_plan_carries_literal_slot_and_mo
 }
 
 #[test]
-fn nix_jit_force_aware_registered_tier1_install_plan_reports_force_finalization_guard() {
+fn nix_jit_force_aware_registered_tier1_install_plan_carries_forced_env_slot_and_module_owner() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
     let arena = IrArena::from_raw_parts(
         vec![IrNode::new(
             IrKind::LocalVar,
@@ -573,31 +613,50 @@ fn nix_jit_force_aware_registered_tier1_install_plan_reports_force_finalization_
         Vec::new(),
     );
 
-    let result = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
         JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
         IrId::new(0),
-    );
-    let Err(error) = result else {
-        panic!("force-aware env-slot install plan is guarded before finalization");
-    };
+    )
+    .expect("force-aware env-slot install plan finalizes with oracle helper candidates");
 
-    assert!(error.decision().should_promote());
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
     assert_eq!(
-        error.slot().invocation_counter().invocations(),
+        plan.slot().invocation_counter().invocations(),
         DEFAULT_TIER1_INVOCATION_THRESHOLD
     );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    assert!(error.slot().tier1_code_ptr().is_none());
-    let NixJitRegisteredTier1PromotionError::Cranelift(source) = error else {
-        panic!("expected Cranelift promotion failure");
-    };
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-        source.setup_error()
-    else {
-        panic!("expected force helper finalization guard");
-    };
-    assert_eq!(symbol_names, &["aos_force".to_owned()]);
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert_eq!(
+        plan.tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_force")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_force")
+                    .expect("force candidate exists")
+                    .address())
+    );
+    assert!(plan.owns_encapsulated_module());
 }

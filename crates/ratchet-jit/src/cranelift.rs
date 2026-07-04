@@ -1080,11 +1080,6 @@ pub enum JitCraneliftModuleSetupError {
         /// Stable runtime symbols imported by the artifact body.
         symbol_names: Vec<String>,
     },
-    /// A call-bearing artifact imports runtime symbols that are not finalized yet.
-    ArtifactRuntimeImportsCannotFinalize {
-        /// Stable runtime symbols blocking registered finalization.
-        symbol_names: Vec<String>,
-    },
     /// A tier-1 artifact could not be lowered from Core IR.
     LowerTier1Artifact {
         /// The Core IR root requested for tier-1 compilation.
@@ -1149,11 +1144,6 @@ impl fmt::Display for JitCraneliftModuleSetupError {
                 "artifact runtime imports require registered native symbols before Cranelift definition: {}",
                 symbol_names.join(", ")
             ),
-            Self::ArtifactRuntimeImportsCannotFinalize { symbol_names } => write!(
-                formatter,
-                "artifact runtime imports are not eligible for registered Cranelift finalization yet: {}",
-                symbol_names.join(", ")
-            ),
             Self::LowerTier1Artifact { root, source } => write!(
                 formatter,
                 "IR root {root:?} could not be lowered for tier-1 compilation: {source}"
@@ -1210,7 +1200,6 @@ impl Error for JitCraneliftModuleSetupError {
             Self::Readiness(error) => Some(error),
             Self::RuntimeSymbolRegistration(error) => Some(error),
             Self::ArtifactRuntimeImportsRequireRegistration { .. } => None,
-            Self::ArtifactRuntimeImportsCannotFinalize { .. } => None,
             Self::LowerTier1Artifact { source, .. } => Some(source),
             Self::DeclareRuntimeSymbol { source, .. } => Some(source),
             Self::DeclareArtifactFunction { source, .. } => Some(source),
@@ -1394,9 +1383,6 @@ pub fn jit_cranelift_registered_artifact_definition_preflight_with_candidates(
 /// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration`]
 /// when the artifact imports a runtime symbol without matching native-address
 /// registration metadata. Returns
-/// [`JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize`] when
-/// the artifact imports runtime helpers that are not eligible for finalization
-/// yet. Returns
 /// [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot build
 /// an ISA for the current host. Returns
 /// [`JitCraneliftModuleSetupError::Settings`] if required JIT settings are
@@ -1426,7 +1412,6 @@ pub fn jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
         require_resolved_artifact_imports(jit_module_readiness_preflight_for_artifact(&artifact)?)?;
     let registration = jit_runtime_symbol_registration_preflight_with_candidates(candidates)?;
     require_registered_artifact_imports(&readiness, &registration)?;
-    require_finalizable_artifact_imports(&readiness)?;
 
     let symbol_name = module_symbol_name_for_artifact(readiness.artifact());
     let artifact_metadata = readiness.artifact().clone();
@@ -1764,9 +1749,9 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
 ///
 /// This composes tier-up policy with the registered-symbol tier-1 slot path, but
 /// uses the force-call lowerer for local environment-slot roots. Literal roots
-/// still lower through the constant path. Local-slot roots currently stop at the
-/// registered finalization guard because forced artifacts import `aos_force`,
-/// which is not eligible for finalization yet.
+/// still lower through the constant path. Local-slot roots can finalize when the
+/// candidate set contains both `aos_env_get` and `aos_force`, then install the
+/// resulting opaque code pointer into owned tier-1 slot metadata.
 ///
 /// Non-promoted results return the updated slot without lowering, module
 /// construction, finalization, or pointer installation.
@@ -1775,8 +1760,7 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
 ///
 /// Returns [`JitCraneliftTier1PromotionError`] if policy requests promotion but
 /// the current force-aware lowerer cannot lower `root`, if required artifact
-/// runtime imports lack matching candidates, if the artifact imports a helper
-/// that is not eligible for finalization yet, or if finalization or tier-slot
+/// runtime imports lack matching candidates, or if finalization or tier-slot
 /// installation fails. The error preserves the invocation-updated slot and the
 /// policy decision alongside the underlying setup error.
 ///
@@ -1784,7 +1768,7 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
 ///
 /// Panics under the same Cranelift finalized-function lookup conditions as
 /// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`]
-/// when policy requests promotion for a finalizable artifact.
+/// when policy requests promotion and Cranelift finalizes an artifact.
 pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
     mut slot: JitTieredCodeSlot,
     policy: TierUpPolicy,
@@ -2011,29 +1995,6 @@ fn require_registered_artifact_imports(
         Err(
             JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
                 symbol_names: missing_symbol_names,
-            },
-        )
-    }
-}
-
-fn require_finalizable_artifact_imports(
-    readiness: &JitModuleReadinessPreflight,
-) -> Result<(), JitCraneliftModuleSetupError> {
-    let nonfinalizable_symbol_names = readiness
-        .artifact_runtime_imports()
-        .iter()
-        .filter(|artifact_import| artifact_import.symbol_name() == "aos_force")
-        .map(|artifact_import| artifact_import.symbol_name().to_owned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    if nonfinalizable_symbol_names.is_empty() {
-        Ok(())
-    } else {
-        Err(
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize {
-                symbol_names: nonfinalizable_symbol_names,
             },
         )
     }
@@ -2958,7 +2919,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_artifact_finalization_rejects_forced_artifacts_after_registration() {
+    fn registered_artifact_finalization_finalizes_forced_env_get_artifact_with_candidates() {
         let candidates = [
             synthetic_address_candidate(
                 "aos_env_get",
@@ -2972,20 +2933,61 @@ mod tests {
             ),
         ];
 
-        let Err(error) = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+        let preflight = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
             forced_env_get_artifact(4),
             &candidates,
-        ) else {
-            panic!("forced env-get artifact finalization remains intentionally gated");
-        };
+        )
+        .expect("forced env-get artifact finalization accepts registered helpers");
 
-        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-            error
-        else {
-            panic!("expected forced artifact finalization guard");
-        };
-
-        assert_eq!(symbol_names, ["aos_force".to_owned()]);
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_ne!(
+            preflight.finalized_function().code_ptr().as_ptr() as usize,
+            0
+        );
+        assert_eq!(
+            preflight
+                .finalized_function()
+                .compiled_code_ptr()
+                .as_non_null(),
+            preflight.finalized_function().code_ptr()
+        );
+        let artifact_import_names = preflight
+            .artifact_runtime_imports()
+            .iter()
+            .map(JitModuleArtifactRuntimeImport::symbol_name)
+            .collect::<Vec<_>>();
+        assert_eq!(artifact_import_names, ["aos_env_get", "aos_force"]);
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_force")
+                .expect("force helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            5
+        );
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(preflight.registration_gap_for_symbol("aos_force").is_none());
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
     }
 
     #[test]
@@ -3434,6 +3436,65 @@ mod tests {
                 .is_none()
         );
         assert!(!preflight.finalization().is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_tier1_slot_preflight_installs_forced_env_get_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+            forced_env_get_artifact(7),
+            &candidates,
+        )
+        .expect("registered tier-1 forced env-get slot preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.0.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(preflight.slot().is_tier1_installed());
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(preflight.finalization().artifact_runtime_imports().len(), 2);
+        assert!(
+            preflight
+                .finalization()
+                .imported_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            preflight
+                .finalization()
+                .imported_symbol_for("aos_force")
+                .is_some()
+        );
+        assert!(
+            preflight
+                .finalization()
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(
+            preflight
+                .finalization()
+                .registration_gap_for_symbol("aos_force")
+                .is_none()
+        );
         assert!(preflight.owns_encapsulated_module());
     }
 
@@ -4100,7 +4161,7 @@ mod tests {
     }
 
     #[test]
-    fn force_aware_registered_promotion_preflight_reports_force_finalization_guard() {
+    fn force_aware_registered_promotion_preflight_installs_forced_env_slot() {
         let arena = IrArena::from_raw_parts(
             vec![IrNode::new(
                 IrKind::LocalVar,
@@ -4133,27 +4194,73 @@ mod tests {
                 &arena,
                 IrId::new(0),
                 &candidates,
-            );
-        let Err(error) = result else {
-            panic!("force-aware env-slot promotion is guarded before finalization");
-        };
+            )
+            .expect("force-aware env-slot promotion finalizes with registered helpers");
 
         assert_eq!(
-            error.slot().invocation_counter().invocations(),
+            result.slot().invocation_counter().invocations(),
             DEFAULT_TIER1_INVOCATION_THRESHOLD
         );
-        assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-        assert!(error.slot().tier1_code_ptr().is_none());
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
         assert_eq!(
-            error.decision().reasons(),
+            result.decision().reasons(),
             Some(TierUpReasons::new(true, false))
         );
-        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-            error.setup_error()
-        else {
-            panic!("expected force-aware finalization guard");
-        };
-        assert_eq!(symbol_names, &["aos_force".to_owned()]);
+        assert!(result.did_compile());
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_force")
+                .is_some()
+        );
+        assert_eq!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert_eq!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_force")
+                .expect("force helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            5
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registration_gap_for_symbol("aos_force")
+                .is_none()
+        );
+        assert!(!promoted.finalization().is_complete());
+        assert!(result.owns_encapsulated_module());
     }
 
     #[test]
@@ -4247,23 +4354,36 @@ mod tests {
                 &arena,
                 IrId::new(0),
                 &candidates,
-            );
-        let Err(error) = result else {
-            panic!("wrapped force-aware env-slot promotion is guarded before finalization");
-        };
+            )
+            .expect("wrapped force-aware env-slot promotion finalizes with registered helpers");
 
         assert_eq!(
-            error.decision().reasons(),
+            result.decision().reasons(),
             Some(TierUpReasons::new(false, true))
         );
-        assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-        assert!(error.slot().tier1_code_ptr().is_none());
-        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-            error.setup_error()
-        else {
-            panic!("expected wrapped force-aware finalization guard");
-        };
-        assert_eq!(symbol_names, &["aos_force".to_owned()]);
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(result.did_compile());
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_force")
+                .is_some()
+        );
+        assert!(result.owns_encapsulated_module());
     }
 
     #[test]

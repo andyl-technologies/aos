@@ -296,7 +296,7 @@ pub fn nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
 ///
 /// Panics under the same Cranelift finalized-function lookup conditions as
 /// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root`] when
-/// policy requests promotion for a finalizable artifact.
+/// policy requests promotion and Cranelift finalizes an artifact.
 pub fn nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,

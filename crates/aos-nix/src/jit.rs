@@ -203,9 +203,9 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
 /// preflight. It keeps the existing literal promotion behavior, but local
 /// environment-slot roots lower through a forced env-slot artifact that imports
 /// `aos_env_get` and `aos_force`. The current oracle address candidates include
-/// both imported helpers, but `aos_force` still lacks an exported C ABI wrapper,
-/// so hot local-slot roots report a registered-finalization guard before pointer
-/// installation.
+/// both imported helpers, so hot local-slot roots can finalize and install
+/// opaque tier-1 pointer metadata while the exported C ABI wrapper remains
+/// future work.
 ///
 /// Candidate projection runs only after the policy decision requests tier 1, so
 /// a cold attempt can record its invocation and stay in tier 0 without requiring
@@ -276,10 +276,10 @@ pub fn nix_jit_registered_tier1_install_plan_for_ir_root(
 /// This composes the force-aware registered promotion bridge with the same safe
 /// handoff object used by the existing registered install-plan path. Literal
 /// roots can produce a ready plan. Local environment-slot roots lower through
-/// the forced env-slot artifact and currently report the `aos_force`
-/// registered-finalization guard before pointer installation. The plan still
-/// does not mutate evaluator heap state, cast or call the code pointer,
-/// dereference registered helper addresses, or call native code.
+/// the forced env-slot artifact and can produce the same safe pointer/module
+/// owner plan with registered `aos_env_get` and `aos_force` helper metadata.
+/// The plan still does not mutate evaluator heap state, cast or call the code
+/// pointer, dereference registered helper addresses, or call native code.
 ///
 /// # Errors
 ///

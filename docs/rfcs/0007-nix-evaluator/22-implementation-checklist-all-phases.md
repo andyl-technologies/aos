@@ -5434,10 +5434,10 @@ and helps the oracle directly.
       cold roots record an invocation and remain in tier 0 without requiring
       helper-address metadata. Literal roots still promote with no artifact
       runtime imports. Hot local environment-slot roots lower through the forced
-      env-slot artifact importing `aos_env_get` and `aos_force`; the current
-      oracle candidates include both helpers, but `aos_force` still has no
-      exported native wrapper, so the bridge reports the registered-module
-      finalization guard before tier-slot pointer installation. This keeps the force-aware bridge safe:
+      env-slot artifact importing `aos_env_get` and `aos_force`; the oracle
+      candidates include both helpers, so the bridge can finalize the artifact
+      and install opaque tier-slot pointer metadata while still relying on
+      Rust-callable candidate addresses. This keeps the force-aware bridge safe:
       it does not mutate evaluator heap thunks, perform atomic thunk-state CAS,
       cast or call code pointers, dereference registered addresses, call native
       code, or complete runtime-symbol registration.
@@ -5457,8 +5457,8 @@ and helps the oracle directly.
       wraps the force-aware registered promotion preflight in the same safe
       handoff object used by the existing registered path. Tests cover cold slot
       preservation before candidate projection, literal pointer/module-owner
-      readiness, and the current hot env-slot `aos_force` registered-module
-      finalization guard before pointer installation. This creates the future
+      readiness, and hot env-slot pointer/module-owner readiness with registered
+      `aos_env_get` and `aos_force` helper metadata. This creates the future
       force-aware evaluator thunk install boundary but still does not mutate heap
       thunks, perform atomic thunk-state CAS, cast or call code pointers,
       dereference registered addresses, call native code, or complete
@@ -5482,8 +5482,8 @@ and helps the oracle directly.
       wraps the force-aware registered install plan in the same read-only report
       against a target evaluator thunk. Tests cover cold no-code reports,
       literal roots reaching the existing future publication gaps, and hot
-      env-slot roots preserving the `aos_force` finalization guard before
-      pointer installation or evaluator publication. This is safe readiness
+      env-slot roots reaching those same future publication gaps after safe
+      pointer/module-owner metadata is assembled. This is safe readiness
       plumbing only: it does not mutate heap thunks, perform atomic thunk-state
       CAS, cast or call code pointers, dereference registered addresses, call
       native code, or complete runtime-symbol registration.
@@ -5506,12 +5506,11 @@ and helps the oracle directly.
       aggregates the top-level runtime-symbol registration bridge and one
       force-aware evaluator-thunk install-readiness report. Tests cover literal
       roots reaching the existing runtime-symbol and future-publish blockers,
-      cold roots preserving the no-code gap, and hot env-slot roots surfacing the
-      `aos_force` finalization guard before pointer installation or evaluator
-      publication. This is a harness gate only: it does not mutate heap
-      thunks, perform atomic thunk-state CAS, cast or call code pointers,
-      dereference registered addresses, call native code, or complete
-      runtime-symbol registration.
+      cold roots preserving the no-code gap, and hot env-slot roots reaching the
+      same blockers after safe pointer/module-owner metadata is assembled. This
+      is a harness gate only: it does not mutate heap thunks, perform atomic
+      thunk-state CAS, cast or call code pointers, dereference registered
+      addresses, call native code, or complete runtime-symbol registration.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context
@@ -8871,15 +8870,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       artifact-definition path can rewrite both helper imports with synthetic
       candidates. Tests pin helper namespace/index metadata, imported signature
       parity, call ordering and operands, direct `ThunkAlloc` artifact metadata,
-      readiness import resolution, registered definition of the forced artifact,
-      the missing-`aos_force` candidate guard, and the explicit registered
-      finalization rejection for forced artifacts. The new lowerer entrypoints
-      remain verified non-executable CLIF construction; registered Cranelift
-      coverage stops at the existing definition-only `JITModule` preflight with
-      synthetic candidates. Forced artifacts are not eligible for the registered
-      finalization preflight yet, so no executable pointer exposure, real
-      exported wrapper address, raw pointer call, select/app lowering, or
-      generic IR traversal is implemented.
+      readiness import resolution, registered definition and finalization of
+      the forced artifact with synthetic candidates, forced tier-slot metadata
+      installation, and the missing-`aos_force` candidate guard. The new lowerer
+      entrypoints remain verified CLIF construction; registered Cranelift
+      coverage now reaches opaque executable pointer metadata and safe tier-slot
+      installation with synthetic candidates. Real exported wrapper addresses,
+      raw pointer calls, evaluator heap publication, select/app lowering, and
+      generic IR traversal remain unimplemented.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` reserves a Cranelift
       user-function namespace for verified CLIF functions lowered from Core IR
@@ -9124,8 +9122,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       definition path, calls `JITModule::finalize_definitions`, and returns a
       non-null opaque code pointer for the finalized artifact body. Tests pin
       env-slot finalization with a synthetic relocation target for `aos_env_get`,
-      missing-candidate and wrong-kind candidate rejection for artifact imports,
-      unresolved-import readiness preservation, code-pointer metadata,
+      forced env-slot finalization with synthetic `aos_env_get` and `aos_force`
+      targets, missing-candidate and wrong-kind candidate rejection for artifact
+      imports, unresolved-import readiness preservation, code-pointer metadata,
       registered/imported symbol visibility, representative registration gaps,
       and encapsulated-module ownership. This finalizes executable memory for
       registered call-bearing artifacts, but still does not use real exported
@@ -9169,14 +9168,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `JitTieredCodeSlot`, installs the finalized artifact's opaque
       `JitCompiledCodePointer`, and keeps the `JITModule` owner beside the slot
       metadata. Tests pin env-slot installation with a synthetic relocation
-      target for `aos_env_get`, constant artifact installation while unrelated
-      registration gaps remain, missing-candidate rejection, slot/current-tier
-      state, pointer equality, registered/imported symbol visibility, artifact
-      runtime-import metadata, and module ownership. This remains metadata
-      assembly only: it does not publish into evaluator heap thunk state, perform
-      atomic thunk-state CAS, directly dereference or call registered addresses,
-      cast or call the code pointer, lower generic IR, or complete
-      runtime-symbol registration for unrelated stable symbols.
+      target for `aos_env_get`, forced env-slot installation with synthetic
+      `aos_env_get` and `aos_force` targets, constant artifact installation
+      while unrelated registration gaps remain, missing-candidate rejection,
+      slot/current-tier state, pointer equality, registered/imported symbol
+      visibility, artifact runtime-import metadata, and module ownership. This
+      remains metadata assembly only: it does not publish into evaluator heap
+      thunk state, perform atomic thunk-state CAS, directly dereference or call
+      registered addresses, cast or call the code pointer, lower generic IR, or
+      complete runtime-symbol registration for unrelated stable symbols.
 - [x] Current promotion-gated tier-1 compile/install preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_promotion_preflight_for_ir_root()`
       records one invocation on an existing `JitTieredCodeSlot`, applies
@@ -9212,14 +9212,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       records one invocation with the same tier-up policy, preserves the
       existing literal-root promotion path, and lowers local env-slot roots
       through the forced env-slot CLIF artifact. Hot local-slot roots therefore
-      require both `aos_env_get` and `aos_force` candidates, then stop at the
-      explicit `aos_force` registered-finalization guard before any pointer is
-      installed. Tests pin cold unsupported-root no-lowering behavior, literal
-      multi-use promotion without runtime candidates, and hot env-slot
-      force-call promotion rejection with the invocation-updated slot preserved.
-      This is a policy/lowering handoff only: no evaluator heap thunk is
-      mutated, no atomic thunk-state CAS runs, no forced artifact is finalized,
-      no native code pointer is cast or called, and no `aos_force` wrapper is
+      require both `aos_env_get` and `aos_force` candidates, finalize through
+      the registered-symbol path, and install opaque pointer metadata into the
+      updated slot. Tests pin cold unsupported-root no-lowering behavior,
+      literal multi-use promotion without runtime candidates, hot env-slot and
+      wrapped env-slot force-call promotion with registered/imported helper
+      metadata, and missing-`aos_force` candidate rejection with the
+      invocation-updated slot preserved. This is still a policy/lowering handoff:
+      no evaluator heap thunk is mutated, no atomic thunk-state CAS runs, no
+      native code pointer is cast or called, and no `aos_force` wrapper is
       exported or invoked.
 - [x] Current compiled-tier safepoint policy precursor:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records that compiled

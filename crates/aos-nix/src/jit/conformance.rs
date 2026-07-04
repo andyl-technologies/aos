@@ -181,11 +181,10 @@ pub fn nix_jit_tier1_conformance_readiness_for_ir_root(
 ///
 /// This function composes the top-level runtime-symbol registration bridge with
 /// the force-aware evaluator-thunk install-readiness report for `root`. It is a
-/// harness-facing gate only: local environment-slot roots currently surface the
-/// registered-module finalization guard for forced artifacts before the returned
-/// readiness report can be built. Literal roots report the same runtime-symbol
-/// and evaluator publication blockers as the non-force-aware gate, while cold
-/// roots preserve the no-code gap.
+/// harness-facing gate only: local environment-slot roots can now finalize and
+/// install opaque tier-1 pointer metadata when their helper candidates are
+/// present, but still report the same runtime-symbol and evaluator publication
+/// blockers as literal roots. Cold roots preserve the no-code gap.
 ///
 /// # Errors
 ///
@@ -198,7 +197,7 @@ pub fn nix_jit_tier1_conformance_readiness_for_ir_root(
 ///
 /// Panics under the same Cranelift finalized-function lookup conditions as
 /// [`nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root`]
-/// when policy requests promotion for a finalizable artifact.
+/// when policy requests promotion and Cranelift finalizes an artifact.
 pub fn nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,
@@ -270,12 +269,10 @@ fn push_nonzero_gap(
 
 #[cfg(test)]
 mod tests {
-    use crate::jit::NixJitRegisteredTier1PromotionError;
+    use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 
     use ratchet_core::{EffectClass, IrData, IrKind, IrNode, syntax::Span};
-    use ratchet_jit::{
-        DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCraneliftModuleSetupError, JitTier, TierUpCounter,
-    };
+    use ratchet_jit::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter};
 
     use super::*;
 
@@ -517,41 +514,86 @@ mod tests {
     }
 
     #[test]
-    fn force_aware_tier1_conformance_readiness_reports_force_finalization_guard() {
+    fn force_aware_tier1_conformance_readiness_reports_forced_env_slot_publish_gaps() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
         let arena = local_var_arena(9);
         let thunk = EvalThunk::new(IrId::new(0));
 
-        let result = nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
+        let readiness = nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
             hot_slot(),
             TierUpPolicy::default(),
             TierUpDemandHint::NoMultiUseEvidence,
             &arena,
             IrId::new(0),
             &thunk,
-        );
-        let Err(error) = result else {
-            panic!("force-aware env-slot conformance is guarded before finalization");
-        };
+        )
+        .expect("force-aware env-slot JIT conformance readiness report builds");
 
-        let NixJitTier1ConformanceReadinessError::ThunkInstall(
-            NixJitThunkInstallReadinessError::Promotion(
-                NixJitRegisteredTier1PromotionError::Cranelift(source),
-            ),
-        ) = error
-        else {
-            panic!("expected force-aware promotion failure");
-        };
-        assert!(source.decision().should_promote());
+        assert!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .did_compile()
+        );
         assert_eq!(
-            source.slot().invocation_counter().invocations(),
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .invocation_counter()
+                .invocations(),
             DEFAULT_TIER1_INVOCATION_THRESHOLD
         );
-        assert!(source.slot().tier1_code_ptr().is_none());
-        let JitCraneliftModuleSetupError::ArtifactRuntimeImportsCannotFinalize { symbol_names } =
-            source.setup_error()
-        else {
-            panic!("expected force helper finalization guard");
-        };
-        assert_eq!(symbol_names, &["aos_force".to_owned()]);
+        assert_eq!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .current_tier(),
+            JitTier::Tier1Baseline
+        );
+        assert!(!readiness.is_ready_for_jit_enabled_harness());
+        assert!(!readiness.safe_preconditions_met());
+        assert!(
+            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
+                missing_count: readiness.runtime_symbol_registration().gaps().len(),
+            })
+        );
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        }));
+        let promoted = readiness
+            .thunk_install_readiness()
+            .install_plan()
+            .promoted_preflight()
+            .expect("readiness owns promoted preflight");
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_env_get")
+                        .expect("env candidate exists")
+                        .address())
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_force")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_force")
+                        .expect("force candidate exists")
+                        .address())
+        );
     }
 }
