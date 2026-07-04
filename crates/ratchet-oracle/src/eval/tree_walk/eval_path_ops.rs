@@ -344,9 +344,14 @@ impl TreeWalk {
         } else {
             self.mark_impure_input_trace_incomplete();
         }
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        let len = attrs.len();
+        self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )
     }
 
     pub(super) fn eval_read_file_primop(

@@ -598,6 +598,38 @@ fn codec_attrsets_record_dynamic_repr_decisions() {
 }
 
 #[test]
+fn path_surface_attrsets_record_dynamic_repr_decisions() {
+    let root = unique_temp_dir("attr-telemetry-read-dir");
+    fs::write(root.join("alpha"), b"alpha").expect("readDir fixture writes");
+    let source = format!(
+        "builtins.deepSeq [
+            (builtins.parseDrvName \"pkg-1.0\")
+            (builtins.readDir {})
+            builtins.nixPath
+        ] 0",
+        nix_string_literal(&path_source(&root))
+    );
+    let options = search_path_options(b"nixpkgs", &root);
+    let ir = lower(&source);
+
+    let outcome =
+        eval_whnf_owned_with_options(&ir, options).expect("path surface attrsets evaluate");
+
+    assert_eq!(outcome.value().as_int(), Ok(0));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("repr telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 3);
+    assert_eq!(snapshot.flat_decisions, 3);
+    assert_eq!(snapshot.update_merges, 0);
+    assert_eq!(snapshot.reasons.static_literal, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 3);
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn active_flat_selects_record_slow_select_telemetry() {
     let ir = lower(
         "builtins.deepSeq [

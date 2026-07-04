@@ -327,9 +327,14 @@ impl TreeWalk {
                 &self.symbols,
             )
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-            let attrs = self.heap.alloc_attrs(0, attrs).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-            })?;
+            let len = attrs.len();
+            let attrs = self.alloc_flat_attrs_with_repr_telemetry(
+                id,
+                span,
+                0,
+                attrs,
+                AttrSetConstruction::Dynamic { len },
+            )?;
             values.push(attrs);
         }
 
