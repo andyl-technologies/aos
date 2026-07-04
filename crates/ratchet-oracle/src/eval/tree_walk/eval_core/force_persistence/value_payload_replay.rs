@@ -89,14 +89,18 @@ impl TreeWalk {
         attrs: FlatAttrs,
     ) -> Option<Value> {
         let span = Span::new(0, 0);
-        let census_shape =
-            self.project_flat_attr_shape_census_telemetry(IrId::new(0), span, &attrs);
+        let shape_telemetry = self.project_flat_attr_shape_telemetry(IrId::new(0), span, &attrs);
         let value = self
             .heap
             .alloc_attrs_with_repr_metadata(0, repr, attrs)
             .ok()?;
-        if let Some(census_shape) = census_shape {
-            self.record_projected_attr_shape_census_telemetry(IrId::new(0), span, &census_shape);
+        if let Some((census_shape, transitions)) = shape_telemetry {
+            self.record_projected_attr_shape_telemetry(
+                IrId::new(0),
+                span,
+                &census_shape,
+                transitions,
+            );
         }
         Some(value)
     }

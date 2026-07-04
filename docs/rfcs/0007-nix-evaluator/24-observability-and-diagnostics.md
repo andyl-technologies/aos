@@ -389,7 +389,8 @@ shadow-divergence counters in [integration with AOS](14-integration-with-aos.md)
 | Surface | Mechanism | Cross-ref |
 |---|---|---|
 | `thunks_forced` / `thunks_allocated` / `thunks_elided` | counters on force/alloc spans | [15](15-differential-testing-and-benchmarking.md) §4.2 (G3) |
-| `inline_cache_hits` / `misses`, `shape_transitions` | events at `select` sites | [15](15-differential-testing-and-benchmarking.md) §4.2 (G5) |
+| `inline_cache_hits` / `misses` | events at active cache sites | [15](15-differential-testing-and-benchmarking.md) §4.2 (G5) |
+| `shape_transitions` | uncached shape-table edges observed during active flat-attr projection | [15](15-differential-testing-and-benchmarking.md) §4.2 (G5) |
 | `tier_promotions`, `deopts` | events at tier boundaries | [15](15-differential-testing-and-benchmarking.md) §4.2 (G6) |
 | `cache_hits` / `early_cutoffs` | events in the incremental cache | [12](12-incremental-evaluation-cache.md), [15](15-differential-testing-and-benchmarking.md) §4.2 (G2) |
 | native successes / fallbacks / shadow divergences | events at the `NixEval` seam | [14](14-integration-with-aos.md) §11 |

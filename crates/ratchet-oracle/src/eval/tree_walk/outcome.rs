@@ -12481,8 +12481,8 @@ impl ImpureInputTraceSource for EvalOutcome {
 /// Mirrored native-evaluator counters aligned with the RFC-0007 stats schema.
 ///
 /// Fields without an implementation yet stay present and zero so downstream
-/// tracing consumers can rely on stable field names while later slices add
-/// shape transitions, GC, promotions, deopts, and early-cutoff cache behavior.
+/// tracing consumers can rely on stable field names while later slices add GC,
+/// promotions, deopts, and early-cutoff cache behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EvalStats {
     pub(crate) thunks_forced: u64,
@@ -12553,7 +12553,7 @@ impl EvalStats {
         self.inline_cache_misses
     }
 
-    /// Returns the number of object-shape transitions reported by optimized tiers.
+    /// Returns the number of object-shape transition edges observed by active tiers.
     pub const fn shape_transitions(&self) -> u64 {
         self.shape_transitions
     }

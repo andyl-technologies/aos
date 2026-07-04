@@ -213,6 +213,7 @@ fn attr_update_records_active_merge_telemetry() {
     let outcome = eval_whnf_owned(&ir).expect("nested attr update evaluates");
 
     assert_eq!(outcome.value().as_int(), Ok(4));
+    assert_eq!(outcome.stats().shape_transitions(), 6);
     let snapshot = outcome
         .attr_telemetry()
         .update_merge_snapshot()
@@ -285,6 +286,7 @@ fn static_attrset_literals_record_repr_decision_telemetry() {
     let outcome = eval_whnf_owned(&ir).expect("static attrsets evaluate");
 
     assert_eq!(outcome.value().as_int(), Ok(0));
+    assert_eq!(outcome.stats().shape_transitions(), 3);
     let snapshot = outcome
         .attr_telemetry()
         .update_merge_snapshot()
@@ -327,6 +329,7 @@ fn dynamic_attrset_literals_record_dynamic_repr_decisions() {
     let outcome = eval_whnf_owned(&ir).expect("dynamic attrset evaluates");
 
     assert_eq!(outcome.value().as_int(), Ok(1));
+    assert_eq!(outcome.stats().shape_transitions(), 1);
     let snapshot = outcome
         .attr_telemetry()
         .update_merge_snapshot()
@@ -479,6 +482,7 @@ fn list_to_attrs_records_dynamic_repr_decision() {
     let outcome = eval_whnf_owned(&ir).expect("listToAttrs evaluates");
 
     assert_eq!(outcome.value().as_int(), Ok(0));
+    assert_eq!(outcome.stats().shape_transitions(), 4);
     let snapshot = outcome
         .attr_telemetry()
         .update_merge_snapshot()
@@ -1113,6 +1117,7 @@ fn force_cache_payload_replay_preserves_attr_repr_metadata() {
     assert_eq!(metadata.shape(), 0);
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
     assert_eq!(attrs.get(f).expect("f exists").as_int(), Ok(6));
+    assert_eq!(replay.stats.shape_transitions(), 6);
 
     let census = replay
         .attr_telemetry

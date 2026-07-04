@@ -776,9 +776,10 @@ harness, never cut for scope.
       fingerprint-filtered raw-equal shapes, and caches new-key transition edges
       on the parent record. The active tree-walk evaluator now projects
       successful flat attr heap allocations through a process-local shape table
-      for shape-census telemetry only. This is not a global/shared shape table,
-      does not provide lock-free reads, and is not wired into shaped heap
-      allocation, select sites, or `.drv`-observable behavior.
+      for shape-census telemetry and the mirrored uncached shape-transition
+      counter only. This is not a global/shared shape table, does not provide
+      lock-free reads, and is not wired into shaped heap allocation, select
+      sites, or `.drv`-observable behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [x] Current static-shape-plan precursor: `ratchet-value::attrs::shape`
       exposes `StaticShapePlan`, which resolves a static literal's
@@ -994,10 +995,12 @@ harness, never cut for scope.
       also carry HAMT insert/replace summaries from the representation-dispatch
       bridge, and active static flat select-cache terminal states are recorded
       there too. Flat cache hits use mirrored `EvalStats` inline-cache counters
-      while unresolved cache lookups keep slow-select telemetry. Runtime
-      shape/PIC/HAMT storage instrumentation, full AOS package-set measurements,
-      C++ `NIX_SHOW_STATS` comparison, and `.drv` differential proof remain
-      open.
+      while unresolved cache lookups keep slow-select telemetry; the same
+      successful flat-allocation shape projection separately increments
+      `EvalStats::shape_transitions` for uncached process-local transition
+      edges. Runtime shape/PIC/HAMT storage instrumentation, full AOS
+      package-set measurements, C++ `NIX_SHOW_STATS` comparison, and `.drv`
+      differential proof remain open.
 
 ## References
 

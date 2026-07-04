@@ -241,13 +241,13 @@ impl TreeWalk {
         let repr = projection.map_or(AttrSetReprKind::Flat, |projection| {
             projection.decision.kind()
         });
-        let census_shape = self.project_flat_attr_shape_census_telemetry(id, span, &attrs);
+        let shape_telemetry = self.project_flat_attr_shape_telemetry(id, span, &attrs);
         let result = self
             .heap
             .alloc_attrs_with_repr_metadata(0, repr, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if let Some(census_shape) = census_shape {
-            self.record_projected_attr_shape_census_telemetry(id, span, &census_shape);
+        if let Some((census_shape, transitions)) = shape_telemetry {
+            self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);
         }
 
         if let Some(projection) = projection {

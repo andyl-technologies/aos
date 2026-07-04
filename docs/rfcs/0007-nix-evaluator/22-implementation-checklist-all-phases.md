@@ -8548,9 +8548,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       fingerprint-filtered descriptor interning, and parent-record transition
       edge caching. The active tree-walk evaluator now projects successful flat
       attr heap allocations through a process-local shape table for
-      shape-census telemetry only. Global/shared table behavior, lock-free
-      reads, shaped heap allocation, select-site use, and `.drv` effects remain
-      open.
+      shape-census telemetry and the mirrored uncached shape-transition counter
+      only. Global/shared table behavior, lock-free reads, shaped heap
+      allocation, select-site use, and `.drv` effects remain open.
 - [x] Current shaped-instance precursor: `ratchet-value` exposes `ShapedAttrs`,
       a safe `{ ShapeHandle, values_by_symbol }` flat instance that validates
       value counts, stores values in the shape's symbol-slot order, and
@@ -8725,8 +8725,10 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       representation-dispatch bridge, and active static flat select-cache
       terminal states are recorded there too. Flat cache hits use mirrored
       `EvalStats` inline-cache counters while unresolved cache lookups keep the
-      slow-select telemetry. This does not replace runtime shape/PIC/HAMT
-      storage instrumentation, full package-set measurements, C++
+      slow-select telemetry; the same successful flat-allocation shape
+      projection separately increments `EvalStats::shape_transitions` for
+      uncached process-local transition edges. This does not replace runtime
+      shape/PIC/HAMT storage instrumentation, full package-set measurements, C++
       `NIX_SHOW_STATS` comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**
