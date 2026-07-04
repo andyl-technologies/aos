@@ -5060,16 +5060,36 @@ fn run_local_double_resume_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     resume_plan: &ResumeInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
-        return Err(unsupported_resume_backend_error(resume_plan));
-    }
+    let interactive_driver = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive)
+    {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    };
+    run_local_double_resume_workflow_with_driver(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        interactive_driver,
+    )
+}
+
+fn run_local_double_resume_workflow_with_driver(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+) -> Result<BackendCommandOutcome, CliError> {
     let evidence = resume_handle_evidence(resume_plan)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let report = runtime.block_on(run_resumed_savepoint_actor_async(
+    let report = runtime.block_on(run_resumed_savepoint_actor_with_driver_async(
         resume_plan,
         evidence.clone(),
+        interactive_driver,
     ))?;
     finish_resume_workflow_outcome(
         thin_plan,
@@ -5077,6 +5097,23 @@ fn run_local_double_resume_workflow(
         ergonomics_plan,
         resume_plan,
         report,
+    )
+}
+
+#[cfg(test)]
+fn run_local_double_resume_workflow_with_interactive_commands(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+    commands: &[SessionCommandKind],
+) -> Result<BackendCommandOutcome, CliError> {
+    run_local_double_resume_workflow_with_driver(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        ResumeInteractiveCommandDriver::Preparsed(commands),
     )
 }
 
@@ -5225,9 +5262,18 @@ fn resume_property_violation_predicate(
     }
 }
 
-async fn run_resumed_savepoint_actor_async(
+enum ResumeInteractiveCommandDriver<'a> {
+    Preparsed(&'a [SessionCommandKind]),
+    Stdin,
+}
+
+type ResumeCommandReply<T> =
+    tokio::sync::oneshot::Receiver<Result<T, crucible_session::SessionError>>;
+
+async fn run_resumed_savepoint_actor_with_driver_async(
     plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<ResumeWorkflowReport, CliError> {
     let resumed_loop = resume_recording_loop_for_plan(plan, &evidence)?;
     let mut graph = save_validation_graph(&evidence.scenario)?;
@@ -5259,106 +5305,131 @@ async fn run_resumed_savepoint_actor_async(
     let mut watch_statuses = Vec::new();
     let mut property_violation_reached = false;
 
-    match plan.terminal_condition {
-        RunTerminalCondition::Quiescence => {
-            send_resumed_actor_command(
-                &sender,
-                SessionCommand::Step {
-                    mode: StepMode::Quantum,
-                },
-                &mut acknowledged_commands,
-            )
-            .await?;
-            let boundary =
-                wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
-                    view.quanta_stepped > 0
-                })
-                .await?;
-            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
-            if plan.watch_streams_live_status {
-                watch_statuses.push(resume_watch_status(boundary));
-            }
+    if matches!(plan.execution_mode, RunExecutionMode::Interactive) {
+        drive_resumed_actor_interactive_commands(
+            &sender,
+            &live,
+            interactive_driver,
+            &mut acknowledged_commands,
+            &mut watch_statuses,
+            plan.watch_streams_live_status,
+        )
+        .await?;
+        let boundary = live.read();
+        state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+        if plan.watch_streams_live_status {
+            watch_statuses.push(resume_watch_status(boundary));
         }
-        RunTerminalCondition::VirtualTime => {
-            let budget = plan
-                .max_virtual_time_ticks
-                .ok_or_else(|| usage_error("--until virtual-time requires --max-virtual-time"))?;
-            let initial = live.read();
-            if initial.virtual_time.ticks < budget {
-                let delta = budget.saturating_sub(initial.virtual_time.ticks);
+    } else {
+        match plan.terminal_condition {
+            RunTerminalCondition::Quiescence => {
                 send_resumed_actor_command(
                     &sender,
                     SessionCommand::Step {
-                        mode: StepMode::Duration(SimDuration { nanos: delta }),
+                        mode: StepMode::Quantum,
                     },
                     &mut acknowledged_commands,
                 )
                 .await?;
+                let boundary =
+                    wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                        view.quanta_stepped > 0
+                    })
+                    .await?;
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
             }
-            let boundary = wait_resumed_actor_boundary(
-                &live,
-                resume_actor_boundary_yield_budget(initial.virtual_time.ticks, budget),
-                |view| {
-                    view.virtual_time.ticks >= budget
-                        && matches!(
-                            view.state_kind,
-                            LiveStateKind::Paused | LiveStateKind::Stopped
-                        )
-                },
-            )
-            .await?;
-            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
-            if plan.watch_streams_live_status {
-                watch_statuses.push(resume_watch_status(boundary));
-            }
-        }
-        RunTerminalCondition::Stopped => {}
-        RunTerminalCondition::Property => {
-            let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
-            let breakpoint_id = set_resumed_actor_breakpoint(
-                &sender,
-                BreakpointSpec::suspend_once(predicate.clone()),
-                &mut acknowledged_commands,
-            )
-            .await?;
-            let before = live.read();
-            send_resumed_actor_command(
-                &sender,
-                SessionCommand::Step {
-                    mode: StepMode::Quantum,
-                },
-                &mut acknowledged_commands,
-            )
-            .await?;
-            let boundary =
-                wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
-                    view.state_kind == LiveStateKind::Paused
-                        && view.quanta_stepped > before.quanta_stepped
-                })
+            RunTerminalCondition::VirtualTime => {
+                let budget = plan.max_virtual_time_ticks.ok_or_else(|| {
+                    usage_error("--until virtual-time requires --max-virtual-time")
+                })?;
+                let initial = live.read();
+                if initial.virtual_time.ticks < budget {
+                    let delta = budget.saturating_sub(initial.virtual_time.ticks);
+                    send_resumed_actor_command(
+                        &sender,
+                        SessionCommand::Step {
+                            mode: StepMode::Duration(SimDuration { nanos: delta }),
+                        },
+                        &mut acknowledged_commands,
+                    )
+                    .await?;
+                }
+                let boundary = wait_resumed_actor_boundary(
+                    &live,
+                    resume_actor_boundary_yield_budget(initial.virtual_time.ticks, budget),
+                    |view| {
+                        view.virtual_time.ticks >= budget
+                            && matches!(
+                                view.state_kind,
+                                LiveStateKind::Paused | LiveStateKind::Stopped
+                            )
+                    },
+                )
                 .await?;
-            state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
-            if plan.watch_streams_live_status {
-                watch_statuses.push(resume_watch_status(boundary));
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
             }
-            let firings =
-                query_resumed_actor_breakpoint_firings(&sender, &mut acknowledged_commands).await?;
-            validate_resume_property_firing(breakpoint_id, &predicate, boundary, &firings)?;
-            property_violation_reached = true;
+            RunTerminalCondition::Stopped => {}
+            RunTerminalCondition::Property => {
+                let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
+                let breakpoint_id = set_resumed_actor_breakpoint(
+                    &sender,
+                    BreakpointSpec::suspend_once(predicate.clone()),
+                    &mut acknowledged_commands,
+                )
+                .await?;
+                let before = live.read();
+                send_resumed_actor_command(
+                    &sender,
+                    SessionCommand::Step {
+                        mode: StepMode::Quantum,
+                    },
+                    &mut acknowledged_commands,
+                )
+                .await?;
+                let boundary =
+                    wait_resumed_actor_boundary(&live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                        view.state_kind == LiveStateKind::Paused
+                            && view.quanta_stepped > before.quanta_stepped
+                    })
+                    .await?;
+                state_updates.push(format!("{:?}", boundary.state_kind).to_ascii_lowercase());
+                if plan.watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
+                let firings =
+                    query_resumed_actor_breakpoint_firings(&sender, &mut acknowledged_commands)
+                        .await?;
+                validate_resume_property_firing(breakpoint_id, &predicate, boundary, &firings)?;
+                property_violation_reached = true;
+            }
         }
     }
 
-    send_resumed_actor_command(&sender, SessionCommand::Stop, &mut acknowledged_commands).await?;
+    if live.read().state_kind != LiveStateKind::Stopped {
+        send_resumed_actor_command(&sender, SessionCommand::Stop, &mut acknowledged_commands)
+            .await?;
+    }
     let actor_report = actor_task
         .await
         .map_err(|error| backend_error(format!("resume actor task failed to join: {error}")))?
         .map_err(|error| backend_error(format!("resume actor failed: {error}")))?;
     let final_view = live.read();
     state_updates.push(format!("{:?}", final_view.state_kind).to_ascii_lowercase());
-    let final_state = match plan.terminal_condition {
-        RunTerminalCondition::Quiescence => String::from("quiescent"),
-        RunTerminalCondition::VirtualTime => String::from("virtual-time"),
-        RunTerminalCondition::Stopped => String::from("stopped"),
-        RunTerminalCondition::Property => String::from("property-failed"),
+    let final_state = if matches!(plan.execution_mode, RunExecutionMode::Interactive) {
+        String::from("interactive")
+    } else {
+        match plan.terminal_condition {
+            RunTerminalCondition::Quiescence => String::from("quiescent"),
+            RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+            RunTerminalCondition::Stopped => String::from("stopped"),
+            RunTerminalCondition::Property => String::from("property-failed"),
+        }
     };
     if plan.watch_streams_live_status {
         watch_statuses.push(resume_watch_status(final_view));
@@ -5397,6 +5468,166 @@ async fn run_resumed_savepoint_actor_async(
         resumed_configuration,
         scenario_label: plan.savepoint.label(),
     })
+}
+
+async fn drive_resumed_actor_interactive_commands(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &Arc<LiveSnapshot>,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    watch_statuses: &mut Vec<String>,
+    watch_streams_live_status: bool,
+) -> Result<(), CliError> {
+    match interactive_driver {
+        ResumeInteractiveCommandDriver::Preparsed(commands) => {
+            for command in commands {
+                let boundary = acknowledge_resumed_actor_command_kind(
+                    sender,
+                    live,
+                    *command,
+                    acknowledged_commands,
+                )
+                .await?;
+                if watch_streams_live_status {
+                    watch_statuses.push(resume_watch_status(boundary));
+                }
+            }
+            Ok(())
+        }
+        ResumeInteractiveCommandDriver::Stdin => {
+            drive_resumed_actor_interactive_stdin_commands(
+                sender,
+                live,
+                acknowledged_commands,
+                watch_statuses,
+                watch_streams_live_status,
+            )
+            .await
+        }
+    }
+}
+
+async fn drive_resumed_actor_interactive_stdin_commands(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &Arc<LiveSnapshot>,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    watch_statuses: &mut Vec<String>,
+    watch_streams_live_status: bool,
+) -> Result<(), CliError> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    drive_resumed_actor_interactive_command_reader(
+        sender,
+        live,
+        acknowledged_commands,
+        watch_statuses,
+        watch_streams_live_status,
+        stdin.lock(),
+        &mut stdout,
+    )
+    .await
+}
+
+async fn drive_resumed_actor_interactive_command_reader<R, W>(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &Arc<LiveSnapshot>,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    watch_statuses: &mut Vec<String>,
+    watch_streams_live_status: bool,
+    reader: R,
+    writer: &mut W,
+) -> Result<(), CliError>
+where
+    R: BufRead,
+    W: Write,
+{
+    for line in reader.lines() {
+        let line = line?;
+        let Some(command) = parse_interactive_session_command_line(&line)? else {
+            continue;
+        };
+        let boundary =
+            acknowledge_resumed_actor_command_kind(sender, live, command, acknowledged_commands)
+                .await?;
+        if watch_streams_live_status {
+            watch_statuses.push(resume_watch_status(boundary));
+        }
+        writeln!(
+            writer,
+            "interactive-ack\tcommand={}\tstatus=accepted",
+            session_command_name(command)
+        )?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+async fn acknowledge_resumed_actor_command_kind(
+    sender: &mpsc::Sender<SessionCommand>,
+    live: &Arc<LiveSnapshot>,
+    command: SessionCommandKind,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<LiveSnapshotView, CliError> {
+    let before = live.read();
+    let model_command = cli_stream_command(command)?;
+    let (model_command, acknowledgement) = resume_actor_interactive_command(model_command);
+    sender
+        .send(model_command)
+        .await
+        .map_err(|error| backend_error(format!("resume actor command channel closed: {error}")))?;
+    observe_resumed_actor_interactive_acceptance(command, acknowledgement).await?;
+    acknowledged_commands.push(command);
+    observe_resumed_actor_interactive_boundary(live, command, before).await
+}
+
+fn resume_actor_interactive_command(
+    command: SessionCommand,
+) -> (SessionCommand, ResumeCommandReply<()>) {
+    let (acknowledgement, acknowledgement_receiver) = CommandReply::channel();
+    (
+        SessionCommand::acknowledged(command, acknowledgement),
+        acknowledgement_receiver,
+    )
+}
+
+async fn observe_resumed_actor_interactive_acceptance(
+    command: SessionCommandKind,
+    acknowledgement: ResumeCommandReply<()>,
+) -> Result<(), CliError> {
+    let context = format!("interactive command `{}`", session_command_name(command));
+    receive_resumed_actor_reply(acknowledgement, &context).await
+}
+
+async fn observe_resumed_actor_interactive_boundary(
+    live: &Arc<LiveSnapshot>,
+    command: SessionCommandKind,
+    before: LiveSnapshotView,
+) -> Result<LiveSnapshotView, CliError> {
+    match command {
+        SessionCommandKind::Continue
+        | SessionCommandKind::StepQuantum
+        | SessionCommandKind::StepEvent
+        | SessionCommandKind::StepAssertion
+        | SessionCommandKind::StepTimer
+        | SessionCommandKind::StepDuration => {
+            wait_resumed_actor_boundary(live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                view.quanta_stepped > before.quanta_stepped
+                    || view.virtual_time.ticks > before.virtual_time.ticks
+                    || view.state_kind == LiveStateKind::Stopped
+            })
+            .await
+        }
+        SessionCommandKind::Stop => {
+            wait_resumed_actor_boundary(live, RUN_INTERACTIVE_ACK_QUANTA_BOUND, |view| {
+                view.state_kind == LiveStateKind::Stopped
+            })
+            .await
+        }
+        _ => {
+            tokio::task::yield_now().await;
+            Ok(live.read())
+        }
+    }
 }
 
 async fn send_resumed_actor_command(
@@ -13591,6 +13822,74 @@ mod tests {
                 .iter()
                 .any(|entry| entry.kind == "resume_checkpoint")
         );
+
+        let interactive_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("resume"),
+            handle_path.display().to_string(),
+            String::from("--interactive"),
+            String::from("--watch"),
+        ]);
+        let Commands::Resume(args) = &interactive_cli.command else {
+            panic!("expected resume command");
+        };
+        let interactive_plan = plan_resume_invocation(args)?;
+        assert_eq!(
+            interactive_plan.execution_mode,
+            RunExecutionMode::Interactive
+        );
+        let backend_plan =
+            plan_backend_selection(&interactive_cli)?.expect("resume should route to backend");
+        let interactive_outcome = run_local_double_resume_workflow_with_interactive_commands(
+            &plan_cli_invocation(&interactive_cli),
+            &backend_plan,
+            None,
+            &interactive_plan,
+            &[
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Query,
+            ],
+        )?;
+
+        assert_eq!(interactive_outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(interactive_outcome.exit_code, 0);
+        assert!(interactive_outcome.terminal_savepoint.is_some());
+        assert!(interactive_outcome.stdout.iter().any(|line| {
+            line.starts_with("resume-session\t")
+                && line.contains("final=interactive")
+                && line.contains("frontier_ticks=2")
+                && line.contains("acks=4")
+        }));
+        assert!(
+            interactive_outcome
+                .stdout
+                .iter()
+                .any(|line| { line.starts_with("run-watch\tstate=paused\tfrontier_ticks=2") })
+        );
+        assert!(
+            interactive_outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "resume_checkpoint"
+                    && entry.summary.contains("until=quiescence"))
+        );
+
+        let rejected = match run_local_double_resume_workflow_with_interactive_commands(
+            &plan_cli_invocation(&interactive_cli),
+            &backend_plan,
+            None,
+            &interactive_plan,
+            &[SessionCommandKind::Start],
+        ) {
+            Ok(_) => panic!("resume interactive command rejection must not be acknowledged"),
+            Err(error) => error,
+        };
+        assert!(matches!(rejected, CliError::Backend(_)));
+        assert!(rejected.to_string().contains("interactive command `start`"));
 
         let property_form = property_selector_scenario_form()?;
         let property_scenario = property_form.scenario_def();
