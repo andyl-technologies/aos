@@ -1590,8 +1590,10 @@ dependencies = [
  "crucible-protocol",
  "crucible-session",
  "libc",
+ "serde",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

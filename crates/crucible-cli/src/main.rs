@@ -43,6 +43,7 @@ use crucible_session::{
         SearchFailureOracle, SimDuration, TemporalGraph, TemporalGraphStoreError, VirtualTime,
     },
 };
+use serde::Deserialize;
 use tokio::sync::mpsc;
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
@@ -1503,6 +1504,26 @@ struct FuzzDriverPlan {
     counterexamples_are_self_contained: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FuzzDispatchRoute {
+    BuiltInFaultCampaignProof,
+    LocalDouble,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalDoubleFuzzReport {
+    family: String,
+    corpus: Option<PathBuf>,
+    iterations: usize,
+    coverage_biased_order: usize,
+    new_coverage: usize,
+    retained_entries: usize,
+    admissions: usize,
+    replay_oracle_validations: u64,
+    generated_mutants: u64,
+    store_puts: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FuzzFamilyRef {
     BuiltInFaultCampaign,
@@ -1522,6 +1543,56 @@ impl FuzzFamilyRef {
     fn is_builtin_fault_campaign(&self) -> bool {
         matches!(self, Self::BuiltInFaultCampaign)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliScenarioFamilyToml {
+    schema: String,
+    seed_space: CliSeedSpaceToml,
+    fault_density: CliFaultDensityToml,
+    topology_size: CliTopologySizeToml,
+    topology_shapes: Vec<String>,
+    node_template: CliNodeTemplateToml,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "kebab-case")]
+enum CliSeedSpaceToml {
+    Generated { meta_seed: String, count: u32 },
+    Explicit { seeds: Vec<String> },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliFaultDensityToml {
+    min_millionths: u32,
+    max_millionths: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliTopologySizeToml {
+    min: u32,
+    max: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CliNodeTemplateToml {
+    fixed_icount: Option<u64>,
+    network_idle_nanos: Option<u64>,
+    console_marker: Option<String>,
+    agent_signal: Option<bool>,
+    arch: Option<String>,
+    white_box: Option<String>,
+    memory_mib: Option<u32>,
+    cmdline: Option<String>,
+    smp_vcpus: Option<u16>,
+    icount_shift: Option<u8>,
+    kernel: Option<String>,
+    root_image: Option<String>,
+    initrd: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2423,6 +2494,271 @@ fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
         )));
     }
     Ok(FuzzFamilyRef::File(path.to_path_buf()))
+}
+
+fn load_fuzz_family(plan: &FuzzDriverPlan) -> Result<crucible::ScenarioFamily, CliError> {
+    match &plan.family {
+        FuzzFamilyRef::BuiltInFaultCampaign => crucible::fault_campaign_family().map_err(|error| {
+            backend_error(format!(
+                "built-in fault-campaign family could not be loaded: {error}"
+            ))
+        }),
+        FuzzFamilyRef::File(path) => load_fuzz_family_file(path),
+        FuzzFamilyRef::Stored(_) => Err(unsupported_stored_fuzz_family_error(plan)),
+    }
+}
+
+fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        backend_error(format!(
+            "family `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let authored = toml::from_str::<CliScenarioFamilyToml>(&text).map_err(|error| {
+        backend_error(format!(
+            "family `{}` is not valid scenario-family TOML: {error}",
+            path.display()
+        ))
+    })?;
+    scenario_family_from_toml(path, authored)
+}
+
+fn scenario_family_from_toml(
+    path: &Path,
+    authored: CliScenarioFamilyToml,
+) -> Result<crucible::ScenarioFamily, CliError> {
+    const SCHEMA: &str = "crucible.scenario-family.v1";
+
+    if authored.schema != SCHEMA {
+        return Err(family_file_error(
+            path,
+            format!(
+                "uses unsupported schema `{}`; expected `{SCHEMA}`",
+                authored.schema
+            ),
+        ));
+    }
+
+    let seeds = seed_space_from_toml(path, authored.seed_space)?;
+    let min_density = crucible::FaultDensity::from_millionths(
+        authored.fault_density.min_millionths,
+    )
+    .map_err(|error| family_file_error(path, format!("has invalid minimum density: {error}")))?;
+    let max_density = crucible::FaultDensity::from_millionths(
+        authored.fault_density.max_millionths,
+    )
+    .map_err(|error| family_file_error(path, format!("has invalid maximum density: {error}")))?;
+    let fault_density = crucible::FaultDensityRange::new(min_density, max_density)
+        .map_err(|error| family_file_error(path, format!("has invalid density range: {error}")))?;
+    let topology_size =
+        crucible::TopologySizeRange::new(authored.topology_size.min, authored.topology_size.max)
+            .map_err(|error| {
+                family_file_error(path, format!("has invalid topology size range: {error}"))
+            })?;
+    let topology_shapes = authored
+        .topology_shapes
+        .iter()
+        .map(|shape| topology_shape_from_toml(path, shape))
+        .collect::<Result<Vec<_>, _>>()?;
+    let space = crucible::FamilySpace::new(seeds, fault_density, topology_size, topology_shapes)
+        .map_err(|error| family_file_error(path, format!("has invalid family space: {error}")))?;
+    let node_template = node_template_from_toml(path, authored.node_template)?;
+
+    Ok(crucible::ScenarioFamily::new(space, node_template))
+}
+
+fn seed_space_from_toml(
+    path: &Path,
+    authored: CliSeedSpaceToml,
+) -> Result<crucible::SeedSpace, CliError> {
+    match authored {
+        CliSeedSpaceToml::Generated { meta_seed, count } => {
+            let meta_seed = parse_family_seed(path, "seed_space.meta_seed", &meta_seed)?;
+            crucible::SeedSpace::generated(meta_seed, count).map_err(|error| {
+                family_file_error(path, format!("has invalid generated seed space: {error}"))
+            })
+        }
+        CliSeedSpaceToml::Explicit { seeds } => {
+            let seeds = seeds
+                .iter()
+                .enumerate()
+                .map(|(index, seed)| {
+                    parse_family_seed(path, &format!("seed_space.seeds[{index}]"), seed)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            crucible::SeedSpace::explicit(seeds).map_err(|error| {
+                family_file_error(path, format!("has invalid explicit seed space: {error}"))
+            })
+        }
+    }
+}
+
+fn topology_shape_from_toml(path: &Path, shape: &str) -> Result<crucible::TopologyShape, CliError> {
+    match shape {
+        "ring" => Ok(crucible::TopologyShape::Ring),
+        "star" => Ok(crucible::TopologyShape::Star),
+        "mesh" => Ok(crucible::TopologyShape::Mesh),
+        "random" => Ok(crucible::TopologyShape::Random),
+        value => Err(family_file_error(
+            path,
+            format!("uses unknown topology shape `{value}`"),
+        )),
+    }
+}
+
+fn node_template_from_toml(
+    path: &Path,
+    authored: CliNodeTemplateToml,
+) -> Result<crucible::NodeTemplate, CliError> {
+    let agent_signal = authored.agent_signal.unwrap_or(false);
+    let ready_point_count = [
+        authored.fixed_icount.is_some(),
+        authored.network_idle_nanos.is_some(),
+        authored.console_marker.is_some(),
+        agent_signal,
+    ]
+    .into_iter()
+    .filter(|set| *set)
+    .count();
+    if ready_point_count != 1 {
+        return Err(family_file_error(
+            path,
+            "node_template must set exactly one of fixed_icount, network_idle_nanos, console_marker, or agent_signal=true",
+        ));
+    }
+
+    let mut template = if let Some(retired) = authored.fixed_icount {
+        crucible::NodeTemplate::fixed_icount(crucible::Icount { retired })
+    } else if let Some(nanos) = authored.network_idle_nanos {
+        crucible::NodeTemplate::network_idle(crucible::SimDuration { nanos })
+    } else if let Some(marker) = authored.console_marker {
+        crucible::NodeTemplate::console_marker(marker)
+    } else {
+        crucible::NodeTemplate::agent_signal()
+    };
+
+    if let Some(arch) = authored.arch {
+        template = template.arch(vm_architecture_from_toml(path, &arch)?);
+    }
+    if let Some(white_box) = authored.white_box {
+        template = template.white_box(white_box_from_toml(path, &white_box)?);
+    }
+    if let Some(memory_mib) = authored.memory_mib {
+        template = template.memory_mib(memory_mib);
+    }
+    if let Some(cmdline) = authored.cmdline {
+        template = template.cmdline(cmdline);
+    }
+    if let Some(smp_vcpus) = authored.smp_vcpus {
+        template = template.smp_vcpus(smp_vcpus);
+    }
+    if let Some(icount_shift) = authored.icount_shift {
+        template = template.icount_shift(icount_shift);
+    }
+    if let Some(kernel) = authored.kernel {
+        template = template.kernel(blob_ref_from_toml(path, "node_template.kernel", &kernel)?);
+    }
+    if let Some(root_image) = authored.root_image {
+        template = template.root_image(blob_ref_from_toml(
+            path,
+            "node_template.root_image",
+            &root_image,
+        )?);
+    }
+    if let Some(initrd) = authored.initrd {
+        template = template.initrd(blob_ref_from_toml(path, "node_template.initrd", &initrd)?);
+    }
+
+    Ok(template)
+}
+
+fn vm_architecture_from_toml(
+    path: &Path,
+    value: &str,
+) -> Result<crucible::VmArchitecture, CliError> {
+    match value {
+        "x86_64" => Ok(crucible::VmArchitecture::X86_64),
+        "aarch64" => Ok(crucible::VmArchitecture::Aarch64),
+        value => Err(family_file_error(
+            path,
+            format!("uses unknown node_template.arch `{value}`"),
+        )),
+    }
+}
+
+fn white_box_from_toml(path: &Path, value: &str) -> Result<crucible::WhiteBoxPolicy, CliError> {
+    match value {
+        "enabled" => Ok(crucible::WhiteBoxPolicy::Enabled),
+        "disabled" => Ok(crucible::WhiteBoxPolicy::Disabled),
+        value => Err(family_file_error(
+            path,
+            format!("uses unknown node_template.white_box `{value}`"),
+        )),
+    }
+}
+
+fn blob_ref_from_toml(
+    path: &Path,
+    field: &'static str,
+    value: &str,
+) -> Result<crucible::ContentAddressedBlobRef, CliError> {
+    crucible::ContentAddressedBlobRef::parse(field, value)
+        .map_err(|error| family_file_error(path, format!("has invalid {field}: {error}")))
+}
+
+fn parse_family_seed(path: &Path, field: &str, value: &str) -> Result<crucible::Seed, CliError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(family_file_error(
+            path,
+            format!("{field} must not be empty"),
+        ));
+    }
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"));
+    if let Some(hex) = hex {
+        if hex.len() == 64 {
+            return Ok(crucible::Seed::from_bytes(parse_family_seed_hex(
+                path, field, hex,
+            )?));
+        }
+        let value = u64::from_str_radix(hex, 16).map_err(|error| {
+            family_file_error(path, format!("{field} has invalid u64 hex seed: {error}"))
+        })?;
+        return Ok(crucible::Seed::from_u64(value));
+    }
+    if trimmed.len() == 64 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(crucible::Seed::from_bytes(parse_family_seed_hex(
+            path, field, trimmed,
+        )?));
+    }
+    let value = trimmed.parse::<u64>().map_err(|error| {
+        family_file_error(
+            path,
+            format!("{field} must be a u64 or 64-byte hex seed: {error}"),
+        )
+    })?;
+    Ok(crucible::Seed::from_u64(value))
+}
+
+fn parse_family_seed_hex(path: &Path, field: &str, value: &str) -> Result<[u8; 32], CliError> {
+    let mut bytes = [0; 32];
+    for (index, chunk) in value.as_bytes().chunks(2).enumerate() {
+        let high = hex_nibble(chunk[0]).ok_or_else(|| {
+            family_file_error(path, format!("{field} has malformed 64-byte hex seed"))
+        })?;
+        let low = hex_nibble(chunk[1]).ok_or_else(|| {
+            family_file_error(path, format!("{field} has malformed 64-byte hex seed"))
+        })?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn family_file_error(path: &Path, message: impl Into<String>) -> CliError {
+    backend_error(format!("family `{}` {}", path.display(), message.into()))
 }
 
 fn validate_positive_optional_budget(
@@ -10925,11 +11261,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_search_backend_error(search_plan));
         }
         if let Some(fuzz_plan) = &fuzz_plan {
-            if fuzz_plan.family.is_builtin_fault_campaign() {
-                run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
-                return Ok(());
+            match fuzz_dispatch_route(&backend_plan, fuzz_plan) {
+                Some(FuzzDispatchRoute::BuiltInFaultCampaignProof) => {
+                    run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
+                    return Ok(());
+                }
+                Some(FuzzDispatchRoute::LocalDouble) => {
+                    let outcome = run_local_double_fuzz_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        fuzz_plan,
+                    )?;
+                    if emit_human && backend_plan.should_announce(cli.quiet) {
+                        println!("{}", backend_plan.announcement());
+                    }
+                    emit_backend_command_output(cli, &outcome)?;
+                    if outcome.status.is_non_passing() {
+                        return Err(CliError::Outcome(outcome.status));
+                    }
+                    return Ok(());
+                }
+                None => return Err(unsupported_fuzz_backend_error(fuzz_plan)),
             }
-            return Err(unsupported_fuzz_backend_error(fuzz_plan));
         }
         let mut outcome = execute_backend_routed_command(
             &thin_plan,
@@ -11562,6 +11916,178 @@ fn run_builtin_fault_campaign_fuzz(cli: &Cli, plan: &FuzzDriverPlan) -> Result<(
     Ok(())
 }
 
+fn fuzz_dispatch_route(
+    backend_plan: &BackendSelectionPlan,
+    plan: &FuzzDriverPlan,
+) -> Option<FuzzDispatchRoute> {
+    if plan.family.is_builtin_fault_campaign() {
+        return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
+    }
+    if backend_plan.target == BackendExecutionTarget::Local
+        && matches!(
+            backend_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Double)
+        )
+    {
+        return Some(FuzzDispatchRoute::LocalDouble);
+    }
+    None
+}
+
+fn run_local_double_fuzz_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &FuzzDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let family = load_fuzz_family(plan)?;
+    run_local_double_fuzz_workflow_with_family(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        plan,
+        &family,
+    )
+}
+
+fn run_local_double_fuzz_workflow_with_family(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &FuzzDriverPlan,
+    family: &crucible::ScenarioFamily,
+) -> Result<BackendCommandOutcome, CliError> {
+    let report = if let Some(corpus) = &plan.corpus {
+        fs::create_dir_all(corpus).map_err(|error| {
+            backend_error(format!(
+                "local-double fuzz could not create corpus `{}`: {error}",
+                corpus.display()
+            ))
+        })?;
+        let store = crucible::LocalDagStore::new(corpus.clone());
+        let run = family
+            .fuzz_coverage_guided_corpus(
+                &store,
+                plan.config,
+                crucible::CoverageGuidedCorpusConfig::new(plan.config.meta_seed),
+                &[],
+            )
+            .map_err(|error| {
+                backend_error(format!("local-double fuzz corpus run failed: {error}"))
+            })?;
+        local_double_fuzz_report_from_corpus_run(plan, corpus, &run)
+    } else {
+        let run = family
+            .fuzz_coverage_guided(plan.config, &[])
+            .map_err(|error| backend_error(format!("local-double fuzz run failed: {error}")))?;
+        local_double_fuzz_report_from_run(plan, &run)
+    };
+
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    apply_local_double_fuzz_report(&mut outcome, plan, &report);
+    Ok(outcome)
+}
+
+fn local_double_fuzz_report_from_run(
+    plan: &FuzzDriverPlan,
+    run: &crucible::CoverageGuidedFuzzRun,
+) -> LocalDoubleFuzzReport {
+    LocalDoubleFuzzReport {
+        family: plan.family.label(),
+        corpus: None,
+        iterations: run.iterations.len(),
+        coverage_biased_order: run.coverage_biased_order.len(),
+        new_coverage: run
+            .iterations
+            .iter()
+            .filter(|iteration| iteration.new_coverage)
+            .count(),
+        retained_entries: 0,
+        admissions: 0,
+        replay_oracle_validations: 0,
+        generated_mutants: run.iterations.len() as u64,
+        store_puts: 0,
+    }
+}
+
+fn local_double_fuzz_report_from_corpus_run(
+    plan: &FuzzDriverPlan,
+    corpus: &Path,
+    run: &crucible::CoverageGuidedCorpusRun,
+) -> LocalDoubleFuzzReport {
+    LocalDoubleFuzzReport {
+        family: plan.family.label(),
+        corpus: Some(corpus.to_path_buf()),
+        iterations: run.fuzz.iterations.len(),
+        coverage_biased_order: run.fuzz.coverage_biased_order.len(),
+        new_coverage: run
+            .fuzz
+            .iterations
+            .iter()
+            .filter(|iteration| iteration.new_coverage)
+            .count(),
+        retained_entries: run.corpus.len(),
+        admissions: run.admissions.len(),
+        replay_oracle_validations: run.throughput.replay_oracle_validations,
+        generated_mutants: run.throughput.generated_mutants,
+        store_puts: run.throughput.store_puts,
+    }
+}
+
+fn apply_local_double_fuzz_report(
+    outcome: &mut BackendCommandOutcome,
+    plan: &FuzzDriverPlan,
+    report: &LocalDoubleFuzzReport,
+) {
+    let status = BackendCommandStatus::Passed;
+    outcome.status = status;
+    outcome.exit_code = status.exit_code();
+    let corpus = report
+        .corpus
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| String::from("none"));
+    outcome.stdout.push(format!(
+        "fuzz-run\tfamily={}\truns={}\tcoverage={}\tcorpus={}\titerations={}\tcoverage_order={}\tnew_coverage={}\tadmissions={}\tretained_entries={}\treplay_oracle_validations={}\tgenerated_mutants={}\tstore_puts={}\tstatus={}",
+        report.family,
+        plan.runs,
+        plan.coverage.label(),
+        corpus,
+        report.iterations,
+        report.coverage_biased_order,
+        report.new_coverage,
+        report.admissions,
+        report.retained_entries,
+        report.replay_oracle_validations,
+        report.generated_mutants,
+        report.store_puts,
+        status.label()
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("fuzz"),
+        kind: String::from("coverage_guided_fuzz_run"),
+        summary: format!(
+            "family={} runs={} coverage={} corpus={} iterations={} coverage_order={} new_coverage={} admissions={} retained_entries={} replay_oracle_validations={} generated_mutants={} store_puts={} status={}",
+            report.family,
+            plan.runs,
+            plan.coverage.label(),
+            corpus,
+            report.iterations,
+            report.coverage_biased_order,
+            report.new_coverage,
+            report.admissions,
+            report.retained_entries,
+            report.replay_oracle_validations,
+            report.generated_mutants,
+            report.store_puts,
+            status.label()
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+}
+
 fn run_local_double_search_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -11714,6 +12240,15 @@ fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
 fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
     backend_error(format!(
         "fuzz family {} runs={} coverage={} requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13",
+        plan.family.label(),
+        plan.runs,
+        plan.coverage.label()
+    ))
+}
+
+fn unsupported_stored_fuzz_family_error(plan: &FuzzDriverPlan) -> CliError {
+    backend_error(format!(
+        "fuzz family {} runs={} coverage={} requires DAG-store ScenarioFamily loading tracked by T-CLI-13",
         plan.family.label(),
         plan.runs,
         plan.coverage.label()
@@ -14166,6 +14701,34 @@ mod tests {
         let form = search_frontier_scenario_form()?;
         let path = temp.path().join("search-frontier-scenario.toml");
         fs::write(&path, form.to_canonical_toml()?)?;
+        Ok(path)
+    }
+
+    fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+        let path = temp.path().join("family.toml");
+        fs::write(
+            &path,
+            r#"schema = "crucible.scenario-family.v1"
+topology_shapes = ["ring"]
+
+[seed_space]
+kind = "generated"
+meta_seed = "0x55"
+count = 2
+
+[fault_density]
+min_millionths = 0
+max_millionths = 1
+
+[topology_size]
+min = 1
+max = 2
+
+[node_template]
+fixed_icount = 17
+cmdline = "cli-fuzz-family"
+"#,
+        )?;
         Ok(path)
     }
 
@@ -18638,8 +19201,7 @@ mod tests {
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
 
-        let family_path = temp.path().join("family.toml");
-        fs::write(&family_path, "schema = \"scenario-family-fixture\"\n")?;
+        let family_path = write_valid_fuzz_family(&temp)?;
         let corpus = temp.path().join("corpus");
         fs::create_dir(&corpus)?;
         let fuzz_cli = Cli::parse_from([
@@ -18677,6 +19239,7 @@ mod tests {
         assert!(fuzz_plan.delegates_policy_to_advanced_engine);
         assert!(fuzz_plan.pins_one_scenario_def_per_iteration);
         assert!(fuzz_plan.counterexamples_are_self_contained);
+        assert_eq!(load_fuzz_family(&fuzz_plan)?.space().cardinality()?, 8);
 
         let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
         let hash_cli = Cli::parse_from(["crucible", "fuzz", "--family", &reference]);
@@ -18773,7 +19336,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_fuzz_runs_builtin_fault_campaign_family() {
+    fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dyn Error>> {
         let cli = Cli::parse_from([
             "crucible",
             "--quiet",
@@ -18788,7 +19351,24 @@ mod tests {
             "2",
         ]);
 
+        let Commands::Fuzz(args) = &cli.command else {
+            panic!("expected fuzz command");
+        };
+        let seed_plan = plan_determinism_ergonomics(
+            &cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("built-in fuzz should resolve a seed");
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("built-in fuzz should route");
+        assert_eq!(
+            fuzz_dispatch_route(&backend_plan, &fuzz_plan),
+            Some(FuzzDispatchRoute::BuiltInFaultCampaignProof)
+        );
+
         dispatch(&cli).expect("built-in fault campaign fuzz should run on the local proof path");
+        Ok(())
     }
 
     #[test]
@@ -19015,11 +19595,10 @@ mod tests {
     }
 
     #[test]
-    fn cli_search_fuzz_workflow_rejects_fuzz_execution_until_driver_exists()
-    -> Result<(), Box<dyn Error>> {
+    fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
-        let family_path = temp.path().join("family.toml");
-        fs::write(&family_path, "schema = \"scenario-family-fixture\"\n")?;
+        let family_path = write_valid_fuzz_family(&temp)?;
+        let corpus = temp.path().join("fuzz-corpus");
         let fuzz_cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--quiet"),
@@ -19031,15 +19610,124 @@ mod tests {
             family_path.display().to_string(),
             String::from("--runs"),
             String::from("2"),
+            String::from("--corpus"),
+            corpus.display().to_string(),
         ]);
-        let error = match dispatch(&fuzz_cli) {
-            Ok(_) => panic!("fuzz must not silently pass before exploration driver exists"),
+        let Commands::Fuzz(args) = &fuzz_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let seed_plan = plan_determinism_ergonomics(
+            &fuzz_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("fuzz should resolve a seed");
+        let fuzz_plan = plan_fuzz_invocation(args, &seed_plan)?;
+        let backend_plan =
+            plan_backend_selection(&fuzz_cli)?.expect("fuzz should route to backend");
+        let outcome = run_local_double_fuzz_workflow(
+            &plan_cli_invocation(&fuzz_cli),
+            &backend_plan,
+            Some(&seed_plan),
+            &fuzz_plan,
+        )?;
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        let fuzz_line = outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fuzz-run\t"))
+            .expect("fuzz workflow must emit a fuzz-run line");
+        assert!(fuzz_line.contains("runs=2"));
+        assert!(fuzz_line.contains("coverage=basic-block"));
+        assert!(fuzz_line.contains("iterations=2"));
+        assert!(fuzz_line.contains("admissions=2"));
+        assert!(fuzz_line.contains("retained_entries=1"));
+        assert!(fuzz_line.contains("replay_oracle_validations=3"));
+        assert!(fuzz_line.contains("generated_mutants=2"));
+        assert!(fuzz_line.contains("store_puts=2"));
+        assert!(fuzz_line.contains("status=passed"));
+        assert!(outcome.canonical_log.iter().any(|entry| {
+            entry.kind == "coverage_guided_fuzz_run"
+                && entry.summary.contains("replay_oracle_validations=3")
+        }));
+        assert!(corpus.is_dir());
+        dispatch(&fuzz_cli)?;
+
+        let no_corpus_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--seed"),
+            String::from("9"),
+            String::from("fuzz"),
+            family_path.display().to_string(),
+            String::from("--runs"),
+            String::from("2"),
+        ]);
+        let Commands::Fuzz(args) = &no_corpus_cli.command else {
+            panic!("expected fuzz command");
+        };
+        let no_corpus_seed_plan = plan_determinism_ergonomics(
+            &no_corpus_cli,
+            &FakeSeedEnvironment::default(),
+            &mut FakeSeedEntropySource::new(0),
+        )?
+        .expect("no-corpus fuzz should resolve a seed");
+        let no_corpus_plan = plan_fuzz_invocation(args, &no_corpus_seed_plan)?;
+        let no_corpus_backend =
+            plan_backend_selection(&no_corpus_cli)?.expect("no-corpus fuzz should route");
+        assert_eq!(
+            fuzz_dispatch_route(&no_corpus_backend, &no_corpus_plan),
+            Some(FuzzDispatchRoute::LocalDouble)
+        );
+        let no_corpus_outcome = run_local_double_fuzz_workflow(
+            &plan_cli_invocation(&no_corpus_cli),
+            &no_corpus_backend,
+            Some(&no_corpus_seed_plan),
+            &no_corpus_plan,
+        )?;
+        assert_eq!(no_corpus_outcome.status, BackendCommandStatus::Passed);
+        let no_corpus_line = no_corpus_outcome
+            .stdout
+            .iter()
+            .find(|line| line.starts_with("fuzz-run\t"))
+            .expect("no-corpus fuzz workflow must emit a fuzz-run line");
+        assert!(no_corpus_line.contains("corpus=none"));
+        assert!(no_corpus_line.contains("iterations=2"));
+        assert!(no_corpus_line.contains("coverage_order=2"));
+        assert!(no_corpus_line.contains("admissions=0"));
+        assert!(no_corpus_line.contains("retained_entries=0"));
+        assert!(no_corpus_line.contains("replay_oracle_validations=0"));
+        assert!(no_corpus_line.contains("generated_mutants=2"));
+        assert!(no_corpus_line.contains("store_puts=0"));
+        assert!(no_corpus_line.contains("status=passed"));
+        dispatch(&no_corpus_cli)?;
+
+        let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
+        let stored_cli = Cli::parse_from([
+            "crucible",
+            "--quiet",
+            "--backend",
+            "double",
+            "fuzz",
+            "--family",
+            &reference,
+        ]);
+        let error = match dispatch(&stored_cli) {
+            Ok(_) => panic!("stored family hashes still need DAG-store family loading"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Backend(_)));
         assert_eq!(error.exit_code(), 4);
         assert!(error.to_string().contains("T-CLI-13"));
-        assert!(error.to_string().contains("runs=2"));
+        assert!(
+            error
+                .to_string()
+                .contains("requires DAG-store ScenarioFamily loading")
+        );
+        assert!(error.to_string().contains("runs=1"));
 
         Ok(())
     }

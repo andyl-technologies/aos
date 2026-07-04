@@ -73,6 +73,14 @@
         label = "T-CLI-13 local-double replay oracle sampling progress";
         needle = "1/1 replay-oracle sampling counts over fat search materializations";
       }
+      {
+        label = "T-CLI-13 local-double fuzz runner progress";
+        needle = "executes local `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
+      }
+      {
+        label = "T-CLI-13 local-double fuzz corpus progress";
+        needle = "persists retained corpus\n  artifacts through `LocalDagStore`";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -98,6 +106,14 @@
       {
         label = "phase5 CLI local-double replay oracle sampling progress";
         needle = "1/1 replay-oracle\n  sampling counts over fat search materializations";
+      }
+      {
+        label = "phase5 CLI local-double fuzz runner progress";
+        needle = "local-double `ScenarioFamily::fuzz_coverage_guided` and\n  `ScenarioFamily::fuzz_coverage_guided_corpus` execution";
+      }
+      {
+        label = "phase5 CLI local-double fuzz corpus progress";
+        needle = "durable\n  `LocalDagStore` corpus persistence";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -214,6 +230,62 @@
         needle = "requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13";
       }
       {
+        label = "scenario family TOML loader";
+        needle = "fn load_fuzz_family_file";
+      }
+      {
+        label = "scenario family schema";
+        needle = "crucible.scenario-family.v1";
+      }
+      {
+        label = "local-double fuzz runner";
+        needle = "fn run_local_double_fuzz_workflow";
+      }
+      {
+        label = "fuzz dispatch route";
+        needle = "enum FuzzDispatchRoute";
+      }
+      {
+        label = "built-in fuzz proof route";
+        needle = "FuzzDispatchRoute::BuiltInFaultCampaignProof";
+      }
+      {
+        label = "local-double fuzz injectable family runner";
+        needle = "fn run_local_double_fuzz_workflow_with_family";
+      }
+      {
+        label = "local-double fuzz no-corpus API";
+        needle = "fuzz_coverage_guided(plan.config, &[])";
+      }
+      {
+        label = "local-double fuzz corpus API";
+        needle = "fuzz_coverage_guided_corpus";
+      }
+      {
+        label = "local-double fuzz output";
+        needle = "fuzz-run";
+      }
+      {
+        label = "local-double fuzz canonical log";
+        needle = "coverage_guided_fuzz_run";
+      }
+      {
+        label = "local-double fuzz corpus persistence";
+        needle = "crucible::LocalDagStore::new";
+      }
+      {
+        label = "local-double fuzz replay validation output";
+        needle = "replay_oracle_validations={}";
+      }
+      {
+        label = "local-double fuzz no-corpus output";
+        needle = "corpus=none";
+      }
+      {
+        label = "stored fuzz family error";
+        needle = "requires DAG-store ScenarioFamily loading";
+      }
+      {
         label = "search fuzz help test";
         needle = "cli_search_fuzz_help_surface_lists_wip_flags";
       }
@@ -226,8 +298,12 @@
         needle = "cli_search_fuzz_workflow_executes_local_double_search";
       }
       {
-        label = "search fuzz fuzz-blocker test";
-        needle = "cli_search_fuzz_workflow_rejects_fuzz_execution_until_driver_exists";
+        label = "search fuzz local-double fuzz execution test";
+        needle = "cli_search_fuzz_workflow_executes_local_double_fuzz";
+      }
+      {
+        label = "local-double positive fuzz replay regression";
+        needle = "replay_oracle_validations=3";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" engineModel [
