@@ -469,7 +469,10 @@ long-held locks.
   command driving, CLI-replayable child reproduction artifact writing whose
   embedded seed remains the scenario-form seed plus fork-seed provenance output
   and separate model artifact/replay-state evidence, and terminal savepoint
-  replay-oracle validation; full closure waits for real-QEMU coverage.
+  replay-oracle validation, plus explicitly selected local-QEMU forks through
+  the same child-session materialization with resolved QEMU/plugin identity
+  provenance in stdout and the canonical log; full closure waits for
+  process-backed real-QEMU fork execution.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation,
   byte-identical canonical-log comparison, exit 1 on mismatch with
