@@ -53,8 +53,8 @@
         needle = "Work in progress under `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
-        label = "T-CLI-15 search fuzz process coverage note";
-        needle = "process-tests local-double `run`, `save`, `search`,\n  and `fuzz` JSONL output with parsed command-specific canonical events";
+        label = "T-CLI-15 replay process coverage note";
+        needle = "`fuzz`, and `replay --check` success/mismatch JSONL output with parsed";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -91,6 +91,18 @@
       {
         label = "final outcome summary";
         needle = "fn final_outcome_summary";
+      }
+      {
+        label = "replay machine-readable output helper";
+        needle = "fn emit_replay_report_output";
+      }
+      {
+        label = "replay machine-readable trace entries";
+        needle = "fn replay_machine_readable_trace_entries";
+      }
+      {
+        label = "replay final outcome summary";
+        needle = "fn replay_final_outcome_summary";
       }
       {
         label = "final outcome exit code field";
@@ -159,6 +171,10 @@
         needle = "cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_final_outcome";
       }
       {
+        label = "replay check process stdout regression";
+        needle = "cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome";
+      }
+      {
         label = "real crucible binary execution";
         needle = "CARGO_BIN_EXE_crucible";
       }
@@ -181,6 +197,26 @@
       {
         label = "failure final outcome assertion";
         needle = "exit_code={expected_exit_code}";
+      }
+      {
+        label = "replay artifact canonical jsonl assertion";
+        needle = "\"replay_artifact\"";
+      }
+      {
+        label = "replay check canonical jsonl assertion";
+        needle = "\"replay_check\"";
+      }
+      {
+        label = "replay check mismatch jsonl assertion";
+        needle = "status=mismatch";
+      }
+      {
+        label = "replay check mismatch exit assertion";
+        needle = "replay --check mismatch --format jsonl should exit 1";
+      }
+      {
+        label = "replay human text forbidden in process stdout";
+        needle = "crucible: replay artifact";
       }
       {
         label = "retained evidence failure exit assertion";
