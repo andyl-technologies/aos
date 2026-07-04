@@ -1104,8 +1104,11 @@ branch on the verdict without parsing output:
   requested boundary; writes a CLI-replayable child reproduction artifact whose
   embedded seed remains the scenario-form seed while CLI output reports the fork
   seed provenance, separate model artifact/replay-state evidence for the same
-  child configuration, and terminal child savepoint replay-oracle validation.
-  Full closure remains blocked on real-QEMU coverage.
+  child configuration, and terminal child savepoint replay-oracle validation;
+  routes explicitly selected local-QEMU forks through the same child-session
+  materialization with resolved QEMU/plugin identity provenance in stdout and
+  the canonical log. Full closure remains blocked on process-backed real-QEMU
+  fork execution.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —

@@ -67,6 +67,10 @@
         label = "T-CLI-11 child artifact progress";
         needle = "writes a CLI-replayable child reproduction artifact whose\n  embedded seed remains the scenario-form seed";
       }
+      {
+        label = "T-CLI-11 local-QEMU fork routing progress";
+        needle = "routes explicitly selected local-QEMU forks through the same child-session";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -84,6 +88,10 @@
       {
         label = "phase5 CLI fork artifact progress";
         needle = "CLI-replayable child reproduction artifact writing whose\n  embedded seed remains the scenario-form seed plus fork-seed provenance output";
+      }
+      {
+        label = "phase5 CLI fork local-QEMU progress";
+        needle = "explicitly selected local-QEMU forks through\n  the same child-session materialization";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -114,6 +122,18 @@
       {
         label = "fork local-double runner";
         needle = "fn run_local_double_fork_workflow";
+      }
+      {
+        label = "fork local-QEMU runner";
+        needle = "fn run_local_qemu_fork_workflow";
+      }
+      {
+        label = "fork local-QEMU identity output";
+        needle = "fork-qemu-runner";
+      }
+      {
+        label = "fork local-QEMU canonical log";
+        needle = "fork_qemu_runner";
       }
       {
         label = "fork child actor runner";
@@ -194,6 +214,10 @@
       {
         label = "fork execution test";
         needle = "cli_fork_workflow_executes_local_double_handle";
+      }
+      {
+        label = "fork local-QEMU execution test";
+        needle = "cli_fork_workflow_executes_local_qemu_handle_with_identity";
       }
       {
         label = "fork tampered frontier test";

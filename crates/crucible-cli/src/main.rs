@@ -5820,19 +5820,43 @@ fn run_local_double_fork_workflow(
     fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let evidence = fork_handle_evidence(fork_plan)?;
-    let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
-        ResumeInteractiveCommandDriver::Stdin
-    } else {
-        ResumeInteractiveCommandDriver::Preparsed(&[])
-    };
     run_local_double_fork_workflow_with_driver(
         thin_plan,
         backend_plan,
         ergonomics_plan,
         fork_plan,
         evidence,
-        interactive_driver,
+        default_fork_interactive_driver(fork_plan),
     )
+}
+
+fn run_local_qemu_fork_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let evidence = fork_handle_evidence(fork_plan)?;
+    let mut outcome = run_local_double_fork_workflow_with_driver(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        fork_plan,
+        evidence,
+        default_fork_interactive_driver(fork_plan),
+    )?;
+    append_local_qemu_fork_identity(&mut outcome, backend_plan)?;
+    Ok(outcome)
+}
+
+fn default_fork_interactive_driver(
+    fork_plan: &ForkInvocationPlan,
+) -> ResumeInteractiveCommandDriver<'static> {
+    if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    }
 }
 
 fn run_local_double_fork_workflow_with_driver(
@@ -7417,6 +7441,38 @@ fn append_local_qemu_save_identity(
         kind: String::from("save_qemu_runner"),
         summary: format!(
             "materialization=create-savepoint-reply qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(())
+}
+
+fn append_local_qemu_fork_identity(
+    outcome: &mut BackendCommandOutcome,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<(), CliError> {
+    let Some(ResolvedLocalBackend::Qemu {
+        qemu_build_id,
+        qemu_patch_series_hash,
+        plugin_abi,
+        shmem_abi_version,
+        ..
+    }) = backend_plan.resolved_backend.as_ref()
+    else {
+        return Err(backend_error(
+            "local QEMU fork requires a resolved QEMU backend identity",
+        ));
+    };
+    outcome.stdout.push(format!(
+        "fork-qemu-runner\tmaterialization=child-session-savepoint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("qemu"),
+        kind: String::from("fork_qemu_runner"),
+        summary: format!(
+            "materialization=child-session-savepoint qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -10805,18 +10861,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_resume_backend_error(resume_plan));
         }
         if let Some(fork_plan) = &fork_plan {
-            if backend_plan.target == BackendExecutionTarget::Local
-                && matches!(
-                    backend_plan.resolved_backend,
-                    Some(ResolvedLocalBackend::Double)
-                )
-            {
-                let outcome = run_local_double_fork_workflow(
-                    &thin_plan,
-                    &backend_plan,
-                    ergonomics_plan.as_ref(),
-                    fork_plan,
-                )?;
+            if backend_plan.target == BackendExecutionTarget::Local {
+                let outcome = match backend_plan.resolved_backend.as_ref() {
+                    Some(ResolvedLocalBackend::Double) => run_local_double_fork_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        fork_plan,
+                    ),
+                    Some(ResolvedLocalBackend::Qemu { .. }) => run_local_qemu_fork_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        fork_plan,
+                    ),
+                    None => Err(unsupported_fork_backend_error(fork_plan)),
+                }?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }
@@ -18117,6 +18177,121 @@ mod tests {
                 line.starts_with("run-watch\t") && line.contains("frontier_ticks=2")
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_fork_workflow_executes_local_qemu_handle_with_identity() -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("qemu-fork-artifacts");
+        let store_root = temp.path().join("store");
+        let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+        let fixture = crucible::happy_path_scenario()?;
+        let form = fixture.scenario;
+        let inherited_seed = seed_to_u64(form.seed());
+        let scenario = form.scenario_def();
+        let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        ));
+        let configuration = crucible::Configuration {
+            def: scenario,
+            schedule: schedule.clone(),
+        };
+        let checkpoint = configuration.id();
+        let handle_path = write_savepoint_handle_fixture(
+            temp.path(),
+            "qemu-fork-source",
+            &form,
+            &schedule,
+            checkpoint,
+            1,
+            &content_address_bytes(b"qemu-fork-log"),
+        )?;
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("qemu"),
+            String::from("--qemu"),
+            qemu.clone(),
+            String::from("--plugin"),
+            plugin.clone(),
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--until"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ticks"),
+            String::from("--label"),
+            String::from("qemu-child"),
+        ]);
+        let Commands::Fork(args) = &cli.command else {
+            panic!("expected fork command");
+        };
+        let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir, &store_root)?;
+        let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
+        assert!(matches!(
+            backend_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Qemu { .. })
+        ));
+        let outcome = run_local_qemu_fork_workflow(
+            &plan_cli_invocation(&cli),
+            &backend_plan,
+            None,
+            &fork_plan,
+        )?;
+
+        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.terminal_savepoint.is_some());
+        assert!(outcome.savepoint_oracle.is_some());
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("fork-session\t")
+                && line.contains("label=qemu-child")
+                && line.contains("final=virtual-time")
+                && line.contains("frontier_ticks=2")
+        }));
+        let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
+        let expected_plugin_abi = required_qemu_plugin_abi();
+        let expected_shmem_abi = crucible::SHMEM_ABI_VERSION.to_string();
+        assert!(outcome.stdout.iter().any(|line| {
+            line == &format!(
+                "fork-qemu-runner\tmaterialization=child-session-savepoint\tqemu_build_id={expected_qemu_build_id}\tqemu_patch_series=sha256-test-qemu-patch-series\tplugin_abi={expected_plugin_abi}\tshmem_abi={expected_shmem_abi}"
+            )
+        }));
+        assert!(
+            outcome
+                .canonical_log
+                .iter()
+                .any(|entry| entry.kind == "fork_qemu_runner")
+        );
+        assert_fork_artifact_replays(&cli, &outcome, inherited_seed)?;
+
+        let dispatch_artifact_dir = temp.path().join("qemu-fork-dispatch-artifacts");
+        let dispatch_cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--quiet"),
+            String::from("--artifact-dir"),
+            dispatch_artifact_dir.display().to_string(),
+            String::from("--backend"),
+            String::from("qemu"),
+            String::from("--qemu"),
+            qemu,
+            String::from("--plugin"),
+            plugin,
+            String::from("fork"),
+            handle_path.display().to_string(),
+            String::from("--label"),
+            String::from("qemu-dispatch-child"),
+        ]);
+        dispatch(&dispatch_cli)?;
+        assert!(fs::read_dir(&dispatch_artifact_dir)?.next().is_some());
 
         Ok(())
     }
