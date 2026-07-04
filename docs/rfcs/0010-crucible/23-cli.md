@@ -1074,12 +1074,14 @@ branch on the verdict without parsing output:
   the temporal graph, validating
   property-stop breakpoint firing evidence when requested, stopping with a
   terminal savepoint, and replay-oracle-validating that terminal
-  materialization. The same check also routes non-interactive remote-daemon
-  resume over `ResumeSession` RPC for handle-backed virtual-time runs,
-  instantiating the checkpoint through the session resume API, advancing the
+  materialization. The same check also routes remote-daemon resume over
+  `ResumeSession` RPC for handle-backed virtual-time runs and interactive
+  command driving, instantiating the checkpoint through the session resume API,
+  streaming `--watch` status at observed remote boundaries, advancing the
   resumed actor, stopping with a terminal savepoint, and replay-oracle-validating
-  that terminal materialization. Full closure remains blocked on remote
-  interactive command driving, remote `--watch` status streaming, real-QEMU
+  that terminal materialization. It fails terminal remote interactive command
+  sequences explicitly before racing post-terminal snapshot collection. Full
+  closure remains blocked on terminal remote interactive finalization, real-QEMU
   coverage, and full replay-oracle coverage across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact

@@ -447,11 +447,13 @@ long-held locks.
   virtual-time, interactive command driving, or a declared property violation
   through the session checkpoint-resume API with breakpoint-firing proof for the
   property stop and replay-oracle validation for terminal savepoints, plus
-  non-interactive remote-daemon handle-backed virtual-time resume over
-  `ResumeSession` RPC with terminal savepoint replay-oracle validation; full
-  closure waits for remote interactive command driving, remote `--watch` status
-  streaming, real-QEMU coverage, and full replay-oracle coverage across those
-  runners.
+  remote-daemon handle-backed virtual-time resume over `ResumeSession` RPC,
+  remote interactive command driving, `--watch` status streaming at observed
+  remote boundaries, terminal savepoint replay-oracle validation, and explicit
+  failure for terminal remote interactive command sequences before racing
+  post-terminal snapshot collection; full closure waits for terminal remote
+  interactive finalization, real-QEMU coverage, and full replay-oracle coverage
+  across those runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
