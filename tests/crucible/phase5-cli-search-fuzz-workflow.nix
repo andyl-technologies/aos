@@ -187,6 +187,14 @@
         needle = "failure_oracle=none";
       }
       {
+        label = "local-double search assertion oracle marker";
+        needle = "failure_oracle=scenario-assertions";
+      }
+      {
+        label = "local-double search assertion oracle derivation";
+        needle = "from_search_assertion_violations";
+      }
+      {
         label = "local-double search oracle API";
         needle = "search_with_strategy_and_failure_oracle";
       }
@@ -411,6 +419,22 @@
         needle = "sampling_sequence_offset";
       }
       {
+        label = "search assertion oracle helper";
+        needle = "pub fn from_search_assertion_violations";
+      }
+      {
+        label = "search assertion retained log helper";
+        needle = "recorded_assertion_log_from_schedule_for_search";
+      }
+      {
+        label = "search assertion prefix-safe filter";
+        needle = "prefix_safe_search_assertion_failure";
+      }
+      {
+        label = "search assertion schedule predicate allowlist";
+        needle = "assertion_uses_only_search_schedule_predicates";
+      }
+      {
         label = "sampled search sequence offset bisection test";
         needle = "sampled_search_offset_localizes_bisection_sequence";
       }
@@ -423,6 +447,10 @@
       {
         label = "sampled search strategy config";
         needle = "SearchReplayOracleSamplingConfig::new";
+      }
+      {
+        label = "search assertion oracle lowering gate";
+        needle = "gate_search_failure_oracle_lowers_prefix_safe_assertion_violations";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

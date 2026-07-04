@@ -6,12 +6,14 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FaultDecision, FaultId,
-    FindingDiscoveryPath, GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger,
-    NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
-    SearchReplayOracleSamplingConfig, SearchStrategy, Seed, TemporalGraph, TemporalGraphSearchRun,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    AssertionDef, AssertionId, ChoiceTag, Configuration, ContentHash, ControlFaultAction,
+    ControlFaultDecision, Decision, EngineError, Fault, FaultDecision, FaultId,
+    FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath, GenesisCheckpoint, Icount,
+    MaterializationPolicy, MaterializationTrigger, NodeFault, NodeId, NodeTemplate,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RngDecision, RngStreamId,
+    ScenarioDefForm, Schedule, SchedulingPoint, SearchBudget, SearchFailureOracle,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchStrategy, Seed, TemporalGraph,
+    TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -247,6 +249,74 @@ fn gate_search_strategies_report_discovered_failures_deterministically()
     Ok(())
 }
 
+#[test]
+fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Result<(), Box<dyn Error>>
+{
+    let tag = FaultTag::from_name("forbidden-control-fault");
+    let scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::fault_active(tag.clone())),
+    })?;
+    let root = Configuration {
+        def: scenario.scenario_def(),
+        schedule: Schedule::from_decisions([control_fault_inject_decision(tag)]),
+    };
+    let run = empty_search_run_for_root(&root);
+
+    let oracle = SearchFailureOracle::from_search_assertion_violations(&scenario, &root, &run)?;
+    let fingerprint = oracle
+        .failure_for(root.id())
+        .ok_or("prefix-safe assertion violation should become a search failure")?;
+
+    assert_ne!(fingerprint, ContentHash::default());
+
+    let liveness_scenario = assertion_lowering_scenario(Property::Sometimes {
+        predicate: Predicate::named("never-satisfied-by-black-box-oracle"),
+    })?;
+    let liveness_root = Configuration::genesis(liveness_scenario.scenario_def());
+    let liveness_run = empty_search_run_for_root(&liveness_root);
+    let liveness_oracle = SearchFailureOracle::from_search_assertion_violations(
+        &liveness_scenario,
+        &liveness_root,
+        &liveness_run,
+    )?;
+
+    assert!(liveness_oracle.is_empty());
+
+    let named_safety_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::named("requires-external-host-oracle"),
+    })?;
+    let named_safety_root = Configuration::genesis(named_safety_scenario.scenario_def());
+    let named_safety_run = empty_search_run_for_root(&named_safety_root);
+    let named_safety_oracle = SearchFailureOracle::from_search_assertion_violations(
+        &named_safety_scenario,
+        &named_safety_root,
+        &named_safety_run,
+    )?;
+
+    assert!(named_safety_oracle.is_empty());
+
+    let timed_safety_scenario = assertion_lowering_scenario(Property::Always {
+        predicate: Predicate::not(Predicate::at(time(0))),
+    })?;
+    let timed_safety_root = Configuration {
+        def: timed_safety_scenario.scenario_def(),
+        schedule: Schedule::from_decisions([control_fault_inject_decision_at(
+            FaultTag::from_name("late-control-fault"),
+            time(100),
+        )]),
+    };
+    let timed_safety_run = empty_search_run_for_root(&timed_safety_root);
+    let timed_safety_oracle = SearchFailureOracle::from_search_assertion_violations(
+        &timed_safety_scenario,
+        &timed_safety_root,
+        &timed_safety_run,
+    )?;
+
+    assert!(timed_safety_oracle.is_empty());
+
+    Ok(())
+}
+
 fn run_strategy(
     strategy: SearchStrategy,
     budget: SearchBudget,
@@ -462,6 +532,50 @@ fn override_decision(point: impl Into<String>, choice: impl Into<String>) -> Dec
         point: SchedulingPoint { key: point.into() },
         choice: ChoiceTag {
             name: choice.into(),
+        },
+    })
+}
+
+fn assertion_lowering_scenario(property: Property) -> Result<ScenarioDefForm, EngineError> {
+    let world = single_node_world("assertion-lowering")?;
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef {
+            id: AssertionId::from_name("search-assertion-lowering"),
+            message: String::from("search assertion lowering test"),
+            property,
+        }],
+    )?;
+    ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::default())
+}
+
+fn empty_search_run_for_root(root: &Configuration) -> TemporalGraphSearchRun {
+    TemporalGraphSearchRun {
+        root: root.id(),
+        strategy: SearchStrategy::BreadthFirst,
+        budget: SearchBudget::new(1),
+        explored_graph: BTreeSet::from([root.id()]),
+        expansions: Vec::new(),
+        discovered_failures: Vec::new(),
+        exhausted: true,
+    }
+}
+
+fn control_fault_inject_decision(tag: FaultTag) -> Decision {
+    control_fault_inject_decision_at(tag, time(0))
+}
+
+fn control_fault_inject_decision_at(tag: FaultTag, at: VirtualTime) -> Decision {
+    Decision::ControlFault(ControlFaultDecision {
+        at,
+        sequence: 0,
+        action: ControlFaultAction::Inject {
+            tag,
+            fault: Fault::Node(NodeFault::Slow {
+                node: node_id("search-node"),
+                factor: FaultSlowdownFactorBasisPoints::from_basis_points(12_000)
+                    .unwrap_or_else(|error| panic!("valid slowdown factor: {error}")),
+            }),
         },
     })
 }
