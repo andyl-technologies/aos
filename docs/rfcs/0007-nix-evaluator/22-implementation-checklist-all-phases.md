@@ -7797,6 +7797,28 @@ nurseries build on the bump arena.
       `Failed` payloads, re-raise stored thunk errors to waiters, wire GC-poll
       safepoints, interrupt in-flight work, evaluate Nix derivations, or satisfy
       the loom/Miri/TSan audit.
+- [x] Current scheduler-backed tree-walk raw-evaluation bridge:
+      `ratchet-oracle::eval::eval_raw_bytes_parallel_top_level` runs independent
+      lowered roots through the safe fallible L1 scheduler, creates a fresh
+      serial tree-walk evaluator for each completed root, renders strict raw
+      bytes with the existing tree-walk raw renderer, and stores root-local
+      tree-walk failures as stable task-order outcomes. Source-less roots match
+      `--expr`-style evaluation, while source-backed root payloads preserve
+      source names and bytes for position-sensitive builtins. The bridge clones
+      `TreeWalkOptions` per task, prevalidates that the scheduler worker count
+      fits the parallel thunk state-word encoding, and assigns the active
+      parallel thunk worker id from the scheduler worker that actually executes
+      the root. When parallel payloads are enabled, the tree-walk parallel
+      payload sidecar therefore observes the same worker identity as the L1
+      completion report. Tests cover stable raw-byte parity with serial
+      tree-walk evaluation, source-provenance preservation, canonical tree-walk
+      error selection by task order, fail-fast cancellation before later
+      task-boundary checks, and scheduler-worker to thunk-worker id bounds. This
+      is an independent-root bridge only: it does not share evaluator heaps or
+      thunk graphs between roots, allocate through live per-worker nurseries,
+      evaluate a full derivation closure, replace the serial tree-walk force
+      path, install the final Chase-Lev deque, or satisfy the full
+      differential/loom/Miri/TSan gates.
 
 **Conformance (hold parity).**
 

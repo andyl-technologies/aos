@@ -14,6 +14,7 @@ pub mod parallel;
 pub mod parallel_failure;
 pub mod parallel_heap;
 pub mod parallel_output;
+pub mod parallel_tree_walk;
 pub mod thunk;
 pub mod thunk_cas;
 pub mod thunk_lowering;
@@ -37,8 +38,9 @@ pub use parallel::{
     parallel_top_level_seed_plan,
 };
 pub use parallel_failure::{
-    ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTopLevelError,
-    ParallelFallibleTopLevelReport, ParallelTaskOutcome, execute_parallel_top_level_fallible,
+    ParallelFailurePolicy, ParallelFailureWorkerReport, ParallelFallibleTaskContext,
+    ParallelFallibleTopLevelError, ParallelFallibleTopLevelReport, ParallelTaskOutcome,
+    execute_parallel_top_level_fallible, execute_parallel_top_level_fallible_with_worker,
 };
 pub use parallel_heap::{
     ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,
@@ -55,6 +57,12 @@ pub use parallel_output::{
     ParallelOutputDifferentialError, ParallelOutputDifferentialReport, ParallelOutputFragment,
     ParallelOutputTaskResult, collate_parallel_output_fragments,
     compare_parallel_output_across_worker_counts, parallel_drv_output_content_sha256,
+};
+pub use parallel_tree_walk::{
+    ParallelTreeWalkEvaluationError, ParallelTreeWalkRawEvaluation,
+    ParallelTreeWalkRawEvaluationReport, ParallelTreeWalkRoot, ParallelTreeWalkRootSource,
+    ParallelTreeWalkTopLevelError, eval_raw_bytes_parallel_top_level,
+    eval_raw_bytes_parallel_top_level_roots,
 };
 pub use thunk::{
     DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,

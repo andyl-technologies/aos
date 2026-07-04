@@ -65,6 +65,44 @@ where
     E: Send,
     F: Fn(T) -> Result<R, E> + Sync,
 {
+    execute_parallel_top_level_fallible_with_worker(tasks, worker_count, policy, |_, payload| {
+        worker(payload)
+    })
+}
+
+/// Executes independent fallible top-level tasks with worker execution context.
+///
+/// This is the worker-aware form of [`execute_parallel_top_level_fallible`].
+/// The supplied closure receives [`ParallelFallibleTaskContext`] describing the
+/// stable task index, initial worker queue, executing worker, and worker count
+/// for the task currently being evaluated. Outcomes retain the same stable
+/// task-order collation and cooperative cancellation semantics as the
+/// context-free entry point.
+///
+/// # Errors
+///
+/// Returns [`ParallelFallibleTopLevelError`] if a worker queue or result buffer
+/// is poisoned, if a worker queue cannot be found for an internal worker id, or
+/// if a worker thread panics while evaluating a task.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot spawn one of the scoped worker
+/// threads. Task panics are caught and returned as
+/// [`ParallelFallibleTopLevelError::WorkerPanicked`].
+pub fn execute_parallel_top_level_fallible_with_worker<I, T, R, E, F>(
+    tasks: I,
+    worker_count: NonZeroUsize,
+    policy: ParallelFailurePolicy,
+    worker: F,
+) -> Result<ParallelFallibleTopLevelReport<R, E>, ParallelFallibleTopLevelError>
+where
+    I: IntoIterator<Item = T>,
+    T: Send,
+    R: Send,
+    E: Send,
+    F: Fn(ParallelFallibleTaskContext, T) -> Result<R, E> + Sync,
+{
     let worker_count = worker_count.get();
     let mut seeded_queues = (0..worker_count)
         .map(|_| VecDeque::new())
@@ -165,7 +203,7 @@ fn fallible_worker_loop<T, R, E, F>(
     worker_count: usize,
 ) -> Result<ParallelFailureWorkerReport, ParallelFallibleTopLevelError>
 where
-    F: Fn(T) -> Result<R, E>,
+    F: Fn(ParallelFallibleTaskContext, T) -> Result<R, E>,
 {
     let mut report = ParallelFailureWorkerReport::new(worker_id);
 
@@ -179,7 +217,13 @@ where
     )? {
         let task_index = task.task_index;
         let initial_worker = task.initial_worker;
-        let outcome = worker(task.payload);
+        let context = ParallelFallibleTaskContext {
+            task_index,
+            initial_worker,
+            worker_id,
+            worker_count,
+        };
+        let outcome = worker(context, task.payload);
         if outcome.is_err() {
             report.task_errors += 1;
             if policy.cancels_queued_after_first_error() {
@@ -267,6 +311,37 @@ struct ParallelFallibleTopLevelTask<T> {
     task_index: usize,
     initial_worker: usize,
     payload: T,
+}
+
+/// Execution context passed to worker-aware fallible top-level tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParallelFallibleTaskContext {
+    task_index: usize,
+    initial_worker: usize,
+    worker_id: usize,
+    worker_count: usize,
+}
+
+impl ParallelFallibleTaskContext {
+    /// Returns the stable top-level task index.
+    pub const fn task_index(self) -> usize {
+        self.task_index
+    }
+
+    /// Returns the worker queue that initially owned this task.
+    pub const fn initial_worker(self) -> usize {
+        self.initial_worker
+    }
+
+    /// Returns the worker that is executing this task.
+    pub const fn worker_id(self) -> usize {
+        self.worker_id
+    }
+
+    /// Returns the total number of scheduler workers.
+    pub const fn worker_count(self) -> usize {
+        self.worker_count
+    }
 }
 
 /// The cancellation policy for fallible top-level execution.
@@ -560,6 +635,43 @@ mod tests {
                         && outcome.initial_worker() == expected_index % 3
                         && outcome.worker_id() < 3
                 )
+        );
+    }
+
+    #[test]
+    fn worker_aware_executor_reports_task_context() {
+        let report = execute_parallel_top_level_fallible_with_worker(
+            0..9,
+            workers(3),
+            ParallelFailurePolicy::CollectAll,
+            |context, value| {
+                Ok::<_, &'static str>((
+                    value,
+                    context.task_index(),
+                    context.initial_worker(),
+                    context.worker_id(),
+                    context.worker_count(),
+                ))
+            },
+        )
+        .expect("worker-aware fallible execution succeeds");
+
+        assert_eq!(report.worker_count(), 3);
+        assert!(
+            report
+                .outcomes()
+                .iter()
+                .enumerate()
+                .all(|(expected_index, outcome)| {
+                    let (value, task_index, initial_worker, context_worker, worker_count) =
+                        outcome.outcome().as_ref().expect("root succeeded");
+                    *value == expected_index
+                        && *task_index == expected_index
+                        && *initial_worker == expected_index % 3
+                        && *context_worker == outcome.worker_id()
+                        && outcome.worker_id() < 3
+                        && *worker_count == 3
+                })
         );
     }
 
