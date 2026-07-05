@@ -316,14 +316,8 @@ impl TreeWalk {
             }
         }
 
-        let right = self
-            .heap
-            .alloc_list(NixList::new(right))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let wrong = self
-            .heap
-            .alloc_list(NixList::new(wrong))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let right = self.alloc_tree_walk_list(id, span, NixList::new(right))?;
+        let wrong = self.alloc_tree_walk_list(id, span, NixList::new(wrong))?;
         let right_key = self.intern_builtin_attr_symbol(id, b"right", span)?;
         let wrong_key = self.intern_builtin_attr_symbol(id, b"wrong", span)?;
         let mut entries = Vec::new();

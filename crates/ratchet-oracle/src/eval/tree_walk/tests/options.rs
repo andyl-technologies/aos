@@ -3020,6 +3020,122 @@ fn gc_stress_cat_attrs_direct_list_result_skips_active_env_roots() {
 }
 
 #[test]
+fn gc_stress_partition_list_results_skip_active_argument_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let right_key = evaluator.symbols.intern(b"right").expect("right interns");
+    let wrong_key = evaluator.symbols.intern(b"wrong").expect("wrong interns");
+    let skipped = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"x".to_vec()))
+        .expect("skipped string allocates");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![Value::int(1), skipped, Value::int(2)]))
+        .expect("input list allocates");
+    let predicate_symbol = evaluator.symbols.intern(b"isInt").expect("isInt interns");
+    let predicate_builtin = lookup_builtin(b"isInt").expect("isInt builtin exists");
+    let predicate = evaluator
+        .heap
+        .alloc_primop(EvalPrimOp::registered(predicate_symbol, predicate_builtin))
+        .expect("predicate primop allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, predicate),
+                EvalPrimOpArg::new(ir.root, span, input),
+            ],
+        )
+        .expect("active partition argument roots push");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.eval_partition_elements(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            predicate,
+            ir.root,
+            span,
+            vec![Value::int(1), skipped, Value::int(2)],
+        )
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("partition result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 2,
+        "partition right/wrong lists did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active partition argument roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("partition result is heap-owned");
+    let right = attrs.get(right_key).expect("right partition exists");
+    let wrong = attrs.get(wrong_key).expect("wrong partition exists");
+    let right = evaluator
+        .heap()
+        .get_list(right)
+        .expect("right partition is heap-owned");
+    assert_eq!(right.len(), 2);
+    assert_eq!(
+        right.get(0).expect("first right value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        right.get(1).expect("second right value exists").as_int(),
+        Ok(2)
+    );
+    let wrong = evaluator
+        .heap()
+        .get_list(wrong)
+        .expect("wrong partition is heap-owned");
+    assert_eq!(wrong.len(), 1);
+    assert!(wrong.get(0).expect("wrong value exists").raw_eq(skipped));
+    let permanent_safepoints = evaluator.heap().permanent_allocation_safepoints();
+    assert_eq!(
+        permanent_safepoints.count(),
+        permanent_safepoints_before + 3,
+        "partition result did not record the two list safepoints plus attrs safepoint"
+    );
+    let permanent_safepoint = permanent_safepoints
+        .last()
+        .expect("partition attrs allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");
     let span = ir.arena.node(ir.root).expect("root exists").span;
