@@ -223,6 +223,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with opt-in thread-local Tier-A worker storage.
+    pub fn with_heap_thread_local_tier_a_enabled(enabled: bool) -> Self {
+        let mut options = Self::default();
+        options.set_heap_thread_local_tier_a_enabled(enabled);
+        options
+    }
+
     /// Creates evaluator options with a GC-stress polling policy.
     pub fn with_gc_stress_policy(policy: GcStressPolicy) -> Self {
         let mut options = Self::default();
@@ -654,6 +661,18 @@ impl TreeWalkOptions {
         self.heap_tier_b_transition_admission_enabled = enabled;
     }
 
+    /// Enables or disables thread-local Tier-A worker storage.
+    ///
+    /// When enabled, the tree-walk heap still uses the Tier-A one-shot
+    /// allocation strategy and `aos_alloc_*` dispatch table, but worker
+    /// allocations are stored in the current thread's arena instead of an
+    /// evaluator-owned arena. This does not change permanent-shared storage,
+    /// install Tier B, or make the thread-local backend the process-wide
+    /// default.
+    pub fn set_heap_thread_local_tier_a_enabled(&mut self, enabled: bool) {
+        self.heap_thread_local_tier_a_enabled = enabled;
+    }
+
     /// Installs a GC-stress polling policy for evaluator heap allocations.
     pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
         self.gc_stress_policy = policy;
@@ -865,6 +884,11 @@ impl TreeWalkOptions {
     /// Returns whether owned outcomes automatically apply Tier-B admission.
     pub const fn heap_tier_b_transition_admission_enabled(&self) -> bool {
         self.heap_tier_b_transition_admission_enabled
+    }
+
+    /// Returns whether tree-walk worker storage uses the current thread's Tier-A arena.
+    pub const fn heap_thread_local_tier_a_enabled(&self) -> bool {
+        self.heap_thread_local_tier_a_enabled
     }
 
     /// Returns the configured GC-stress polling policy.

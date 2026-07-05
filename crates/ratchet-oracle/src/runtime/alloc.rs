@@ -1573,6 +1573,33 @@ impl RuntimeAllocator {
         }
     }
 
+    /// Creates a Tier-A thread-local allocator after clearing the worker arena.
+    ///
+    /// This constructor preserves the same dispatch and ownership checks as
+    /// [`Self::tier_a_thread_local`], but it first replaces the current
+    /// thread's [`ThreadLocalBumpArena`] with an empty arena. Owned evaluator
+    /// runs use this path so a previous opt-in run cannot leak worker allocation
+    /// accounting into the next one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current thread already has an active thread-local runtime
+    /// allocator, if the internal owner-token counter is exhausted, or if the
+    /// current thread's arena is already mutably borrowed.
+    pub fn tier_a_thread_local_empty() -> Self {
+        let owner = thread::current().id();
+        let token = reserve_thread_local_runtime_allocator(owner);
+        if let Err(payload) = std::panic::catch_unwind(ThreadLocalBumpArena::reset_current) {
+            release_thread_local_runtime_allocator(owner, token);
+            std::panic::resume_unwind(payload);
+        }
+        Self {
+            backend: RuntimeAllocatorBackend::TierAThreadLocal { owner, token },
+            safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
+        }
+    }
+
     /// Returns this allocator with a GC-stress polling policy installed.
     pub fn with_gc_stress_policy(mut self, policy: GcStressPolicy) -> Self {
         self.gc_stress_policy = policy;
@@ -1598,6 +1625,14 @@ impl RuntimeAllocator {
             RuntimeAllocatorBackend::TierAOneShot(_) => RuntimeAllocatorTier::TierAOneShot,
             RuntimeAllocatorBackend::TierAThreadLocal { .. } => RuntimeAllocatorTier::TierAOneShot,
         }
+    }
+
+    /// Returns whether this allocator stores worker allocations in thread-local Tier-A storage.
+    pub fn uses_thread_local_tier_a(&self) -> bool {
+        matches!(
+            self.backend,
+            RuntimeAllocatorBackend::TierAThreadLocal { .. }
+        )
     }
 
     /// Returns the safe allocation dispatch table for the installed backend.

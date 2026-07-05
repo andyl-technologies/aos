@@ -573,8 +573,29 @@ impl EvalHeap {
     ///
     /// Panics if the process exhausts all evaluator heap region-owner ids.
     pub fn new() -> Self {
+        Self::with_worker_allocator(RuntimeAllocator::tier_a_one_shot())
+    }
+
+    /// Creates an empty evaluator heap backed by the current thread's Tier-A arena.
+    ///
+    /// The heap still reports the [`RuntimeAllocatorTier::TierAOneShot`] tier,
+    /// but worker storage comes from [`crate::heap::arena::ThreadLocalBumpArena`]
+    /// through the same `aos_alloc_*` dispatch table. This is an opt-in
+    /// per-worker precursor for the final CLI-wide Tier-A default.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exhausts all evaluator heap region-owner ids, if
+    /// the current thread already has an active thread-local runtime allocator,
+    /// if the allocator owner-token counter is exhausted, or if the current
+    /// thread's arena is already mutably borrowed.
+    pub fn new_thread_local_tier_a() -> Self {
+        Self::with_worker_allocator(RuntimeAllocator::tier_a_thread_local_empty())
+    }
+
+    fn with_worker_allocator(allocator: RuntimeAllocator) -> Self {
         Self {
-            allocator: RuntimeAllocator::tier_a_one_shot(),
+            allocator,
             permanent_allocator: PermanentSharedAllocator::new(),
             region_owner: next_heap_region_owner(),
             worker_allocator_epoch: 0,
@@ -1319,6 +1340,11 @@ impl EvalHeap {
     /// Returns the runtime allocation tier backing this heap.
     pub fn allocator_tier(&self) -> RuntimeAllocatorTier {
         self.allocator.tier()
+    }
+
+    /// Returns whether worker allocations use the current thread's Tier-A arena.
+    pub fn uses_thread_local_tier_a(&self) -> bool {
+        self.allocator.uses_thread_local_tier_a()
     }
 
     /// Returns the runtime allocation tier backing permanent shared values.

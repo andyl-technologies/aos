@@ -4955,10 +4955,13 @@ and helps the oracle directly.
       allocation safepoints, GC-stress policy, and `reset_to_empty` bound to
       that worker arena. Tests cover vtable selection, safepoint recording,
       same-thread sharing rejection, cross-thread use rejection, thread
-      isolation, region pop, GC-stress poll metadata, and reset accounting.
-      This remains opt-in runtime plumbing: tree-walk still defaults to its
-      owned arena, no C ABI symbols are exported, and the CLI-wide byte-green
-      Tier-A proof remains open.
+      isolation, region pop, GC-stress poll metadata, reset accounting, and an
+      opt-in `TreeWalkOptions::with_heap_thread_local_tier_a_enabled` evaluation
+      path that stores worker allocations in the thread-local arena while
+      preserving Tier-A outcome semantics. This remains opt-in runtime plumbing:
+      tree-walk still defaults to its owned arena, trap-only runtime-FFI
+      wrappers remain blocked from final native-export/JIT admission, and the
+      CLI-wide byte-green Tier-A proof remains open.
 - [x] Current Tier-A strict-JSON stats precursor: `EvalStats` now mirrors worker
       and permanent-shared arena chunk counts, logical reserved bytes,
       page-rounded mapped bytes, and used bytes from the default tree-walk heap,

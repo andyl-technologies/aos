@@ -9,7 +9,9 @@ use crate::eval::{
     ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId, TreeWalkParallelThunkWait,
 };
 use crate::heap::{HeapGeneration, HeapMemoryBudgetResponse, MemoryAdviceKind};
-use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
+use crate::runtime::alloc::{
+    AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint, RuntimeAllocator,
+};
 
 #[test]
 fn evaluates_inline_scalar_literals() {
@@ -584,6 +586,55 @@ fn heap_tier_b_transition_admission_option_can_be_configured() {
 
     let options = TreeWalkOptions::with_heap_tier_b_transition_admission_enabled(true);
     assert!(options.heap_tier_b_transition_admission_enabled());
+}
+
+#[test]
+fn heap_thread_local_tier_a_option_routes_tree_walk_worker_allocations() {
+    let mut options = TreeWalkOptions::new();
+
+    assert!(!options.heap_thread_local_tier_a_enabled());
+    options.set_heap_thread_local_tier_a_enabled(true);
+    assert!(options.heap_thread_local_tier_a_enabled());
+    options.set_heap_thread_local_tier_a_enabled(false);
+    assert!(!options.heap_thread_local_tier_a_enabled());
+
+    let ir = lower("\"thread-local\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_heap_thread_local_tier_a_enabled(true),
+    )
+    .expect("string evaluates");
+
+    assert!(outcome.heap().uses_thread_local_tier_a());
+    assert_eq!(
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("string is heap-owned")
+            .bytes(),
+        b"thread-local"
+    );
+}
+
+#[test]
+fn heap_thread_local_tier_a_option_starts_each_owned_eval_from_empty_worker_arena() {
+    let ir = lower("\"thread-local\"");
+
+    {
+        let mut stale = RuntimeAllocator::tier_a_thread_local();
+        stale
+            .aos_alloc_string(12)
+            .expect("stale thread-local allocation succeeds");
+        assert!(stale.stats().used_bytes > 0);
+    }
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_heap_thread_local_tier_a_enabled(true),
+    )
+    .expect("string evaluates");
+    assert!(outcome.heap().uses_thread_local_tier_a());
+    assert_eq!(outcome.heap().arena_stats().used_bytes, 0);
 }
 
 #[test]
