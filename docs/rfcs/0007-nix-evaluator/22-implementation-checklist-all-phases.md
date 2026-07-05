@@ -7282,6 +7282,11 @@ and helps the oracle directly.
       through the wrapper and dispatch for direct root store-path results.
       `toFile` final text-store path string allocations now route through the
       wrapper and dispatch for direct root text-store path results.
+      `builtins.path` and `filterSource` final source-store path string
+      allocations now route through the wrapper; direct-root `filterSource`
+      results dispatch, public `builtins.path` calls still skip while their
+      source setup leaves interned/live roots, and nested source-path results
+      preserve outer locals.
       `fetchurl` final fixed-output store-path string allocations now route
       through the wrapper and dispatch for direct root fetchurl results without
       routing shared fetch-tree/fetch-git attrset out-path construction.
@@ -7334,6 +7339,12 @@ and helps the oracle directly.
       transient roots,
       nested `toFile` final text-store path allocations preserving
       unregistered outer locals,
+      root `builtins.path` final source-store string allocations preserving
+      registered transient roots while source setup leaves interned/live roots,
+      root `filterSource` final source-store string allocations relocating
+      registered transient roots,
+      nested `builtins.path`/`filterSource` final source-store string
+      allocations preserving unregistered outer locals,
       root `fetchurl` final fixed-output path allocations relocating registered
       transient roots,
       nested `fetchurl` final fixed-output path allocations preserving

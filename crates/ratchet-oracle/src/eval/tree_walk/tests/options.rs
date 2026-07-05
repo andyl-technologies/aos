@@ -1831,6 +1831,67 @@ fn gc_stress_nested_to_file_result_skips_unregistered_outer_locals() {
 }
 
 #[test]
+fn gc_stress_eval_root_path_source_string_results_skip_interned_source_setup() {
+    let (file_dir, file_path) = temp_file_with_bytes("gc-stress-source-path", b"abc");
+    let file_path = path_source(&file_path);
+    let source = format!("builtins.path {{ path = {file_path}; }}");
+    let expected = eval_string_bytes(&source);
+    assert_gc_stress_root_string_result_skips_dispatch(&source, &expected);
+    fs::remove_dir_all(file_dir).expect("temp directory removes");
+
+    let dir = unique_temp_dir("gc-stress-source-path-filter");
+    let tree = dir.join("tree");
+    fs::create_dir(&tree).expect("source tree creates");
+    fs::write(tree.join("a"), b"one").expect("included source file writes");
+    fs::write(tree.join("b"), b"two").expect("excluded source file writes");
+    let tree = path_source(&tree);
+    let keep = r#"path: type: type != "directory" && builtins.baseNameOf path == "a""#;
+    let source = format!("builtins.path {{ path = {tree}; filter = ({keep}); }}");
+    let expected = eval_string_bytes(&source);
+    assert_gc_stress_root_string_result_skips_dispatch(&source, &expected);
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn gc_stress_eval_root_filter_source_string_result_dispatch_permanent_noop_bridge() {
+    let dir = unique_temp_dir("gc-stress-filter-source");
+    let tree = dir.join("tree");
+    fs::create_dir(&tree).expect("source tree creates");
+    fs::write(tree.join("a"), b"one").expect("included source file writes");
+    fs::write(tree.join("b"), b"two").expect("excluded source file writes");
+    let tree = path_source(&tree);
+    let keep = r#"path: type: type != "directory" && builtins.baseNameOf path == "a""#;
+    let source = format!("builtins.filterSource ({keep}) {tree}");
+    let expected = eval_string_bytes(&source);
+    assert_gc_stress_root_string_result_dispatches(&source, &expected);
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn gc_stress_nested_source_path_string_results_skip_unregistered_outer_locals() {
+    let (file_dir, file_path) = temp_file_with_bytes("gc-stress-nested-source-path", b"abc");
+    let file_path = path_source(&file_path);
+    assert_gc_stress_root_bool_result_skips_dispatch(
+        &format!(r#""left" == builtins.path {{ path = {file_path}; }}"#),
+        false,
+    );
+    fs::remove_dir_all(file_dir).expect("temp directory removes");
+
+    let dir = unique_temp_dir("gc-stress-nested-filter-source");
+    let tree = dir.join("tree");
+    fs::create_dir(&tree).expect("source tree creates");
+    fs::write(tree.join("a"), b"one").expect("included source file writes");
+    fs::write(tree.join("b"), b"two").expect("excluded source file writes");
+    let tree = path_source(&tree);
+    let keep = r#"path: type: type != "directory" && builtins.baseNameOf path == "a""#;
+    assert_gc_stress_root_bool_result_skips_dispatch(
+        &format!(r#""left" == builtins.filterSource ({keep}) {tree}"#),
+        false,
+    );
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn gc_stress_eval_root_fetchurl_result_dispatch_permanent_noop_bridge() {
     let (dir, path) = temp_file_with_bytes("gc-stress-fetchurl", b"abc");
     let url = nix_string_literal(&format!("file://{}", path_source(&path)));

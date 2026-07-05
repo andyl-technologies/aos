@@ -587,9 +587,7 @@ impl TreeWalk {
             expected_sha256,
             filter.as_ref(),
         )?;
-        self.heap
-            .alloc_string(path)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, path)
     }
 
     pub(super) fn eval_filter_source_primop(
@@ -621,9 +619,7 @@ impl TreeWalk {
             None,
             Some(&filter),
         )?;
-        self.heap
-            .alloc_string(path)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, path)
     }
 
     pub(super) fn eval_fetchurl_primop(
