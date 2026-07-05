@@ -1770,6 +1770,14 @@ fn gc_stress_eval_root_to_string_scalar_result_dispatch_permanent_noop_bridge() 
 }
 
 #[test]
+fn gc_stress_eval_root_store_path_result_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches(
+        r#"builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src""#,
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src",
+    );
+}
+
+#[test]
 fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.toJSON 123", b"123");
     assert_gc_stress_root_string_result_dispatches(

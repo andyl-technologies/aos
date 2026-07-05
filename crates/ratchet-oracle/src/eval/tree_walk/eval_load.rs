@@ -753,9 +753,7 @@ impl TreeWalk {
             })?;
             NixString::new(full_path, context)
         };
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_to_path_primop(

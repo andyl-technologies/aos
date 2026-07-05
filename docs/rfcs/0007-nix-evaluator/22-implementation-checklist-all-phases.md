@@ -7278,6 +7278,8 @@ and helps the oracle directly.
       `toString` final string allocations now route through the wrapper, and
       scalar direct-root `toString` results dispatch through the scalar no-op
       bridge.
+      `storePath` final context-bearing store-string allocations now route
+      through the wrapper and dispatch for direct root store-path results.
       `toJSON` and `toXML` final serialized string allocations now route
       through the wrapper, and scalar direct-root serializer results dispatch
       through the scalar no-op bridge.
@@ -7317,6 +7319,8 @@ and helps the oracle directly.
       registered transient roots while interned string/path roots are live,
       root scalar `toString` final allocations relocating registered transient
       roots,
+      root `storePath` final store-string allocations relocating registered
+      transient roots,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
