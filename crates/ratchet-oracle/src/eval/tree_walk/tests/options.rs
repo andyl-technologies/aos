@@ -795,6 +795,134 @@ fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
 }
 
 #[test]
+fn gc_stress_eval_root_primop_allocation_dispatches_reserved_writeback_bridge() {
+    let ir = lower("builtins.length");
+    let default_outcome = eval_whnf_owned(&ir).expect("default primop evaluates");
+
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let value = evaluator.eval_root().expect("GC-stress primop evaluates");
+
+    assert_eq!(value.tag(), ValueTag::Primop);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("primop generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(evaluator.heap().len(), default_outcome.heap().len() + 1);
+    let source_value = evaluator
+        .heap()
+        .test_record_value(0)
+        .expect("original primop source record exists")
+        .expect("original primop source value rebuilds");
+    let destination_value = evaluator
+        .heap()
+        .test_record_value(1)
+        .expect("reserved primop destination record exists")
+        .expect("reserved primop destination value rebuilds");
+    assert!(!source_value.raw_eq(value));
+    assert!(destination_value.raw_eq(value));
+    assert_eq!(
+        evaluator.heap().allocation_safepoints().count(),
+        default_outcome.heap().allocation_safepoints().count() + 1
+    );
+    let final_safepoint = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("final primop reserved allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocRaw
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+
+    let empty_list = evaluator
+        .heap
+        .alloc_list(NixList::empty())
+        .expect("empty list allocates");
+    let applied = evaluator
+        .apply_value(ir.root, Span::new(0, 0), value, empty_list)
+        .expect("relocated length primop applies");
+    assert_eq!(applied.as_int(), Ok(0));
+}
+
+#[test]
+fn gc_stress_primop_allocation_dispatch_skips_captured_argument_primops() {
+    let ir = lower("builtins.substring \"abcdef\"");
+    let default_outcome = eval_whnf_owned(&ir).expect("default partial primop evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress partial primop evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Primop);
+    let primop = outcome
+        .heap()
+        .get_primop(outcome.value())
+        .expect("partial primop is heap-owned");
+    assert_eq!(primop.args().len(), 1);
+    assert_eq!(primop.args()[0].value().tag(), ValueTag::String);
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len());
+    assert_eq!(
+        outcome.heap().allocation_safepoints().count(),
+        default_outcome.heap().allocation_safepoints().count()
+    );
+    let final_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("partial primop allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocRaw
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+}
+
+#[test]
+fn gc_stress_primop_allocation_dispatch_skips_direct_eval_node_callers() {
+    let ir = lower("builtins.map");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+
+    let value = evaluator
+        .eval_node(ir.root)
+        .expect("direct primop node evaluation succeeds");
+
+    assert_eq!(value.tag(), ValueTag::Primop);
+    assert_eq!(evaluator.heap().len(), 1);
+    assert_eq!(evaluator.heap().allocation_safepoints().count(), 1);
+    let final_safepoint = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("direct primop allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocRaw
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+}
+
+#[test]
 fn heap_cheap_memory_advice_option_can_be_configured() {
     let mut options = TreeWalkOptions::new();
 

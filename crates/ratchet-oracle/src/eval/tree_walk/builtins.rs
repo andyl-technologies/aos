@@ -127,10 +127,9 @@ impl BuiltinExecutor for TreeWalk {
             BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
             BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
             BuiltinExecution::Derivation => eval.eval_derivation_wrapper_lambda(id, span),
-            _ if builtin.first_class_arity().is_some() => eval
-                .heap
-                .alloc_primop(EvalPrimOp::registered(symbol, builtin))
-                .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)),
+            _ if builtin.first_class_arity().is_some() => {
+                eval.alloc_tree_walk_primop(id, span, EvalPrimOp::registered(symbol, builtin))
+            }
             _ => unsupported_builtin_attr(id, span, symbol),
         }
     }

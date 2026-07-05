@@ -761,10 +761,8 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
     ) -> Result<Value, TreeWalkError> {
-        let previous_poll = self
-            .heap
-            .allocation_safepoints()
-            .last_safepoint_collector_poll();
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
         let value = self
             .heap
             .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
@@ -773,6 +771,7 @@ impl TreeWalk {
         self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
             id,
             span,
+            RuntimeAllocatorTier::TierAOneShot,
             previous_poll,
             value,
             true,
@@ -787,10 +786,8 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_lambda_allocation_safepoint(id, &lambda);
-        let previous_poll = self
-            .heap
-            .allocation_safepoints()
-            .last_safepoint_collector_poll();
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
         let value = self
             .heap
             .alloc_lambda(lambda)
@@ -799,6 +796,35 @@ impl TreeWalk {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
+                RuntimeAllocatorTier::TierAOneShot,
+                previous_poll,
+                value,
+                false,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
+    pub(super) fn alloc_tree_walk_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        primop: EvalPrimOp,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_primop_allocation_safepoint(id, &primop);
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
+        let value = self
+            .heap
+            .alloc_primop(primop)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                RuntimeAllocatorTier::TierAOneShot,
                 previous_poll,
                 value,
                 false,
@@ -813,6 +839,21 @@ impl TreeWalk {
         id: IrId,
         lambda: &EvalLambda,
     ) -> bool {
+        self.can_dispatch_gc_stress_root_allocation_safepoint(id)
+            && lambda.env().frames().is_empty()
+            && lambda.with_scope_env().scopes().is_empty()
+            && lambda.scoped_global_env().scopes().is_empty()
+    }
+
+    fn can_dispatch_gc_stress_primop_allocation_safepoint(
+        &self,
+        id: IrId,
+        primop: &EvalPrimOp,
+    ) -> bool {
+        self.can_dispatch_gc_stress_root_allocation_safepoint(id) && primop.args().is_empty()
+    }
+
+    fn can_dispatch_gc_stress_root_allocation_safepoint(&self, id: IrId) -> bool {
         self.active_root_eval_node == Some(id)
             && self.env.is_empty()
             && self.with_scopes.is_empty()
@@ -822,9 +863,6 @@ impl TreeWalk {
             && self.active_primop_arg_roots.is_empty()
             && self.active_primop_arg_frames.is_empty()
             && self.import_cache.is_empty()
-            && lambda.env().frames().is_empty()
-            && lambda.with_scope_env().scopes().is_empty()
-            && lambda.scoped_global_env().scopes().is_empty()
             && matches!(self.heap.interned_root_set(), Ok(roots) if roots.is_empty())
     }
 
@@ -832,15 +870,12 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         span: Span,
+        tier: RuntimeAllocatorTier,
         previous_poll: Option<AllocationCollectorPoll>,
         value: Value,
         install_forwarding_slots: bool,
     ) -> Result<Value, TreeWalkError> {
-        let Some(current_poll) = self
-            .heap
-            .allocation_safepoints()
-            .last_safepoint_collector_poll()
-        else {
+        let Some(current_poll) = self.last_allocation_collector_poll_for_tier(tier) else {
             return Ok(value);
         };
         if Some(current_poll) == previous_poll {
@@ -873,6 +908,22 @@ impl TreeWalk {
             )
         })?;
         Ok(transient_roots[0])
+    }
+
+    fn last_allocation_collector_poll_for_tier(
+        &self,
+        tier: RuntimeAllocatorTier,
+    ) -> Option<AllocationCollectorPoll> {
+        match tier {
+            RuntimeAllocatorTier::TierAOneShot => self
+                .heap
+                .allocation_safepoints()
+                .last_safepoint_collector_poll(),
+            RuntimeAllocatorTier::PermanentShared => self
+                .heap
+                .permanent_allocation_safepoints()
+                .last_safepoint_collector_poll(),
+        }
     }
 
     fn admit_parallel_thunk_payload_cell(

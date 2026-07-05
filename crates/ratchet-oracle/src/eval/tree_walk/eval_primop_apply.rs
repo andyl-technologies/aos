@@ -418,16 +418,11 @@ impl TreeWalk {
 
         if len < arity {
             self.check_call_depth(id, span)?;
-            return self
-                .heap
-                .alloc_primop(EvalPrimOp::registered_with_args(
-                    primop.symbol(),
-                    builtin,
-                    args,
-                ))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_primop(
+                id,
+                span,
+                EvalPrimOp::registered_with_args(primop.symbol(), builtin, args),
+            );
         }
         if len > arity {
             self.check_call_depth(id, span)?;
