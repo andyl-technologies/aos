@@ -667,6 +667,32 @@ fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
         preflight.domains(),
         [preflight.worker(), preflight.permanent_shared()]
     );
+    let admission = outcome
+        .tier_b_transition_admission_plan()
+        .expect("current outcome heap admits transition request")
+        .expect("over-budget outcome has transition admission plan");
+    assert_eq!(admission.preflight(), preflight);
+    assert_eq!(admission.request(), request);
+    assert_eq!(
+        admission.pre_flip_mapped_bytes(),
+        request.pre_flip_mapped_bytes()
+    );
+    assert_eq!(
+        admission.heap_plan().worker_stats(),
+        outcome.heap().arena_stats()
+    );
+    assert_eq!(
+        admission.heap_plan().permanent_stats(),
+        outcome.heap().permanent_arena_stats()
+    );
+    assert_eq!(admission.heap_plan().record_count(), outcome.heap().len());
+    assert_eq!(
+        admission
+            .heap_plan()
+            .worker_records()
+            .saturating_add(admission.heap_plan().permanent_shared_records()),
+        admission.heap_plan().record_count()
+    );
 }
 
 #[test]
@@ -695,6 +721,18 @@ fn tier_b_transition_preflight_rejects_stale_worker_accounting() {
             actual: stale_heap.arena_stats(),
         }
     );
+    let error = request
+        .admission_plan(&stale_heap)
+        .expect_err("fresh heap has different worker arena accounting");
+    assert_eq!(
+        error,
+        EvalTierBTransitionAdmissionPlanError::Preflight(
+            EvalTierBTransitionPreflightError::WorkerStatsChanged {
+                expected: request.worker_stats(),
+                actual: stale_heap.arena_stats(),
+            }
+        )
+    );
 }
 
 #[test]
@@ -719,6 +757,18 @@ fn tier_b_transition_preflight_rejects_stale_permanent_shared_accounting() {
             actual: stale_heap.permanent_arena_stats(),
         }
     );
+    let error = request
+        .admission_plan(&stale_heap)
+        .expect_err("fresh heap has different permanent-shared arena accounting");
+    assert_eq!(
+        error,
+        EvalTierBTransitionAdmissionPlanError::Preflight(
+            EvalTierBTransitionPreflightError::PermanentSharedStatsChanged {
+                expected: request.permanent_stats(),
+                actual: stale_heap.permanent_arena_stats(),
+            }
+        )
+    );
 }
 
 #[test]
@@ -739,6 +789,12 @@ fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
             .tier_b_transition_preflight()
             .expect("preflight checks are skipped without a transition request"),
         None
+    );
+    assert!(
+        outcome
+            .tier_b_transition_admission_plan()
+            .expect("admission planning is skipped without a transition request")
+            .is_none()
     );
 }
 
@@ -772,6 +828,12 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
             .tier_b_transition_preflight()
             .expect("preflight checks are skipped without a transition request"),
         None
+    );
+    assert!(
+        outcome
+            .tier_b_transition_admission_plan()
+            .expect("admission planning is skipped without a transition request")
+            .is_none()
     );
 }
 

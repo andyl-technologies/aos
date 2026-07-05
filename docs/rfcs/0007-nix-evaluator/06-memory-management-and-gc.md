@@ -3154,6 +3154,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       non-mutation of current heap metadata. This still does not install a
       collector, reserve semispace storage, switch allocators, mutate
       heap-record generations, or relocate values.
+- [x] Current Tier-B transition admission-plan bridge:
+      `EvalTierBTransitionRequest::admission_plan` and
+      `EvalOutcome::tier_b_transition_admission_plan()` combine request-level
+      arena-accounting preflight with the heap-record admission plan, returning
+      one read-only artifact for callers that need both transition metadata and
+      per-record generation assignments. Tests cover current-outcome admission,
+      no plan for Continue/Advice actions, and stale worker/permanent-shared
+      preflight errors propagating before heap-record planning. This still does
+      not install a collector, switch allocators, mutate heap-record
+      generations, rewrite handles, or relocate values.
 
 ### Region inference (§5)
 

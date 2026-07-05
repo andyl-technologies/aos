@@ -6814,6 +6814,16 @@ and helps the oracle directly.
       non-mutation of current heap metadata. This remains a heap-record plan
       only: it does not install a collector, reserve semispace storage, switch
       allocators, mutate heap-record generations, or relocate values.
+      `EvalTierBTransitionRequest::admission_plan` and
+      `EvalOutcome::tier_b_transition_admission_plan()` now combine the
+      request-level arena-accounting preflight with that heap-record admission
+      plan, returning one read-only artifact for callers that need both
+      transition metadata and per-record generation assignments. Tests cover
+      current-outcome admission, no plan for Continue/Advice actions, and stale
+      worker/permanent-shared preflight errors propagating before heap-record
+      planning. This remains a bridge only: it does not install a collector,
+      switch allocators, mutate heap-record generations, rewrite handles, or
+      relocate values.
       Hash-cons hits skip the poll because no heap
       allocation occurred. Linux and Darwin budget polls now sample process RSS
       from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through

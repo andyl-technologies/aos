@@ -11,8 +11,8 @@ use crate::eval::heap::{
     AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
     AllocationCollectorPollObjectGenerationWritePlan,
-    AllocationCollectorPollObjectGenerationWriteReport, EvalHeapMemoryAdviceReport,
-    EvalHeapMemoryBudgetDecision, EvalRootSource,
+    AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError, EvalHeapMemoryAdviceReport,
+    EvalHeapMemoryBudgetDecision, EvalHeapTierBAdmissionPlan, EvalRootSource,
 };
 use crate::heap::{ArenaStats, HeapGeneration};
 use crate::value::HeapObject;
@@ -191,6 +191,26 @@ impl EvalTierBTransitionRequest {
             ),
         ))
     }
+
+    /// Builds a read-only Tier-B admission plan for this request.
+    ///
+    /// This first validates that the request still matches current heap
+    /// accounting, then snapshots the current heap-record admission plan. The
+    /// returned plan still does not install a collector, switch allocators,
+    /// rewrite heap records, or relocate values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalTierBTransitionAdmissionPlanError`] if the request is
+    /// stale for `heap` or if the heap-record admission plan cannot be built.
+    pub fn admission_plan(
+        self,
+        heap: &EvalHeap,
+    ) -> Result<EvalTierBTransitionAdmissionPlan, EvalTierBTransitionAdmissionPlanError> {
+        let preflight = self.preflight(heap)?;
+        let heap_plan = heap.plan_tier_b_admission()?;
+        Ok(EvalTierBTransitionAdmissionPlan::new(preflight, heap_plan))
+    }
 }
 
 /// One pre-flip allocation domain considered for Tier-B admission.
@@ -292,6 +312,50 @@ impl EvalTierBTransitionPreflight {
     }
 }
 
+/// Read-only cross-tier admission plan for a requested Tier-B transition.
+///
+/// This combines request-level arena-accounting validation with the current
+/// heap-record admission plan. It is still planning metadata only: no collector
+/// is installed, no allocator tier changes, no heap-record generations are
+/// rewritten, and no values are relocated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalTierBTransitionAdmissionPlan {
+    preflight: EvalTierBTransitionPreflight,
+    heap_plan: EvalHeapTierBAdmissionPlan,
+}
+
+impl EvalTierBTransitionAdmissionPlan {
+    const fn new(
+        preflight: EvalTierBTransitionPreflight,
+        heap_plan: EvalHeapTierBAdmissionPlan,
+    ) -> Self {
+        Self {
+            preflight,
+            heap_plan,
+        }
+    }
+
+    /// Returns the validated request-level admission preflight.
+    pub const fn preflight(&self) -> EvalTierBTransitionPreflight {
+        self.preflight
+    }
+
+    /// Returns the Tier-B request validated by this admission plan.
+    pub const fn request(&self) -> EvalTierBTransitionRequest {
+        self.preflight.request()
+    }
+
+    /// Returns the heap-record admission plan.
+    pub fn heap_plan(&self) -> &EvalHeapTierBAdmissionPlan {
+        &self.heap_plan
+    }
+
+    /// Returns total mapped bytes in the admitted pre-flip heap domains.
+    pub const fn pre_flip_mapped_bytes(&self) -> usize {
+        self.preflight.pre_flip_mapped_bytes()
+    }
+}
+
 /// A Tier-B transition request no longer matches the heap snapshot it captured.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum EvalTierBTransitionPreflightError {
@@ -315,6 +379,17 @@ pub enum EvalTierBTransitionPreflightError {
         /// The permanent-shared accounting currently reported by the heap.
         actual: ArenaStats,
     },
+}
+
+/// A Tier-B transition admission plan could not be built.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum EvalTierBTransitionAdmissionPlanError {
+    /// The transition request no longer matches the heap accounting snapshot.
+    #[error("Tier-B transition preflight failed: {0}")]
+    Preflight(#[from] EvalTierBTransitionPreflightError),
+    /// The heap-record admission plan could not be built.
+    #[error("Tier-B heap admission planning failed: {0}")]
+    Heap(#[from] EvalHeapError),
 }
 
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
@@ -11033,6 +11108,26 @@ impl EvalOutcome {
     ) -> Result<Option<EvalTierBTransitionPreflight>, EvalTierBTransitionPreflightError> {
         self.tier_b_transition_request()
             .map(|request| request.preflight(&self.heap))
+            .transpose()
+    }
+
+    /// Returns a validated Tier-B transition admission plan, if requested.
+    ///
+    /// This combines the request-level arena-accounting preflight with the
+    /// heap-record admission plan for the outcome heap. It remains read-only
+    /// metadata and does not mutate the heap or install a collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalTierBTransitionAdmissionPlanError`] if the request no
+    /// longer matches the outcome heap or if heap-record admission planning
+    /// fails.
+    pub fn tier_b_transition_admission_plan(
+        &self,
+    ) -> Result<Option<EvalTierBTransitionAdmissionPlan>, EvalTierBTransitionAdmissionPlanError>
+    {
+        self.tier_b_transition_request()
+            .map(|request| request.admission_plan(&self.heap))
             .transpose()
     }
 
