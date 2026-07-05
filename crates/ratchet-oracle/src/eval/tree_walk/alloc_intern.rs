@@ -771,7 +771,7 @@ impl TreeWalk {
         Ok(value)
     }
 
-    fn alloc_tree_walk_thunk(
+    pub(super) fn alloc_tree_walk_thunk(
         &mut self,
         id: IrId,
         span: Span,
@@ -1119,7 +1119,31 @@ impl TreeWalk {
             return Ok(value);
         }
 
-        let mut transient_roots = [value];
+        let registered_roots = self.transient_value_stack_roots.len();
+        let total_roots = registered_roots.checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: registered_roots,
+                },
+                span,
+            )
+        })?;
+        let mut transient_roots = Vec::new();
+        transient_roots
+            .try_reserve_exact(total_roots)
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: total_roots,
+                    },
+                    span,
+                )
+            })?;
+        transient_roots.extend_from_slice(&self.transient_value_stack_roots);
+        transient_roots.push(value);
+
         let promotion_policy = MinorGcPromotionPolicy::new(
             TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS,
         );
@@ -1144,7 +1168,17 @@ impl TreeWalk {
                 span,
             )
         })?;
-        Ok(transient_roots[0])
+        for (registered_root, updated_root) in self
+            .transient_value_stack_roots
+            .iter_mut()
+            .zip(transient_roots.iter().copied())
+        {
+            *registered_root = updated_root;
+        }
+        Ok(transient_roots
+            .get(registered_roots)
+            .copied()
+            .unwrap_or(value))
     }
 
     fn last_allocation_collector_poll_for_tier(

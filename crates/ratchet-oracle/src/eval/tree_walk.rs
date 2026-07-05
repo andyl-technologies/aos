@@ -1032,6 +1032,7 @@ pub struct TreeWalk {
     active_force_roots: Vec<Value>,
     active_primop_arg_roots: Vec<EvalPrimOpArg>,
     active_primop_arg_frames: Vec<ActivePrimopArgFrame>,
+    transient_value_stack_roots: Vec<Value>,
     suspended_env_roots: Vec<SuspendedTreeWalkEnv>,
     thunk_resolve_remembered_set: RememberedSet,
     thunk_resolve_card_table: GcCardTable,

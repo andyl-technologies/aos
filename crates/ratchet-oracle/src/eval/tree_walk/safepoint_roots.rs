@@ -6,7 +6,11 @@
 //! `with` scopes, scoped-import globals, active force continuations,
 //! first-class primop arguments, and permanent hash-cons roots.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    path::PathBuf,
+};
 
 use thiserror::Error;
 
@@ -949,6 +953,73 @@ impl TreeWalkSafepointMinorGcLiveReferenceWritebackPreflight {
 }
 
 impl TreeWalk {
+    /// Runs `body` with caller-owned values published to allocation safepoints.
+    ///
+    /// The supplied slots are appended to the tree-walk transient value stack
+    /// before `body` runs. GC-stress allocation safepoints scan that stack as
+    /// [`EvalRootSource::ValueStack`] storage and write relocated values back
+    /// into it. This helper copies the final stored values back to `roots` and
+    /// restores the previous stack depth whether `body` succeeds or returns an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkError`] if transient-root storage cannot be reserved or
+    /// if `body` returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` panics. The transient root stack is restored before the
+    /// panic resumes.
+    pub fn with_transient_value_stack_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        roots: &mut [Value],
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let start = self.transient_value_stack_roots.len();
+        let end = start.checked_add(roots.len()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: roots.len(),
+                },
+                span,
+            )
+        })?;
+        self.transient_value_stack_roots
+            .try_reserve_exact(roots.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len: end },
+                    span,
+                )
+            })?;
+        self.transient_value_stack_roots.extend_from_slice(roots);
+
+        let result = match catch_unwind(AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.transient_value_stack_roots.truncate(start);
+                resume_unwind(payload);
+            }
+        };
+        if let Some(updated_roots) = self.transient_value_stack_roots.get(start..end) {
+            for (root, updated) in roots.iter_mut().zip(updated_roots.iter().copied()) {
+                *root = updated;
+            }
+        }
+        self.transient_value_stack_roots.truncate(start);
+        result
+    }
+
+    /// Returns transient value-stack roots registered for allocation safepoints.
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) fn transient_value_stack_roots(&self) -> &[Value] {
+        &self.transient_value_stack_roots
+    }
+
     /// Builds the explicit heap roots live at the current tree-walk safepoint.
     ///
     /// The returned set includes active lexical frame slots, active `with`

@@ -7109,16 +7109,17 @@ and helps the oracle directly.
       `TreeWalk::alloc_tree_walk_primop`,
       `TreeWalk::alloc_tree_walk_list`, and
       `TreeWalk::alloc_tree_walk_attrs_with_projected_shape_metadata` detect when an admitted allocation
-      produced a new collector poll, reserve destination records, publish the
-      just-allocated value as transient value-stack root storage, and return
-      the rewritten `Value` to the caller. Thunks use the current-poll
-      reserved forwarding bridge from the previous slice only when the
-      allocated thunk is the active `eval_root` node, no hidden roots or local
-      composite accumulators are active, and the deferred work carries no
+      produced a new collector poll, reserve destination records, publish any
+      registered transient value-stack roots plus the just-allocated value as
+      explicit value-stack storage, copy rewritten registered roots back, and
+      return the rewritten allocation `Value` to the caller. Thunks use the
+      current-poll reserved forwarding bridge from the previous slice only when
+      the allocated thunk is the active `eval_root` node, no hidden roots or
+      local composite accumulators are active, and the deferred work carries no
       unsupported lexical capture.
       Uncaptured source lambdas and argument-free first-class primop wrappers
       dispatch only when they are the active `eval_root` node, where the
-      just-allocated value is the only transient root, and use the
+      just-allocated value is the implicit allocation result root, and use the
       non-forwarding reserved writeback bridge to avoid publishing unnecessary
       forwarding side-table state. Root list and root attrset allocations whose
       immediate worker fields are non-composites, uncaptured lambdas/primops,
@@ -7559,9 +7560,24 @@ and helps the oracle directly.
       live side-table forwarding installation, stale same-domain poll
       rejection, recursive-force cleanup, and
       first-class primop error cleanup. This remains a root-set
-      precursor: arbitrary Rust locals still need explicit value-stack
+      precursor: arbitrary Rust locals still need explicit caller
       registration, and mutable relocation slots, collector invocation, and JIT
       stack maps remain open in the full precise-root row above.
+- [x] Current tree-walk transient value-stack registration precursor:
+      `TreeWalk` owns scoped transient value-stack root storage for evaluator
+      paths that keep heap values in Rust locals across allocation safepoints.
+      `TreeWalk::with_transient_value_stack_roots` appends caller-owned slots,
+      restores the previous stack depth on success, error, or panic, and copies
+      any rewritten values back to the caller's slice. GC-stress allocation
+      safepoints now build one combined value-stack buffer from those registered
+      roots plus the just-allocated value, run the existing current-poll
+      minor-GC reference writeback bridge, copy relocated registered roots back
+      to the tree-walk-owned stack, and return the relocated allocation result.
+      Tests cover registered-root relocation through a thunk allocation
+      safepoint and cleanup after a body error or panic. This is explicit scoped
+      registration only: ordinary Rust locals are still invisible unless a
+      caller publishes them, and JIT stack maps, collector invocation, and full
+      relocation-slot ownership remain open.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` classifies the single generational write
       barrier for `Blackhole -> Forced(value)`, records only

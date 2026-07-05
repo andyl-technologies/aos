@@ -363,6 +363,7 @@ impl TreeWalk {
             active_force_roots: Vec::new(),
             active_primop_arg_roots: Vec::new(),
             active_primop_arg_frames: Vec::new(),
+            transient_value_stack_roots: Vec::new(),
             suspended_env_roots: Vec::new(),
             thunk_resolve_remembered_set: RememberedSet::new(),
             thunk_resolve_card_table: GcCardTable::default(),

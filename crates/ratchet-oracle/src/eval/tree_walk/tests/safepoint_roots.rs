@@ -39,12 +39,36 @@ fn relocated_value(tag: ValueTag, address: GcHeapAddress) -> Value {
     .expect("relocated heap value rebuilds")
 }
 
+fn test_lambda_record() -> EvalLambda {
+    EvalLambda::new(
+        IrId::new(0),
+        IrId::new(0),
+        FrameId::new(0),
+        EvalEnv::default(),
+    )
+}
+
 fn resolved_heap_destination_address(value: ResolvedValueGeneration) -> Option<GcHeapAddress> {
     let ResolvedValueGeneration::Heap { address, .. } = value else {
         return None;
     };
 
     Some(address)
+}
+
+fn has_forwarding_destination(heap: &EvalHeap, destination: Value) -> bool {
+    let destination_address = gc_address(destination);
+    heap.test_record_values().any(|record| {
+        let source = record.expect("heap record value rebuilds");
+        if source.raw_eq(destination) {
+            return false;
+        }
+        matches!(
+            heap.minor_gc_forwarding_value_at(gc_address(source)),
+            Ok(Some(forwarded))
+                if resolved_heap_destination_address(forwarded) == Some(destination_address)
+        )
+    })
 }
 
 fn next_dirty_card_source(card_table: &GcCardTable) -> GcHeapAddress {
@@ -4138,6 +4162,108 @@ fn gc_stress_poll_scan_uses_tree_walk_roots_plus_transient_value_stack() {
         .expect("collector poll minor-GC planning accepts the tree-walk scan");
     assert_eq!(minor_gc.plan().survivors().len(), 1);
     assert_eq!(minor_gc.plan().survivors()[0].address(), gc_address(root));
+}
+
+#[test]
+fn gc_stress_allocation_safepoint_rewrites_registered_transient_value_stack_root() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let span = Span::new(0, 0);
+    let local_source = evaluator
+        .heap
+        .alloc_lambda(test_lambda_record())
+        .expect("registered local lambda allocates");
+    let local_source_address = gc_address(local_source);
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let allocated: Value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_tree_walk_thunk(ir.root, span, EvalThunk::new(ir.root))
+        })
+        .expect("GC-stress allocation rewrites registered transient roots");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert_ne!(gc_address(roots[0]), local_source_address);
+    assert_eq!(roots[0].tag(), ValueTag::Lambda);
+    assert_eq!(allocated.tag(), ValueTag::Thunk);
+    assert!(!allocated.raw_eq(roots[0]));
+    assert!(has_forwarding_destination(evaluator.heap(), roots[0]));
+    assert!(has_forwarding_destination(evaluator.heap(), allocated));
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(roots[0])
+            .expect("registered root destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(allocated)
+            .expect("allocated value destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+}
+
+#[test]
+fn transient_value_stack_roots_restore_after_body_error() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let span = Span::new(0, 0);
+    let original = Value::int(7);
+    let mut roots = [original];
+    let bad_id = IrId::new(999);
+
+    let error = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            assert_eq!(eval.transient_value_stack_roots().len(), 1);
+            assert!(eval.transient_value_stack_roots()[0].raw_eq(original));
+            Err::<(), TreeWalkError>(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidNodeId { id: bad_id },
+                span,
+            ))
+        })
+        .expect_err("body error propagates");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::InvalidNodeId { id } if id == bad_id
+    ));
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(roots[0].raw_eq(original));
+}
+
+#[test]
+fn transient_value_stack_roots_restore_after_body_panic() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let span = Span::new(0, 0);
+    let original = Value::int(9);
+    let mut roots = [original];
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<(), TreeWalkError> =
+            evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+                assert_eq!(eval.transient_value_stack_roots().len(), 1);
+                assert!(eval.transient_value_stack_roots()[0].raw_eq(original));
+                panic!("transient root cleanup test panic");
+            });
+    }));
+
+    assert!(panic.is_err());
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(roots[0].raw_eq(original));
 }
 
 #[test]
