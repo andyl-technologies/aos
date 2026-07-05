@@ -6085,6 +6085,18 @@ fn run_local_double_resume_workflow(
     )
 }
 
+fn run_local_qemu_resume_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let mut outcome =
+        run_local_double_resume_workflow(thin_plan, backend_plan, ergonomics_plan, resume_plan)?;
+    append_local_qemu_resume_identity(&mut outcome, backend_plan)?;
+    Ok(outcome)
+}
+
 fn run_local_double_resume_workflow_with_driver(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -8337,6 +8349,38 @@ fn append_local_qemu_save_identity(
         kind: String::from("save_qemu_runner"),
         summary: format!(
             "materialization=create-savepoint-reply qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(())
+}
+
+fn append_local_qemu_resume_identity(
+    outcome: &mut BackendCommandOutcome,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<(), CliError> {
+    let Some(ResolvedLocalBackend::Qemu {
+        qemu_build_id,
+        qemu_patch_series_hash,
+        plugin_abi,
+        shmem_abi_version,
+        ..
+    }) = backend_plan.resolved_backend.as_ref()
+    else {
+        return Err(backend_error(
+            "local QEMU resume requires a resolved QEMU backend identity",
+        ));
+    };
+    outcome.stdout.push(format!(
+        "resume-qemu-runner\tmaterialization=resumed-session-savepoint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("qemu"),
+        kind: String::from("resume_qemu_runner"),
+        summary: format!(
+            "materialization=resumed-session-savepoint qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -11746,18 +11790,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
         if let Some(resume_plan) = &resume_plan {
-            if backend_plan.target == BackendExecutionTarget::Local
-                && matches!(
-                    backend_plan.resolved_backend,
-                    Some(ResolvedLocalBackend::Double)
-                )
-            {
-                let outcome = run_local_double_resume_workflow(
-                    &thin_plan,
-                    &backend_plan,
-                    ergonomics_plan.as_ref(),
-                    resume_plan,
-                )?;
+            if backend_plan.target == BackendExecutionTarget::Local {
+                let outcome = match backend_plan.resolved_backend.as_ref() {
+                    Some(ResolvedLocalBackend::Double) => run_local_double_resume_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        resume_plan,
+                    ),
+                    Some(ResolvedLocalBackend::Qemu { .. }) => run_local_qemu_resume_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        resume_plan,
+                    ),
+                    None => Err(unsupported_resume_backend_error(resume_plan)),
+                }?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }

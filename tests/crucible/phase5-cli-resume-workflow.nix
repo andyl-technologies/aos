@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -63,11 +64,27 @@
         label = "T-CLI-10 terminal oracle progress";
         needle = "replay-oracle-validating";
       }
+      {
+        label = "T-CLI-10 local-QEMU resume routing progress";
+        needle = "Explicitly selected local-QEMU resumes now route through the same\n  resumed-session materialization";
+      }
+      {
+        label = "T-CLI-10 process qemu resume progress";
+        needle = "process-tests real-binary\n  `resume --backend qemu` JSONL";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI resume progress note";
         needle = "`T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently";
+      }
+      {
+        label = "phase5 CLI resume local-QEMU progress";
+        needle = "explicitly selected local-QEMU resumes through the same\n  resumed-session materialization";
+      }
+      {
+        label = "phase5 CLI process qemu resume progress";
+        needle = "process-level `resume --backend qemu`\n  JSONL output plus replay-oracle validation";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -114,6 +131,18 @@
       {
         label = "resume local double runner";
         needle = "fn run_local_double_resume_workflow";
+      }
+      {
+        label = "resume local-QEMU runner";
+        needle = "fn run_local_qemu_resume_workflow";
+      }
+      {
+        label = "resume local-QEMU identity output";
+        needle = "resume-qemu-runner";
+      }
+      {
+        label = "resume local-QEMU canonical log";
+        needle = "resume_qemu_runner";
       }
       {
         label = "resume remote daemon runner";
@@ -260,6 +289,28 @@
         needle = "cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+      {
+        label = "process qemu resume JSONL regression";
+        needle = "cli_resume_qemu_process_jsonl_reports_identity_and_oracle";
+      }
+      {
+        label = "process qemu resume runner kind";
+        needle = "\"resume_qemu_runner\"";
+      }
+      {
+        label = "process qemu resume oracle kind";
+        needle = "\"resume_oracle_validation\"";
+      }
+      {
+        label = "process qemu resume patch series";
+        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
+      }
+      {
+        label = "process qemu resume materialization";
+        needle = "materialization=resumed-session-savepoint";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI resume workflow check";
@@ -329,6 +380,13 @@ in
               -p crucible-cli \
               cli_resume \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-resume-workflow-target" \
+              -p crucible-cli \
+              cli_resume_qemu_process_jsonl_reports_identity_and_oracle \
+              -- --test-threads=1
           '';
         }
         {
@@ -342,6 +400,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             contract=resume-workflow-progress
+            process_qemu_resume=marker-resolved-jsonl-oracle
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
