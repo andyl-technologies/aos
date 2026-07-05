@@ -7317,6 +7317,10 @@ and helps the oracle directly.
       list/binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
+      `derivationStrict` result-attrset string assembly whose partially built
+      output entries are not yet registered roots, shared fetcher path
+      construction used outside the dedicated `builtins.fetchurl` result
+      wrapper, persistent payload replay allocations,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned list/attr roots, JIT roots,
