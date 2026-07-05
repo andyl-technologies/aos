@@ -61,6 +61,10 @@
         label = "T-CLI-9 oracle validated save scope";
         needle = "validates the returned materialized";
       }
+      {
+        label = "T-CLI-9 process qemu save progress";
+        needle = "process-tests real-binary `save --backend qemu`";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -74,6 +78,10 @@
       {
         label = "phase5 CLI remote selector proof progress";
         needle = "routes remote selector proof queries over RPC breakpoint-firing payloads";
+      }
+      {
+        label = "phase5 CLI process qemu save progress";
+        needle = "process-tests real-binary `save --backend qemu` JSONL output and handle export";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -377,6 +385,26 @@
         label = "machine-readable save output path";
         needle = "out=";
       }
+      {
+        label = "process qemu save JSONL regression";
+        needle = "cli_save_qemu_process_jsonl_reports_identity_and_handle";
+      }
+      {
+        label = "process qemu save runner kind";
+        needle = "\"save_qemu_runner\"";
+      }
+      {
+        label = "process qemu backend fidelity";
+        needle = "summary\\\":\\\"Qemu\\\"";
+      }
+      {
+        label = "process qemu patch series";
+        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
+      }
+      {
+        label = "process qemu handle materialization";
+        needle = "materialization\\tcreate-savepoint\\treply";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -454,6 +482,13 @@ in
               -p crucible-session \
               breakpoint_conditions_cover_guest_marker_white_box_leaves \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
+              -p crucible-cli \
+              cli_save_qemu_process_jsonl_reports_identity_and_handle \
+              -- --test-threads=1
           '';
         }
         {
@@ -467,6 +502,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             contract=save-workflow-progress
+            process_qemu_save=marker-resolved-jsonl-handle
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
