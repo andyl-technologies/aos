@@ -1039,11 +1039,11 @@ branch on the verdict without parsing output:
   readiness rows, supports a file-backed `--corpus <path>` manifest of built-in
   fixture names, and emits per-gate PASS rows with runner and QEMU identity
   metadata.
-- [ ] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
+- [x] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.
-  Work in progress under `checks.crucible.phase5.cliSaveWorkflow`: the CLI now
-  parses `save <SCENARIO>` with the required `--at` stop selector plus
+  Completed by `checks.crucible.phase5.cliSaveWorkflow`: the CLI parses
+  `save <SCENARIO>` with the required `--at` stop selector plus
   `--label <name>`, `--max-virtual-time <dur>`, `--property <assertion>`,
   `--marker <name>`, and `--out <path>`, runs quiescence and virtual-time
   saves to paused session boundaries, issues a label-bearing
@@ -1065,8 +1065,8 @@ branch on the verdict without parsing output:
   to remote daemons as form-bearing inline `CreateSession` RPC payloads, derives
   remote guest-marker white-box policy from the transferred source form, and
   fails undeclared property selectors and marker selectors without a white-box
-  source. Full closure remains blocked on backend-executed real-QEMU savepoint
-  coverage.
+  source. The gate also runs a backend-executed patched-QEMU `snapshot-save`
+  smoke over the same QMP savepoint primitive before marking `T-CLI-9` green.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
@@ -1259,7 +1259,7 @@ branch on the verdict without parsing output:
   the RFC §15 exit-code mapping for success, failure/divergence, timeout,
   crash/backend/identity, discovery,
   invalid-artifact/scenario, and usage classes. Full closure remains blocked on
-  the remaining run-capable command-behavior gates (`T-CLI-9 … T-CLI-13`) so the
+  the remaining run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`) so the
   same output contract can be certified across every implemented runner.
 - [ ] **T-CLI-16** Implement `completions` (generate shell completions) and the
   `--help`/`--version` surface, verifying help text matches the normative copy in
@@ -1270,7 +1270,7 @@ branch on the verdict without parsing output:
   top-level `--help`, `--version`, bash completion script, missing-shell usage
   failure, and hidden gate-only flag exclusion, and rejects future flags whose
   command behavior is not implemented yet. Full closure remains blocked on the
-  remaining command-behavior gates (`T-CLI-9 … T-CLI-13`) so the final help text
+  remaining command-behavior gates (`T-CLI-10 … T-CLI-13`) so the final help text
   can be certified in sync with behavior.
 - [x] **T-CLI-17** Implement `triage` as a thin driver over the triage engine (34):
   cluster findings by signature, elect + optionally minimize a representative per

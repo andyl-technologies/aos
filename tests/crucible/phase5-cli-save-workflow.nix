@@ -24,6 +24,7 @@
   apiLifecycleUnary = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
+  saveWorkflowGate = builtins.readFile ./phase5-cli-save-workflow.nix;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -52,12 +53,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-9 remains open";
-        needle = "- [ ] **T-CLI-9** Implement `save`";
+        label = "T-CLI-9 checklist complete";
+        needle = "- [x] **T-CLI-9** Implement `save`";
       }
       {
-        label = "T-CLI-9 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliSaveWorkflow`";
+        label = "T-CLI-9 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "T-CLI-9 oracle validated save scope";
@@ -71,11 +72,15 @@
         label = "T-CLI-9 remote selector source transfer progress";
         needle = "transfers arbitrary scenario selector sources";
       }
+      {
+        label = "T-CLI-9 backend-executed QEMU savepoint completion";
+        needle = "backend-executed patched-QEMU `snapshot-save` smoke";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI save progress note";
-        needle = "`T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently";
+        label = "phase5 CLI save completion note";
+        needle = "`T-CLI-9` is green through `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "phase5 CLI remote save progress";
@@ -92,6 +97,10 @@
       {
         label = "phase5 CLI remote selector source transfer progress";
         needle = "transfers arbitrary scenario selector sources";
+      }
+      {
+        label = "phase5 CLI backend-executed QEMU savepoint completion";
+        needle = "backend-executed patched-QEMU `snapshot-save` smoke";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -501,6 +510,20 @@
         label = "phase5 exposes CLI save workflow check";
         needle = "cliSaveWorkflow = import ./phase5-cli-save-workflow.nix";
       }
+    ]
+    ++ failuresFor "tests/crucible/phase5-cli-save-workflow.nix" saveWorkflowGate [
+      {
+        label = "patched QEMU build dependency";
+        needle = "pkgs.qemu-crucible";
+      }
+      {
+        label = "QMP savepoint job polling";
+        needle = "wait_for_cli_save_qemu_job";
+      }
+      {
+        label = "backend-executed patched QEMU snapshot save";
+        needle = "snapshot-save=concluded";
+      }
     ];
 in
   if failures != []
@@ -513,8 +536,11 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.jq
+        pkgs.qemu-crucible
         pkgs.rust
         pkgs.sed
+        pkgs.socat
       ];
 
       ATTR_PATH = attrPath;
@@ -600,6 +626,133 @@ in
               -p crucible-cli \
               cli_save_qemu_process_jsonl_reports_identity_and_handle \
               -- --test-threads=1
+
+            qemu_pid=""
+            qmp_socket="$TMPDIR/cli-save-qemu-qmp.sock"
+            vmstate="$TMPDIR/cli-save-qemu-vmstate.qcow2"
+            qemu_stderr="$TMPDIR/cli-save-qemu.stderr"
+            rm -f "$qmp_socket" "$vmstate" "$qemu_stderr"
+
+            cleanup_cli_save_qemu() {
+              if [ -n "$qemu_pid" ]; then
+                kill "$qemu_pid" 2>/dev/null || true
+                wait "$qemu_pid" 2>/dev/null || true
+                qemu_pid=""
+              fi
+            }
+
+            fail_cli_save_qemu() {
+              echo "FAIL: $*" >&2
+              if [ -s "$qemu_stderr" ]; then
+                cat "$qemu_stderr" >&2
+              fi
+              cleanup_cli_save_qemu
+              exit 1
+            }
+
+            trap cleanup_cli_save_qemu EXIT
+
+            wait_for_cli_save_qemu_socket() {
+              waited=0
+              while [ "$waited" -lt 600 ]; do
+                if [ -S "$qmp_socket" ]; then
+                  return 0
+                fi
+                sleep 0.1
+                waited=$((waited + 1))
+              done
+              return 1
+            }
+
+            qmp_cli_save_cmd() {
+              socket="$1"
+              request="$2"
+              response="$3"
+              response_err="$response.err"
+
+              {
+                printf '{"execute":"qmp_capabilities"}\r\n'
+                printf '%s\r\n' "$request"
+              } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+
+              if [ ! -s "$response" ]; then
+                cat "$response_err" >&2 || true
+                return 1
+              fi
+
+              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                cat "$response" >&2
+                return 1
+              fi
+              jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+            }
+
+            wait_for_cli_save_qemu_job() {
+              socket="$1"
+              job="$2"
+              waited=0
+              while [ "$waited" -lt 600 ]; do
+                if qmp_cli_save_cmd "$socket" '{"execute":"query-jobs"}' "$TMPDIR/qmp-cli-save-jobs.json"; then
+                  if jq -e -s --arg job "$job" '
+                    [.[] | select(has("return"))][-1].return[]
+                    | select(.id == $job)
+                    | has("error")
+                  ' "$TMPDIR/qmp-cli-save-jobs.json" >/dev/null; then
+                    cat "$TMPDIR/qmp-cli-save-jobs.json" >&2
+                    return 1
+                  fi
+                  if jq -e -s --arg job "$job" '
+                    [.[] | select(has("return"))][-1].return[]
+                    | select(.id == $job)
+                    | .status == "concluded"
+                  ' "$TMPDIR/qmp-cli-save-jobs.json" >/dev/null; then
+                    return 0
+                  fi
+                fi
+                sleep 0.25
+                waited=$((waited + 1))
+              done
+              return 1
+            }
+
+            "${pkgs.qemu-crucible}/bin/qemu-img" create -f qcow2 "$vmstate" 32M >/dev/null
+            timeout 120 "${pkgs.qemu-crucible}/bin/qemu-system-x86_64" \
+              -nodefaults \
+              -no-user-config \
+              -display none \
+              -monitor none \
+              -machine q35 \
+              -accel tcg,thread=single \
+              -cpu qemu64,-rdrand,-rdseed \
+              -m 256 \
+              -smp 1 \
+              -rtc base=2026-01-01T00:00:00,clock=vm \
+              -seed 0x0010c109 \
+              -qmp "unix:$qmp_socket,server=on,wait=off" \
+              -blockdev driver=file,filename="$vmstate",node-name=vmfile \
+              -blockdev driver=qcow2,file=vmfile,node-name=vmstate \
+              -S \
+              -no-shutdown \
+              -no-reboot \
+              2> "$qemu_stderr" &
+            qemu_pid="$!"
+
+            wait_for_cli_save_qemu_socket || fail_cli_save_qemu "patched QEMU QMP socket did not appear"
+            qmp_cli_save_cmd \
+              "$qmp_socket" \
+              '{"execute":"snapshot-save","arguments":{"job-id":"cli-save-qemu-save","tag":"cli-save-qemu-savepoint","vmstate":"vmstate","devices":["vmstate"]}}' \
+              "$TMPDIR/qmp-cli-save-snapshot-save.json" \
+              || fail_cli_save_qemu "patched QEMU snapshot-save command failed"
+            wait_for_cli_save_qemu_job "$qmp_socket" "cli-save-qemu-save" \
+              || fail_cli_save_qemu "patched QEMU snapshot-save job did not conclude"
+            qmp_cli_save_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-cli-save-quit.json" >/dev/null 2>&1 || true
+            wait "$qemu_pid" || fail_cli_save_qemu "patched QEMU exited unsuccessfully after snapshot-save"
+            qemu_pid=""
+
+            cat > "$TMPDIR/cli-save-qemu-snapshot.result" <<'RESULT'
+            snapshot-save=concluded
+            backend_executed_qemu_savepoint=patched-qemu-snapshot-save
+            RESULT
           '';
         }
         {
@@ -607,6 +760,8 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+            grep -q '^snapshot-save=concluded$' "$TMPDIR/cli-save-qemu-snapshot.result"
+            cp "$TMPDIR/cli-save-qemu-snapshot.result" "$out/qemu-snapshot-save.result"
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
@@ -615,6 +770,7 @@ in
             contract=save-workflow-progress
             process_qemu_save=marker-resolved-jsonl-handle
             remote_inline_scenario_transfer=form-bearing-rpc-payload
+            backend_executed_qemu_savepoint=patched-qemu-snapshot-save
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
