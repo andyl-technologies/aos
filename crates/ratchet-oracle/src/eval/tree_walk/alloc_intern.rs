@@ -912,6 +912,21 @@ impl TreeWalk {
         self.alloc_tree_walk_path(origin.id(), span, path).ok()
     }
 
+    pub(super) fn alloc_replayed_payload_list(
+        &mut self,
+        origin: Option<EvalNodeRef>,
+        list: NixList,
+    ) -> Option<Value> {
+        let Some(origin) = origin else {
+            return self.heap.alloc_list(list).ok();
+        };
+        if origin.module() != self.current_module {
+            return self.heap.alloc_list(list).ok();
+        }
+        let span = self.node_in_module(origin.module(), origin.id()).ok()?.span;
+        self.alloc_tree_walk_list(origin.id(), span, list).ok()
+    }
+
     pub(super) fn alloc_tree_walk_string_with_attr_entry_roots(
         &mut self,
         id: IrId,

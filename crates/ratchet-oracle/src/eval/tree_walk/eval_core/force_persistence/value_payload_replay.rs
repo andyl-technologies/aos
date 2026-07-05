@@ -90,23 +90,36 @@ impl TreeWalk {
 
     fn alloc_replayed_attrs_with_census(
         &mut self,
+        origin: Option<EvalNodeRef>,
         repr: AttrSetReprKind,
         attrs: FlatAttrs,
     ) -> Option<Value> {
-        let span = Span::new(0, 0);
-        let shape_telemetry = self.project_flat_attr_shape_telemetry(IrId::new(0), span, &attrs);
+        let (id, span, dispatch) = match origin {
+            Some(origin) if origin.module() == self.current_module => {
+                let span = self.node_in_module(origin.module(), origin.id()).ok()?.span;
+                (origin.id(), span, true)
+            }
+            _ => (IrId::new(0), Span::new(0, 0), false),
+        };
+        let shape_telemetry = self.project_flat_attr_shape_telemetry(id, span, &attrs);
         let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
-        let value = self
-            .heap
-            .alloc_attrs_with_projected_shape_metadata(0, repr, projected_shape, attrs)
-            .ok()?;
-        if let Some((census_shape, transitions)) = shape_telemetry {
-            self.record_projected_attr_shape_telemetry(
-                IrId::new(0),
+        let value = if dispatch {
+            self.alloc_tree_walk_attrs_with_projected_shape_metadata(
+                id,
                 span,
-                &census_shape,
-                transitions,
-            );
+                0,
+                repr,
+                projected_shape,
+                attrs,
+            )
+            .ok()?
+        } else {
+            self.heap
+                .alloc_attrs_with_projected_shape_metadata(0, repr, projected_shape, attrs)
+                .ok()?
+        };
+        if let Some((census_shape, transitions)) = shape_telemetry {
+            self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);
         }
         Some(value)
     }
@@ -148,7 +161,7 @@ impl TreeWalk {
             );
         }
         if payload.is_empty_list() {
-            return self.heap.alloc_list(NixList::empty()).ok();
+            return self.alloc_replayed_payload_list(replay_allocation_node, NixList::empty());
         }
         if let Some(element_payloads) = payload.list_element_payloads() {
             let mut elements = Vec::new();
@@ -161,11 +174,16 @@ impl TreeWalk {
                     replay_allocation_node,
                 )?);
             }
-            return self.heap.alloc_list(NixList::new(elements)).ok();
+            return self
+                .alloc_replayed_payload_list(replay_allocation_node, NixList::new(elements));
         }
         if payload.is_empty_attrs() {
             let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
-            return self.alloc_replayed_attrs_with_census(repr, FlatAttrs::empty());
+            return self.alloc_replayed_attrs_with_census(
+                replay_allocation_node,
+                repr,
+                FlatAttrs::empty(),
+            );
         }
         if let Some(attr_payloads) = payload.attrs_entries_with_positions() {
             let repr = payload.attr_repr_kind().unwrap_or(AttrSetReprKind::Flat);
@@ -189,7 +207,7 @@ impl TreeWalk {
                 entries.push(entry);
             }
             let attrs = FlatAttrs::new(entries, &self.symbols).ok()?;
-            return self.alloc_replayed_attrs_with_census(repr, attrs);
+            return self.alloc_replayed_attrs_with_census(replay_allocation_node, repr, attrs);
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.alloc_replayed_payload_path(replay_allocation_node, NixString::from_bytes(bytes))

@@ -7316,12 +7316,12 @@ and helps the oracle directly.
       `fetchTree` and `fetchGit` result attrset `outPath` and metadata string
       allocations now route through the wrapper; partially built result entries
       are registered as transient roots around later result-string allocations.
-      Persistent payload replay context-free/context string and
-      context-free/context path allocations with real replay-allocation
-      origins in the current module now route through the wrapper; originless
-      synthetic replay subjects and
-      cross-module origins keep non-dispatching heap allocation instead of
-      fabricating source provenance.
+      Persistent payload replay context-free/context string,
+      context-free/context path, list, and attrset allocations with real
+      replay-allocation origins in the current module now route through the
+      wrappers; originless synthetic replay subjects and cross-module origins
+      keep non-dispatching heap allocation instead of fabricating source
+      provenance.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -7332,8 +7332,8 @@ and helps the oracle directly.
       list/binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
-      persistent payload replay list/attr allocations,
-      originless or cross-module persistent payload replay string/path fallbacks,
+      originless or cross-module persistent payload replay string/path/list/attr
+      fallbacks,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned list/attr roots, JIT roots,
@@ -7398,9 +7398,11 @@ and helps the oracle directly.
       direct `fetchTree` and `fetchGit` result-string assembly relocating
       registered transient roots while keeping partially built result entries
       registered across later metadata string allocations,
-      direct origin-bearing persistent payload string/path replay relocating
-      registered transient roots for both context-free and context-bearing
-      payloads,
+      direct origin-bearing persistent payload string/path/list replay and
+      attrset-origin persistent payload attr replay relocating registered
+      transient roots for context-free, context-bearing, empty, and strict
+      payloads, with non-attrset-origin attr replay preserving registered
+      transient roots through the attrset IR-kind gate,
       static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string

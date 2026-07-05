@@ -275,6 +275,331 @@ fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
 }
 
 #[test]
+fn gc_stress_empty_payload_replay_list_dispatches_permanent_noop_bridge() {
+    let ir = lower("[ ]");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::empty_list();
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-empty-replay-list");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("empty list payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached empty list payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed empty list generation is known"),
+        HeapGeneration::Permanent
+    );
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("replayed value is a list");
+    assert!(list.is_empty());
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay empty list allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_strict_payload_replay_list_dispatches_permanent_noop_bridge() {
+    let ir = lower("[ 1 ]");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::strict_list(vec![
+        CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+        CachedExpressionValue::immediate(Value::bool(true)).expect("bool payload builds"),
+    ]);
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-strict-replay-list");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("strict list payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached strict list payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed strict list generation is known"),
+        HeapGeneration::Permanent
+    );
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("replayed value is a list");
+    assert_eq!(list.len(), 2);
+    assert_eq!(
+        list.get(0).expect("first list element exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second list element exists").as_bool(),
+        Ok(true)
+    );
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay strict list allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_empty_payload_replay_attrs_dispatches_permanent_noop_bridge() {
+    let ir = lower("{ }");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::empty_attrs();
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-empty-replay-attrs");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("empty attrset payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached empty attrset payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed empty attrs generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("replayed value is an attrset");
+    assert!(attrs.is_empty());
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay empty attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_strict_payload_replay_attrs_dispatches_permanent_noop_bridge() {
+    let ir = lower("{ a = 1; b = 2; }");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::strict_attrs(vec![
+        (
+            b"a".to_vec(),
+            CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+        ),
+        (
+            b"b".to_vec(),
+            CachedExpressionValue::immediate(Value::bool(true)).expect("bool payload builds"),
+        ),
+    ])
+    .expect("attr payload builds");
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-strict-replay-attrs");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("strict attrset payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached strict attrset payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed strict attrs generation is known"),
+        HeapGeneration::Permanent
+    );
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("replayed value is an attrset");
+    assert_eq!(attrs.get(a).expect("a binding exists").as_int(), Ok(1));
+    assert_eq!(attrs.get(b).expect("b binding exists").as_bool(), Ok(true));
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay strict attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_payload_replay_attrs_skip_non_attrset_origin_dispatch() {
+    let ir = lower("[ ]");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::empty_attrs();
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-non-attr-origin-replay-attrs");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("attrset payload replay allocates with non-attrset origin");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root was relocated despite non-attrset replay origin gate"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(roots[0])
+            .expect("registered root generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed attrs generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("replayed value is an attrset");
+    assert!(attrs.is_empty());
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        1
+    );
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn search_path_forced_inline_thunks_rehydrate_after_impure_input_edges() {
     let root = unique_temp_dir("force-cache-search-path");
     let target = root.join("target");
