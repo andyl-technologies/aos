@@ -3378,6 +3378,117 @@ fn gc_stress_group_by_bucket_lists_skip_active_argument_roots() {
 }
 
 #[test]
+fn gc_stress_sort_result_skips_active_argument_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let comparator_symbol = evaluator
+        .symbols
+        .intern(b"lessThan")
+        .expect("lessThan interns");
+    let comparator_builtin = lookup_builtin(b"lessThan").expect("lessThan builtin exists");
+    let comparator = evaluator
+        .heap
+        .alloc_primop(EvalPrimOp::registered(
+            comparator_symbol,
+            comparator_builtin,
+        ))
+        .expect("comparator primop allocates");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![
+            Value::int(3),
+            Value::int(1),
+            Value::int(2),
+        ]))
+        .expect("input list allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, comparator),
+                EvalPrimOpArg::new(ir.root, span, input),
+            ],
+        )
+        .expect("active sort argument roots push");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.eval_sort_elements(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            comparator,
+            ir.root,
+            span,
+            vec![Value::int(3), Value::int(1), Value::int(2)],
+        )
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("sort result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "sort result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active sort argument roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("sort result is heap-owned");
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.get(0).expect("first sorted value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second sorted value exists").as_int(),
+        Ok(2)
+    );
+    assert_eq!(
+        list.get(2).expect("third sorted value exists").as_int(),
+        Ok(3)
+    );
+    let permanent_safepoints = evaluator.heap().permanent_allocation_safepoints();
+    assert!(
+        permanent_safepoints.count() >= permanent_safepoints_before + 1,
+        "sort result allocation did not record a permanent safepoint"
+    );
+    let permanent_safepoint = permanent_safepoints
+        .last()
+        .expect("sort list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");
     let span = ir.arena.node(ir.root).expect("root exists").span;
