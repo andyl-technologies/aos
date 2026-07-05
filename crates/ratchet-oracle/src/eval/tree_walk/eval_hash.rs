@@ -435,9 +435,7 @@ impl TreeWalk {
         let digest = Self::nix_sha256_digest(&input);
         let bytes = Self::slash_prefixed_nix_base32_sha256_digest(id, span, digest)?;
 
-        self.heap
-            .alloc_string(NixString::from_bytes(bytes))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::from_bytes(bytes))
     }
 
     pub(super) fn eval_hash_file_primop(
@@ -550,9 +548,7 @@ impl TreeWalk {
         let digest =
             self.decode_convert_hash(argument, argument_span, &hash, expected_algorithm)?;
         let bytes = Self::encode_convert_hash_digest(id, span, format, &digest)?;
-        self.heap
-            .alloc_string(NixString::from_bytes(bytes))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::from_bytes(bytes))
     }
 
     pub(super) fn hash_bytes(bytes: &[u8], algorithm: HashStringAlgorithm) -> NixHashDigest {
@@ -575,9 +571,7 @@ impl TreeWalk {
         digest: &NixHashDigest,
     ) -> Result<Value, TreeWalkError> {
         let bytes = Self::lower_hex_bytes(id, span, digest.bytes())?;
-        self.heap
-            .alloc_string(NixString::from_bytes(bytes))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::from_bytes(bytes))
     }
 
     pub(super) fn eval_hash_algorithm(

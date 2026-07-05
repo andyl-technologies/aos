@@ -1681,6 +1681,24 @@ fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge(
 }
 
 #[test]
+fn gc_stress_eval_root_hash_string_result_helpers_dispatch_permanent_noop_bridge() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            r#"builtins.hashString "sha256" "abc""#,
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            r#"builtins.placeholder "out""#,
+            b"/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        assert_gc_stress_root_string_result_dispatches(source, expected);
+    }
+}
+
+#[test]
 fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
     type ContextStringHelper =
         fn(&mut TreeWalk, IrId, Span, IrId, Span, Value) -> Result<Value, TreeWalkError>;

@@ -3106,8 +3106,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       `unsafeDiscardOutputDependency`, and `unsafeDiscardStringContext`) also
       pass the owning primop id/span into the wrapper, so admitted helper
       result allocations use the scalar no-op dispatch when they allocate a
-      distinct string record. The dispatch uses the same promotion threshold of
-      2 as the existing tree-walk GC-stress bridges and intentionally leaves
+      distinct string record. Hash digest result allocation (`hashString` and
+      `hashFile` through `alloc_hash_digest`) and `placeholder` output strings
+      now route through the same wrapper, and `convertHash` final strings are
+      wrapper-routed even though direct root `convertHash` calls still remain
+      outside public dispatch while their argument attrsets are live interned
+      attr roots. The dispatch uses the same promotion threshold of 2 as the
+      existing tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
       thunks and thunk fields, application-argument thunks, captured lambdas,
       captured-argument primop wrappers,
@@ -3127,7 +3132,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       plus root string, URI, and path literals preserving their permanent values
       through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
       `toPath` helper allocations relocating registered transient roots while
-      interned string/path roots are live, static helper string allocations
+      interned string/path roots are live, root `hashString` digest and
+      `placeholder` string allocations relocating registered transient roots,
+      static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string
       allocations preserving their bytes while relocating registered transient
