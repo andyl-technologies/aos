@@ -5789,6 +5789,24 @@ and helps the oracle directly.
       admitted, no safe Rust callable is treated as the final ABI target, no
       `JITBuilder::symbol` registration occurs, and no native trap transfer is
       implemented.
+- [x] Current attrset-access native-export readiness gate:
+      `runtime::attr::runtime_attr_access_native_export_preflight()` records the
+      exact blockers that keep `aos_has_attr`, `aos_select_ic`, and `aos_update`
+      from being final exported native ABI symbols: missing final exported
+      wrapper admission, runtime-context decoding, active attrset-root binding,
+      symbol-table and inline-cache site binding plus inline-cache dispatch for
+      keyed helpers, native shallow-update merge for `aos_update`, evaluator
+      trap transfer, and native value-return materialization. The runtime-FFI
+      crate has process-local trap-only attrset-access wrapper addresses for JIT
+      provenance, but those wrappers are not accepted as final native exports by
+      this oracle gate. The aggregate
+      `runtime::helpers::runtime_symbol_native_export_preflight()` preserves
+      attrset-access-specific blockers for the three frozen symbols in full
+      runtime-symbol order. This remains safe readiness metadata only: no final
+      native-export registration is admitted, no safe Rust callable is treated
+      as the final ABI target, no `JITBuilder::symbol` registration occurs, and
+      no native trap transfer, inline-cache dispatch, or update merge is
+      implemented.
 - [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep` success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier`/attrset-access trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its

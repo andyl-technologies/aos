@@ -3484,6 +3484,22 @@ mod tests {
                 attr_export_gap.missing_exported_attrset_access_blockers(),
                 Some(attr_blockers)
             );
+            assert_eq!(
+                attr_export_gap
+                    .missing_exported_attrset_access_blockers()
+                    .expect(label),
+                [
+                    RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                    RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
+                    RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+                ]
+                .as_slice()
+            );
             assert!(
                 attr_export_gap
                     .missing_exported_attrset_access_blockers()
@@ -3523,6 +3539,20 @@ mod tests {
         assert_eq!(
             update_export_gap.missing_exported_attrset_access_blockers(),
             Some(update_blockers)
+        );
+        assert_eq!(
+            update_export_gap
+                .missing_exported_attrset_access_blockers()
+                .expect("update blockers exist"),
+            [
+                RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
+                RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
+                RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+            ]
+            .as_slice()
         );
         assert!(
             update_export_gap

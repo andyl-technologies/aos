@@ -401,6 +401,19 @@ mod tests {
     }
 
     #[test]
+    fn attr_access_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+        for binding in runtime_attr_access_native_wrapper_bindings() {
+            let oracle_blockers = binding.entrypoint().native_export_blockers();
+            assert_eq!(
+                binding.remaining_export_blockers(),
+                &oracle_blockers[1..],
+                "{} runtime-FFI blockers extend oracle gate after final admission",
+                binding.symbol_name()
+            );
+        }
+    }
+
+    #[test]
     fn aos_has_attr_native_wrapper_aborts() {
         assert_child_process_aborts(HAS_ATTR_ABORT_CHILD);
     }

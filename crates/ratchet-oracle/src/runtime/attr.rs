@@ -144,10 +144,11 @@ pub fn runtime_attr_access_rust_callable_bindings() -> Vec<RuntimeAttrAccessRust
 /// Builds native-export readiness metadata for frozen attribute-access helpers.
 ///
 /// The returned report is intentionally negative today: the helper has frozen
-/// ABI metadata and a safe evaluator-callable wrapper, but no exported C ABI
-/// wrapper or inline-cache implementation. The blocker list is precise so
-/// later unsafe wrapper work can clear individual obligations without treating
-/// the Rust callable as a native ABI export.
+/// ABI metadata, a safe evaluator-callable wrapper, and process-local trap-only
+/// runtime-FFI wrapper provenance, but no wrapper is admitted as a final native
+/// export and no inline-cache implementation exists. The blocker list is
+/// precise so later unsafe wrapper work can clear individual obligations
+/// without treating the Rust callable as a native ABI export.
 pub fn runtime_attr_access_native_export_preflight() -> RuntimeAttrAccessNativeExportPreflight {
     RuntimeAttrAccessNativeExportPreflight::new(
         runtime_attr_access_entrypoints()
@@ -895,37 +896,40 @@ mod tests {
             assert_eq!(record.symbol_name(), entrypoint.symbol_name());
             assert_eq!(record.blockers(), entrypoint.native_export_blockers());
             assert!(!record.is_export_ready());
-            assert!(
-                record
-                    .blockers()
-                    .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper)
-            );
-            assert!(record.blockers().contains(
-                &RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented
-            ));
-            assert!(record.blockers().contains(
-                &RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented
-            ));
             match entrypoint {
                 RuntimeAttrAccessEntryPoint::AosHasAttr
                 | RuntimeAttrAccessEntryPoint::AosSelectIc => {
-                    assert!(record.blockers().contains(
-                        &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
-                    ));
-                    assert!(record.blockers().contains(
-                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented
-                    ));
-                    assert!(record.blockers().contains(
-                        &RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented
-                    ));
+                    assert_eq!(
+                        record.blockers(),
+                        [
+                            RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                            RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+                        ]
+                        .as_slice()
+                    );
                     assert!(!record.blockers().contains(
                         &RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented
                     ));
                 }
                 RuntimeAttrAccessEntryPoint::AosUpdate => {
-                    assert!(record.blockers().contains(
-                        &RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented
-                    ));
+                    assert_eq!(
+                        record.blockers(),
+                        [
+                            RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                            RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
+                            RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
+                        ]
+                        .as_slice()
+                    );
                     assert!(!record.blockers().contains(
                         &RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented
                     ));
@@ -937,6 +941,17 @@ mod tests {
                     ));
                 }
             }
+            assert!(
+                record
+                    .blockers()
+                    .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper)
+            );
+            assert!(record.blockers().contains(
+                &RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented
+            ));
+            assert!(record.blockers().contains(
+                &RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented
+            ));
             assert!(
                 record
                     .blockers()
