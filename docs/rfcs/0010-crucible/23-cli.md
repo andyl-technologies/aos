@@ -1244,7 +1244,7 @@ branch on the verdict without parsing output:
   the RFC §15 exit-code mapping for success, failure/divergence, timeout,
   crash/backend/identity, discovery,
   invalid-artifact/scenario, and usage classes. Full closure remains blocked on
-  the remaining run-capable command-behavior gates (`T-CLI-7 … T-CLI-13`) so the
+  the remaining run-capable command-behavior gates (`T-CLI-9 … T-CLI-13`) so the
   same output contract can be certified across every implemented runner.
 - [ ] **T-CLI-16** Implement `completions` (generate shell completions) and the
   `--help`/`--version` surface, verifying help text matches the normative copy in

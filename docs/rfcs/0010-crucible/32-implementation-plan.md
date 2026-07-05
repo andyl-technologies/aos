@@ -580,7 +580,7 @@ long-held locks.
   output with parsed command-specific canonical events plus `final_outcome`, and
   regression-testing the RFC §15 exit-code classes; full closure waits for the
   remaining run-capable
-  command-behavior gates `T-CLI-7 … T-CLI-13` so the same contract can be
+  command-behavior gates `T-CLI-9 … T-CLI-13` so the same contract can be
   certified across every implemented runner.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
