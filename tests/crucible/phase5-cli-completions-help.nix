@@ -59,7 +59,7 @@
       }
       {
         label = "T-CLI-16 remaining blocker range";
-        needle = "remaining command-behavior gates (`T-CLI-9 … T-CLI-13`)";
+        needle = "remaining command-behavior gates (`T-CLI-10 … T-CLI-13`)";
       }
       {
         label = "CLI help discipline";
@@ -163,7 +163,7 @@
       }
       {
         label = "phase5 CLI completions/help blocker range";
-        needle = "gates `T-CLI-9 … T-CLI-13`";
+        needle = "gates `T-CLI-10 … T-CLI-13`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

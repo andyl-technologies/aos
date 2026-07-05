@@ -412,7 +412,7 @@ long-held locks.
   missing-shell usage coverage for the real binary, hidden gate-only flag
   exclusion from help, and rejection of future flags whose command behavior is
   not implemented yet; full closure waits for the remaining command-behavior
-  gates `T-CLI-9 … T-CLI-13` so the final help text can be certified in sync
+  gates `T-CLI-10 … T-CLI-13` so the final help text can be certified in sync
   with behavior.
   `T-CLI-8` is green through `checks.crucible.phase5.cliSelftest`, which covers
   the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
@@ -421,7 +421,7 @@ long-held locks.
   file-backed `--corpus <path>` manifests of built-in fixture names, built-in
   example corpus execution, and per-gate PASS rows with runner/QEMU identity
   metadata.
-  `T-CLI-9` remains open. `checks.crucible.phase5.cliSaveWorkflow` currently
+  `T-CLI-9` is green through `checks.crucible.phase5.cliSaveWorkflow`, which
   covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
   --max-virtual-time <dur>` saves, parser/planner coverage for
   `--at property --property <assertion>` and `--at marker --marker <name>`, and
@@ -442,10 +442,11 @@ long-held locks.
   selector sources to remote daemons as form-bearing inline `CreateSession` RPC
   payloads, derives remote guest-marker white-box policy from the transferred
   source form, and fails undeclared property selectors and marker selectors
-  without a white-box source; full closure waits for backend-executed real-QEMU
-  savepoint coverage. The same gate now also
-  process-tests real-binary `save --backend qemu` JSONL output and handle export
-  through marker-resolved QEMU/plugin identity.
+  without a white-box source. The same gate also process-tests real-binary
+  `save --backend qemu` JSONL output and handle export through marker-resolved
+  QEMU/plugin identity, then runs a backend-executed patched-QEMU
+  `snapshot-save` smoke over the same QMP savepoint primitive before marking
+  `T-CLI-9` green.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
@@ -594,7 +595,7 @@ long-held locks.
   `final_outcome`, and
   regression-testing the RFC §15 exit-code classes; full closure waits for the
   remaining run-capable
-  command-behavior gates `T-CLI-9 … T-CLI-13` so the same contract can be
+  command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract can be
   certified across every implemented runner.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 

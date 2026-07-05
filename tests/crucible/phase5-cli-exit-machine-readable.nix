@@ -71,7 +71,7 @@
       }
       {
         label = "T-CLI-15 remaining gate range";
-        needle = "remaining run-capable command-behavior gates (`T-CLI-9 … T-CLI-13`)";
+        needle = "remaining run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -87,7 +87,7 @@
       }
       {
         label = "phase5 T-CLI-15 remaining gate range";
-        needle = "command-behavior gates `T-CLI-9 … T-CLI-13` so the same contract can be";
+        needle = "command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract can be";
       }
       {
         label = "phase5 T-CLI-15 qemu process coverage note";
