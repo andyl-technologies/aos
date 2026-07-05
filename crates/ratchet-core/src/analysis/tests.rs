@@ -179,6 +179,77 @@ fn cardinality_counts_let_binding_value_uses() {
 }
 
 #[test]
+fn cardinality_skips_absent_binding_value_uses() {
+    let ir = annotate_usage("let x = 1 + 2; y = x; in 0");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Absent);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Absent);
+}
+
+#[test]
+fn cardinality_propagates_transitive_demanded_binding_values() {
+    let ir = annotate_usage("let x = 1 + 2; y = x; z = y; in z");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[2]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_does_not_count_dead_sibling_binding_values() {
+    let ir = annotate_usage("let x = 1 + 2; y = x; z = x; in y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[2]), Cardinality::Absent);
+}
+
+#[test]
+fn cardinality_counts_many_entry_binding_value_once_for_shared_thunk() {
+    let ir = annotate_usage("let x = 1 + 2; y = x; in y + y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_keeps_recursive_alias_cycle_conservative() {
+    let ir = annotate_usage("let x = y; y = x; in x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_resets_stale_facts_when_binding_value_becomes_absent() {
+    let mut ir = lowered("let x = 1 + 2; y = x; in 0");
+    let bindings = let_binding_values(&ir, ir.root);
+    ir.facts
+        .get_mut(bindings[0])
+        .expect("binding fact exists")
+        .cardinality = Cardinality::Once;
+
+    annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Absent);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Absent);
+}
+
+#[test]
+fn cardinality_keeps_incomplete_demanded_binding_values_conservative() {
+    let ir = annotate_usage("let x = 1; y = (z: x + z); in y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Many);
+}
+
+#[test]
 fn cardinality_stays_conservative_across_nested_frames() {
     let ir = annotate_usage("let x = 1; in (y: x + y)");
     let bindings = let_binding_values(&ir, ir.root);

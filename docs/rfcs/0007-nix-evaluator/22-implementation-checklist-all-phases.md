@@ -9002,6 +9002,25 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `cardinality_sums_if_condition_with_branch_uses`,
       `cardinality_keeps_incomplete_if_branches_conservative`,
       `cardinality_resets_stale_facts_when_if_branch_becomes_incomplete`.
+- [x] Current demanded-binding cardinality precursor:
+      `annotate_cardinality` now seeds local `let` usage from the body and then
+      counts only binding values whose slots become reachable from that body or
+      another reachable binding value. Each demanded value body is counted once
+      to match shared-thunk evaluation, so dead sibling bindings no longer keep
+      dependencies live while transitive demanded aliases still propagate
+      `Once`. Demanded value bodies that cross nested frame producers still
+      reset the frame to conservative `Many`. This is intra-frame syntactic
+      precision only; it does not implement the whole-program usage fixpoint,
+      frame compaction, or call-by-name lowering. Gate:
+      `cardinality_skips_absent_binding_value_uses`,
+      `cardinality_propagates_transitive_demanded_binding_values`,
+      `cardinality_does_not_count_dead_sibling_binding_values`,
+      `cardinality_counts_many_entry_binding_value_once_for_shared_thunk`,
+      `cardinality_keeps_recursive_alias_cycle_conservative`,
+      `cardinality_resets_stale_facts_when_binding_value_becomes_absent`,
+      `cardinality_keeps_incomplete_demanded_binding_values_conservative`,
+      `analysis_annotations_elide_dead_transitive_binding_values`,
+      `analysis_annotations_preserve_live_alias_while_eliding_dead_sibling_alias`.
 - [x] Current dead-binding elimination planning precursor:
       `ratchet-core::analysis::dead_binding` consumes cardinality facts and
       returns a conservative plan for `let` bindings whose value code can be

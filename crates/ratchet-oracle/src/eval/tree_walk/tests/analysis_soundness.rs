@@ -188,6 +188,75 @@ fn analysis_annotations_drive_tree_walk_dead_binding_elision() {
     assert_eq!(annotated.stats().thunks_allocated(), 0, "{source}");
 }
 
+#[test]
+fn analysis_annotations_elide_dead_transitive_binding_values() {
+    let source = r#"let used = 7; dead = builtins.trace "hidden" (1 + 2); alias = dead; in used"#;
+    let conservative_ir = lower(source);
+    let mut annotated_ir = lower(source);
+    crate::compile::annotate_ir(&mut annotated_ir).expect("analysis succeeds");
+    assert_ne!(
+        fact_delta_count(&conservative_ir, &annotated_ir),
+        0,
+        "{source}"
+    );
+
+    let conservative = eval_whnf_owned(&conservative_ir).expect("conservative evaluates");
+    let annotated = eval_whnf_owned(&annotated_ir).expect("annotated evaluates");
+
+    assert_eq!(conservative.value().as_int(), Ok(7), "{source}");
+    assert_eq!(annotated.value().as_int(), Ok(7), "{source}");
+    assert_eq!(
+        annotated.trace_output(),
+        conservative.trace_output(),
+        "{source}"
+    );
+    assert_eq!(
+        annotated.warning_output(),
+        conservative.warning_output(),
+        "{source}"
+    );
+    assert_eq!(conservative.stats().thunks_elided(), 0, "{source}");
+    assert_eq!(annotated.stats().thunks_elided(), 2, "{source}");
+    assert_eq!(conservative.stats().thunks_allocated(), 2, "{source}");
+    assert_eq!(annotated.stats().thunks_allocated(), 0, "{source}");
+}
+
+#[test]
+fn analysis_annotations_preserve_live_alias_while_eliding_dead_sibling_alias() {
+    let source = r#"let x = builtins.trace "visible" (1 + 2); live = x; dead = x; in live + 1"#;
+    let conservative_ir = lower(source);
+    let mut annotated_ir = lower(source);
+    crate::compile::annotate_ir(&mut annotated_ir).expect("analysis succeeds");
+    assert_ne!(
+        fact_delta_count(&conservative_ir, &annotated_ir),
+        0,
+        "{source}"
+    );
+
+    let conservative = eval_whnf_owned(&conservative_ir).expect("conservative evaluates");
+    let annotated = eval_whnf_owned(&annotated_ir).expect("annotated evaluates");
+
+    assert_eq!(conservative.value().as_int(), Ok(4), "{source}");
+    assert_eq!(annotated.value().as_int(), Ok(4), "{source}");
+    assert_eq!(
+        annotated.trace_output(),
+        conservative.trace_output(),
+        "{source}"
+    );
+    assert_eq!(
+        annotated.warning_output(),
+        conservative.warning_output(),
+        "{source}"
+    );
+    assert_eq!(conservative.stats().thunks_elided(), 0, "{source}");
+    assert_eq!(annotated.stats().thunks_elided(), 1, "{source}");
+    assert_eq!(
+        annotated.stats().thunks_allocated() + 1,
+        conservative.stats().thunks_allocated(),
+        "{source}"
+    );
+}
+
 proptest! {
     #[test]
     fn analysis_annotations_preserve_generated_json_observables(

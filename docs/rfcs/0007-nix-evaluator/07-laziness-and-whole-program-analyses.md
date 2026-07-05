@@ -983,6 +983,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       branches still stay conservative at `Many`. This is still local syntactic
       cardinality only; it does not add path-sensitive demand facts,
       recursion/higher-order precision, or the whole-program usage fixpoint.
+- [x] Current demanded-binding cardinality precursor:
+      local usage counting now seeds a `let` frame from the body, then counts a
+      binding value only after that binding's slot becomes reachable from the
+      body or another already-reachable binding value. Each demanded binding
+      value is counted once, matching the current shared-thunk model, so dead
+      sibling bindings no longer make their dependencies appear live while
+      transitive demanded aliases still refine to `Once`. Demanded values that
+      cross nested frame producers still reset the whole frame to conservative
+      `Many`; this is not the whole-program usage fixpoint.
 - [ ] Single-entry thunks: drop the `Blackhole`/`Forced` update machinery (or downgrade to call-by-name) for used-at-most-once bindings (§5.1) — **P4**; the blackhole-skip restricted to escape-proven *frame-local* thunks so it is sound under parallel forcing (§10 item 4, `C-8`); ties to [13](13-parallel-evaluation.md) **P3.5**.
 - [x] Current frame-local single-entry preflight:
       `ratchet-core::analysis::thunk_sharing` names the safety predicate for

@@ -176,9 +176,7 @@ impl<'a> CardinalityAnalyzer<'a> {
         let bindings = self.binding_values(id, bindings)?;
         let mut counter = LocalUsageCounter::new(self, bindings.len());
         counter.count_node(body)?;
-        for binding in &bindings {
-            counter.count_node(binding.value)?;
-        }
+        counter.count_demanded_binding_values(&bindings)?;
         if !counter.complete {
             for binding in &bindings {
                 self.set_cardinality(binding.value, Cardinality::Many)?;
@@ -616,6 +614,33 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
             })
             .collect();
         Ok(())
+    }
+
+    fn count_demanded_binding_values(
+        &mut self,
+        bindings: &[IrBinding],
+    ) -> Result<(), CardinalityAnalysisError> {
+        // A lazy binding value can only demand other same-frame slots after the
+        // binding itself is reachable. Count each demanded value body once to
+        // match update-thunk sharing, then keep propagating through new demands.
+        let mut counted_values = vec![false; bindings.len()];
+        loop {
+            if !self.complete {
+                return Ok(());
+            }
+            let Some(slot) = self.next_uncounted_demanded_binding(&counted_values) else {
+                return Ok(());
+            };
+            counted_values[slot] = true;
+            self.count_node(bindings[slot].value)?;
+        }
+    }
+
+    fn next_uncounted_demanded_binding(&self, counted_values: &[bool]) -> Option<usize> {
+        self.counts
+            .iter()
+            .zip(counted_values.iter())
+            .position(|(count, counted)| !*counted && *count != UsageCount::Zero)
     }
 
     fn count_bindings(
