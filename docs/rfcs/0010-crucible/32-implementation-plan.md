@@ -440,8 +440,10 @@ long-held locks.
   validates them with replay-oracle evidence, routes remote selector proof
   queries over RPC breakpoint-firing payloads, and fails undeclared property
   selectors and marker selectors without a white-box source; full closure waits
-  for process-backed real-QEMU savepoint coverage and remote arbitrary-scenario
-  selector-source transfer.
+  for backend-executed real-QEMU savepoint coverage and remote
+  arbitrary-scenario selector-source transfer. The same gate now also
+  process-tests real-binary `save --backend qemu` JSONL output and handle export
+  through marker-resolved QEMU/plugin identity.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`

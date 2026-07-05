@@ -96,6 +96,70 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let artifact_dir = temp.path().join("qemu-save-artifacts");
+    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
+        .arg(&qemu)
+        .arg("--plugin")
+        .arg(&plugin)
+        .args(["--seed", "7", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("save")
+        .arg("builtin:happy-path.scn")
+        .args(["--at", "quiescence", "--label", "qemu-process"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "crucible save --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &[
+            "backend_fidelity",
+            "save_oracle_validation",
+            "save_qemu_runner",
+            "save_export",
+        ],
+    )?;
+    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
+    let expected_plugin_abi = qemu_process_plugin_abi();
+    assert!(stdout.contains("summary\":\"Qemu\""));
+    assert!(stdout.contains("materialization=create-savepoint-reply"));
+    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
+    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
+    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
+    assert!(stdout.contains(&format!("shmem_abi={}", crucible::SHMEM_ABI_VERSION)));
+    assert!(stdout.contains("status=fat==thin-passed"));
+    assert!(stdout.contains(".crucible-savepoint"));
+
+    let handles = fs::read_dir(&artifact_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str()?;
+            (file_name.starts_with("savepoint-qemu-process-")
+                && file_name.ends_with(".crucible-savepoint"))
+            .then_some(entry.path())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let handle = fs::read_to_string(&handles[0])?;
+    assert!(handle.contains("label\tqemu-process\n"));
+    assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
+    assert!(handle.contains("oracle\tfat==thin-passed\n"));
+    assert!(handle.contains("terminal-condition\tquiescence\n"));
+
+    Ok(())
+}
+
+#[test]
 fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
 {
     let temp = TempDir::new()?;
@@ -528,6 +592,33 @@ node = "cli-search-retained-node"
 marker = "forbidden-search-marker"
 retired_icount = 7
 "#
+}
+
+fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    fs::create_dir_all(dir)?;
+    let qemu = dir.join("qemu-system-x86_64");
+    let plugin = dir.join("crucible-qemu-plugin.so");
+    fs::write(&qemu, b"patched-qemu")?;
+    fs::write(&plugin, b"plugin")?;
+    let shmem_abi_version = crucible::SHMEM_ABI_VERSION;
+    let plugin_abi = qemu_process_plugin_abi();
+    fs::write(
+        dir.join("qemu-build-identity.env"),
+        format!(
+            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-process-qemu-patch-series\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-process-shmem-header\nqemu_build_id=process-qemu-build-v1\n"
+        ),
+    )?;
+    fs::write(
+        dir.join("crucible-qemu-plugin-build-info"),
+        format!(
+            "package=crucible-qemu-plugin\nqemu_package=qemu-crucible\nqemu_build_id=process-qemu-build-v1\nshmem_abi_version={shmem_abi_version}\nshmem_abi={plugin_abi}\nshmem_generated_header=include/aos/crucible/crucible_shmem_abi.h\nshmem_generated_header_hash=sha256-process-shmem-header\nplugin_abi={plugin_abi}\n"
+        ),
+    )?;
+    Ok((qemu, plugin))
+}
+
+fn qemu_process_plugin_abi() -> String {
+    format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION)
 }
 
 #[derive(Debug)]
