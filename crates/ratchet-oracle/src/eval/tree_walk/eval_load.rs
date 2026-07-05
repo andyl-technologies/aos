@@ -530,14 +530,15 @@ impl TreeWalk {
                     )
                 })?;
             for output in group.outputs {
-                outputs.push(self.alloc_static_string(id, span, &output)?);
+                let value = self.with_transient_value_stack_roots(
+                    id,
+                    span,
+                    outputs.as_mut_slice(),
+                    |eval| eval.alloc_static_string(id, span, &output),
+                )?;
+                outputs.push(value);
             }
-            let outputs = self
-                .heap
-                .alloc_list(NixList::new(outputs))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
+            let outputs = self.alloc_tree_walk_list(id, span, NixList::new(outputs))?;
             let symbol = self.intern_builtin_attr_symbol(id, b"outputs", span)?;
             entries.push(AttrEntry::new(symbol, outputs));
         }

@@ -2097,6 +2097,73 @@ fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
 }
 
 #[test]
+fn gc_stress_reflected_context_outputs_list_preserves_accumulated_outputs() {
+    let ir = lower("\"root\"");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let mut group =
+        ReflectedContextGroup::new(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv".to_vec());
+    group.outputs = vec![b"out".to_vec(), b"dev".to_vec()];
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_reflected_context_group(ir.root, span, group)
+        })
+        .expect("reflected context group allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "reflected context outputs list did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating reflected context outputs list"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let outputs_key = evaluator
+        .symbols
+        .intern(b"outputs")
+        .expect("outputs key interns");
+    let outputs = {
+        let group_attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("context group is an attrset");
+        assert_eq!(group_attrs.len(), 1);
+        group_attrs.get(outputs_key).expect("outputs attr exists")
+    };
+    let output_items = {
+        let outputs = evaluator
+            .heap()
+            .get_list(outputs)
+            .expect("outputs value is a heap-owned list");
+        assert_eq!(outputs.len(), 2);
+        [
+            outputs.get(0).expect("first output exists"),
+            outputs.get(1).expect("second output exists"),
+        ]
+    };
+    assert_heap_string_bytes(&evaluator, output_items[0], b"out");
+    assert_heap_string_bytes(&evaluator, output_items[1], b"dev");
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(r#"builtins.substring 1 2 "abcd""#, b"bc");
 }
