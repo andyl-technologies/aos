@@ -20,9 +20,7 @@ impl TreeWalk {
             )
         })?;
         owned.extend_from_slice(bytes);
-        self.heap
-            .alloc_string(NixString::from_bytes(owned))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::from_bytes(owned))
     }
 
     pub(super) fn alloc_symbol_string(

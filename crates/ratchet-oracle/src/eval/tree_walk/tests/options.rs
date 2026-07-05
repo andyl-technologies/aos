@@ -6,7 +6,8 @@ use crate::eval::heap::{
     EvalHeap, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
 use crate::eval::{
-    ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId, TreeWalkParallelThunkWait,
+    EvalThunk, ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId,
+    TreeWalkParallelThunkWait,
 };
 use crate::heap::{HeapGeneration, HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{
@@ -1299,6 +1300,145 @@ fn gc_stress_eval_root_string_allocation_dispatches_permanent_noop_bridge() {
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
     assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
+    let ir = lower("builtins.nixVersion");
+    let span = Span::new(0, 0);
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_static_string(ir.root, span, PINNED_NIX_VERSION)
+        })
+        .expect("static helper string allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(!roots[0].raw_eq(local_source));
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(roots[0])
+            .expect("registered root generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("static helper string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(value)
+            .expect("static helper string is heap-owned")
+            .bytes(),
+        PINNED_NIX_VERSION
+    );
+    assert_eq!(evaluator.heap().len(), 3);
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        1
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("static helper string allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_alloc_symbol_string_helper_skips_unregistered_local_dispatch() {
+    let ir = lower("{ helperSymbol = 1; }");
+    let span = Span::new(0, 0);
+    let symbol = symbol_for(&ir, b"helperSymbol");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_symbol_string(ir.root, span, symbol)
+        })
+        .expect("symbol helper string allocates without dispatching");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(roots[0].raw_eq(local_source));
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(roots[0])
+            .expect("registered root generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("symbol helper string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(value)
+            .expect("symbol helper string is heap-owned")
+            .bytes(),
+        b"helperSymbol"
+    );
+    assert_eq!(evaluator.heap().len(), 2);
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        1
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("symbol helper string allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
 #[test]
