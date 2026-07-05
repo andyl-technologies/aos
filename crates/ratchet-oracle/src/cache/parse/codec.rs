@@ -866,6 +866,10 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
+    pub(super) fn is_eof(&self) -> bool {
+        self.cursor == self.bytes.len()
+    }
+
     pub(super) fn read_len(&mut self, what: &'static str) -> Result<usize, String> {
         usize::try_from(self.read_u32()?).map_err(|_| format!("{what} does not fit usize"))
     }

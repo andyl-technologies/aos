@@ -2319,13 +2319,13 @@ alone (`M-1`/`Q-A`).
       coordination remain open (`C-13`/`R-14`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
-      bytes as one versioned little-endian payload, and
-      `ParseCacheEntry::read_artifact_bundle` reads complete entries into that
-      bundle. Optional parse-cache sidecars such as `facts.bin` are cache-local
-      and deliberately excluded from the bundle framing. This is payload-format
-      substrate only; automatic file-artifact materialization, automatic
-      parse-cache integration, cache-hit selection, mmap reads, and harness
-      proof remain open (`C-13`).
+      bytes as one versioned little-endian payload, and may append a fifth
+      `facts.bin` section when the entry carries a sidecar that validates
+      against the lowered-IR artifact fingerprint. Four-section legacy bundles
+      still decode as factless. This is payload-format substrate only;
+      automatic file-artifact materialization, automatic parse-cache
+      integration, cache-hit selection, mmap reads, independent IR-hash fact
+      artifacts, and harness proof remain open (`C-13`/`S-9`).
 - [x] Current explicit parse-cache hit reader:
       `ParseCache::load_cached_bytes` computes the normal source-content key,
       returns `Ok(None)` for missing/incomplete entries, and decodes complete
@@ -2356,12 +2356,14 @@ alone (`M-1`/`Q-A`).
       (`C-13`).
 - [x] Current parse-artifact bundle hydration adapter:
       `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
-      entry, clearing `meta.toml` before payload writes, clearing stale
-      `facts.bin` because bundles do not carry analysis sidecars, and committing
-      metadata last so partial hydration is not treated as complete. This is
-      explicit entry hydration only; durable index lookup, automatic
-      file-artifact materialization, semantic validation before write, mmap
-      reads, cache-hit integration, and harness proof remain open (`C-13`).
+      entry, clearing `meta.toml` before payload writes, replacing `facts.bin`
+      only when the bundle carries a sidecar that validates against the bundled
+      lowered-IR artifact fingerprint, removing stale facts for factless or
+      invalid fact sections, and committing metadata last so partial hydration
+      is not treated as complete. This is explicit entry hydration only; durable
+      index lookup, automatic file-artifact materialization, semantic validation
+      before write, mmap reads, cache-hit integration, independent IR-hash fact
+      artifacts, and harness proof remain open (`C-13`/`S-9`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -9120,6 +9122,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       This does not close `ir/annotate.rs`: analysis passes, IR-hash
       content-addressed persistent fact artifacts, strictness FV sets, and
       JIT lowering consumers remain open.
+- [x] Current persistent fact-sidecar transport precursor:
+      parse-artifact bundles now carry an optional fifth `facts.bin` section
+      after the mandatory frontend artifacts, and hydration writes that sidecar
+      only when it validates against the bundled lowered-IR fingerprint and node
+      count. Four-section bundles remain factless, and malformed or mismatched
+      fact sections remove stale local sidecars and fall back to conservative
+      facts. This lets existing persistent parse/file artifact blobs transport
+      analyzed facts, but it is not an independent IR-hash fact artifact,
+      analyzed-once cross-source fact index, whole-program fixpoint cache, or
+      JIT lowering consumer.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

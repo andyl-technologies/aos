@@ -821,6 +821,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       report, and leaves conservative facts behind if any producer rejects
       malformed IR. This is not yet the memoized closed-world fixpoint driver.
 - [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
+- [x] Current persistent fact-sidecar transport precursor:
+      parse-artifact bundles now carry an optional fifth `facts.bin` section
+      after the mandatory frontend artifacts, and hydration writes that sidecar
+      only when it validates against the bundled lowered-IR fingerprint and node
+      count. Four-section bundles remain factless, and malformed or mismatched
+      fact sections remove stale local sidecars and fall back to conservative
+      facts. This lets existing persistent parse/file artifact blobs transport
+      analyzed facts, but it is not an independent IR-hash fact artifact or
+      analyzed-once cross-source fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

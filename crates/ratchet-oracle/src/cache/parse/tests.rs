@@ -78,24 +78,42 @@ fn resolved_single_symbol_with_scopes(scopes: ScopeTables) -> ResolvedAst {
 }
 
 fn bundle_with_meta(bundle: &ParseArtifactBundle, meta: ParseCacheMeta) -> ParseArtifactBundle {
-    ParseArtifactBundle::new(
-        bundle.resolved_bytes(),
-        bundle.ir_bytes(),
-        bundle.symbols_bytes(),
-        meta.to_toml().into_bytes(),
-    )
+    match bundle.facts_bytes() {
+        Some(facts) => ParseArtifactBundle::new_with_facts(
+            bundle.resolved_bytes(),
+            bundle.ir_bytes(),
+            bundle.symbols_bytes(),
+            meta.to_toml().into_bytes(),
+            facts,
+        ),
+        None => ParseArtifactBundle::new(
+            bundle.resolved_bytes(),
+            bundle.ir_bytes(),
+            bundle.symbols_bytes(),
+            meta.to_toml().into_bytes(),
+        ),
+    }
 }
 
 fn bundle_with_resolved(
     bundle: &ParseArtifactBundle,
     resolved: impl Into<Vec<u8>>,
 ) -> ParseArtifactBundle {
-    ParseArtifactBundle::new(
-        resolved,
-        bundle.ir_bytes(),
-        bundle.symbols_bytes(),
-        bundle.meta_toml_bytes(),
-    )
+    match bundle.facts_bytes() {
+        Some(facts) => ParseArtifactBundle::new_with_facts(
+            resolved,
+            bundle.ir_bytes(),
+            bundle.symbols_bytes(),
+            bundle.meta_toml_bytes(),
+            facts,
+        ),
+        None => ParseArtifactBundle::new(
+            resolved,
+            bundle.ir_bytes(),
+            bundle.symbols_bytes(),
+            bundle.meta_toml_bytes(),
+        ),
+    }
 }
 
 fn lowered_ir_for_source(source: &str) -> Ir {

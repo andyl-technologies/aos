@@ -159,6 +159,7 @@ impl ParseCacheEntry {
         let resolved_path = self.resolved_path();
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
+        let facts_path = self.facts_path();
         let meta_path = self.meta_path();
         let resolved =
             fs::read(&resolved_path).map_err(|source| ParseCacheError::ReadArtifact {
@@ -177,15 +178,23 @@ impl ParseCacheEntry {
             path: meta_path,
             source,
         })?;
-        Ok(ParseArtifactBundle::new(resolved, ir, symbols, meta_toml))
+        let facts = read_valid_fact_sidecar(&facts_path, &ir, &symbols);
+        Ok(match facts {
+            Some(facts) => {
+                ParseArtifactBundle::new_with_facts(resolved, ir, symbols, meta_toml, facts)
+            }
+            None => ParseArtifactBundle::new(resolved, ir, symbols, meta_toml),
+        })
     }
 
     /// Writes a raw parse-cache artifact bundle into this entry.
     ///
     /// The metadata file is removed before payload files are written and
     /// rewritten last, so incomplete bundle hydration does not look like a
-    /// complete cache entry. The optional `facts.bin` sidecar is removed
-    /// because raw bundles do not frame analysis facts.
+    /// complete cache entry. If the raw bundle carries a valid `facts.bin`
+    /// sidecar for its lowered-IR artifact, it is written best-effort before
+    /// metadata is committed; missing or invalid fact sections remove any stale
+    /// sidecar and leave the hydrated entry conservative.
     ///
     /// # Errors
     ///
@@ -222,6 +231,9 @@ impl ParseCacheEntry {
                 source,
             }
         })?;
+        if let Some(facts) = validated_bundle_fact_sidecar(bundle) {
+            let _ = write_cache_file_atomic(&facts_path, facts);
+        }
         write_cache_file_atomic(&meta_path, bundle.meta_toml_bytes()).map_err(|source| {
             ParseCacheError::WriteMeta {
                 path: meta_path,
@@ -321,4 +333,25 @@ impl ParseCacheEntry {
         }
         Ok(ir)
     }
+}
+
+fn read_valid_fact_sidecar(path: &Path, ir_bytes: &[u8], symbols_bytes: &[u8]) -> Option<Vec<u8>> {
+    let facts = fs::read(path).ok()?;
+    valid_fact_sidecar(&facts, ir_bytes, symbols_bytes).then_some(facts)
+}
+
+fn validated_bundle_fact_sidecar(bundle: &ParseArtifactBundle) -> Option<&[u8]> {
+    let facts = bundle.facts_bytes()?;
+    valid_fact_sidecar(facts, bundle.ir_bytes(), bundle.symbols_bytes()).then_some(facts)
+}
+
+fn valid_fact_sidecar(facts: &[u8], ir_bytes: &[u8], symbols_bytes: &[u8]) -> bool {
+    let ir_fingerprint = lowered_ir_artifact_fingerprint(ir_bytes, symbols_bytes);
+    let Ok(symbols) = decode_symbols(symbols_bytes) else {
+        return false;
+    };
+    let Ok(ir) = decode_lowered_ir(ir_bytes, symbols) else {
+        return false;
+    };
+    decode_ir_facts(facts, ir.arena.nodes().len(), ir_fingerprint).is_ok()
 }

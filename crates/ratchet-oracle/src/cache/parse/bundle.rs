@@ -6,14 +6,16 @@ use super::*;
 ///
 /// The bundle frames the mandatory payloads that [`ParseCacheEntry`] stores as
 /// separate files: `resolved.bin`, `ir.bin`, `symbols.bin`, and `meta.toml`.
-/// Optional analysis sidecars such as `facts.bin` are cache-local and are not
-/// bundled.
+/// It may also carry the optional `facts.bin` analysis sidecar; fact bytes are
+/// still validated against the lowered-IR fingerprint before hydration writes
+/// them to a cache entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseArtifactBundle {
     resolved: Vec<u8>,
     ir: Vec<u8>,
     symbols: Vec<u8>,
     meta_toml: Vec<u8>,
+    facts: Option<Vec<u8>>,
 }
 
 impl ParseArtifactBundle {
@@ -29,6 +31,24 @@ impl ParseArtifactBundle {
             ir: ir.into(),
             symbols: symbols.into(),
             meta_toml: meta_toml.into(),
+            facts: None,
+        }
+    }
+
+    /// Creates a bundle from raw parse-cache artifact bytes plus facts.
+    pub fn new_with_facts(
+        resolved: impl Into<Vec<u8>>,
+        ir: impl Into<Vec<u8>>,
+        symbols: impl Into<Vec<u8>>,
+        meta_toml: impl Into<Vec<u8>>,
+        facts: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            resolved: resolved.into(),
+            ir: ir.into(),
+            symbols: symbols.into(),
+            meta_toml: meta_toml.into(),
+            facts: Some(facts.into()),
         }
     }
 
@@ -50,6 +70,11 @@ impl ParseArtifactBundle {
     /// Returns the diagnostic metadata TOML bytes.
     pub fn meta_toml_bytes(&self) -> &[u8] {
         &self.meta_toml
+    }
+
+    /// Returns the optional serialized fact sidecar bytes.
+    pub fn facts_bytes(&self) -> Option<&[u8]> {
+        self.facts.as_deref()
     }
 
     /// Decodes the bundled diagnostic metadata.
@@ -153,6 +178,9 @@ impl ParseArtifactBundle {
         encode_bundle_section(&mut out, &self.ir, "IR artifact byte count")?;
         encode_bundle_section(&mut out, &self.symbols, "symbol artifact byte count")?;
         encode_bundle_section(&mut out, &self.meta_toml, "metadata byte count")?;
+        if let Some(facts) = &self.facts {
+            encode_bundle_section(&mut out, facts, "fact artifact byte count")?;
+        }
         Ok(out)
     }
 
@@ -183,6 +211,14 @@ impl ParseArtifactBundle {
             .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
         let meta_toml = decode_bundle_section(&mut reader, "metadata byte count")
             .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        let facts = if reader.is_eof() {
+            None
+        } else {
+            Some(
+                decode_bundle_section(&mut reader, "fact artifact byte count")
+                    .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?,
+            )
+        };
         reader
             .expect_eof()
             .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
@@ -191,6 +227,7 @@ impl ParseArtifactBundle {
             ir,
             symbols,
             meta_toml,
+            facts,
         })
     }
 }
