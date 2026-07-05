@@ -7275,6 +7275,9 @@ and helps the oracle directly.
       wrapper for both direct builtin calls and first-class primop-value calls.
       String-addition and path-addition final scalar allocations route through
       the same wrappers and dispatch for direct root scalar results.
+      `toString` final string allocations now route through the wrapper, and
+      scalar direct-root `toString` results dispatch through the scalar no-op
+      bridge.
       `concatStringsSep` and `replaceStrings` final string allocations are
       wrapper-routed for direct builtin calls and first-class primop-value
       calls, while public direct-root calls still skip dispatch when their
@@ -7306,6 +7309,8 @@ and helps the oracle directly.
       roots while interned string roots are live,
       root string-addition and path-addition final scalar allocations relocating
       registered transient roots while interned string/path roots are live,
+      root scalar `toString` final allocations relocating registered transient
+      roots,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
       static helper string allocations

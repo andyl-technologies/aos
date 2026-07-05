@@ -1765,6 +1765,11 @@ fn gc_stress_eval_root_add_operator_scalar_results_dispatch_permanent_noop_bridg
 }
 
 #[test]
+fn gc_stress_eval_root_to_string_scalar_result_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches("builtins.toString 123", b"123");
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),
