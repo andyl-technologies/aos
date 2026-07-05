@@ -2710,6 +2710,127 @@ fn reference_writebacks_apply_reserved_forwarding_wrapper_with_primop_arguments(
 }
 
 #[test]
+fn reference_writebacks_apply_current_reserved_forwarding_wrapper() {
+    let (mut evaluator, child, parent, _poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_address = gc_address(child);
+
+    let application = evaluator
+        .apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            RuntimeAllocatorTier::PermanentShared,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+        )
+        .expect("current reserved destination wrapper installs forwarding and applies");
+
+    assert_eq!(application.forwarding_pointers_installed(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 4);
+    let forwarded = evaluator
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("forwarding source remains known")
+        .expect("forwarding slot installs");
+    let destination_address =
+        resolved_heap_destination_address(forwarded).expect("forwarded value is heap-backed");
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_apply_current_reserved_forwarding_wrapper_with_primop_arguments() {
+    let (mut evaluator, child, parent, _poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_address = gc_address(child);
+    let mut primop_arguments = vec![child];
+
+    let application = evaluator
+        .apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            RuntimeAllocatorTier::PermanentShared,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("current reserved destination primop wrapper installs forwarding and applies");
+
+    assert_eq!(application.forwarding_pointers_installed(), 1);
+    assert_eq!(application.root_value_writeback_slots().len(), 4);
+    assert_eq!(application.heap_field_writeback_slots().len(), 1);
+    assert_eq!(application.applied_root_writebacks(), 4);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 5);
+    let forwarded = evaluator
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("forwarding source remains known")
+        .expect("forwarding slot installs");
+    let destination_address =
+        resolved_heap_destination_address(forwarded).expect("forwarded value is heap-backed");
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(primop_arguments[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_current_reserved_forwarding_wrapper_rejects_missing_poll_without_reservation()
+ {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::disabled()),
+    );
+    let records_before = evaluator.heap().len();
+    let mut value_stack = Vec::new();
+
+    let err = evaluator
+        .apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            RuntimeAllocatorTier::TierAOneShot,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+        )
+        .expect_err("missing current poll rejects before reservation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Scan(
+            TreeWalkSafepointScanError::NoCurrentCollectorPoll {
+                tier: RuntimeAllocatorTier::TierAOneShot
+            },
+        )
+    );
+    assert_eq!(evaluator.heap().len(), records_before);
+}
+
+#[test]
 fn reference_writebacks_forwarding_slots_reject_occupied_before_live_mutation() {
     let (mut evaluator, child, parent, destination, poll, mut value_stack) =
         tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();

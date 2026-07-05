@@ -60,6 +60,12 @@ pub enum TreeWalkSafepointScanError {
         /// The current collector poll for the same allocation tier, if any.
         current: Option<AllocationCollectorPoll>,
     },
+    /// The requested allocator tier has no current collector poll.
+    #[error("allocator tier {tier:?} has no current collector poll")]
+    NoCurrentCollectorPoll {
+        /// The allocator tier inspected for a current collector poll.
+        tier: RuntimeAllocatorTier,
+    },
     /// The precise heap scanner rejected the constructed root graph.
     #[error("failed to scan tree-walk safepoint roots: {0}")]
     Heap(#[from] EvalHeapError),
@@ -2648,6 +2654,76 @@ impl TreeWalk {
         )?;
         self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
             &plan,
+            value_stack,
+            primop_arguments,
+        )
+    }
+
+    /// Applies the current tier poll through the reserved forwarding bridge.
+    ///
+    /// This is the current-poll convenience form of
+    /// [`Self::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`].
+    /// It reads the latest collector poll for `tier` immediately before
+    /// reservation, so callers do not have to preserve an
+    /// [`AllocationCollectorPoll`] handle across intervening code.
+    ///
+    /// This remains an explicit tree-walk bridge: it does not run automatically
+    /// from allocation sites, write real ABI object headers, reserve semispace
+    /// storage, consume JIT stack maps, or invoke Tier B.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if no current poll exists
+    /// for `tier`, if destination reservation or planning fails, if current root
+    /// or heap-field validation fails, if forwarding-slot validation fails, if
+    /// reserved destination records reject paired body/generation writes, or if
+    /// live root or heap-field mutation fails.
+    pub fn apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+        &mut self,
+        tier: RuntimeAllocatorTier,
+        promotion_policy: MinorGcPromotionPolicy,
+        value_stack: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let mut primop_arguments: [Value; 0] = [];
+        self.apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            tier,
+            promotion_policy,
+            value_stack,
+            &mut primop_arguments,
+        )
+    }
+
+    /// Applies current-poll reserved forwarding writebacks with primop roots.
+    ///
+    /// This is the caller-buffer-aware form of
+    /// [`Self::apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if no current poll exists
+    /// for `tier`, if destination reservation or planning fails, if current root
+    /// or heap-field validation fails, if forwarding-slot validation fails, if
+    /// reserved destination records reject paired body/generation writes, or if
+    /// live root or heap-field mutation fails.
+    pub fn apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+        &mut self,
+        tier: RuntimeAllocatorTier,
+        promotion_policy: MinorGcPromotionPolicy,
+        value_stack: &mut [Value],
+        primop_arguments: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let poll = self
+            .current_collector_poll_for_tier(tier)
+            .ok_or(TreeWalkSafepointScanError::NoCurrentCollectorPoll { tier })?;
+        self.apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            poll,
+            promotion_policy,
             value_stack,
             primop_arguments,
         )
