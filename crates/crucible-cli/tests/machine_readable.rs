@@ -302,6 +302,41 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
     Ok(())
 }
 
+#[test]
+fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let artifact_dir = temp.path().join("replay-to-artifacts");
+    let fixture = replay_to_savepoint_process_fixture(temp.path())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&fixture.artifact)
+        .arg("--to")
+        .arg(&fixture.savepoint)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "crucible replay --to --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(&stdout, &["replay_artifact", "replay_to_savepoint"])?;
+    assert!(stdout.contains("subcommand=replay"));
+    assert!(stdout.contains("status=target-validated"));
+    assert!(stdout.contains("schedule_prefix=typed"));
+    assert!(stdout.contains("materialization=model-temporal-graph"));
+    assert!(stdout.contains("unified_operation=replay"));
+    assert!(stdout.contains("single_vm_fingerprint=blake3:"));
+    assert!(stdout.contains("exit_code=0"));
+    assert!(!stdout.contains("crucible: replay --to"));
+
+    Ok(())
+}
+
 fn run_machine_readable(
     format: &str,
     scenario: &Path,
@@ -504,6 +539,372 @@ struct ArtifactDecision {
     payload_digest: String,
 }
 
+#[derive(Debug)]
+struct ReplayToSavepointProcessFixture {
+    artifact: PathBuf,
+    savepoint: PathBuf,
+}
+
+#[derive(Debug)]
+struct ReplayToSavepointDecisionFixture {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    node: String,
+    kind: String,
+    payload: String,
+    payload_digest: String,
+}
+
+fn replay_to_savepoint_process_fixture(
+    dir: &Path,
+) -> Result<ReplayToSavepointProcessFixture, Box<dyn Error>> {
+    let fixture = crucible::happy_path_scenario()?;
+    let form = fixture.scenario;
+    let scenario = form.scenario_def();
+    let schedule = replay_to_savepoint_schedule();
+    let configuration = crucible::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    let checkpoint = checkpoint_for_process_fixture(&configuration)?;
+    let artifact = dir.join("process-replay-to.crucible");
+    let savepoint = dir.join("process-replay-to.crucible-savepoint");
+    fs::write(
+        &artifact,
+        replay_to_savepoint_artifact_text(&scenario, &schedule)?.into_bytes(),
+    )?;
+    fs::write(
+        &savepoint,
+        savepoint_handle_text(&form, &schedule, &checkpoint)?,
+    )?;
+    Ok(ReplayToSavepointProcessFixture {
+        artifact,
+        savepoint,
+    })
+}
+
+fn replay_to_savepoint_schedule() -> crucible::Schedule {
+    crucible::Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+        crucible::DeliveryOrderDecision {
+            at: crucible::VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        },
+    )])
+}
+
+fn checkpoint_for_process_fixture(
+    configuration: &crucible::Configuration,
+) -> Result<crucible::Checkpoint, Box<dyn Error>> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))?;
+        Some(crucible::Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Ok(crucible::Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        crucible::VirtualTime {
+            ticks: configuration.schedule.len() as u64,
+        },
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )?)
+}
+
+fn replay_to_savepoint_artifact_text(
+    scenario: &crucible::ScenarioDef,
+    schedule: &crucible::Schedule,
+) -> Result<String, Box<dyn Error>> {
+    let scenario_bytes = scenario_identity_bytes(scenario);
+    let scenario_digest = content_address_bytes(&scenario_bytes);
+    let store_uri = format!("cas:{scenario_digest}");
+    let decisions = replay_to_savepoint_decision_fixtures(schedule);
+    let mut text = String::new();
+    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v2"]);
+    artifact_line(&mut text, &["seed", "111"]);
+    artifact_line(
+        &mut text,
+        &[
+            "identity",
+            env!("CARGO_PKG_VERSION"),
+            "crucible-harness-e2e-v1",
+            "crucible.reproduction-artifact.v2",
+            &content_address_bytes(b"mock-backend-source-v1"),
+            &content_address_bytes(b"mock-qemu-patch-series-v1"),
+            &crucible::SHMEM_ABI_VERSION.to_string(),
+            &crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string(),
+            &format!(
+                "{}.{}.{}",
+                crucible_api::RPC_PROTOCOL_MAJOR,
+                crucible_api::RPC_PROTOCOL_MINOR,
+                crucible_api::RPC_PROTOCOL_PATCH
+            ),
+            crucible_api::RPC_PROTOCOL_BUILD,
+            "simdouble-mock-plugin-abi",
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "scenario",
+            "scenario_def",
+            "process-replay-to.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "component",
+            "scenario_def",
+            "process-replay-to.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "component",
+                "other",
+                &format!("decision-{}-payload", decision.sequence),
+                &decision.payload_digest,
+                &format!("cas:{}", decision.payload_digest),
+                "application/vnd.crucible.recorded-decision-payload+text",
+                &decision.payload.len().to_string(),
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "payload",
+                &decision.payload_digest,
+                &hex_bytes(decision.payload.as_bytes()),
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &[
+            "schedule",
+            &replay_to_savepoint_schedule_digest(&decisions),
+            &decisions.len().to_string(),
+        ],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.node,
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &[
+            "fingerprint",
+            "0",
+            &content_address_bytes(b"process-replay-to"),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "sampling",
+            "every-fingerprint-sample",
+            "final",
+            "1",
+            "execution-fingerprint-stream",
+        ],
+    );
+    Ok(text)
+}
+
+fn replay_to_savepoint_decision_fixtures(
+    schedule: &crucible::Schedule,
+) -> Vec<ReplayToSavepointDecisionFixture> {
+    schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| {
+            let payload = format!("{decision:?}");
+            let kind = match decision {
+                crucible::Decision::DeliveryOrder(_) => "delivery-order",
+                crucible::Decision::FaultFires(_) => "fault-fires",
+                crucible::Decision::RngDraw(_) => "rng-draw",
+                crucible::Decision::Override(_) => "override",
+                crucible::Decision::Preemption(_) => "preemption",
+                crucible::Decision::AppRandom(_) => "app-random",
+                crucible::Decision::ControlFault(_) => "control-fault",
+            };
+            ReplayToSavepointDecisionFixture {
+                sequence: index as u64,
+                virtual_time_ticks: index as u64 + 1,
+                node: String::from("search"),
+                kind: kind.to_owned(),
+                payload_digest: content_address_bytes(payload.as_bytes()),
+                payload,
+            }
+        })
+        .collect()
+}
+
+fn replay_to_savepoint_schedule_digest(decisions: &[ReplayToSavepointDecisionFixture]) -> String {
+    let mut material = String::new();
+    for decision in decisions {
+        artifact_line(
+            &mut material,
+            &[
+                "decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.node,
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    content_address_bytes(material.as_bytes())
+}
+
+fn savepoint_handle_text(
+    form: &crucible::ScenarioDefForm,
+    schedule: &crucible::Schedule,
+    checkpoint: &crucible::Checkpoint,
+) -> Result<String, Box<dyn Error>> {
+    let scenario = form.scenario_def();
+    let scenario_payload = form.to_compact_binary();
+    let schedule_payload = schedule.to_compact_binary();
+    let mut text = String::new();
+    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v2"]);
+    artifact_line(&mut text, &["label", "process-replay-to"]);
+    artifact_line(
+        &mut text,
+        &[
+            "checkpoint",
+            &crucible::ContentAddressedBlobRef::from_hash(checkpoint.id).to_uri(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &["scenario", &scenario.id().to_hex(), "process-replay-to.scn"],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "scenario-payload",
+            &content_address_bytes(&scenario_payload),
+            &hex_bytes(&scenario_payload),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "schedule-payload",
+            &content_address_bytes(&schedule_payload),
+            &hex_bytes(&schedule_payload),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &["frontier", &checkpoint.virtual_time.ticks.to_string()],
+    );
+    artifact_line(&mut text, &["at", "quiescence"]);
+    artifact_line(&mut text, &["terminal-condition", "quiescence"]);
+    artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
+    artifact_line(&mut text, &["oracle", "fat==thin-passed"]);
+    artifact_line(
+        &mut text,
+        &[
+            "canonical-log",
+            &content_address_bytes(b"process-replay-to-canonical-log"),
+        ],
+    );
+    Ok(text)
+}
+
+fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
+    format!(
+        "scenario_id={}\nseed={}\napp_random_draw_cap={}\n",
+        scenario.id().to_hex(),
+        scenario.seed().to_hex(),
+        scenario.app_random_draw_cap()
+    )
+    .into_bytes()
+}
+
+fn content_address_bytes(bytes: &[u8]) -> String {
+    format!("crucible-hash:{}", hex_bytes(&stable_digest(bytes)))
+}
+
+fn stable_digest(material: &[u8]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    for lane in 0..4 {
+        let mut state = 0xcbf2_9ce4_8422_2325u64 ^ lane;
+        for byte in b"crucible.reproduction.hash.v1"
+            .iter()
+            .copied()
+            .chain([0xff])
+            .chain(material.iter().copied())
+        {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            state ^= state.rotate_left(17);
+        }
+        output[lane as usize * 8..lane as usize * 8 + 8].copy_from_slice(&state.to_be_bytes());
+    }
+    output
+}
+
+fn artifact_line(text: &mut String, fields: &[&str]) {
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            text.push('\t');
+        }
+        text.push_str(&escape_artifact_field(field));
+    }
+    text.push('\n');
+}
+
+fn escape_artifact_field(value: &str) -> String {
+    let mut escaped = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'%' => escaped.push_str("%25"),
+            b'\t' => escaped.push_str("%09"),
+            b'\n' => escaped.push_str("%0A"),
+            b'\r' => escaped.push_str("%0D"),
+            _ => escaped.push(char::from(byte)),
+        }
+    }
+    escaped
+}
+
 fn single_reproduction_artifact(artifact_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let mut paths = fs::read_dir(artifact_dir)?
         .filter_map(|entry| {
@@ -613,6 +1014,16 @@ fn unescape_artifact_field(value: &str) -> Result<String, Box<dyn Error>> {
         }
     }
     Ok(output)
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, Box<dyn Error>> {

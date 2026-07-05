@@ -63,7 +63,11 @@
       }
       {
         label = "process replay check progress";
-        needle = "process-tests real-binary\n  `replay --check` success/mismatch JSONL output";
+        needle = "process-tests real-binary\n  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`";
+      }
+      {
+        label = "process replay to progress";
+        needle = "target-validation JSONL output with replay records plus `final_outcome`";
       }
       {
         label = "replay identity before store progress";
@@ -85,7 +89,11 @@
       }
       {
         label = "phase5 process replay check progress";
-        needle = "process-level\n  `replay --check` success/mismatch JSONL coverage";
+        needle = "process-level\n  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`";
+      }
+      {
+        label = "phase5 process replay to progress";
+        needle = "target-validation JSONL coverage with replay records plus `final_outcome`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -323,6 +331,30 @@
         label = "process replay check mismatch status assertion";
         needle = "status=mismatch";
       }
+      {
+        label = "process replay to JSONL regression";
+        needle = "cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome";
+      }
+      {
+        label = "process replay to record assertion";
+        needle = "\"replay_to_savepoint\"";
+      }
+      {
+        label = "process replay to target validation assertion";
+        needle = "status=target-validated";
+      }
+      {
+        label = "process replay to materialization assertion";
+        needle = "materialization=model-temporal-graph";
+      }
+      {
+        label = "process replay to unified operation assertion";
+        needle = "unified_operation=replay";
+      }
+      {
+        label = "process replay to human text forbidden assertion";
+        needle = "assert!(!stdout.contains(\"crucible: replay --to\"));";
+      }
     ]
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
       {
@@ -443,6 +475,13 @@ in
               -p crucible-cli \
               cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
+              cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome \
+              -- --test-threads=1
           '';
         }
         {
@@ -459,7 +498,7 @@ in
             replay_to_schedule_prefix=typed-payload-backed
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
-            replay_process=check-jsonl-success-mismatch
+            replay_process=check-jsonl-success-mismatch,to-savepoint-jsonl-target-validation
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

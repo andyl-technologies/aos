@@ -483,8 +483,9 @@ long-held locks.
   selected local DAG store, declared DAG-store reference validation against
   inline payloads, byte-identical canonical-log comparison, exit 1 on mismatch
   with deterministic first-difference byte localization, process-level
-  `replay --check` success/mismatch JSONL coverage with replay records plus
-  `final_outcome`, artifact-to-artifact
+  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`
+  target-validation JSONL coverage with replay records plus `final_outcome`,
+  artifact-to-artifact
   `--bisect <other-artifact>` over validated matching replay inputs with
   canonical-log/fingerprint divergence localization, and `replay --to
   <SAVEPOINT>` validation for savepoint handles or local DAG-store checkpoint
@@ -495,9 +496,8 @@ long-held locks.
   materialization with runtime/reduced-state, single-VM-fingerprint, and
   fat/thin checkpoint agreement, plus mock host-profile machine-independent
   replay coverage in the same gate for quiet single-core vs loaded many-core
-  artifact reproduction; full closure waits for process-backed
-  replay-to-savepoint and real-backend/fleet machine-independent replay
-  coverage.
+  artifact reproduction; full closure waits for real-backend/fleet
+  machine-independent replay coverage.
   `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
   currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,

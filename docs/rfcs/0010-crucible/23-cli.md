@@ -1124,8 +1124,9 @@ branch on the verdict without parsing output:
   DAG-store references against inline payloads, reconstructs the replay
   canonical log, returns exit 1 on byte mismatch with deterministic
   first-difference byte localization, process-tests real-binary
-  `replay --check` success/mismatch JSONL output with replay records plus
-  `final_outcome`, and supports artifact-to-artifact
+  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`
+  target-validation JSONL output with replay records plus `final_outcome`, and
+  supports artifact-to-artifact
   `--bisect <other-artifact>` by validating both artifacts, requiring matching
   replay inputs, localizing the first differing canonical-log/fingerprint
   coordinate, and returning the replay-check failure exit path on divergence.
@@ -1142,8 +1143,8 @@ branch on the verdict without parsing output:
   checkpoints agree, and wires mock host-profile machine-independent replay into
   the replay gate by reproducing the same artifact across quiet single-core and
   loaded many-core profiles with identical canonical log, fingerprint, and
-  artifact digest. Full closure remains blocked on process-backed
-  replay-to-savepoint and real-backend/fleet machine-independent replay coverage.
+  artifact digest. Full closure remains blocked on real-backend/fleet
+  machine-independent replay coverage.
 - [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
