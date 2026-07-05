@@ -276,6 +276,7 @@ pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
     source_card_table: GcCardTable,
     remembered_set_refreshes: usize,
     next_remembered_set: RememberedSet,
+    placement_plan: MinorGcDestinationPlacementPlan,
     forwarding_slots: Vec<MinorGcForwardingSlot>,
     object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
     writebacks: AllocationCollectorPollReferenceWritebackPlan,
@@ -292,6 +293,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
         source_card_table: GcCardTable,
         remembered_set_refreshes: usize,
         next_remembered_set: RememberedSet,
+        placement_plan: MinorGcDestinationPlacementPlan,
         forwarding_slots: Vec<MinorGcForwardingSlot>,
         object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
         writebacks: AllocationCollectorPollReferenceWritebackPlan,
@@ -306,6 +308,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            placement_plan,
             forwarding_slots,
             object_body_plan,
             writebacks,
@@ -373,6 +376,31 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
     /// Returns the number of remembered edges in the rebuilt next-epoch set.
     pub fn next_remembered_set_edges(&self) -> usize {
         self.next_remembered_set.len()
+    }
+
+    /// Returns the destination placement metadata paired with relocation planning.
+    pub const fn placement_plan(&self) -> &MinorGcDestinationPlacementPlan {
+        &self.placement_plan
+    }
+
+    /// Returns the number of destination placements in the plan.
+    pub fn destination_placements(&self) -> usize {
+        self.placement_plan.len()
+    }
+
+    /// Returns reserved bytes needed for the next nursery destination space.
+    pub const fn nursery_reserved_bytes(&self) -> usize {
+        self.placement_plan.nursery_reserved_bytes()
+    }
+
+    /// Returns reserved bytes needed for old-generation destination space.
+    pub const fn old_reserved_bytes(&self) -> usize {
+        self.placement_plan.old_reserved_bytes()
+    }
+
+    /// Returns total reserved destination bytes, including alignment padding.
+    pub const fn total_reserved_bytes(&self) -> usize {
+        self.placement_plan.total_reserved_bytes()
     }
 
     /// Returns the filled forwarding slots for relocated source objects.
@@ -1425,6 +1453,7 @@ impl TreeWalk {
         let writebacks = self
             .heap
             .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
+        let placement_plan = destinations.into_placement_plan();
         Ok(TreeWalkSafepointMinorGcReferenceWritebackPlan::new(
             poll,
             scanned_roots,
@@ -1435,6 +1464,7 @@ impl TreeWalk {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            placement_plan,
             forwarding_slots,
             object_body_plan,
             writebacks,
@@ -1562,6 +1592,7 @@ impl TreeWalk {
         let writebacks = self
             .heap
             .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
+        let placement_plan = destinations.into_placement_plan();
         Ok(TreeWalkSafepointMinorGcReferenceWritebackPlan::new(
             scan_poll,
             scanned_roots,
@@ -1572,6 +1603,7 @@ impl TreeWalk {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            placement_plan,
             forwarding_slots,
             object_body_plan,
             writebacks,

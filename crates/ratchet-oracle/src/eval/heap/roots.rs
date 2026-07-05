@@ -1450,6 +1450,11 @@ impl AllocationCollectorPollMinorGcRelocationDestinations {
         &self.placement_plan
     }
 
+    /// Consumes this wrapper and returns the aligned destination placements.
+    pub fn into_placement_plan(self) -> MinorGcDestinationPlacementPlan {
+        self.placement_plan
+    }
+
     /// Returns the materialized relocation-destination plan.
     pub const fn relocation_destinations(&self) -> &MinorGcRelocationDestinationPlan {
         &self.relocation_destinations

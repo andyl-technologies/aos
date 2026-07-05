@@ -6541,6 +6541,18 @@ and helps the oracle directly.
       management remain open; reserved records carry placeholder bodies and are
       only scratch evaluator records consumed by the existing object
       body/generation writers before publication.
+- [x] Current tree-walk reference-writeback placement reporting precursor:
+      `TreeWalkSafepointMinorGcReferenceWritebackPlan` now retains the
+      `MinorGcDestinationPlacementPlan` produced by either explicit-base
+      relocation planning or reserved-destination relocation planning. The plan
+      exposes the placement count plus nursery, old, and total reserved-byte
+      totals alongside the existing survivor/reference/writeback counts, filled
+      forwarding slots, object-copy plan, and root/heap-field writeback plan.
+      Unit tests cover a mixed copied-young root/field plan and a reserved
+      promoted destination plan. This remains read-only planning metadata: it
+      does not reserve semispace storage, choose live collector bases, mutate
+      destination records, publish roots or fields, write ABI object headers, or
+      dispatch Tier B.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot used by the poll plan and composes the existing lower-level
@@ -7012,6 +7024,10 @@ and helps the oracle directly.
       card tables unchanged while apply consumes the reserved destination records
       through the existing writer, including caller-owned primop arguments. The
       plan now carries filled forwarding slots, and
+      `TreeWalkSafepointMinorGcReferenceWritebackPlan` also retains the
+      destination placement plan from explicit or reserved relocation planning
+      so callers can inspect placement count plus nursery, old, and total
+      reserved destination bytes before a later semispace/storage bridge.
       `TreeWalk::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
       validates those slots against the live heap, stages live heap publication,
       writes supported roots before forwarding install, and then commits
@@ -7047,7 +7063,8 @@ and helps the oracle directly.
       card-table rejection before live mutation, reserved-destination
       forwarding-slot installation, occupied forwarding-slot rejection before
       live mutation, forwarding-aware frame-borrow rejection without forwarding
-      install, poll-derived reserved forwarding wrappers with and without
+      install, explicit copied-young and reserved promoted placement accounting,
+      poll-derived reserved forwarding wrappers with and without
       primop arguments, current-poll reserved forwarding wrappers with and
       without primop arguments, missing current-poll rejection before
       reservation, and a dirty permanent-list

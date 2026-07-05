@@ -1558,6 +1558,17 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     assert_eq!(plan.scanned_objects(), 2);
     assert_eq!(plan.survivors(), 1);
     assert_eq!(plan.reference_slots(), 5);
+    assert_eq!(plan.destination_placements(), 1);
+    assert_eq!(
+        plan.placement_plan().placements()[0].destination_generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        plan.nursery_reserved_bytes(),
+        plan.object_body_plan().requests()[0].size_bytes()
+    );
+    assert_eq!(plan.old_reserved_bytes(), 0);
+    assert_eq!(plan.total_reserved_bytes(), plan.nursery_reserved_bytes());
     assert_eq!(plan.source_remembered_set().epoch().value(), 0);
     assert_eq!(plan.source_remembered_set_edges(), 1);
     assert_eq!(
@@ -2340,6 +2351,58 @@ fn reference_writebacks_apply_reserved_worker_poll_switch_and_promote_destinatio
 }
 
 #[test]
+fn reference_writebacks_reserved_destination_plan_reports_promoted_placement_bytes() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let child_address = gc_address(child);
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a worker collector poll");
+    let records_before = evaluator.heap().len();
+    let value_stack = vec![child];
+
+    let plan = evaluator
+        .collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(0),
+            &value_stack,
+        )
+        .expect("reserved promoted destination reference writeback plan derives");
+
+    assert_ne!(plan.poll(), poll);
+    assert_eq!(evaluator.heap().len(), records_before + 1);
+    assert_eq!(plan.scanned_roots(), 1);
+    assert_eq!(plan.scanned_objects(), 1);
+    assert_eq!(plan.survivors(), 1);
+    assert_eq!(plan.reference_slots(), 1);
+    assert_eq!(plan.destination_placements(), 1);
+    assert_eq!(
+        plan.placement_plan().placements()[0].source(),
+        child_address
+    );
+    assert_eq!(
+        plan.placement_plan().placements()[0].destination_generation(),
+        HeapGeneration::Old
+    );
+    assert_eq!(plan.nursery_reserved_bytes(), 0);
+    assert_eq!(
+        plan.old_reserved_bytes(),
+        plan.object_body_plan().requests()[0].size_bytes()
+    );
+    assert_eq!(plan.total_reserved_bytes(), plan.old_reserved_bytes());
+    let request = plan.object_body_plan().requests()[0];
+    assert_eq!(request.source(), child_address);
+    assert_eq!(request.action(), MinorGcSurvivorAction::PromoteToOld);
+    assert_eq!(request.destination_generation(), HeapGeneration::Old);
+}
+
+#[test]
 fn reference_writebacks_validate_reserved_destination_without_live_mutation() {
     let (mut evaluator, child, parent, poll, value_stack) =
         tree_walk_with_mixed_root_and_heap_field_writebacks();
@@ -2435,6 +2498,17 @@ fn reference_writebacks_reserved_destination_plan_uses_unbound_placeholder_body(
     assert_eq!(plan.scanned_objects(), 2);
     assert_eq!(plan.survivors(), 1);
     assert_eq!(plan.reference_slots(), 5);
+    assert_eq!(plan.destination_placements(), 1);
+    assert_eq!(
+        plan.placement_plan().placements()[0].destination_generation(),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        plan.nursery_reserved_bytes(),
+        plan.object_body_plan().requests()[0].size_bytes()
+    );
+    assert_eq!(plan.old_reserved_bytes(), 0);
+    assert_eq!(plan.total_reserved_bytes(), plan.nursery_reserved_bytes());
     assert_eq!(plan.object_bodies(), 1);
     let request = plan.object_body_plan().requests()[0];
     assert_eq!(request.source(), child_address);
