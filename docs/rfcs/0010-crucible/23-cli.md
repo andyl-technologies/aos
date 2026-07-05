@@ -1061,10 +1061,12 @@ branch on the verdict without parsing output:
   JSONL output and handle export through marker-resolved QEMU/plugin identity,
   routes remote-daemon quiescence and virtual-time saves over the RPC control
   API with replay-oracle validation, routes remote selector proof queries over
-  RPC breakpoint-firing payloads, and fails undeclared property selectors and
-  marker selectors without a white-box source. Full closure remains blocked on
-  backend-executed real-QEMU savepoint coverage and remote arbitrary-scenario
-  selector-source transfer.
+  RPC breakpoint-firing payloads, transfers arbitrary scenario selector sources
+  to remote daemons as form-bearing inline `CreateSession` RPC payloads, derives
+  remote guest-marker white-box policy from the transferred source form, and
+  fails undeclared property selectors and marker selectors without a white-box
+  source. Full closure remains blocked on backend-executed real-QEMU savepoint
+  coverage.
 - [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.

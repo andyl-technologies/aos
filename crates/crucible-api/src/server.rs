@@ -112,7 +112,7 @@ pub async fn serve_lifecycle_http2<L, F>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     serve_lifecycle_http2_with_mode(listener, control_plane, LifecycleServerMode::read_write())
         .await
@@ -134,7 +134,7 @@ pub async fn serve_lifecycle_http2_with_mode<L, F>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     serve_lifecycle_http2_with_mode_until_shutdown(
         listener,
@@ -163,7 +163,7 @@ pub async fn serve_lifecycle_http2_with_mode_until_shutdown<L, F, S>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -183,7 +183,7 @@ where
 fn lifecycle_router<L, F>(state: Http2LifecycleState<L, F>) -> Router
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     Router::new()
         .route("/crucible.rpc/hello", post(handle_rpc_hello::<L, F>))
@@ -230,7 +230,7 @@ async fn handle_rpc_hello<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -260,7 +260,7 @@ async fn handle_list_scenarios<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -279,7 +279,7 @@ async fn handle_create_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -311,7 +311,7 @@ async fn handle_resume_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -343,7 +343,7 @@ async fn handle_list_sessions<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -362,7 +362,7 @@ async fn handle_destroy_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -394,7 +394,7 @@ async fn handle_get_reproduction<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -422,7 +422,7 @@ async fn handle_control_attach<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -457,7 +457,7 @@ async fn handle_control_send<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     handle_streaming_send(state, request).await
 }
@@ -468,7 +468,7 @@ async fn handle_watch_attach<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -500,7 +500,7 @@ async fn handle_send_command<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     handle_streaming_send(state, request).await
 }
@@ -511,7 +511,7 @@ async fn handle_streaming_send<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -585,7 +585,40 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let seed = parse_seed_line(lines.next(), "seed=")?;
+            let next = lines.next();
+            let (scenario_form, seed_line) = if let Some(line) = next {
+                if line.starts_with("scenario-payload=") {
+                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
+                    let scenario_def = scenario.scenario_def();
+                    if scenario_def.id() != id {
+                        return Err(format!(
+                            "scenario payload id {} did not match request scenario id {}",
+                            scenario_def.id().to_hex(),
+                            id.to_hex()
+                        ));
+                    }
+                    if scenario.seed() != scenario_seed {
+                        return Err(format!(
+                            "scenario payload seed {} did not match request scenario seed {}",
+                            scenario.seed().to_hex(),
+                            scenario_seed.to_hex()
+                        ));
+                    }
+                    if scenario.app_random_draw_cap() != app_random_draw_cap {
+                        return Err(format!(
+                            "scenario payload app-random draw cap {} did not match request cap {}",
+                            scenario.app_random_draw_cap(),
+                            app_random_draw_cap
+                        ));
+                    }
+                    (Some(scenario), lines.next())
+                } else {
+                    (None, Some(line))
+                }
+            } else {
+                (None, None)
+            };
+            let seed = parse_seed_line(seed_line, "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
             let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
@@ -593,7 +626,12 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
                 scenario_seed,
                 app_random_draw_cap,
             );
-            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
+            let request = if let Some(scenario_form) = scenario_form {
+                CreateSessionRequest::inline_form(scenario_form, seed)
+            } else {
+                CreateSessionRequest::inline(scenario, seed)
+            };
+            Ok(request.with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
@@ -1632,6 +1670,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             &error.to_string(),
         ),
         LifecycleApiError::ScenarioSeedMismatch { .. }
+        | LifecycleApiError::InlineScenarioIdentityMismatch { .. }
         | LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
@@ -1976,7 +2015,7 @@ mod tests {
 
     type TestState = Http2LifecycleState<
         QuiescentLifecycleLoop,
-        fn(&ScenarioDef, Seed) -> QuiescentLifecycleLoop,
+        crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
     >;
 
     fn quiescent_loop(_: &ScenarioDef, _: Seed) -> QuiescentLifecycleLoop {

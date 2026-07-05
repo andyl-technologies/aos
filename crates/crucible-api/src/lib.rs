@@ -53,7 +53,7 @@ pub use lifecycle::{
     DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
+    LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
     ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource,
     ScenarioSummary, SessionId, SessionRef, SessionSummary,

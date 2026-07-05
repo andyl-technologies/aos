@@ -1341,7 +1341,10 @@ fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
             push_line(&mut output, "source", "scenario-ref");
             push_line(&mut output, "name", name);
         }
-        CreateSessionSource::Inline { scenario } => {
+        CreateSessionSource::Inline {
+            scenario,
+            scenario_form,
+        } => {
             push_line(&mut output, "source", "inline");
             push_line(&mut output, "scenario-id", &scenario.id().to_hex());
             push_line(&mut output, "scenario-seed", &scenario.seed().to_hex());
@@ -1350,6 +1353,13 @@ fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
                 "app-random-draw-cap",
                 &scenario.app_random_draw_cap().to_string(),
             );
+            if let Some(scenario_form) = scenario_form {
+                push_line(
+                    &mut output,
+                    "scenario-payload",
+                    &hex_encode(&scenario_form.to_compact_binary()),
+                );
+            }
         }
     }
     push_line(&mut output, "seed", &request.seed.to_hex());

@@ -9787,8 +9787,9 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
-        .with_start_paused(true);
+    let request =
+        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
+            .with_start_paused(true);
     let created = client
         .create_session(request)
         .await
@@ -10015,8 +10016,9 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
-        .with_start_paused(true);
+    let request =
+        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
+            .with_start_paused(true);
     let created = client
         .create_session(request)
         .await
@@ -10857,8 +10859,9 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_def().clone(), seed)
-        .with_start_paused(true);
+    let request =
+        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
+            .with_start_paused(true);
     let created = client
         .create_session(request)
         .await
@@ -17295,19 +17298,10 @@ finding.0.detail=synthetic signed finding evidence
         Ok(address.to_string())
     }
 
-    fn spawn_save_recording_lifecycle_server(
-        scenario_form: &::crucible::ScenarioDefForm,
-    ) -> Result<String, Box<dyn Error>> {
+    fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
-        let sources = SaveRecordingSources::from_scenario_form(scenario_form);
-        let white_box_policies = scenario_form
-            .world()
-            .nodes()
-            .iter()
-            .map(|node| (node.id.clone(), node.white_box))
-            .collect::<BTreeMap<_, _>>();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -17321,14 +17315,17 @@ finding.0.detail=synthetic signed finding evidence
                     Ok(listener) => listener,
                     Err(_) => return,
                 };
-                let control_plane = LifecycleControlPlane::new(
+                let control_plane = LifecycleControlPlane::new_with_source_factory(
                     "crucible-cli-save-selector-test-daemon",
                     Vec::new(),
-                    move |_scenario: &crucible::ScenarioDef, _seed| {
-                        SaveRecordingLifecycleLoop::new(sources.clone())
+                    move |_scenario: &crucible::ScenarioDef, scenario_form, _seed| {
+                        let scenario_form = scenario_form
+                            .expect("save selector daemon requires inline scenario source");
+                        SaveRecordingLifecycleLoop::new(SaveRecordingSources::from_scenario_form(
+                            scenario_form,
+                        ))
                     },
-                )
-                .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
+                );
                 let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
             });
         });
@@ -19511,8 +19508,7 @@ finding.0.detail=synthetic signed finding evidence
     fn cli_save_workflow_executes_remote_daemon_selector_savepoint() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
         let scenario = write_property_selector_scenario(&temp)?;
-        let scenario_form = property_selector_scenario_form()?;
-        let daemon = spawn_save_recording_lifecycle_server(&scenario_form)?;
+        let daemon = spawn_save_recording_lifecycle_server()?;
         let out = temp.path().join("remote-selector.crucible-savepoint");
         let cli = Cli::parse_from([
             String::from("crucible"),
@@ -19540,7 +19536,7 @@ finding.0.detail=synthetic signed finding evidence
         let marker_form = marker_selector_scenario_form(::crucible::WhiteBoxPolicy::Enabled)?;
         let marker_scenario = temp.path().join("remote-marker-selector-scenario.toml");
         fs::write(&marker_scenario, marker_form.to_canonical_toml()?)?;
-        let marker_daemon = spawn_save_recording_lifecycle_server(&marker_form)?;
+        let marker_daemon = spawn_save_recording_lifecycle_server()?;
         let marker_out = temp
             .path()
             .join("remote-marker-selector.crucible-savepoint");
@@ -23855,8 +23851,8 @@ quiescent = false
             |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
         );
         let client = InProcessLifecycleClient::new(control_plane);
-        let request = CreateSessionRequest::inline(
-            run_plan.scenario.scenario_def().clone(),
+        let request = CreateSessionRequest::inline_form(
+            run_plan.scenario.scenario_form().clone(),
             run_plan.scenario.scenario_def().seed(),
         )
         .with_start_paused(true);

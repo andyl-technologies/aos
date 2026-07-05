@@ -438,10 +438,12 @@ long-held locks.
   export/oracle workflow with resolved QEMU/plugin identity metadata, routes
   remote-daemon quiescence and virtual-time saves over the RPC control API and
   validates them with replay-oracle evidence, routes remote selector proof
-  queries over RPC breakpoint-firing payloads, and fails undeclared property
-  selectors and marker selectors without a white-box source; full closure waits
-  for backend-executed real-QEMU savepoint coverage and remote
-  arbitrary-scenario selector-source transfer. The same gate now also
+  queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
+  selector sources to remote daemons as form-bearing inline `CreateSession` RPC
+  payloads, derives remote guest-marker white-box policy from the transferred
+  source form, and fails undeclared property selectors and marker selectors
+  without a white-box source; full closure waits for backend-executed real-QEMU
+  savepoint coverage. The same gate now also
   process-tests real-binary `save --backend qemu` JSONL output and handle export
   through marker-resolved QEMU/plugin identity.
   `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently

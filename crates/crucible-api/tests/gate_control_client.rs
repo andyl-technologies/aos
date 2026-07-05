@@ -21,17 +21,17 @@ use crucible_api::{
     ControlWireModel, CreateSessionRequest, CreateSessionResponse, DestroySessionRequest,
     DestroySessionResponse, EventLogCursor, GOLDEN_RPC_VECTORS, GetReproductionRequest,
     GetReproductionResponse, HelloRequest, InProcessControlClient, InProcessLifecycleClient,
-    InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, LifecycleServerMode,
-    ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue, OpenSetEventEnvelope,
-    OpenSetEventSource, OpenSetEventTime, OpenSetPayload, QuiescentLifecycleLoop,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeSessionRequest,
-    ResumeSessionResponse, RpcControlClient, RpcEndpoint, RpcStatusCode, RpcTransportProtocol,
-    ScenarioCatalogEntry, ScenarioSummary, SendRequest, SendResponse, SessionId, SessionRef,
-    SessionSummary, StateUpdate, StreamingApiError, StreamingCapabilitySet, StreamingEventFrame,
-    StreamingFrame, StreamingStateUpdateFrame, WatchStream, assert_shared_wire_model,
-    encode_rpc_hello_request, encode_rpc_hello_response, open_set_command_kind,
-    rpc_status_code_wire_name, serve_lifecycle_http2,
+    InProcessStreamingSession, LifecycleApiError, LifecycleControlPlane, LifecycleLoopFactory,
+    LifecycleServerMode, ListScenariosResponse, ListSessionsResponse, OpenSetAttributeValue,
+    OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime, OpenSetPayload,
+    QuiescentLifecycleLoop, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION,
+    ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
+    ResumeSessionRequest, ResumeSessionResponse, RpcControlClient, RpcEndpoint, RpcStatusCode,
+    RpcTransportProtocol, ScenarioCatalogEntry, ScenarioSummary, SendRequest, SendResponse,
+    SessionId, SessionRef, SessionSummary, StateUpdate, StreamingApiError, StreamingCapabilitySet,
+    StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame, WatchStream,
+    assert_shared_wire_model, encode_rpc_hello_request, encode_rpc_hello_response,
+    open_set_command_kind, rpc_status_code_wire_name, serve_lifecycle_http2,
     serve_lifecycle_http2_with_mode_until_shutdown, session_command_for_open_set_command_kind,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -1353,7 +1353,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=3.0.0+crucible-rpc-abi-v3\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=4.0.0+crucible-rpc-abi-v4\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1386,6 +1386,30 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         "create-session-inline-request",
         &create_inline,
         &create_inline,
+    );
+
+    let inline_form = resume_session_request(80).scenario;
+    let inline_form_scenario = inline_form.scenario_def();
+    let create_inline_form = format!(
+        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap={}\nscenario-payload={}\nseed={seed_hex}\nstart-paused=true\n",
+        inline_form_scenario.id().to_hex(),
+        inline_form.seed().to_hex(),
+        inline_form.app_random_draw_cap(),
+        hex_encode(&inline_form.to_compact_binary()),
+    );
+    assert!(
+        create_inline_form.contains("\nscenario-payload="),
+        "form-bearing inline create-session must transfer source payload"
+    );
+    assert_eq!(
+        parse_create_session_request(create_inline_form.as_bytes())
+            .unwrap_or_else(|error| panic!("inline form request should parse: {error}")),
+        CreateSessionRequest::inline_form(inline_form, session.seed),
+    );
+    assert_rpc_snapshot(
+        "create-session-inline-form-request",
+        &create_inline_form,
+        &create_inline_form,
     );
 
     let resume_request = resume_session_request(78);
@@ -1490,7 +1514,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=3.0.0+crucible-rpc-abi-v3\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=4.0.0+crucible-rpc-abi-v4\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1588,7 +1612,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=3.0.0+crucible-rpc-abi-v3\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=4.0.0+crucible-rpc-abi-v4\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
@@ -2068,6 +2092,30 @@ where
     assert!(inline_destroyed.stopped);
     report.lifecycle.push("create-session-inline");
 
+    let inline_form = resume_session_request(13_015).scenario;
+    let inline_form_created = client
+        .create_session(CreateSessionRequest::inline_form(
+            inline_form.clone(),
+            inline_form.seed(),
+        ))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{backend}: inline form CreateSession should succeed: {error}")
+        });
+    assert_eq!(inline_form_created.state, LiveStateKind::Paused);
+    assert_eq!(inline_form_created.session.seed, inline_form.seed());
+    let inline_form_destroyed = client
+        .destroy_session(
+            DestroySessionRequest::new(inline_form_created.session)
+                .with_expected_epoch(inline_form_created.session.epoch),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{backend}: inline form DestroySession should succeed: {error}")
+        });
+    assert!(inline_form_destroyed.stopped);
+    report.lifecycle.push("create-session-inline-form");
+
     drop(control);
     drop(watch);
 
@@ -2170,10 +2218,10 @@ fn assert_reference_conformance_equivalent(
 fn reference_lifecycle_control_plane<L, F>(
     server_name: &'static str,
     loop_factory: F,
-) -> LifecycleControlPlane<L, F>
+) -> LifecycleControlPlane<L, LifecycleLoopFactory<L>>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L,
+    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
 {
     LifecycleControlPlane::new(
         server_name,
@@ -3212,7 +3260,7 @@ fn golden_vector_bytes(name: &str) -> &'static [u8] {
 }
 
 type TestLifecyclePlane =
-    LifecycleControlPlane<ServerQuantumLoop, fn(&ScenarioDef, Seed) -> ServerQuantumLoop>;
+    LifecycleControlPlane<ServerQuantumLoop, LifecycleLoopFactory<ServerQuantumLoop>>;
 
 fn test_loop_factory(_: &ScenarioDef, _: Seed) -> ServerQuantumLoop {
     ServerQuantumLoop { quanta: 0 }
@@ -3840,7 +3888,8 @@ fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Respons
             "session-limit",
             &error.to_string(),
         ),
-        LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
+        LifecycleApiError::ScenarioSeedMismatch { .. }
+        | LifecycleApiError::InlineScenarioIdentityMismatch { .. } => typed_rpc_status_response(
             axum::http::StatusCode::BAD_REQUEST,
             crucible_api::RpcStatusCode::InvalidArgument,
             "invalid-argument",
@@ -4104,7 +4153,40 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let seed = parse_seed_line(lines.next(), "seed=")?;
+            let next = lines.next();
+            let (scenario_form, seed_line) = if let Some(line) = next {
+                if line.starts_with("scenario-payload=") {
+                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
+                    let scenario_def = scenario.scenario_def();
+                    if scenario_def.id() != id {
+                        return Err(format!(
+                            "scenario payload id {} did not match request scenario id {}",
+                            scenario_def.id().to_hex(),
+                            id.to_hex()
+                        ));
+                    }
+                    if scenario.seed() != scenario_seed {
+                        return Err(format!(
+                            "scenario payload seed {} did not match request scenario seed {}",
+                            scenario.seed().to_hex(),
+                            scenario_seed.to_hex()
+                        ));
+                    }
+                    if scenario.app_random_draw_cap() != app_random_draw_cap {
+                        return Err(format!(
+                            "scenario payload app-random draw cap {} did not match request cap {}",
+                            scenario.app_random_draw_cap(),
+                            app_random_draw_cap
+                        ));
+                    }
+                    (Some(scenario), lines.next())
+                } else {
+                    (None, Some(line))
+                }
+            } else {
+                (None, None)
+            };
+            let seed = parse_seed_line(seed_line, "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
             let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
@@ -4112,7 +4194,12 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
                 scenario_seed,
                 app_random_draw_cap,
             );
-            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
+            let request = if let Some(scenario_form) = scenario_form {
+                CreateSessionRequest::inline_form(scenario_form, seed)
+            } else {
+                CreateSessionRequest::inline(scenario, seed)
+            };
+            Ok(request.with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }

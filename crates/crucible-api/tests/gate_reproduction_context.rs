@@ -2,13 +2,12 @@
 
 #![forbid(unsafe_code)]
 
-use crucible::{
-    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed, VirtualTime,
-};
+use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, SchedulerError, Seed, VirtualTime};
 use crucible_api::{
     AttachRequest, CommandResultStatus, CreateSessionRequest, DestroySessionRequest,
-    GetReproductionRequest, LifecycleApiError, LifecycleControlPlane, ReproductionCommandRecord,
-    ReproductionCommandResult, ScenarioCatalogEntry, SendRequest, SessionRef,
+    GetReproductionRequest, LifecycleApiError, LifecycleControlPlane, LifecycleLoopFactory,
+    ReproductionCommandRecord, ReproductionCommandResult, ScenarioCatalogEntry, SendRequest,
+    SessionRef,
 };
 use crucible_session::{LiveStateKind, SessionCommand, SessionCommandKind};
 
@@ -171,10 +170,7 @@ async fn drive_inject_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
 }
 
 async fn create_paused_session(
-    control_plane: &mut LifecycleControlPlane<
-        BoundaryLoop,
-        impl Fn(&ScenarioDef, Seed) -> BoundaryLoop,
-    >,
+    control_plane: &mut LifecycleControlPlane<BoundaryLoop, LifecycleLoopFactory<BoundaryLoop>>,
     seed: Seed,
 ) -> SessionRef {
     let created = control_plane
@@ -189,10 +185,7 @@ async fn create_paused_session(
 }
 
 async fn wait_for_reproduction_len(
-    control_plane: &LifecycleControlPlane<
-        BoundaryLoop,
-        impl Fn(&ScenarioDef, Seed) -> BoundaryLoop,
-    >,
+    control_plane: &LifecycleControlPlane<BoundaryLoop, LifecycleLoopFactory<BoundaryLoop>>,
     session: SessionRef,
     expected_len: usize,
 ) -> Vec<ReproductionCommandRecord> {
@@ -226,7 +219,7 @@ fn assert_pause_record(record: &ReproductionCommandRecord, at_sequence: u64) {
 }
 
 fn lifecycle_control_plane()
--> LifecycleControlPlane<BoundaryLoop, impl Fn(&ScenarioDef, Seed) -> BoundaryLoop> {
+-> LifecycleControlPlane<BoundaryLoop, LifecycleLoopFactory<BoundaryLoop>> {
     LifecycleControlPlane::new(
         "crucible-reproduction-context-test-server",
         vec![ScenarioCatalogEntry::from_canonical_material(
