@@ -1,6 +1,8 @@
 //! Tree-walk evaluator tests: derivation 3.
 
 use super::*;
+use crate::heap::HeapGeneration;
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
 
 #[test]
 fn derivation_strict_unions_input_hash_replacement_outputs() {
@@ -112,6 +114,151 @@ fn derivation_strict_result_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
+fn gc_stress_derivation_strict_result_strings_dispatch_with_registered_entry_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let drv_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+    )
+    .expect("drv store path parses");
+    let out_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x",
+    )
+    .expect("out store path parses");
+    let dev_path = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"cccccccccccccccccccccccccccccccc-x-dev",
+    )
+    .expect("dev store path parses");
+    let mut derivation = nix_compat::derivation::Derivation::default();
+    derivation.outputs.insert(
+        "out".to_owned(),
+        nix_compat::derivation::Output {
+            path: Some(out_path),
+            ca_hash: None,
+        },
+    );
+    derivation.outputs.insert(
+        "dev".to_owned(),
+        nix_compat::derivation::Output {
+            path: Some(dev_path),
+            ca_hash: None,
+        },
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_derivation_strict_result(
+                ir.root,
+                span,
+                &derivation,
+                &drv_path,
+                DerivationOutputResolution::StaticPaths,
+            )
+        })
+        .expect("derivation result attrs allocate under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating derivation result strings"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("attrs generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("derivation result is attrs");
+    assert_eq!(attrs.len(), 3);
+    assert!(attrs.iter_by_symbol().all(|entry| {
+        entry.value.tag() == ValueTag::String
+            && evaluator
+                .heap()
+                .generation(entry.value)
+                .is_ok_and(|generation| generation == HeapGeneration::Permanent)
+    }));
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("derivation result allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_derivation_strict_result_string_helper_rewrites_existing_entry_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let key = evaluator
+        .intern_builtin_attr_symbol(ir.root, b"previous", span)
+        .expect("entry key interns");
+    let previous = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("existing entry thunk allocates");
+    let mut entries = [AttrEntry::new(key, previous)];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .alloc_derivation_strict_result_string(
+            ir.root,
+            span,
+            &mut entries,
+            NixString::from_bytes(b"next".to_vec()),
+        )
+        .expect("derivation result string allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(
+        !entries[0].value.raw_eq(previous),
+        "existing entry root was not rewritten after the result-string safepoint"
+    );
+    assert_eq!(entries[0].value.tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(entries[0].value)
+            .expect("existing entry root generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("allocated result string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
 fn input_hash_replacement_fixture() -> (

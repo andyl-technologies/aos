@@ -3149,6 +3149,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       wrapper-routed for direct builtin calls and first-class primop-value
       calls, while public direct-root calls still skip dispatch when their
       required list arguments leave interned composite roots live.
+      `derivationStrict` result output and `drvPath` string allocations now
+      route through the wrapper; partially built result entries are registered
+      as transient roots around later result-string allocations, safe direct
+      result assembly dispatches, and public derivation calls can still skip
+      under the broader interned attr-root gate.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -3159,8 +3164,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       list/binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
-      `derivationStrict` result-attrset string assembly whose partially built
-      output entries are not yet registered roots, shared fetcher attrset
+      shared fetcher attrset
       out-path construction, persistent payload replay allocations,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
@@ -3220,6 +3224,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       while interned reflected-context attr roots block dispatch,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
+      direct `derivationStrict` result-string assembly relocating registered
+      transient roots while keeping partially built result entries registered
+      across later result-string allocations,
       static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string

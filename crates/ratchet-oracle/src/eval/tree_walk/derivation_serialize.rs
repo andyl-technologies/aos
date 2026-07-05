@@ -862,12 +862,12 @@ impl TreeWalk {
                 })?,
             )
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
-            let value = self
-                .heap
-                .alloc_string(NixString::new(output_path, context))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
+            let value = self.alloc_derivation_strict_result_string(
+                id,
+                span,
+                &mut entries,
+                NixString::new(output_path, context),
+            )?;
             let key = self.intern_builtin_attr_symbol(id, output_name.as_bytes(), span)?;
             entries.push(AttrEntry::new(key, value));
         }
@@ -878,10 +878,12 @@ impl TreeWalk {
             })?,
         )
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
-        let drv_path_value = self
-            .heap
-            .alloc_string(NixString::new(drv_path_bytes, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let drv_path_value = self.alloc_derivation_strict_result_string(
+            id,
+            span,
+            &mut entries,
+            NixString::new(drv_path_bytes, context),
+        )?;
         let drv_path_key = self.intern_builtin_attr_symbol(id, DRV_PATH_ATTR, span)?;
         entries.push(AttrEntry::new(drv_path_key, drv_path_value));
 
@@ -895,5 +897,39 @@ impl TreeWalk {
             attrs,
             AttrSetConstruction::Dynamic { len },
         )
+    }
+
+    pub(super) fn alloc_derivation_strict_result_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &mut [AttrEntry],
+        string: NixString,
+    ) -> Result<Value, TreeWalkError> {
+        if entries.is_empty() {
+            return self.alloc_tree_walk_string(id, span, string);
+        }
+
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: entries.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        roots.extend(entries.iter().map(|entry| entry.value));
+
+        let value = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
+            eval.alloc_tree_walk_string(id, span, string)
+        })?;
+        for (entry, root) in entries.iter_mut().zip(roots) {
+            entry.value = root;
+        }
+        Ok(value)
     }
 }
