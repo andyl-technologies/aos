@@ -63,7 +63,11 @@
       }
       {
         label = "T-CLI-15 replay process coverage note";
-        needle = "`fuzz`, and `replay --check` success/mismatch JSONL output with parsed";
+        needle = "`fuzz`, marker-resolved QEMU `save`, `resume`, and `fork`, `replay --check`";
+      }
+      {
+        label = "T-CLI-15 replay-to process coverage note";
+        needle = "and `replay --to <SAVEPOINT>` JSONL output with parsed";
       }
       {
         label = "T-CLI-15 remaining gate range";
@@ -84,6 +88,14 @@
       {
         label = "phase5 T-CLI-15 remaining gate range";
         needle = "command-behavior gates `T-CLI-9 … T-CLI-13` so the same contract can be";
+      }
+      {
+        label = "phase5 T-CLI-15 qemu process coverage note";
+        needle = "marker-resolved QEMU `save`, `resume`, and\n  `fork`, `replay --check`";
+      }
+      {
+        label = "phase5 T-CLI-15 replay-to process coverage note";
+        needle = "and `replay --to <SAVEPOINT>`\n  JSONL output";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -192,6 +204,18 @@
         needle = "cli_exit_machine_readable_process_stdout_is_pure_json";
       }
       {
+        label = "qemu save process stdout regression";
+        needle = "cli_save_qemu_process_jsonl_reports_identity_and_handle";
+      }
+      {
+        label = "qemu resume process stdout regression";
+        needle = "cli_resume_qemu_process_jsonl_reports_identity_and_oracle";
+      }
+      {
+        label = "qemu fork process stdout regression";
+        needle = "cli_fork_qemu_process_jsonl_reports_identity_and_artifact";
+      }
+      {
         label = "search fuzz process stdout regression";
         needle = "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome";
       }
@@ -202,6 +226,10 @@
       {
         label = "replay check process stdout regression";
         needle = "cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome";
+      }
+      {
+        label = "replay-to process stdout regression";
+        needle = "cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome";
       }
       {
         label = "real crucible binary execution";
@@ -220,6 +248,18 @@
         needle = "\"save_export\"";
       }
       {
+        label = "qemu save canonical jsonl assertion";
+        needle = "\"save_qemu_runner\"";
+      }
+      {
+        label = "qemu resume canonical jsonl assertion";
+        needle = "\"resume_qemu_runner\"";
+      }
+      {
+        label = "qemu fork canonical jsonl assertion";
+        needle = "\"fork_qemu_runner\"";
+      }
+      {
         label = "search canonical jsonl assertion";
         needle = "\"search_strategy_run\"";
       }
@@ -234,6 +274,10 @@
       {
         label = "replay check canonical jsonl assertion";
         needle = "\"replay_check\"";
+      }
+      {
+        label = "replay-to canonical jsonl assertion";
+        needle = "\"replay_to_savepoint\"";
       }
       {
         label = "replay check mismatch jsonl assertion";
@@ -343,6 +387,13 @@ in
               -p crucible-cli \
               cli_exit_machine_readable \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-exit-machine-readable-target" \
+              -p crucible-cli \
+              --test machine_readable \
+              -- --test-threads=1
           '';
         }
         {
@@ -356,6 +407,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             contract=exit-codes-and-machine-readable-final-outcome
+            process_matrix=local-double-qemu-replay-jsonl
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
