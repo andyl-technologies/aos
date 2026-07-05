@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::heap::{
-    ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
-    MemoryAdviceKind, MemoryAdviceOutcome, ProcessResidentMemorySample,
+    ArenaMemoryAdviceReport, GcHeapAddress, HeapMemoryBudget, HeapMemoryBudgetResponse,
+    HeapMemorySample, MemoryAdviceKind, MemoryAdviceOutcome, ProcessResidentMemorySample,
     ProcessResidentMemorySource, RegionPlan, advise_cold_heap_object_allocation,
     advise_evict_heap_object_allocation,
 };
@@ -1536,6 +1536,96 @@ impl EvalHeap {
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
+        });
+        self.poll_memory_budget_after_allocation();
+        Ok(value)
+    }
+
+    /// Allocates a worker-domain placeholder record for a reserved minor-GC destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `tag` is not a worker-domain record type that
+    /// can be copied by the current reservation bridge, if record storage cannot
+    /// be reserved, if the runtime allocator fails, or if the allocated handle
+    /// cannot be represented as a typed evaluator value.
+    pub(super) fn alloc_minor_gc_destination_worker_record(
+        &mut self,
+        source: GcHeapAddress,
+        tag: ValueTag,
+    ) -> Result<Value, EvalHeapError> {
+        if !matches!(tag, ValueTag::Lambda | ValueTag::Primop | ValueTag::Thunk) {
+            return Err(
+                EvalHeapError::CollectorPollMinorGcDestinationReservationUnsupported {
+                    source_address: source,
+                    tag,
+                },
+            );
+        }
+
+        self.reserve_record_slot()?;
+        let allocation = match tag {
+            ValueTag::Lambda => self
+                .allocator
+                .aos_alloc_lambda()
+                .map_err(EvalHeapError::Arena)?,
+            ValueTag::Primop => self
+                .allocator
+                .aos_alloc_raw(PRIMOP_HANDLE_BYTES, PRIMOP_HANDLE_ALIGN, PRIMOP_TYPE_TAG)
+                .map_err(EvalHeapError::Arena)?,
+            ValueTag::Thunk => self
+                .allocator
+                .aos_alloc_thunk()
+                .map_err(EvalHeapError::Arena)?,
+            tag => {
+                return Err(
+                    EvalHeapError::CollectorPollMinorGcDestinationReservationUnsupported {
+                        source_address: source,
+                        tag,
+                    },
+                );
+            }
+        };
+        let (value, object) = match tag {
+            ValueTag::Lambda => (
+                Value::lambda(allocation.ptr),
+                HeapObjectValue::Lambda(Rc::new(EvalLambda::new(
+                    IrId::new(0),
+                    IrId::new(0),
+                    FrameId::new(0),
+                    EvalEnv::default(),
+                ))),
+            ),
+            ValueTag::Primop => (
+                Value::primop(allocation.ptr),
+                HeapObjectValue::Primop(Rc::new(EvalPrimOp::new(Symbol::new(0)))),
+            ),
+            ValueTag::Thunk => (
+                Value::thunk(allocation.ptr),
+                HeapObjectValue::Thunk(Rc::new(EvalThunk::new(IrId::new(0)))),
+            ),
+            tag => {
+                return Err(
+                    EvalHeapError::CollectorPollMinorGcDestinationReservationUnsupported {
+                        source_address: source,
+                        tag,
+                    },
+                );
+            }
+        };
+        let value = value.map_err(EvalHeapError::Value)?;
+        let last_touch_epoch = Cell::new(self.next_access_epoch());
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
+            structural_hash: None,
+            allocation_domain: HeapAllocationDomain::Worker,
+            generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
+            minor_gc_forwarding: Cell::new(None),
+            last_touch_epoch,
+            value_hash: Cell::new(None),
+            captured_value_hash: Cell::new(None),
+            object,
         });
         self.poll_memory_budget_after_allocation();
         Ok(value)

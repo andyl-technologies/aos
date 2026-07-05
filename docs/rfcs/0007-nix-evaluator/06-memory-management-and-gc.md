@@ -1809,14 +1809,23 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata can be built. The heap helpers derive survivor nursery layouts
       from allocator-recorded heap side-table size/alignment metadata and reject
       heap record or allocation-safepoint changes after minor-GC planning before
-      materializing or validating destinations. Tests cover caller-supplied
-      copied-young/promoted-old destination planning, heap-derived layout sizes,
-      explicit non-contiguous destination tables, duplicate, overlapping, and
-      source-overlapping explicit-destination rejection, and post-plan allocation
-      rejection. This is still metadata only: it does not reserve
-      semispace pages, choose destination bases for the live collector, allocate
-      object storage, bind byte buffers to real objects, or manage nursery/old
-      generation spaces.
+      materializing or validating destinations.
+      `EvalHeap::reserve_current_young_minor_gc_destination_records` now reserves
+      scratch evaluator heap records for the current young worker records before
+      the collector-poll scan, and
+      `EvalHeap::plan_collector_poll_minor_gc_reserved_relocation_destinations`
+      filters those reservations to the actual survivor frontier while rejecting
+      stale reservation snapshots. Tests cover caller-supplied copied-young/
+      promoted-old destination planning, heap-derived layout sizes, explicit
+      non-contiguous destination tables, duplicate, overlapping, and
+      source-overlapping explicit-destination rejection, post-plan allocation
+      rejection, copied and promoted reserved destination records, dead young
+      reservations that are ignored, and stale reservation snapshots. This still
+      does not reserve semispace pages, choose destination bases for the live
+      collector, dispatch Tier B automatically, publish roots/fields, write
+      object headers, or manage nursery/old generation spaces; reserved records
+      carry placeholder bodies and are only scratch evaluator records consumed
+      by the existing object body/generation writers before publication.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level

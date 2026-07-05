@@ -60,6 +60,8 @@ const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebac
 const MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC copied heap field writes";
 const MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC direct heap field writes";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
+const MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE: &str =
+    "minor-GC destination record reservations";
 
 /// A write-barrier adapter for publishing a forced thunk result.
 ///
@@ -1456,6 +1458,133 @@ impl AllocationCollectorPollMinorGcRelocationDestinations {
     /// Returns materialized relocation destinations in survivor-frontier order.
     pub fn destinations(&self) -> &[MinorGcRelocationDestination] {
         self.relocation_destinations.destinations()
+    }
+}
+
+/// A heap-record destination reserved before a collector-poll minor-GC plan.
+#[derive(Clone, Copy, Debug)]
+pub struct AllocationCollectorPollMinorGcDestinationRecordReservation {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    destination_value: Value,
+    tag: ValueTag,
+}
+
+impl AllocationCollectorPollMinorGcDestinationRecordReservation {
+    const fn new(
+        source: GcHeapAddress,
+        destination: GcHeapAddress,
+        destination_value: Value,
+        tag: ValueTag,
+    ) -> Self {
+        Self {
+            source,
+            destination,
+            destination_value,
+            tag,
+        }
+    }
+
+    /// Returns the young source object the destination was reserved for.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the reserved destination object address.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the heap value for the reserved destination record.
+    pub const fn destination_value(self) -> Value {
+        self.destination_value
+    }
+
+    /// Returns the source heap tag copied by this destination reservation.
+    pub const fn tag(self) -> ValueTag {
+        self.tag
+    }
+}
+
+impl PartialEq for AllocationCollectorPollMinorGcDestinationRecordReservation {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.destination == other.destination
+            && self.destination_value.raw_eq(other.destination_value)
+            && self.tag == other.tag
+    }
+}
+
+impl Eq for AllocationCollectorPollMinorGcDestinationRecordReservation {}
+
+/// Destination records reserved for the current young heap before a poll scan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollMinorGcDestinationRecordReservations {
+    heap_records: usize,
+    worker_region_owner: u64,
+    worker_region_epoch: u64,
+    allocation_safepoints: AllocationSafepointState,
+    permanent_allocation_safepoints: AllocationSafepointState,
+    reservations: Vec<AllocationCollectorPollMinorGcDestinationRecordReservation>,
+}
+
+impl AllocationCollectorPollMinorGcDestinationRecordReservations {
+    fn new(
+        heap_records: usize,
+        worker_region_owner: u64,
+        worker_region_epoch: u64,
+        allocation_safepoints: AllocationSafepointState,
+        permanent_allocation_safepoints: AllocationSafepointState,
+        reservations: Vec<AllocationCollectorPollMinorGcDestinationRecordReservation>,
+    ) -> Self {
+        Self {
+            heap_records,
+            worker_region_owner,
+            worker_region_epoch,
+            allocation_safepoints,
+            permanent_allocation_safepoints,
+            reservations,
+        }
+    }
+
+    /// Returns the heap record count after destination reservation.
+    pub const fn heap_records(&self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns the heap-region owner captured after destination reservation.
+    pub const fn worker_region_owner(&self) -> u64 {
+        self.worker_region_owner
+    }
+
+    /// Returns the worker-region epoch captured after destination reservation.
+    pub const fn worker_region_epoch(&self) -> u64 {
+        self.worker_region_epoch
+    }
+
+    /// Returns the worker allocation-safepoint state captured after reservation.
+    pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
+        self.allocation_safepoints
+    }
+
+    /// Returns the permanent allocation-safepoint state captured after reservation.
+    pub const fn permanent_allocation_safepoints(&self) -> AllocationSafepointState {
+        self.permanent_allocation_safepoints
+    }
+
+    /// Returns the reserved source-to-destination records.
+    pub fn reservations(&self) -> &[AllocationCollectorPollMinorGcDestinationRecordReservation] {
+        &self.reservations
+    }
+
+    /// Returns how many destination records were reserved.
+    pub fn len(&self) -> usize {
+        self.reservations.len()
+    }
+
+    /// Returns whether no destination records were reserved.
+    pub fn is_empty(&self) -> bool {
+        self.reservations.is_empty()
     }
 }
 
@@ -3914,6 +4043,86 @@ impl EvalHeap {
         ))
     }
 
+    /// Reserves scratch destination records for current young worker objects.
+    ///
+    /// This must run before the collector-poll scan and minor-GC plan that will
+    /// consume the reservations. It records each current young worker-domain
+    /// record's tag, allocates a fresh tag-compatible placeholder record,
+    /// records the source-to-destination address mapping, and captures the
+    /// post-reservation heap snapshot. A later call to
+    /// [`Self::plan_collector_poll_minor_gc_reserved_relocation_destinations`]
+    /// filters these reservations to the actual survivor frontier.
+    ///
+    /// Reserved records carry placeholder side-table bodies only to satisfy
+    /// typed heap-record invariants before publication. The existing
+    /// object-body/generation writer must still validate and install the planned
+    /// relocated body before any root or field can publish the destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if reservation metadata cannot be allocated, if a
+    /// current young record has no destination-record allocator, if a destination
+    /// record allocation fails, or if a reserved destination value cannot be
+    /// converted back into a heap address.
+    pub fn reserve_current_young_minor_gc_destination_records(
+        &mut self,
+    ) -> Result<AllocationCollectorPollMinorGcDestinationRecordReservations, EvalHeapError> {
+        let mut sources = Vec::new();
+        for record in &self.records {
+            if record.allocation_domain != HeapAllocationDomain::Worker
+                || generation_for_record(record) != HeapGeneration::Young
+            {
+                continue;
+            }
+
+            let entries =
+                sources
+                    .len()
+                    .checked_add(1)
+                    .ok_or(EvalHeapError::RootScanLengthOverflow {
+                        table: MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE,
+                    })?;
+            sources
+                .try_reserve_exact(1)
+                .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE,
+                    entries,
+                })?;
+            sources.push((gc_address_for_record(record)?, record.object.tag()));
+        }
+
+        let mut reservations = Vec::new();
+        reservations.try_reserve_exact(sources.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE,
+                entries: sources.len(),
+            }
+        })?;
+
+        for (source, tag) in sources {
+            let destination_value = self.alloc_minor_gc_destination_record_like(source, tag)?;
+            reservations.push(
+                AllocationCollectorPollMinorGcDestinationRecordReservation::new(
+                    source,
+                    gc_address_for_value(destination_value)?,
+                    destination_value,
+                    tag,
+                ),
+            );
+        }
+
+        Ok(
+            AllocationCollectorPollMinorGcDestinationRecordReservations::new(
+                self.records.len(),
+                self.region_owner,
+                self.worker_region_epoch,
+                self.allocation_safepoints(),
+                self.permanent_allocation_safepoints(),
+                reservations,
+            ),
+        )
+    }
+
     /// Builds relocation destinations for a collector-poll minor-GC plan from
     /// current heap-record layout metadata.
     ///
@@ -3967,6 +4176,58 @@ impl EvalHeap {
         self.validate_collector_poll_plan_allocation_state(plan)?;
         let nursery_layouts = self.nursery_layouts_for_minor_gc_plan(plan.plan())?;
         Ok(plan.explicit_relocation_destination_plan(&nursery_layouts, destinations)?)
+    }
+
+    /// Builds relocation destinations from pre-reserved destination records.
+    ///
+    /// `reservations` must come from
+    /// [`Self::reserve_current_young_minor_gc_destination_records`] and `plan`
+    /// must be built after that reservation without intervening heap allocation.
+    /// Only reservations for actual survivors are consumed; reserved records for
+    /// dead young objects remain ordinary unreferenced heap records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `plan` is stale for the current heap, if
+    /// `reservations` were captured for a different heap snapshot, if a survivor
+    /// has no reserved destination record, if source or destination records no
+    /// longer match their reservation metadata, or if the lower-level explicit
+    /// relocation planner rejects the resulting destination table.
+    pub fn plan_collector_poll_minor_gc_reserved_relocation_destinations(
+        &self,
+        plan: &AllocationCollectorPollMinorGcPlan,
+        reservations: &AllocationCollectorPollMinorGcDestinationRecordReservations,
+    ) -> Result<AllocationCollectorPollMinorGcRelocationDestinations, EvalHeapError> {
+        self.validate_collector_poll_plan_allocation_state(plan)?;
+        validate_destination_reservation_snapshot_matches_plan(plan, reservations)?;
+        let nursery_layouts = self.nursery_layouts_for_minor_gc_plan(plan.plan())?;
+        let mut destinations = Vec::new();
+        destinations
+            .try_reserve_exact(plan.plan().survivors().len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE,
+                entries: plan.plan().survivors().len(),
+            })?;
+
+        for survivor in plan.plan().survivors() {
+            let reservation = reservations
+                .reservations()
+                .iter()
+                .copied()
+                .find(|reservation| reservation.source() == survivor.address())
+                .ok_or(
+                    EvalHeapError::CollectorPollMinorGcDestinationReservationMissing {
+                        source_address: survivor.address(),
+                    },
+                )?;
+            self.validate_minor_gc_destination_record_reservation(reservation)?;
+            destinations.push(MinorGcRelocationDestination::new(
+                survivor.address(),
+                reservation.destination(),
+            ));
+        }
+
+        Ok(plan.explicit_relocation_destination_plan(&nursery_layouts, &destinations)?)
     }
 
     /// Derives object byte-copy requests for caller-owned copy buffers.
@@ -5542,6 +5803,61 @@ impl EvalHeap {
             .get())
     }
 
+    fn alloc_minor_gc_destination_record_like(
+        &mut self,
+        source: GcHeapAddress,
+        tag: ValueTag,
+    ) -> Result<Value, EvalHeapError> {
+        if matches!(tag, ValueTag::Lambda | ValueTag::Primop | ValueTag::Thunk) {
+            self.alloc_minor_gc_destination_worker_record(source, tag)
+        } else {
+            Err(
+                EvalHeapError::CollectorPollMinorGcDestinationReservationUnsupported {
+                    source_address: source,
+                    tag,
+                },
+            )
+        }
+    }
+
+    fn validate_minor_gc_destination_record_reservation(
+        &self,
+        reservation: AllocationCollectorPollMinorGcDestinationRecordReservation,
+    ) -> Result<(), EvalHeapError> {
+        let source = self.record_for_minor_gc_survivor(reservation.source())?;
+        let Some(destination) = self.records.iter().find(|record| {
+            record.ptr.as_ptr() as usize == reservation.destination().address_bits()
+        }) else {
+            return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+                destination: reservation.destination(),
+            });
+        };
+
+        if source.object.tag() != reservation.tag() || destination.object.tag() != reservation.tag()
+        {
+            return Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+                source_address: reservation.source(),
+                destination: reservation.destination(),
+                reason: "reserved destination record tag does not match source record tag",
+            });
+        }
+        if !heap_record_layout_matches(
+            destination.layout,
+            source.layout.size_bytes,
+            source.layout.align,
+        ) {
+            return Err(EvalHeapError::CollectorPollObjectBodyWriteLayoutMismatch {
+                address: reservation.destination(),
+                expected_size: source.layout.size_bytes,
+                actual_size: destination.layout.size_bytes,
+                expected_align: source.layout.align,
+                actual_align: destination.layout.align,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Returns every installed live side-table forwarding value.
     ///
     /// This exposes evaluator-owned forwarding metadata used by the tree-walk
@@ -6756,6 +7072,48 @@ impl EvalHeap {
         }
         Ok(())
     }
+}
+
+fn validate_destination_reservation_snapshot_matches_plan(
+    plan: &AllocationCollectorPollMinorGcPlan,
+    reservations: &AllocationCollectorPollMinorGcDestinationRecordReservations,
+) -> Result<(), EvalHeapError> {
+    if reservations.heap_records() != plan.heap_records() {
+        return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation heap record count differs from minor-GC plan",
+            expected_records: plan.heap_records(),
+            actual_records: reservations.heap_records(),
+        });
+    }
+    if reservations.worker_region_owner() != plan.worker_region_owner() {
+        return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation worker region owner differs from minor-GC plan",
+            expected_records: plan.heap_records(),
+            actual_records: reservations.heap_records(),
+        });
+    }
+    if reservations.worker_region_epoch() != plan.worker_region_epoch() {
+        return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation worker region epoch differs from minor-GC plan",
+            expected_records: plan.heap_records(),
+            actual_records: reservations.heap_records(),
+        });
+    }
+    if reservations.allocation_safepoints() != plan.allocation_safepoints() {
+        return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation worker allocation safepoints differ from minor-GC plan",
+            expected_records: plan.heap_records(),
+            actual_records: reservations.heap_records(),
+        });
+    }
+    if reservations.permanent_allocation_safepoints() != plan.permanent_allocation_safepoints() {
+        return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation permanent allocation safepoints differ from minor-GC plan",
+            expected_records: plan.heap_records(),
+            actual_records: reservations.heap_records(),
+        });
+    }
+    Ok(())
 }
 
 fn nursery_field_views(

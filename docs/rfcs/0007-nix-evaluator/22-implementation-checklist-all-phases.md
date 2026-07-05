@@ -6503,14 +6503,23 @@ and helps the oracle directly.
       preserving the same allocation and placement metadata. Explicit tables
       are checked against the derived object-copy sizes so absolute destination
       ranges are disjoint and do not overlap live source ranges before commit
-      metadata can be built. Unit tests cover base-derived
+      metadata can be built.
+      `EvalHeap::reserve_current_young_minor_gc_destination_records` reserves
+      scratch evaluator heap records for the current young worker records before
+      the collector-poll scan, and
+      `EvalHeap::plan_collector_poll_minor_gc_reserved_relocation_destinations`
+      filters those reservations to the actual survivor frontier while rejecting
+      stale reservation snapshots. Unit tests cover base-derived
       copied-young/promoted-old destination planning, heap-derived layout sizes,
       explicit non-contiguous destination tables, duplicate, overlapping, and
-      source-overlapping explicit-destination rejection, and post-plan
-      allocation rejection. This remains destination metadata only; semispace
-      page reservation, live collector base selection, object storage
-      allocation, buffer binding to real heap objects, and generation-space
-      management remain open.
+      source-overlapping explicit-destination rejection, post-plan allocation
+      rejection, copied and promoted reserved destination records, ignored dead
+      young reservations, and stale reservation snapshots. Semispace page
+      reservation, live collector base selection, automatic Tier-B dispatch,
+      root/field publication, object-header writes, and generation-space
+      management remain open; reserved records carry placeholder bodies and are
+      only scratch evaluator records consumed by the existing object
+      body/generation writers before publication.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot used by the poll plan and composes the existing lower-level
@@ -7040,9 +7049,14 @@ and helps the oracle directly.
       caller-provided layouts/bases. `EvalHeap` also exposes a heap-record-backed
       bridge that derives survivor layouts from recorded allocation size/alignment
       metadata and rejects post-plan heap allocation before destination
-      materialization. This connects precise-root minor-GC planning to
-      lower-level destination metadata, but still does not allocate or bind live
-      destination storage.
+      materialization. `EvalHeap::reserve_current_young_minor_gc_destination_records`
+      reserves scratch destination records before the scan/plan snapshot, and
+      `EvalHeap::plan_collector_poll_minor_gc_reserved_relocation_destinations`
+      maps only the actual survivors onto those records while rejecting stale
+      reservation snapshots. This connects precise-root minor-GC planning to
+      concrete evaluator destination records with placeholder bodies, but
+      semispace ownership, automatic collector dispatch, root/field publication,
+      and object-header writes remain open.
 - [x] Current `heap/roots.rs` commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` stores the remembered-set
       snapshot captured during allocation-poll planning and composes it with the

@@ -4530,6 +4530,280 @@ fn collector_poll_minor_gc_explicit_relocation_destinations_reject_source_range_
 }
 
 #[test]
+fn collector_poll_minor_gc_reserved_destination_records_bind_existing_heap_records() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let child_address = gc_address(child);
+    let reservations = heap
+        .reserve_current_young_minor_gc_destination_records()
+        .expect("destination records reserve");
+
+    assert_eq!(reservations.len(), 1);
+    assert!(!reservations.is_empty());
+    let reservation = reservations.reservations()[0];
+    assert_eq!(reservation.source(), child_address);
+    assert_eq!(reservation.tag(), ValueTag::Thunk);
+    assert_eq!(
+        gc_address(reservation.destination_value()),
+        reservation.destination()
+    );
+    assert_eq!(
+        heap_generation(&heap, reservation.destination_value()),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        allocation_domain(&heap, reservation.destination_value()),
+        HeapAllocationDomain::Worker
+    );
+
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("destination reservation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_reserved_relocation_destinations(&planned, &reservations)
+        .expect("reserved destinations plan");
+
+    assert_eq!(destinations.destinations().len(), 1);
+    assert_eq!(destinations.destinations()[0].source(), child_address);
+    assert_eq!(
+        destinations.destinations()[0].destination(),
+        reservation.destination()
+    );
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan accepts reserved destination");
+    let byte_copy_plan = heap
+        .collector_poll_minor_gc_object_byte_copy_plan(&commit)
+        .expect("object byte-copy plan derives");
+    assert_eq!(byte_copy_plan.len(), 1);
+    let request = byte_copy_plan.requests()[0];
+    assert_eq!(request.source(), child_address);
+    assert_eq!(request.destination(), reservation.destination());
+    assert_eq!(request.action(), MinorGcSurvivorAction::CopyToNursery);
+    assert_eq!(request.destination_generation(), HeapGeneration::Young);
+    assert!(matches!(
+        heap.validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Thunk),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+
+    let report = heap
+        .apply_collector_poll_minor_gc_object_body_and_generation_writes(&byte_copy_plan)
+        .expect("paired body/generation writes apply");
+
+    assert_eq!(report.body_write_report().objects(), 1);
+    assert_eq!(report.body_write_report().copied_to_nursery(), 1);
+    assert_eq!(report.generation_write_report().objects(), 1);
+    assert_eq!(
+        heap_generation(&heap, reservation.destination_value()),
+        HeapGeneration::Young
+    );
+    heap.validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Thunk)
+        .expect("destination body is bound to source body");
+}
+
+#[test]
+fn collector_poll_minor_gc_reserved_destination_records_support_promotions() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let child_address = gc_address(child);
+    let reservations = heap
+        .reserve_current_young_minor_gc_destination_records()
+        .expect("destination records reserve");
+    let reservation = reservations.reservations()[0];
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("destination reservation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_reserved_relocation_destinations(&planned, &reservations)
+        .expect("reserved destinations plan");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan accepts reserved destination");
+    let byte_copy_plan = heap
+        .collector_poll_minor_gc_object_byte_copy_plan(&commit)
+        .expect("object byte-copy plan derives");
+
+    assert_eq!(byte_copy_plan.len(), 1);
+    assert_eq!(byte_copy_plan.promote_to_old_count(), 1);
+    let request = byte_copy_plan.requests()[0];
+    assert_eq!(request.source(), child_address);
+    assert_eq!(request.destination(), reservation.destination());
+    assert_eq!(request.action(), MinorGcSurvivorAction::PromoteToOld);
+    assert_eq!(request.destination_generation(), HeapGeneration::Old);
+
+    let report = heap
+        .apply_collector_poll_minor_gc_object_body_and_generation_writes(&byte_copy_plan)
+        .expect("paired body/generation writes apply");
+
+    assert_eq!(report.body_write_report().promoted_to_old(), 1);
+    assert_eq!(report.generation_write_report().promoted_to_old(), 1);
+    assert_eq!(
+        heap_generation(&heap, reservation.destination_value()),
+        HeapGeneration::Old
+    );
+    heap.validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Thunk)
+        .expect("promoted destination body is bound to source body");
+}
+
+#[test]
+fn collector_poll_minor_gc_reserved_destination_records_ignore_dead_young_reservations() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let live = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("live thunk allocates");
+    let dead = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("dead thunk allocates");
+    let live_address = gc_address(live);
+    let dead_address = gc_address(dead);
+    let reservations = heap
+        .reserve_current_young_minor_gc_destination_records()
+        .expect("destination records reserve");
+    let live_reservation = reservations
+        .reservations()
+        .iter()
+        .copied()
+        .find(|reservation| reservation.source() == live_address)
+        .expect("live source has a reservation");
+    let dead_reservation = reservations
+        .reservations()
+        .iter()
+        .copied()
+        .find(|reservation| reservation.source() == dead_address)
+        .expect("dead source has a reservation");
+
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("destination reservation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, live)
+        .expect("live root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_reserved_relocation_destinations(&planned, &reservations)
+        .expect("reserved destinations plan");
+
+    assert_eq!(reservations.len(), 2);
+    assert_eq!(destinations.destinations().len(), 1);
+    assert_eq!(
+        destinations.destinations()[0],
+        MinorGcRelocationDestination::new(live_address, live_reservation.destination())
+    );
+    assert_ne!(
+        destinations.destinations()[0].destination(),
+        dead_reservation.destination()
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_reserved_destination_records_reject_stale_reservation_snapshot() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let reservations = heap
+        .reserve_current_young_minor_gc_destination_records()
+        .expect("destination records reserve");
+    let sibling = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("post-reservation sibling allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("post-reservation allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    roots
+        .try_push_value_stack(1, sibling)
+        .expect("sibling root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_reserved_relocation_destinations(
+            &planned,
+            &reservations,
+        )
+        .expect_err("stale reservations reject"),
+        EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "destination reservation heap record count differs from minor-GC plan",
+            expected_records: planned.heap_records(),
+            actual_records: reservations.heap_records(),
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_object_byte_copy_plan_partitions_mixed_actions() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());

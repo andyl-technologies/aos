@@ -1350,6 +1350,26 @@ pub enum EvalHeapError {
         /// The current heap-record generation for the destination object.
         actual: HeapGeneration,
     },
+    /// Destination-record reservation cannot reserve this young heap object.
+    #[error(
+        "collector-poll minor-GC destination reservation for source 0x{source_address:x} cannot reserve a {tag:?} record",
+        source_address = source_address.address_bits()
+    )]
+    CollectorPollMinorGcDestinationReservationUnsupported {
+        /// The young source object that needs a destination record.
+        source_address: GcHeapAddress,
+        /// The source object's heap tag.
+        tag: ValueTag,
+    },
+    /// A planned survivor has no reserved destination record.
+    #[error(
+        "collector-poll minor-GC survivor 0x{source_address:x} has no reserved destination record",
+        source_address = source_address.address_bits()
+    )]
+    CollectorPollMinorGcDestinationReservationMissing {
+        /// The planned survivor source object.
+        source_address: GcHeapAddress,
+    },
     /// A minor-GC object-body write plan references a destination outside the heap.
     #[error(
         "collector-poll object-body write destination 0x{destination:x} does not belong to this heap",
