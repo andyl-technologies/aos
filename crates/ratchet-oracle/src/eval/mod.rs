@@ -11,6 +11,7 @@ pub mod heap;
 pub mod internal_diff;
 pub mod module;
 pub mod parallel;
+pub mod parallel_audit;
 pub mod parallel_chase_lev;
 pub mod parallel_failure;
 pub mod parallel_heap;
@@ -40,6 +41,14 @@ pub use parallel::{
     claim_or_poll_ready_then_wait, execute_parallel_top_level,
     execute_parallel_top_level_chase_lev, parallel_chase_lev_ready_work_queues,
     parallel_ready_work_queues, parallel_top_level_seed_plan,
+};
+pub use parallel_audit::{
+    ParallelRuntimeAuditLowerStage, ParallelRuntimeAuditManifest,
+    ParallelRuntimeAuditManifestError, ParallelRuntimeAuditScope, ParallelRuntimeAuditSmokeError,
+    ParallelRuntimeAuditSmokeReport, ParallelRuntimeAuditTarget, ParallelRuntimeAuditTool,
+    parallel_runtime_audit_manifest, run_parallel_audit_parallel_tree_walk_drv_smoke,
+    run_parallel_audit_parallel_tree_walk_raw_smoke,
+    run_parallel_audit_safe_tree_walk_oracle_smoke, validate_parallel_runtime_audit_manifest,
 };
 pub use parallel_chase_lev::{
     ParallelChaseLevTake, ParallelChaseLevTask, ParallelChaseLevTaskSource,

@@ -1091,6 +1091,26 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       space is not exhaustive, the production wait-cell is not rewritten to loom
       shims directly, scheduler park tokens and the final lock-free waiter list
       are not modeled, and the Miri/TSan portions of `R-4` remain open.
+- [x] Current Miri/TSan audit-target manifest precursor:
+      `ratchet-oracle::eval::parallel_audit` now exposes a machine-readable
+      `R-4` audit-target manifest covering the existing loom CAS model, Miri
+      smoke targets for the safe tree-walk oracle and scheduler-backed raw
+      tree-walk harness, and ThreadSanitizer smoke targets for the
+      scheduler-backed raw and `.drv` tree-walk harnesses. The manifest records
+      each target's package, Cargo manifest path, test filter, scope, and
+      rationale; ordinary tests validate the required tool/scope matrix and the
+      exact filters
+      `parallel_audit_safe_tree_walk_oracle_miri_smoke`,
+      `parallel_audit_parallel_tree_walk_miri_smoke`,
+      `parallel_audit_parallel_tree_walk_tsan_smoke`, and
+      `parallel_audit_parallel_tree_walk_drv_tsan_smoke`. The same module
+      provides deterministic smoke functions that lower fixed Nix sources and
+      either compare safe raw bytes or run the Chase-Lev raw/`.drv`
+      differentials over pinned worker counts. This is only a target-matrix and
+      smoke-harness precursor: it does not invoke `cargo miri`, run
+      ThreadSanitizer, certify the actual parallel binary, model the fiber
+      runtime, or close the final lock-free waiter-list audit; the Miri/TSan
+      portions of `R-4` remain open until those tools run clean in CI.
 - [ ] Miri over the safe tree-walk oracle + small parallel harnesses (UB + data-race checking) and ThreadSanitizer over the *actual* parallel binary (scheduler glue, shared insert-or-get tables, fiber runtime) (§3.6) — **P3.5**, `R-4`/`S-17`.
 
 ### Parallel GC × thunk mutation (§5)
