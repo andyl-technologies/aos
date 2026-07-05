@@ -43,10 +43,11 @@ pub use parallel::{
     parallel_ready_work_queues, parallel_top_level_seed_plan,
 };
 pub use parallel_audit::{
-    ParallelRuntimeAuditLowerStage, ParallelRuntimeAuditManifest,
+    ParallelRuntimeAuditInvocation, ParallelRuntimeAuditLowerStage, ParallelRuntimeAuditManifest,
     ParallelRuntimeAuditManifestError, ParallelRuntimeAuditScope, ParallelRuntimeAuditSmokeError,
     ParallelRuntimeAuditSmokeReport, ParallelRuntimeAuditTarget, ParallelRuntimeAuditTool,
-    parallel_runtime_audit_manifest, run_parallel_audit_parallel_tree_walk_drv_smoke,
+    parallel_runtime_audit_invocations, parallel_runtime_audit_manifest,
+    run_parallel_audit_parallel_tree_walk_drv_smoke,
     run_parallel_audit_parallel_tree_walk_raw_smoke,
     run_parallel_audit_safe_tree_walk_oracle_smoke, validate_parallel_runtime_audit_manifest,
 };

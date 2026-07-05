@@ -8807,11 +8807,16 @@ nurseries build on the bump arena.
       `parallel_audit_parallel_tree_walk_drv_tsan_smoke`. The same module
       provides deterministic smoke functions that lower fixed Nix sources and
       either compare safe raw bytes or run the Chase-Lev raw/`.drv`
-      differentials over pinned worker counts. This is only a target-matrix and
-      smoke-harness precursor: it does not invoke `cargo miri`, run
-      ThreadSanitizer, certify the actual parallel binary, model the fiber
-      runtime, or close the final lock-free waiter-list audit; the Miri/TSan
-      portions of `R-4` remain open until those tools run clean in CI.
+      differentials over pinned worker counts. `parallel_runtime_audit_invocations`
+      turns the validated target matrix into structured cargo command plans,
+      including `+nightly miri test`, ThreadSanitizer `RUSTFLAGS`, `-Z
+      build-std`, and the pinned Linux sanitizer target triple, so CI wiring no
+      longer has to reconstruct commands from prose. This is still only a
+      target-matrix, smoke-harness, and invocation precursor: it does not invoke
+      `cargo miri`, run ThreadSanitizer, certify the actual parallel binary,
+      model the fiber runtime, or close the final lock-free waiter-list audit;
+      the Miri/TSan portions of `R-4` remain open until those tools run clean in
+      CI.
 
 **Decisions closed/measured.**
 

@@ -28,6 +28,11 @@ use crate::{
 const AUDIT_PACKAGE: &str = "ratchet-oracle";
 const AUDIT_MANIFEST_PATH: &str = "crates/Cargo.toml";
 const AUDIT_WORKER_COUNTS: [usize; 2] = [1, 2];
+const CARGO_PROGRAM: &str = "cargo";
+const NIGHTLY_CARGO_ARG: &str = "+nightly";
+const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
+const TSAN_TARGET: &str = "x86_64-unknown-linux-gnu";
+const TSAN_RUSTFLAGS: &str = "-Z sanitizer=thread";
 
 const PARALLEL_RUNTIME_AUDIT_TARGETS: [ParallelRuntimeAuditTarget; 5] = [
     ParallelRuntimeAuditTarget::new(
@@ -264,6 +269,28 @@ pub fn validate_parallel_runtime_audit_manifest()
     Ok(manifest)
 }
 
+/// Returns the cargo invocations for the current R-4 audit target matrix.
+///
+/// The returned commands are not executed by ordinary tests. They provide a
+/// stable adapter boundary for CI to run loom, Miri, and ThreadSanitizer without
+/// reconstructing command lines from prose.
+///
+/// # Errors
+///
+/// Returns [`ParallelRuntimeAuditManifestError`] if the audit target manifest is
+/// invalid.
+pub fn parallel_runtime_audit_invocations()
+-> Result<Vec<ParallelRuntimeAuditInvocation>, ParallelRuntimeAuditManifestError> {
+    validate_parallel_runtime_audit_manifest().map(|manifest| {
+        manifest
+            .targets()
+            .iter()
+            .copied()
+            .map(ParallelRuntimeAuditInvocation::for_target)
+            .collect()
+    })
+}
+
 /// Runs the safe tree-walk oracle smoke target.
 ///
 /// # Errors
@@ -419,6 +446,106 @@ impl ParallelRuntimeAuditSmokeReport {
     }
 }
 
+/// A cargo command needed to run one parallel runtime audit target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParallelRuntimeAuditInvocation {
+    target: ParallelRuntimeAuditTarget,
+    cargo_args: Vec<&'static str>,
+    environment: Vec<(&'static str, &'static str)>,
+    requires_nightly_toolchain: bool,
+}
+
+impl ParallelRuntimeAuditInvocation {
+    fn for_target(target: ParallelRuntimeAuditTarget) -> Self {
+        match target.tool() {
+            ParallelRuntimeAuditTool::Loom => Self {
+                target,
+                cargo_args: cargo_test_args("test", target),
+                environment: Vec::new(),
+                requires_nightly_toolchain: false,
+            },
+            ParallelRuntimeAuditTool::Miri => Self {
+                target,
+                cargo_args: cargo_miri_test_args(target),
+                environment: Vec::new(),
+                requires_nightly_toolchain: true,
+            },
+            ParallelRuntimeAuditTool::ThreadSanitizer => Self {
+                target,
+                cargo_args: cargo_tsan_test_args(target),
+                environment: vec![(RUSTFLAGS_ENV, TSAN_RUSTFLAGS)],
+                requires_nightly_toolchain: true,
+            },
+        }
+    }
+
+    /// Returns the audit manifest target this command runs.
+    pub const fn target(&self) -> ParallelRuntimeAuditTarget {
+        self.target
+    }
+
+    /// Returns the cargo executable name.
+    pub const fn cargo_program(&self) -> &'static str {
+        CARGO_PROGRAM
+    }
+
+    /// Returns arguments passed to `cargo`.
+    ///
+    /// Miri targets use `miri test`; ThreadSanitizer targets use `test` with
+    /// nightly, sanitizer environment variables, `-Z build-std`, and the
+    /// pinned Linux target triple used by the CI audit runner.
+    pub fn cargo_args(&self) -> &[&'static str] {
+        &self.cargo_args
+    }
+
+    /// Returns environment variables required by this command.
+    pub fn environment(&self) -> &[(&'static str, &'static str)] {
+        &self.environment
+    }
+
+    /// Returns whether the command requires a nightly-capable toolchain.
+    pub const fn requires_nightly_toolchain(&self) -> bool {
+        self.requires_nightly_toolchain
+    }
+}
+
+fn cargo_test_args(first: &'static str, target: ParallelRuntimeAuditTarget) -> Vec<&'static str> {
+    let mut args = vec![first];
+    extend_cargo_test_target_args(&mut args, target);
+    args
+}
+
+fn cargo_miri_test_args(target: ParallelRuntimeAuditTarget) -> Vec<&'static str> {
+    let mut args = vec![NIGHTLY_CARGO_ARG, "miri", "test"];
+    extend_cargo_test_target_args(&mut args, target);
+    args
+}
+
+fn cargo_tsan_test_args(target: ParallelRuntimeAuditTarget) -> Vec<&'static str> {
+    let mut args = vec![
+        NIGHTLY_CARGO_ARG,
+        "test",
+        "-Z",
+        "build-std",
+        "--target",
+        TSAN_TARGET,
+    ];
+    extend_cargo_test_target_args(&mut args, target);
+    args
+}
+
+fn extend_cargo_test_target_args(args: &mut Vec<&'static str>, target: ParallelRuntimeAuditTarget) {
+    args.extend_from_slice(&[
+        "--manifest-path",
+        target.manifest_path(),
+        "-p",
+        target.package(),
+        target.test_filter(),
+        "--",
+        "--nocapture",
+    ]);
+}
+
 /// A frontend stage used while lowering an audit smoke source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParallelRuntimeAuditLowerStage {
@@ -551,6 +678,133 @@ mod tests {
             assert_eq!(target.test_filter(), test_filter);
             assert!(!target.rationale().is_empty());
         }
+    }
+
+    #[test]
+    fn parallel_runtime_audit_invocations_pin_tool_commands() {
+        let invocations = parallel_runtime_audit_invocations().expect("audit invocations validate");
+        assert_eq!(
+            invocations.len(),
+            validate_parallel_runtime_audit_manifest()
+                .expect("audit manifest validates")
+                .target_count()
+        );
+
+        let loom = invocation_for(
+            &invocations,
+            ParallelRuntimeAuditTool::Loom,
+            ParallelRuntimeAuditScope::ThunkCasModel,
+        );
+        assert_eq!(loom.cargo_program(), "cargo");
+        assert_eq!(
+            loom.cargo_args(),
+            &[
+                "test",
+                "--manifest-path",
+                AUDIT_MANIFEST_PATH,
+                "-p",
+                AUDIT_PACKAGE,
+                "loom_model_tests",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert!(loom.environment().is_empty());
+        assert!(!loom.requires_nightly_toolchain());
+
+        let miri = invocation_for(
+            &invocations,
+            ParallelRuntimeAuditTool::Miri,
+            ParallelRuntimeAuditScope::SafeTreeWalkOracle,
+        );
+        assert_eq!(
+            miri.cargo_args(),
+            &[
+                NIGHTLY_CARGO_ARG,
+                "miri",
+                "test",
+                "--manifest-path",
+                AUDIT_MANIFEST_PATH,
+                "-p",
+                AUDIT_PACKAGE,
+                "parallel_audit_safe_tree_walk_oracle_miri_smoke",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert!(miri.environment().is_empty());
+        assert!(miri.requires_nightly_toolchain());
+
+        let sanitizer_raw = invocation_for(
+            &invocations,
+            ParallelRuntimeAuditTool::ThreadSanitizer,
+            ParallelRuntimeAuditScope::ParallelTreeWalkRawHarness,
+        );
+        assert_eq!(
+            sanitizer_raw.cargo_args(),
+            &[
+                NIGHTLY_CARGO_ARG,
+                "test",
+                "-Z",
+                "build-std",
+                "--target",
+                TSAN_TARGET,
+                "--manifest-path",
+                AUDIT_MANIFEST_PATH,
+                "-p",
+                AUDIT_PACKAGE,
+                "parallel_audit_parallel_tree_walk_tsan_smoke",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert_eq!(
+            sanitizer_raw.environment(),
+            &[(RUSTFLAGS_ENV, TSAN_RUSTFLAGS)]
+        );
+        assert!(sanitizer_raw.requires_nightly_toolchain());
+
+        let sanitizer_drv = invocation_for(
+            &invocations,
+            ParallelRuntimeAuditTool::ThreadSanitizer,
+            ParallelRuntimeAuditScope::ParallelTreeWalkDrvHarness,
+        );
+        assert_eq!(
+            sanitizer_drv.cargo_args(),
+            &[
+                NIGHTLY_CARGO_ARG,
+                "test",
+                "-Z",
+                "build-std",
+                "--target",
+                TSAN_TARGET,
+                "--manifest-path",
+                AUDIT_MANIFEST_PATH,
+                "-p",
+                AUDIT_PACKAGE,
+                "parallel_audit_parallel_tree_walk_drv_tsan_smoke",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert_eq!(
+            sanitizer_drv.environment(),
+            &[(RUSTFLAGS_ENV, TSAN_RUSTFLAGS)]
+        );
+        assert!(sanitizer_drv.requires_nightly_toolchain());
+    }
+
+    fn invocation_for(
+        invocations: &[ParallelRuntimeAuditInvocation],
+        tool: ParallelRuntimeAuditTool,
+        scope: ParallelRuntimeAuditScope,
+    ) -> &ParallelRuntimeAuditInvocation {
+        invocations
+            .iter()
+            .find(|invocation| {
+                invocation.target().tool() == tool && invocation.target().scope() == scope
+            })
+            .expect("audit invocation is present")
     }
 
     #[test]
