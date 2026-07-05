@@ -714,9 +714,7 @@ impl TreeWalk {
 
         let result =
             self.replace_strings_bytes(id, span, to_id, to_span, &source, context, &patterns)?;
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn replace_strings_bytes(

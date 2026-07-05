@@ -233,9 +233,7 @@ impl TreeWalk {
             context,
             &patterns,
         )?;
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_substring_primop_value(

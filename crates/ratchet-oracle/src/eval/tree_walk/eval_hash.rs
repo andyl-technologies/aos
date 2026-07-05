@@ -124,9 +124,7 @@ impl TreeWalk {
             separator_context,
             &elements,
         )?;
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn concat_strings_sep_values(

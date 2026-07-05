@@ -7273,6 +7273,10 @@ and helps the oracle directly.
       outside public dispatch while their argument attrsets are live interned
       attr roots. `substring` final string allocation also routes through the
       wrapper for both direct builtin calls and first-class primop-value calls.
+      `concatStringsSep` and `replaceStrings` final string allocations are
+      wrapper-routed for direct builtin calls and first-class primop-value
+      calls, while public direct-root calls still skip dispatch when their
+      required list arguments leave interned composite roots live.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -7298,6 +7302,8 @@ and helps the oracle directly.
       `placeholder` string allocations relocating registered transient roots,
       root `substring` final string allocation relocating registered transient
       roots while interned string roots are live,
+      root `concatStringsSep` and `replaceStrings` evaluations preserving
+      registered transient roots while interned list roots block dispatch,
       static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string
