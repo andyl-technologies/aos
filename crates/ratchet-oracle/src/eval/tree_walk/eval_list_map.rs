@@ -228,9 +228,7 @@ impl TreeWalk {
             })?;
             elements.extend(inner);
         }
-        self.heap
-            .alloc_list(NixList::new(elements))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(elements))
     }
 
     pub(super) fn intern_builtin_attr_symbol(

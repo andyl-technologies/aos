@@ -7398,6 +7398,8 @@ and helps the oracle directly.
       registered transient roots,
       direct list-concat result allocations preserving registered transient
       roots while input composite list roots block dispatch,
+      direct `concatLists` list-result allocations preserving registered
+      transient roots while active primop argument roots block dispatch,
       direct `catAttrs` list-result allocations preserving registered
       transient roots while active primop argument roots block dispatch,
       direct `attrNames`, `attrValues`, and `tail` list-result helper
