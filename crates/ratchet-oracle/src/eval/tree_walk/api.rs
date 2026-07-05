@@ -295,6 +295,7 @@ fn finish_owned_eval_outcome(
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
         memory_budget_action,
+        tier_b_transition_admission_report: None,
         cheap_memory_budget_plan,
         cheap_memory_advice_report,
         cold_hash_consed_value_materialization,

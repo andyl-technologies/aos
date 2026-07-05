@@ -10950,6 +10950,7 @@ pub struct EvalOutcome {
     pub(crate) thunk_resolve_remembered_set: RememberedSet,
     pub(crate) thunk_resolve_card_table: GcCardTable,
     pub(crate) memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
+    pub(crate) tier_b_transition_admission_report: Option<EvalHeapTierBAdmissionReport>,
     pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
     pub(crate) cold_hash_consed_value_materialization:
@@ -10989,6 +10990,10 @@ impl std::fmt::Debug for EvalOutcome {
             )
             .field("thunk_resolve_card_table", &self.thunk_resolve_card_table)
             .field("memory_budget_action", &self.memory_budget_action)
+            .field(
+                "tier_b_transition_admission_report",
+                &self.tier_b_transition_admission_report,
+            )
             .field("cheap_memory_budget_plan", &self.cheap_memory_budget_plan)
             .field(
                 "cheap_memory_advice_report",
@@ -11104,6 +11109,16 @@ impl EvalOutcome {
         }
     }
 
+    /// Returns the latest successful Tier-B transition admission report.
+    ///
+    /// Automatic admission records this before returning an owned outcome, and
+    /// explicit calls to [`Self::apply_tier_b_transition_admission_plan`]
+    /// update it after successful application. A missing report means no
+    /// transition admission has been applied to this outcome heap.
+    pub const fn tier_b_transition_admission_report(&self) -> Option<EvalHeapTierBAdmissionReport> {
+        self.tier_b_transition_admission_report
+    }
+
     /// Returns validated Tier-B transition admission metadata, if requested.
     ///
     /// This checks that the outcome heap still matches the request's pre-flip
@@ -11167,6 +11182,7 @@ impl EvalOutcome {
         let report = self
             .heap
             .apply_tier_b_admission_plan(admission.heap_plan())?;
+        self.tier_b_transition_admission_report = Some(report);
         Ok(Some(report))
     }
 

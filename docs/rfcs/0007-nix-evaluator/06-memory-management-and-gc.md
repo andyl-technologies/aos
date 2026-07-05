@@ -2128,10 +2128,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       retain the latest action for tests and later daemon policy; `EvalOutcome`
       snapshots that final action through `memory_budget_action()` so root and
       attr-path callers can observe the safety-valve decision without reaching
-      into heap internals. `EvalOutcome::tier_b_transition_request()` now
-      derives typed safety-valve metadata from a final `RequestTierB` action,
-      carrying the would-be pre-flip worker/permanent arena snapshots and
-      unused-tail advice report without installing a collector. When callers
+      into heap internals. Automatic or explicit transition admission also
+      records the resulting heap-record rewrite report through
+      `tier_b_transition_admission_report()`.
+      `EvalOutcome::tier_b_transition_request()` now derives typed
+      safety-valve metadata from a final `RequestTierB` action, carrying the
+      would-be pre-flip worker/permanent arena snapshots and unused-tail advice
+      report without installing a collector. When callers
       configure both a heap budget and the post-evaluation cheap-advice idle
       threshold, `EvalOutcome` also snapshots the cold-aware planning telemetry
       through `cheap_memory_budget_plan()`.
@@ -3180,11 +3183,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::apply_tier_b_transition_admission_plan()` builds the
       current transition admission plan for a budget-triggered outcome and
       delegates to the heap admission applicator, so callers can explicitly
-      perform the generation-metadata transition on the outcome heap. Tests
-      cover worker-result admission to old generation and no-op application for
-      Continue/Advice actions. This still does not install a collector, switch
-      allocators, reserve semispace storage, rewrite handles, mutate object
-      bodies, publish remembered/card state, or relocate values.
+      perform the generation-metadata transition on the outcome heap.
+      Successful application records the latest admission report on
+      `EvalOutcome::tier_b_transition_admission_report()`. Tests cover
+      worker-result admission to old generation, report retention, and no-op
+      application for Continue/Advice actions. This still does not install a
+      collector, switch allocators, reserve semispace storage, rewrite handles,
+      mutate object bodies, publish remembered/card state, or relocate values.
 - [x] Current automatic Tier-B admission option precursor:
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` lets
       owned root and attr-path evaluation entry points apply the existing
@@ -3192,11 +3197,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       Native AOS config enables the option automatically when
       `NixEvalConfig` carries a heap memory budget from `--max-rss` or
       `AOS_NIX_MAX_RSS`.
-      Tests cover default-off configuration, root-result admission, and
-      attr-path selected-value admission. This remains a metadata-only
-      generation rewrite: it does not install a collector, switch allocators,
-      reserve semispace storage, rewrite handles, mutate object bodies, publish
-      remembered/card state, or relocate values.
+      Tests cover default-off configuration, root-result admission, attr-path
+      selected-value admission, and the observable admission report. This
+      remains a metadata-only generation rewrite: it does not install a
+      collector, switch allocators, reserve semispace storage, rewrite handles,
+      mutate object bodies, publish remembered/card state, or relocate values.
 
 ### Region inference (§5)
 

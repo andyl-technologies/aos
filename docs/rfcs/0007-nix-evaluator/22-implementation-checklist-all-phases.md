@@ -6788,7 +6788,9 @@ and helps the oracle directly.
       and retain the latest action for tests and later daemon policy;
       `EvalOutcome` snapshots that final action through `memory_budget_action()`
       so root and attr-path callers can observe the safety-valve decision
-      without reaching into heap internals.
+      without reaching into heap internals. Automatic or explicit transition
+      admission also records the resulting heap-record rewrite report through
+      `tier_b_transition_admission_report()`.
       `EvalOutcome::tier_b_transition_request()` derives typed
       safety-valve metadata from a final `RequestTierB` action, carrying the
       would-be pre-flip worker/permanent arena snapshots and unused-tail advice
@@ -6838,18 +6840,20 @@ and helps the oracle directly.
       `EvalOutcome::apply_tier_b_transition_admission_plan()` now builds the
       current transition admission plan for a budget-triggered outcome and
       delegates to the heap admission applicator, giving callers an explicit
-      outcome-level entry point for the generation-metadata transition. Tests
-      cover worker-result admission to old generation and no-op application for
-      Continue/Advice actions. This remains an outcome bridge only: it does not
-      install a collector, switch allocators, reserve semispace storage, rewrite
-      handles, mutate object bodies, publish remembered/card state, or relocate
-      values.
+      outcome-level entry point for the generation-metadata transition.
+      Successful application records the latest report on
+      `EvalOutcome::tier_b_transition_admission_report()`. Tests cover
+      worker-result admission to old generation, report retention, and no-op
+      application for Continue/Advice actions. This remains an outcome bridge
+      only: it does not install a collector, switch allocators, reserve
+      semispace storage, rewrite handles, mutate object bodies, publish
+      remembered/card state, or relocate values.
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` now lets
       owned root and attr-path evaluation entry points apply that same outcome
       admission bridge before returning a budget-triggered outcome. Tests cover
       default-off configuration, native `NixEvalConfig` max-RSS mapping,
-      root-result admission, and attr-path selected-value admission. This
-      remains automatic metadata admission only:
+      root-result admission, attr-path selected-value admission, and the
+      observable admission report. This remains automatic metadata admission only:
       it does not install a collector, switch allocators, reserve semispace
       storage, rewrite handles, mutate object bodies, publish remembered/card
       state, or relocate values.

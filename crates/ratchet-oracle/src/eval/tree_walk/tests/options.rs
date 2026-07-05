@@ -725,6 +725,7 @@ fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
             .expect("lambda has a heap generation"),
         HeapGeneration::Young
     );
+    assert_eq!(outcome.tier_b_transition_admission_report(), None);
     let report = outcome
         .apply_tier_b_transition_admission_plan()
         .expect("transition admission applies")
@@ -739,6 +740,7 @@ fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
             .expect("lambda has a heap generation"),
         HeapGeneration::Old
     );
+    assert_eq!(outcome.tier_b_transition_admission_report(), Some(report));
 }
 
 #[test]
@@ -763,6 +765,12 @@ fn heap_memory_budget_tier_b_transition_admission_option_admits_owned_outcome() 
             .expect("lambda has a heap generation"),
         HeapGeneration::Old
     );
+    let report = outcome
+        .tier_b_transition_admission_report()
+        .expect("automatic admission records its report");
+    assert!(report.worker_records() > 0);
+    assert_eq!(report.permanent_shared_records(), 0);
+    assert_eq!(report.generation_rewrites(), report.worker_records());
     let admission = outcome
         .tier_b_transition_admission_plan()
         .expect("current outcome heap still admits transition request")
@@ -866,6 +874,7 @@ fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
         .expect("tree-walk outcome records configured budget action");
     assert!(!action.requests_tier_b());
     assert_eq!(outcome.tier_b_transition_request(), None);
+    assert_eq!(outcome.tier_b_transition_admission_report(), None);
     assert_eq!(
         outcome
             .tier_b_transition_preflight()
@@ -884,6 +893,7 @@ fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
             .expect("admission application is skipped without a transition request")
             .is_none()
     );
+    assert_eq!(outcome.tier_b_transition_admission_report(), None);
 }
 
 #[test]
@@ -911,6 +921,7 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
     assert!(decision.requires_runtime_action());
     assert!(!action.requests_tier_b());
     assert_eq!(outcome.tier_b_transition_request(), None);
+    assert_eq!(outcome.tier_b_transition_admission_report(), None);
     assert_eq!(
         outcome
             .tier_b_transition_preflight()
@@ -929,6 +940,7 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
             .expect("admission application is skipped without a transition request")
             .is_none()
     );
+    assert_eq!(outcome.tier_b_transition_admission_report(), None);
 }
 
 #[test]
@@ -989,6 +1001,11 @@ fn attr_path_eval_tier_b_transition_admission_option_admits_selected_value() {
             .expect("selected lambda has a heap generation"),
         HeapGeneration::Old
     );
+    let report = outcome
+        .tier_b_transition_admission_report()
+        .expect("automatic attr-path admission records its report");
+    assert!(report.worker_records() > 0);
+    assert_eq!(report.generation_rewrites(), report.worker_records());
 }
 
 #[test]
