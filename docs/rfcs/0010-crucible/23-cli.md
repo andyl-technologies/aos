@@ -1113,8 +1113,10 @@ branch on the verdict without parsing output:
   child configuration, and terminal child savepoint replay-oracle validation;
   routes explicitly selected local-QEMU forks through the same child-session
   materialization with resolved QEMU/plugin identity provenance in stdout and
-  the canonical log. Full closure remains blocked on process-backed real-QEMU
-  fork execution.
+  the canonical log; and process-tests real-binary `fork --backend qemu` JSONL
+  output and child artifact creation through marker-resolved QEMU/plugin
+  identity. Full closure remains blocked on backend-executed real-QEMU fork
+  execution.
 - [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —

@@ -160,6 +160,99 @@ fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<d
 }
 
 #[test]
+fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let save_artifact_dir = temp.path().join("fork-source-artifacts");
+    let fork_artifact_dir = temp.path().join("qemu-fork-artifacts");
+    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
+
+    let save_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "9",
+            "--artifact-dir",
+        ])
+        .arg(&save_artifact_dir)
+        .arg("save")
+        .arg("builtin:happy-path.scn")
+        .args(["--at", "quiescence", "--label", "fork-source"])
+        .output()?;
+    assert!(
+        save_output.status.success(),
+        "source savepoint for qemu fork should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&save_output.stdout),
+        String::from_utf8_lossy(&save_output.stderr),
+    );
+    let source = single_savepoint_handle(&save_artifact_dir, "fork-source")?;
+
+    let fork_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
+        .arg(&qemu)
+        .arg("--plugin")
+        .arg(&plugin)
+        .arg("--artifact-dir")
+        .arg(&fork_artifact_dir)
+        .arg("fork")
+        .arg(&source)
+        .args([
+            "--until",
+            "virtual-time",
+            "--max-virtual-time",
+            "2ticks",
+            "--label",
+            "qemu-process-child",
+        ])
+        .output()?;
+    assert!(
+        fork_output.status.success(),
+        "crucible fork --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&fork_output.stdout),
+        String::from_utf8_lossy(&fork_output.stderr),
+    );
+    let stdout = String::from_utf8(fork_output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &[
+            "backend_fidelity",
+            "fork_checkpoint",
+            "fork_oracle_validation",
+            "fork_reproduction_artifact",
+            "fork_qemu_runner",
+        ],
+    )?;
+    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
+    let expected_plugin_abi = qemu_process_plugin_abi();
+    assert!(stdout.contains("summary\":\"Qemu\""));
+    assert!(stdout.contains("label=qemu-process-child"));
+    assert!(stdout.contains("status=fat==thin-passed"));
+    assert!(stdout.contains("materialization=child-session-savepoint"));
+    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
+    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
+    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
+    assert!(stdout.contains("digest=crucible-hash:"));
+    assert!(stdout.contains("model_artifact=blake3:"));
+    assert!(stdout.contains("replay_state=blake3:"));
+    assert!(stdout.contains("fork_seed=inherited"));
+    assert!(stdout.contains("exit_code=0"));
+
+    let fork_artifacts = fs::read_dir(&fork_artifact_dir)?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let file_name = path.file_name()?.to_str()?;
+            (file_name.starts_with("fork-qemu-process-child-") && file_name.ends_with(".crucible"))
+                .then_some(path)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fork_artifacts.len(), 1);
+
+    Ok(())
+}
+
+#[test]
 fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
 {
     let temp = TempDir::new()?;
@@ -619,6 +712,31 @@ fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Erro
 
 fn qemu_process_plugin_abi() -> String {
     format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION)
+}
+
+fn single_savepoint_handle(dir: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let prefix = format!("savepoint-{label}-");
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid_data(format!("non-UTF-8 entry in `{}`", dir.display())))?;
+        if file_name.starts_with(&prefix) && file_name.ends_with(".crucible-savepoint") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        _ => Err(invalid_data(format!(
+            "expected one savepoint handle with prefix `{prefix}` in `{}`, found {}",
+            dir.display(),
+            paths.len()
+        ))
+        .into()),
+    }
 }
 
 #[derive(Debug)]
