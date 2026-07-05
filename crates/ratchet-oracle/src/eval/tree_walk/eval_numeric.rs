@@ -460,9 +460,7 @@ impl TreeWalk {
         bytes.extend_from_slice(left.bytes());
         bytes.extend_from_slice(right.bytes());
         let bytes = Self::absolute_path_bytes_for_node(id, node.span, &bytes)?;
-        self.heap
-            .alloc_path(NixString::from_bytes(bytes))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_path(id, node.span, NixString::from_bytes(bytes))
     }
 
     pub(super) fn eval_attrs_add(

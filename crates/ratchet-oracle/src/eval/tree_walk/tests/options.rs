@@ -1756,6 +1756,15 @@ fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() 
 }
 
 #[test]
+fn gc_stress_eval_root_add_operator_scalar_results_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches(r#""a" + "b""#, b"ab");
+    assert_gc_stress_root_path_result_dispatches(
+        r#"/tmp/gc-stress-root + "/name""#,
+        b"/tmp/gc-stress-root/name",
+    );
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),

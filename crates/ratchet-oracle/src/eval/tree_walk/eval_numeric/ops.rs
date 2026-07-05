@@ -91,9 +91,7 @@ impl TreeWalk {
                 TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
             })?
         };
-        self.heap
-            .alloc_string(concatenated)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_string(id, node.span, concatenated)
     }
 
     pub(in crate::eval::tree_walk) fn eval_list_concat(
