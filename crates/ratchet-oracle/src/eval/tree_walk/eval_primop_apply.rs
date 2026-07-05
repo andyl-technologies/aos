@@ -498,7 +498,9 @@ impl TreeWalk {
             StrictTernaryPrimOp::ReplaceStrings => {
                 self.eval_replace_strings_primop(call.id, call.span, first, second, third)
             }
-            StrictTernaryPrimOp::Substring => self.eval_substring_primop(first, second, third),
+            StrictTernaryPrimOp::Substring => {
+                self.eval_substring_primop(call.id, call.span, first, second, third)
+            }
         }
     }
 

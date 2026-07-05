@@ -500,6 +500,8 @@ impl TreeWalk {
 
     pub(super) fn eval_substring_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         start: IrId,
         len: IrId,
         string_id: IrId,
@@ -547,15 +549,7 @@ impl TreeWalk {
                     )
                 })?
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: string_id,
-                    source,
-                },
-                string_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_replace_strings_primop(

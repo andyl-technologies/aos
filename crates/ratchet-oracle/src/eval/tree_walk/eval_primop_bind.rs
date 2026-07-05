@@ -51,7 +51,7 @@ impl TreeWalk {
                 self.eval_replace_strings_primop_value(id, span, first, second, third)
             }
             StrictTernaryPrimOp::Substring => {
-                self.eval_substring_primop_value(first, second, third)
+                self.eval_substring_primop_value(id, span, first, second, third)
             }
         }
     }
@@ -240,6 +240,8 @@ impl TreeWalk {
 
     pub(super) fn eval_substring_primop_value(
         &mut self,
+        id: IrId,
+        span: Span,
         start_arg: EvalPrimOpArg,
         len_arg: EvalPrimOpArg,
         string_arg: EvalPrimOpArg,
@@ -280,15 +282,7 @@ impl TreeWalk {
                     )
                 })?
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: string_arg.id(),
-                    source,
-                },
-                string_arg.span(),
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_strict_binary_primop_value(

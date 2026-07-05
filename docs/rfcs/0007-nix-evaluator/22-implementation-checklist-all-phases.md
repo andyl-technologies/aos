@@ -7271,8 +7271,10 @@ and helps the oracle directly.
       now route through the same wrapper, and `convertHash` final strings are
       wrapper-routed even though direct root `convertHash` calls still remain
       outside public dispatch while their argument attrsets are live interned
-      attr roots. The dispatch uses the same promotion threshold of 2 as the
-      existing tree-walk GC-stress bridges and intentionally leaves
+      attr roots. `substring` final string allocation also routes through the
+      wrapper for both direct builtin calls and first-class primop-value calls.
+      The dispatch uses the same promotion threshold of 2 as the existing
+      tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
       thunks and thunk fields, application-argument thunks, captured lambdas,
       captured-argument primop wrappers,
@@ -7294,6 +7296,8 @@ and helps the oracle directly.
       `toPath` helper allocations relocating registered transient roots while
       interned string/path roots are live, root `hashString` digest and
       `placeholder` string allocations relocating registered transient roots,
+      root `substring` final string allocation relocating registered transient
+      roots while interned string roots are live,
       static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string

@@ -1699,6 +1699,11 @@ fn gc_stress_eval_root_hash_string_result_helpers_dispatch_permanent_noop_bridge
 }
 
 #[test]
+fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches(r#"builtins.substring 1 2 "abcd""#, b"bc");
+}
+
+#[test]
 fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
     type ContextStringHelper =
         fn(&mut TreeWalk, IrId, Span, IrId, Span, Value) -> Result<Value, TreeWalkError>;
