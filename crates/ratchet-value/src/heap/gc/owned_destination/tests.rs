@@ -83,6 +83,14 @@ fn minor_gc_owned_destination_storage_materializes_bases_and_copies_sources() {
     let first_copy_source = [1, 2, 3, 4];
     let promote_source = [5, 6, 7, 8, 9, 10];
     let second_copy_source = [11, 12, 13];
+    let planned_report =
+        MinorGcOwnedDestinationStorageCopyReport::from_object_copy_plan(&copy_plan);
+
+    assert_eq!(planned_report.object_copies(), 3);
+    assert_eq!(planned_report.copied_to_nursery(), 2);
+    assert_eq!(planned_report.promoted_to_old(), 1);
+    assert_eq!(planned_report.nursery_payload_bytes(), 7);
+    assert_eq!(planned_report.old_payload_bytes(), 6);
 
     let report = storage
         .copy_from_sources(
@@ -98,6 +106,7 @@ fn minor_gc_owned_destination_storage_materializes_bases_and_copies_sources() {
     assert_eq!(storage.placement_plan(), &placement_plan);
     assert_eq!(storage.nursery_reserved_bytes(), 11);
     assert_eq!(storage.old_reserved_bytes(), 6);
+    assert_eq!(report, planned_report);
     assert_eq!(
         storage.generation_destination_bytes(HeapGeneration::Permanent),
         None

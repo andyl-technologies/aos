@@ -4757,6 +4757,56 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
         }]
     );
     assert!(commit_application.remembered_set().is_empty());
+    let owned_storage_application = preflight
+        .apply_commit_to_owned_destination_storage()
+        .expect("boundary preflight applies owned destination storage commit");
+    let owned_storage_report = owned_storage_application.report();
+    assert_eq!(owned_storage_report.object_copies(), 1);
+    assert_eq!(owned_storage_report.copied_to_nursery(), 1);
+    assert_eq!(owned_storage_report.promoted_to_old(), 0);
+    assert_eq!(owned_storage_report.forwarding_pointers(), 1);
+    assert_eq!(owned_storage_report.reference_rewrites(), 1);
+    assert_eq!(owned_storage_report.remembered_set_source_edges(), 0);
+    assert_eq!(owned_storage_report.remembered_set_published_edges(), 0);
+    let owned_destination_storage = owned_storage_application.destination_storage();
+    assert_eq!(
+        owned_destination_storage.copy_report().object_copies(),
+        owned_storage_report.object_copies()
+    );
+    assert_eq!(
+        owned_destination_storage.copy_report().copied_to_nursery(),
+        1
+    );
+    assert_eq!(owned_destination_storage.copy_report().promoted_to_old(), 0);
+    assert_eq!(
+        owned_destination_storage.nursery_reserved_bytes(),
+        destination_storage.nursery_reserved_bytes()
+    );
+    assert_eq!(owned_destination_storage.old_reserved_bytes(), 0);
+    assert_eq!(
+        owned_destination_storage.nursery_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    assert!(owned_destination_storage.old_destination_bytes().is_empty());
+    let owned_forwarded_value = owned_storage_application.forwarding_slots()[0]
+        .forwarded_value()
+        .expect("owned-storage commit installs forwarding");
+    let ResolvedValueGeneration::Heap {
+        address: owned_nursery_base,
+        generation: HeapGeneration::Young,
+    } = owned_forwarded_value
+    else {
+        panic!("owned-storage copied survivor remains young");
+    };
+    assert_eq!(
+        owned_storage_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: owned_nursery_base,
+            generation: HeapGeneration::Young,
+        }]
+    );
+    assert!(owned_storage_application.remembered_set().is_empty());
+    assert!(owned_storage_application.card_table().is_empty());
 
     let applications = preflights
         .apply_reference_writebacks_to_owned_slots()
@@ -4770,6 +4820,73 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
     assert_eq!(commit_applications.len(), 1);
     assert_eq!(commit_applications.worker(), Some(&commit_application));
     assert!(commit_applications.permanent_shared().is_none());
+    let owned_storage_applications = preflights
+        .apply_commits_to_owned_destination_storage()
+        .expect("boundary preflights apply owned destination storage commits");
+    assert_eq!(owned_storage_applications.len(), 1);
+    assert!(owned_storage_applications.permanent_shared().is_none());
+    let aggregate_owned_storage_application = owned_storage_applications
+        .worker()
+        .expect("worker boundary owned-storage commit application is present");
+    assert_eq!(
+        aggregate_owned_storage_application.report(),
+        owned_storage_application.report()
+    );
+    assert_eq!(
+        aggregate_owned_storage_application
+            .destination_storage()
+            .copy_report(),
+        owned_storage_application
+            .destination_storage()
+            .copy_report()
+    );
+    assert_eq!(
+        aggregate_owned_storage_application
+            .destination_storage()
+            .nursery_reserved_bytes(),
+        owned_destination_storage.nursery_reserved_bytes()
+    );
+    assert_eq!(
+        aggregate_owned_storage_application
+            .destination_storage()
+            .old_reserved_bytes(),
+        owned_destination_storage.old_reserved_bytes()
+    );
+    assert_eq!(
+        aggregate_owned_storage_application
+            .destination_storage()
+            .nursery_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    assert!(
+        aggregate_owned_storage_application
+            .destination_storage()
+            .old_destination_bytes()
+            .is_empty()
+    );
+    let aggregate_forwarded_value = aggregate_owned_storage_application.forwarding_slots()[0]
+        .forwarded_value()
+        .expect("aggregate owned-storage commit installs forwarding");
+    let ResolvedValueGeneration::Heap {
+        address: aggregate_nursery_base,
+        generation: HeapGeneration::Young,
+    } = aggregate_forwarded_value
+    else {
+        panic!("aggregate owned-storage copied survivor remains young");
+    };
+    assert_eq!(
+        aggregate_owned_storage_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: aggregate_nursery_base,
+            generation: HeapGeneration::Young,
+        }]
+    );
+    assert!(
+        aggregate_owned_storage_application
+            .remembered_set()
+            .is_empty()
+    );
+    assert!(aggregate_owned_storage_application.card_table().is_empty());
 }
 
 #[test]
@@ -9073,6 +9190,50 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
             generation: HeapGeneration::Old,
         }]
     );
+    let owned_storage_application = preflight
+        .apply_commit_to_owned_destination_storage()
+        .expect("promoted boundary preflight applies owned destination storage commit");
+    assert_eq!(owned_storage_application.report().copied_to_nursery(), 0);
+    assert_eq!(owned_storage_application.report().promoted_to_old(), 1);
+    let owned_destination_storage = owned_storage_application.destination_storage();
+    assert_eq!(
+        owned_destination_storage.copy_report().copied_to_nursery(),
+        0
+    );
+    assert_eq!(owned_destination_storage.copy_report().promoted_to_old(), 1);
+    assert_eq!(owned_destination_storage.nursery_reserved_bytes(), 0);
+    assert_eq!(
+        owned_destination_storage.old_reserved_bytes(),
+        destination_storage.old_reserved_bytes()
+    );
+    assert!(
+        owned_destination_storage
+            .nursery_destination_bytes()
+            .is_empty()
+    );
+    assert_eq!(
+        owned_destination_storage.old_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    let owned_forwarded_value = owned_storage_application.forwarding_slots()[0]
+        .forwarded_value()
+        .expect("promoted owned-storage commit installs forwarding");
+    let ResolvedValueGeneration::Heap {
+        address: owned_old_base,
+        generation: HeapGeneration::Old,
+    } = owned_forwarded_value
+    else {
+        panic!("promoted owned-storage survivor remains old");
+    };
+    assert_eq!(
+        owned_storage_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: owned_old_base,
+            generation: HeapGeneration::Old,
+        }]
+    );
+    assert!(owned_storage_application.remembered_set().is_empty());
+    assert!(owned_storage_application.card_table().is_empty());
 
     let mut destination_outcome = eval_whnf_owned_with_options(
         &ir,

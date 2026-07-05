@@ -55,6 +55,20 @@ pub struct MinorGcOwnedDestinationStorageCopyReport {
 }
 
 impl MinorGcOwnedDestinationStorageCopyReport {
+    /// Builds copy counts from a validated object-copy plan.
+    ///
+    /// This reports the copy/promote and payload-byte totals that
+    /// [`MinorGcOwnedDestinationStorage::copy_from_sources`] would return after
+    /// successfully applying `copy_plan`, without reading source bytes or
+    /// mutating destination storage.
+    pub fn from_object_copy_plan(copy_plan: &MinorGcObjectCopyPlan) -> Self {
+        let mut report = Self::default();
+        for copy in copy_plan.copies() {
+            report.record(*copy);
+        }
+        report
+    }
+
     fn record(&mut self, copy: MinorGcObjectCopy) {
         self.object_copies += 1;
         match copy.action() {

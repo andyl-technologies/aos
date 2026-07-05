@@ -6841,6 +6841,24 @@ and helps the oracle directly.
       object-header forwarding slots, mutating live tree-walk roots or heap
       fields, mutating remembered source fields, publishing the evaluator-owned
       remembered set, and semispace swapping/management remain open.
+- [x] Current GC-stress boundary owned-storage commit bridge precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflight::apply_commit_to_owned_destination_storage`
+      allocates fresh `MinorGcOwnedDestinationStorage`, rebuilds relocation
+      destinations and commit metadata from the storage-derived bases, builds
+      synthetic source-byte views from the boundary copy requests, and delegates
+      the cloned forwarding, reference, remembered-set, and card-table buffers
+      through the allocation-poll owned-storage commit bridge. The aggregate
+      `EvalGcStressBoundaryMinorGcCommitPreflights::apply_commits_to_owned_destination_storage`
+      preserves worker/permanent-shared partitioning while allocating each
+      partition's storage independently. Tests cover a copied worker-boundary
+      survivor, promoted old-generation destination storage, storage-derived
+      forwarding and reference rewrites, copied destination bytes, copy-report
+      parity, and aggregate partition application.
+      This remains an owned-storage proof path only; live tree-walk root/heap
+      field binding, live object body/header binding, remembered-source field
+      mutation, evaluator-owned card-table storage, and semispace page management
+      remain open, and the GC-stress boundary dry run still uses its existing
+      separate owned-buffer application surface.
 - [x] Current GC-stress boundary commit dry-run precursor:
       `EvalGcStressBoundaryMinorGcCommitPreflights::apply_owned_commit_dry_run`
       consumes the boundary preflight bundle, applies owned reference-writeback
