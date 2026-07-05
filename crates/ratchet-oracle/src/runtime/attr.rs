@@ -344,8 +344,8 @@ impl RuntimeAttrAccessRustCallableBinding {
 /// A missing piece before an attribute-access helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeAttrAccessNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the evaluator runtime context pointer.
     RuntimeContextDecodeUnimplemented,
     /// Native wrappers cannot yet bind the receiver value as an active root.
@@ -365,7 +365,7 @@ pub enum RuntimeAttrAccessNativeExportBlocker {
 }
 
 const ATTR_ACCESS_KEYED_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
-    RuntimeAttrAccessNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
@@ -375,7 +375,7 @@ const ATTR_ACCESS_KEYED_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportB
     RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
 ];
 const ATTR_UPDATE_NATIVE_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
-    RuntimeAttrAccessNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
     RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
@@ -898,7 +898,7 @@ mod tests {
             assert!(
                 record
                     .blockers()
-                    .contains(&RuntimeAttrAccessNativeExportBlocker::MissingExternCWrapper)
+                    .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper)
             );
             assert!(record.blockers().contains(
                 &RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented

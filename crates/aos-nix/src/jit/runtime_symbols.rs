@@ -790,7 +790,7 @@ mod provenance_tests {
                         &RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized
                     )
                     && !blockers.contains(
-                        &RuntimeAllocationNativeExportBlocker::MissingExternCWrapper
+                        &RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper
                     )
                     && !blockers.contains(
                         &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
@@ -803,7 +803,7 @@ mod provenance_tests {
                     &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
                 )
                     && !blockers.contains(
-                        &RuntimeAllocationNativeExportBlocker::MissingExternCWrapper
+                        &RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper
                     )
         ));
 
@@ -812,10 +812,13 @@ mod provenance_tests {
         assert!(
             registration
                 .native_export_gap_for_symbol("aos_alloc_attrs")
-                .is_some_and(|gap| gap
-                    .missing_exported_allocation_blockers()
-                    .is_some_and(|blockers| blockers
-                        .contains(&RuntimeAllocationNativeExportBlocker::MissingExternCWrapper)))
+                .is_some_and(
+                    |gap| gap
+                        .missing_exported_allocation_blockers()
+                        .is_some_and(|blockers| blockers.contains(
+                            &RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper
+                        ))
+                )
         );
         assert!(
             registration

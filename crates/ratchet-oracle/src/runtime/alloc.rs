@@ -841,8 +841,8 @@ impl RuntimeAllocationRustCallableBinding {
 /// A missing piece before a storage-only allocation helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeAllocationNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the runtime context pointer.
     RuntimeContextAbiUnimplemented,
     /// Helper failures cannot yet transfer into evaluator trap/error machinery.
@@ -854,14 +854,14 @@ pub enum RuntimeAllocationNativeExportBlocker {
 }
 
 const ALLOCATION_STORAGE_NATIVE_EXPORT_BLOCKERS: &[RuntimeAllocationNativeExportBlocker] = &[
-    RuntimeAllocationNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
     RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
     RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
 ];
 
 const ALLOCATION_SEMANTIC_NATIVE_EXPORT_BLOCKERS: &[RuntimeAllocationNativeExportBlocker] = &[
-    RuntimeAllocationNativeExportBlocker::MissingExternCWrapper,
+    RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
     RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
     RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
@@ -3129,7 +3129,7 @@ mod tests {
             assert!(
                 record
                     .blockers()
-                    .contains(&RuntimeAllocationNativeExportBlocker::MissingExternCWrapper)
+                    .contains(&RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper)
             );
             assert!(
                 record.blockers().contains(

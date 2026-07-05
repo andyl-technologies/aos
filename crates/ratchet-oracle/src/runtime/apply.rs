@@ -243,8 +243,8 @@ impl RuntimeApplyRustCallableBinding {
 /// A missing piece before an apply helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeApplyNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the evaluator runtime context pointer.
     RuntimeContextDecodeUnimplemented,
     /// Native wrappers cannot yet bind imported function and argument values as roots.
@@ -260,7 +260,7 @@ pub enum RuntimeApplyNativeExportBlocker {
 }
 
 const APPLY_NATIVE_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] = &[
-    RuntimeApplyNativeExportBlocker::MissingExternCWrapper,
+    RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeApplyNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeApplyNativeExportBlocker::ActiveCallRootBindingUnimplemented,
     RuntimeApplyNativeExportBlocker::CallDepthAccountingUnimplemented,
@@ -679,7 +679,7 @@ mod tests {
         assert!(
             record
                 .blockers()
-                .contains(&RuntimeApplyNativeExportBlocker::MissingExternCWrapper)
+                .contains(&RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper)
         );
         assert!(
             record

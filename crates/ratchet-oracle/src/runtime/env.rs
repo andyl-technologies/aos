@@ -226,8 +226,8 @@ impl RuntimeEnvAccessRustCallableBinding {
 /// A missing piece before an environment-access helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEnvAccessNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the captured environment pointer.
     NativeEnvPointerDecodeUnimplemented,
     /// The native environment frame layout is not bound to [`EvalFrame`] yet.
@@ -243,7 +243,7 @@ pub enum RuntimeEnvAccessNativeExportBlocker {
 }
 
 const ENV_ACCESS_NATIVE_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocker] = &[
-    RuntimeEnvAccessNativeExportBlocker::MissingExternCWrapper,
+    RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented,
     RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented,
     RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented,
@@ -668,7 +668,7 @@ mod tests {
         assert!(
             record
                 .blockers()
-                .contains(&RuntimeEnvAccessNativeExportBlocker::MissingExternCWrapper)
+                .contains(&RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper)
         );
         assert!(
             record.blockers().contains(

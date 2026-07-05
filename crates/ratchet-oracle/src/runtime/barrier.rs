@@ -440,8 +440,8 @@ impl RuntimeWriteBarrierRustCallableBinding {
 /// A missing piece before the safe write-barrier helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeWriteBarrierNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the runtime context pointer.
     RuntimeContextAbiUnimplemented,
     /// Native wrappers cannot yet extract heap, remembered-set, and card-table state.
@@ -457,7 +457,7 @@ pub enum RuntimeWriteBarrierNativeExportBlocker {
 }
 
 const WRITE_BARRIER_NATIVE_EXPORT_BLOCKERS: &[RuntimeWriteBarrierNativeExportBlocker] = &[
-    RuntimeWriteBarrierNativeExportBlocker::MissingExternCWrapper,
+    RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented,
     RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented,
     RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented,
@@ -857,7 +857,7 @@ mod tests {
         assert!(
             record
                 .blockers()
-                .contains(&RuntimeWriteBarrierNativeExportBlocker::MissingExternCWrapper)
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper)
         );
         assert!(
             record

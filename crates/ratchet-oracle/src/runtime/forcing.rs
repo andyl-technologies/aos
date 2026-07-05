@@ -321,8 +321,8 @@ impl RuntimeForcingRustCallableBinding {
 /// A missing piece before a forcing helper can become a native ABI export.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeForcingNativeExportBlocker {
-    /// No `unsafe extern "C"` symbol body exists for the frozen helper name.
-    MissingExternCWrapper,
+    /// No final exported C ABI wrapper is admitted for the frozen helper name.
+    MissingFinalExportedWrapper,
     /// Native wrappers cannot yet decode the evaluator runtime context pointer.
     RuntimeContextDecodeUnimplemented,
     /// Native wrappers cannot yet bind an imported value to the evaluator force root.
@@ -338,14 +338,14 @@ pub enum RuntimeForcingNativeExportBlocker {
 }
 
 const BLACKHOLE_CHECK_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
-    RuntimeForcingNativeExportBlocker::MissingExternCWrapper,
+    RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
     RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
 ];
 
 const FORCE_VALUE_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
-    RuntimeForcingNativeExportBlocker::MissingExternCWrapper,
+    RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
     RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
     RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
     RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
@@ -813,7 +813,7 @@ mod tests {
             assert!(
                 record
                     .blockers()
-                    .contains(&RuntimeForcingNativeExportBlocker::MissingExternCWrapper)
+                    .contains(&RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper)
             );
             assert!(
                 record.blockers().contains(

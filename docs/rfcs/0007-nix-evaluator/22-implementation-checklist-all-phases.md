@@ -5402,7 +5402,8 @@ and helps the oracle directly.
       and `aos_update`
       runtime-FFI address/provenance, prove the runtime-FFI provenance set
       follows the unified native-wrapper manifest, prove allocation
-      trap-wrapper blockers no longer include the missing extern-C blocker, feed
+      trap-wrapper blockers no longer include the missing final exported wrapper
+      blocker, feed
       only the allocation-filtered subset through JIT
       registration, and still cover registered env-slot tier-1 promotion for
       `aos_env_get`. This is safe integration preflight plumbing only: it does
@@ -5638,11 +5639,12 @@ and helps the oracle directly.
       initialization for cons/lambda/thunk payloads exist. `aos-nix` uses these
       addresses for runtime-symbol provenance, replacing the allocation
       Rust-callable provenance gap, and that provenance now carries the
-      trap-wrapper's remaining native-export blockers: missing extern-C wrapper
-      is removed by the trap body, while runtime-context decoding,
+      trap-wrapper's remaining native-export blockers: it omits the separate
+      final-export gate, while runtime-context decoding,
       trap transfer, typed pointer returns, and semantic payload initialization
       remain explicit where applicable. The oracle native-export readiness gate
-      still rejects final registration. This is process-local preflight
+      still reports the missing final exported wrapper and rejects final
+      registration. This is process-local preflight
       metadata only: no allocation wrapper allocates, initializes heap payloads,
       transfers traps, registers with `JITBuilder::symbol`, or becomes a final
       exported native ABI target.
