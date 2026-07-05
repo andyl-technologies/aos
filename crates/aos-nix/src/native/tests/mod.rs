@@ -47,6 +47,24 @@ fn assert_materialized_drv(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn assert_ir_has_non_conservative_facts(ir: &Ir) {
+    assert!(
+        ir.facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != crate::compile::ExprFacts::conservative()),
+        "native-lowered IR should carry non-conservative analysis facts"
+    );
+}
+
+fn assert_parse_cache_has_non_conservative_facts(cache_root: &Path, source: &[u8]) -> Result<()> {
+    let cached = ParseCache::new(cache_root)
+        .load_cached_bytes(source)?
+        .expect("parse-cache entry should exist");
+    assert_ir_has_non_conservative_facts(&cached.ir);
+    Ok(())
+}
+
 fn instantiate_file_closure_with_stats(
     native: &NixNative,
     file: &Path,

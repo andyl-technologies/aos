@@ -81,6 +81,87 @@ fn native_file_instantiation_materializes_persistent_root_parse_cache() -> Resul
 }
 
 #[test]
+fn native_file_root_persists_refreshed_analysis_facts() -> Result<()> {
+    use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
+
+    let root = unique_temp_dir("aos-nix-native-file-parse-analysis");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let file = root.join("default.nix");
+    let source = b"(x: x + 1) (1 + 2)";
+    fs::write(&file, source)?;
+    let realpath = fs::canonicalize(&file)?;
+    let source_hint = realpath.to_string_lossy().into_owned();
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options.set_parse_cache_root(&first_parse_root);
+    first_options.set_persist_cache_root(&persist_root);
+    let first_native = NixNative::with_options(0, first_options)?;
+    let first_ir = first_native.lower_native_source_bytes(
+        source,
+        Some(source_hint.clone()),
+        Some(realpath.as_path()),
+        None,
+        None,
+    )?;
+    assert_ir_has_non_conservative_facts(&first_ir);
+    assert_parse_cache_has_non_conservative_facts(&first_parse_root, source)?;
+    let first_cache = ParseCache::new(&first_parse_root);
+    let parse_key = first_cache.key_for_source(source);
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_file_artifact(PersistFileArtifactKey::from_parse_file_key(
+                &file_key, parse_key
+            ))?
+            .is_some(),
+        "native file root should persist the refreshed parse artifact"
+    );
+    let probe_parse_root = root.join("probe-parse");
+    let persisted = PersistCache::open(&persist_root)?
+        .load_parse_cache_source_from_index(&ParseCache::new(&probe_parse_root), &realpath, source)?
+        .expect("persisted file-root artifact hydrates");
+    assert_ir_has_non_conservative_facts(&persisted.ir);
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut second_options = TreeWalkOptions::new();
+    second_options.set_parse_cache_root(&second_parse_root);
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second_native = NixNative::with_options(0, second_options)?;
+    second_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+
+    let second_ir = second_native.lower_native_source_bytes(
+        source,
+        Some(source_hint),
+        Some(realpath.as_path()),
+        None,
+        None,
+    )?;
+
+    assert_ir_has_non_conservative_facts(&second_ir);
+    assert_parse_cache_has_non_conservative_facts(&second_parse_root, source)?;
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source]
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure() -> Result<()> {
     use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
 

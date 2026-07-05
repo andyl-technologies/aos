@@ -60,6 +60,36 @@ fn native_instantiation_expr_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
+fn native_instantiation_expr_refreshes_parse_cache_analysis_facts() -> Result<()> {
+    let root = unique_temp_dir("native-instantiation-parse-cache-analysis");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let cache_root = root.join("parse");
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_parse_cache_root(&cache_root);
+    let native = NixNative::with_options(0, options)?;
+    let expr = r#"(x: derivationStrict {
+         name = "base-${builtins.toString x}";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+       }) (1 + 2)"#;
+    let source = derivation_path_wrapper_source(expr);
+
+    let (closure, _stats) = instantiate_expr_closure_with_stats(&native, expr)?;
+
+    assert!(
+        closure.root().starts_with(&store),
+        "{}",
+        closure.root().display()
+    );
+    assert_parse_cache_has_non_conservative_facts(&cache_root, source.as_bytes())?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_expr_materializes_persistent_parse_cache() -> Result<()> {
     use crate::cache::{PersistCache, PersistParseArtifactKey};
 

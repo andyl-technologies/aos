@@ -221,6 +221,38 @@ fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_refreshes_parse_cache_analysis_facts() -> Result<()> {
+    let root = unique_temp_dir("native-expression-parse-cache-analysis");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let cache_root = root.join("parse");
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(&cache_root);
+    let native = NixNative::with_options(0, options)?;
+    let expr = "(x: x + 1) (1 + 2)";
+    let source = json_wrapper_source(expr);
+
+    let (json, stats) = native.eval_expr_with_stats(expr)?;
+
+    assert_eq!(json, "4");
+    assert!(
+        stats.thunks_elided() > 0,
+        "analyzed native expression should elide a strict thunk"
+    );
+    assert_parse_cache_has_non_conservative_facts(&cache_root, source.as_bytes())?;
+
+    let (cached_json, cached_stats) = native.eval_expr_with_stats(expr)?;
+    assert_eq!(cached_json, "4");
+    assert!(
+        cached_stats.thunks_elided() > 0,
+        "cached analyzed native expression should preserve refreshed facts"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_materializes_persistent_parse_cache_without_source_path() -> Result<()> {
     use crate::cache::{PersistCache, PersistParseArtifactKey};
 
@@ -252,6 +284,77 @@ fn native_expression_eval_materializes_persistent_parse_cache_without_source_pat
         fs::metadata(persist.layout().file_artifact_index_path())?.len(),
         0,
         "raw expression eval should not synthesize a persistent file-artifact key"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_persists_refreshed_analysis_facts_without_source_path() -> Result<()> {
+    use crate::cache::{PersistCache, PersistParseArtifactKey};
+
+    let root = unique_temp_dir("native-expression-persist-parse-analysis");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let expr = "(x: x + 1) (1 + 2)";
+    let source = json_wrapper_source(expr);
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options.set_parse_cache_root(&first_parse_root);
+    first_options.set_persist_cache_root(&persist_root);
+    let first_native = NixNative::with_options(0, first_options)?;
+    let (first_json, first_stats) = first_native.eval_expr_with_stats(expr)?;
+    assert_eq!(first_json, "4");
+    assert!(
+        first_stats.thunks_elided() > 0,
+        "first analyzed native expression should elide a strict thunk"
+    );
+    assert_parse_cache_has_non_conservative_facts(&first_parse_root, source.as_bytes())?;
+    let first_cache = ParseCache::new(&first_parse_root);
+    let parse_key = first_cache.key_for_source(source.as_bytes());
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(parse_key))?
+            .is_some(),
+        "native expression should persist the refreshed parse artifact"
+    );
+    let probe_parse_root = root.join("probe-parse");
+    let persisted = PersistCache::open(&persist_root)?
+        .load_parse_cache_bytes_from_index(&ParseCache::new(&probe_parse_root), source.as_bytes())?
+        .expect("persisted raw expression artifact hydrates");
+    assert_ir_has_non_conservative_facts(&persisted.ir);
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut second_options = TreeWalkOptions::new();
+    second_options.set_parse_cache_root(&second_parse_root);
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second_native = NixNative::with_options(0, second_options)?;
+    second_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+
+    let (second_json, second_stats) = second_native.eval_expr_with_stats(expr)?;
+
+    assert_eq!(second_json, "4");
+    assert!(
+        second_stats.thunks_elided() > 0,
+        "persistent analyzed native expression should preserve refreshed facts"
+    );
+    assert_parse_cache_has_non_conservative_facts(&second_parse_root, source.as_bytes())?;
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Bytes]
     );
 
     fs::remove_dir_all(root)?;

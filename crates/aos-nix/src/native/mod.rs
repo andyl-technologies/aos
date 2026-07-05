@@ -19,8 +19,8 @@ use anyhow::Result;
 #[cfg(test)]
 use crate::cache::EvalCache;
 use crate::cache::{
-    EvalCacheRuntime, MaterializationDecision, ParseCache, ParseCacheError, ParseFileKey,
-    PersistCache,
+    CachedParse, EvalCacheRuntime, MaterializationDecision, ParseCache, ParseCacheError,
+    ParseFileKey, PersistCache,
 };
 #[cfg(test)]
 use crate::compile::{EffectClass, IrFacts};
@@ -665,36 +665,33 @@ impl NixNative {
                         .ok()
                         .flatten()
                 };
-                if let Some(cached) = cached {
+                if let Some(mut cached) = cached {
                     #[cfg(test)]
                     self.observe_persistent_parse_hit(if source_path.is_some() {
                         NativePersistentParseHit::Source
                     } else {
                         NativePersistentParseHit::Bytes
                     });
+                    self.refresh_and_materialize_native_cached_parse(
+                        persist_cache,
+                        source,
+                        source_path,
+                        &mut cached,
+                    );
                     return Ok(cached.ir);
                 }
             }
             match cache.load_or_parse_bytes(source, source_hint) {
-                Ok(cached) => {
-                    if cached.stored {
-                        if let Some(persist_cache) = &persist_cache {
-                            if let Some(source_path) = source_path {
-                                let file_key = ParseFileKey::for_source(source_path, source);
-                                let _ = persist_cache.materialize_parse_artifact_entry_indexed(
-                                    &file_key,
-                                    cached.key,
-                                    &cached.entry,
-                                    MaterializationDecision::Materialize,
-                                );
-                            } else {
-                                let _ = persist_cache.materialize_parse_cache_entry_indexed(
-                                    cached.key,
-                                    &cached.entry,
-                                    MaterializationDecision::Materialize,
-                                );
-                            }
-                        }
+                Ok(mut cached) => {
+                    if let Some(persist_cache) = &persist_cache {
+                        self.refresh_and_materialize_native_cached_parse(
+                            persist_cache,
+                            source,
+                            source_path,
+                            &mut cached,
+                        );
+                    } else {
+                        let _ = cached.refresh_and_store_facts();
                     }
                     return Ok(cached.ir);
                 }
@@ -709,6 +706,34 @@ impl NixNative {
         }
 
         Self::lower_native_source_uncached(source, source_map, diagnostic_source)
+    }
+
+    fn refresh_and_materialize_native_cached_parse(
+        &self,
+        persist_cache: &PersistCache,
+        source: &[u8],
+        source_path: Option<&Path>,
+        cached: &mut CachedParse,
+    ) {
+        let _ = cached.refresh_and_store_facts();
+        if !cached.stored {
+            return;
+        }
+        if let Some(source_path) = source_path {
+            let file_key = ParseFileKey::for_source(source_path, source);
+            let _ = persist_cache.materialize_parse_artifact_entry_indexed(
+                &file_key,
+                cached.key,
+                &cached.entry,
+                MaterializationDecision::Materialize,
+            );
+        } else {
+            let _ = persist_cache.materialize_parse_cache_entry_indexed(
+                cached.key,
+                &cached.entry,
+                MaterializationDecision::Materialize,
+            );
+        }
     }
 
     fn lower_native_source_uncached(

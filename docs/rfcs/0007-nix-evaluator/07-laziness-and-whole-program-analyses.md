@@ -856,9 +856,9 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       in-memory facts, and best-effort writing the validated `facts.bin`
       sidecar. The result reports whether fact storage succeeded, while parse
       and analysis failures remain explicit errors. This is a caller-driven
-      analyzed-load helper; it is not automatic evaluator/import integration,
-      whole-program fixpoint scheduling, independent IR-hash fact persistence,
-      or an analyzed-once cross-source fact index.
+      analyzed-load helper; it is not broad automatic analysis scheduling for
+      every evaluator surface, whole-program fixpoint scheduling, independent
+      IR-hash fact persistence, or an analyzed-once cross-source fact index.
 - [x] Current configured-import analysis refresh precursor:
       ordinary unscoped filesystem imports with a configured parse cache now
       best-effort refresh facts on loaded or freshly parsed `CachedParse`
@@ -866,11 +866,27 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       parse-artifact materialization. The tree-walk oracle can therefore
       consume current strictness/cardinality/escape facts for eligible imports,
       and validated `facts.bin` sidecars are written when possible. Scoped
-      imports, text-store imports, uncached imports, and refresh/write failures
-      stay conservative. This is configured import integration for the current
-      local analysis pipeline, not whole-program fixpoint scheduling,
-      independent IR-hash fact persistence, or an analyzed-once cross-source
-      fact index.
+      imports, text-store imports, and uncached imports stay conservative.
+      Analysis failures leave existing/conservative facts, while sidecar or
+      persistent write failures remain advisory and may still leave refreshed
+      in-memory facts for the current evaluation. This is configured import
+      integration for the current local analysis pipeline, not whole-program
+      fixpoint scheduling, independent IR-hash fact persistence, or an
+      analyzed-once cross-source fact index.
+- [x] Current native root analysis refresh precursor:
+      `NixNative::lower_native_source_bytes` now best-effort refreshes facts on
+      configured parse-cache hits and miss/fallback parses before returning root
+      IR to raw expression, raw instantiation, or file-backed instantiation
+      entry points. Parse-keyed raw roots and file-keyed native source roots
+      attempt to write validated `facts.bin` sidecars and re-materialize
+      persistent parse/file artifacts when a persistent root is configured.
+      Uncached native lowering stays conservative; analysis failures leave
+      existing/conservative facts, while sidecar or persistent write failures
+      remain advisory and may still leave refreshed in-memory facts for the
+      current evaluation. This is native root integration for the current local
+      analysis pipeline, not imported-module scheduling beyond the configured
+      import path, whole-program fixpoint scheduling, independent IR-hash fact
+      persistence, or an analyzed-once cross-source fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

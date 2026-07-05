@@ -2391,9 +2391,10 @@ alone (`M-1`/`Q-A`).
       fatal. The returned `CachedAnalyzedParse` carries the analysis report and
       a `facts_stored` bit so callers can distinguish analyzed in-memory facts
       from durable fact-sidecar persistence. This is caller-driven analyzed
-      loading only; automatic evaluator/import integration, durable index
-      lookup, mmap reads, independent IR-hash fact artifacts, analyzed-once
-      cross-source fact indexes, and harness proof remain open (`C-13`/`S-9`).
+      loading only; broad automatic analysis scheduling for every evaluator
+      surface, durable index lookup, mmap reads, independent IR-hash fact
+      artifacts, analyzed-once cross-source fact indexes, and harness proof
+      remain open (`C-13`/`S-9`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -3867,11 +3868,14 @@ alone (`M-1`/`Q-A`).
       materialization, preserving existing hit/miss accounting. Refreshed facts
       are written to `facts.bin` when possible, and existing parse/file artifact
       bundles transport that sidecar when later materialized or hydrated.
-      Scoped imports, text-store imports, uncached imports, and refresh/write
-      failures remain conservative. This is ordinary import integration only:
-      no whole-program analysis scheduler, no every-module analyzed-once index,
-      no mmap read path, no independent IR-hash fact artifact/index, and no full
-      cached/uncached harness proof (`C-13`/`S-9`). Gate:
+      Scoped imports, text-store imports, and uncached imports remain
+      conservative; analysis failures leave existing/conservative facts, while
+      sidecar or persistent write failures are advisory and may still leave
+      refreshed in-memory facts for the current evaluation. This is ordinary
+      import integration only: no whole-program analysis scheduler, no
+      every-module analyzed-once index, no mmap read path, no independent
+      IR-hash fact artifact/index, and no full cached/uncached harness proof
+      (`C-13`/`S-9`). Gate:
       `ordinary_filesystem_import_refreshes_parse_cache_analysis_facts`,
       `ordinary_filesystem_import_persists_refreshed_analysis_facts`.
 - [x] Current file-backed native root durable parse-cache integration:
@@ -3913,6 +3917,24 @@ alone (`M-1`/`Q-A`).
       lowering, full artifact semantic validation beyond existing decoders,
       GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
+- [x] Current native root analyzed-fact integration:
+      configured native raw expressions, raw instantiations, and file-backed
+      instantiation roots now best-effort refresh facts on `CachedParse`
+      persistent hits and miss/fallback parses before returning root IR to
+      evaluation. Refreshed facts are written to `facts.bin` when possible, and
+      parse-keyed raw artifacts or file-keyed source artifacts are
+      re-materialized after sidecar refresh when possible. Uncached native
+      lowering remains conservative; analysis failures leave
+      existing/conservative facts, while sidecar or persistent write failures
+      are advisory and may still leave refreshed in-memory facts for the
+      current evaluation. This is native root integration only: no
+      whole-program analysis scheduler, no every-module analyzed-once index, no
+      mmap read path, no independent IR-hash fact artifact/index, and no full
+      cached/uncached harness proof (`C-13`/`S-9`). Gate:
+      `native_expression_eval_refreshes_parse_cache_analysis_facts`,
+      `native_expression_eval_persists_refreshed_analysis_facts_without_source_path`,
+      `native_instantiation_expr_refreshes_parse_cache_analysis_facts`,
+      `native_file_root_persists_refreshed_analysis_facts`.
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`hashFile`/`readDir`/`readFileType`/`pathExists`/
@@ -9203,10 +9225,10 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       returned module's in-memory facts, and best-effort writing the validated
       `facts.bin` sidecar. The result reports whether fact storage succeeded,
       while parse and analysis failures remain explicit errors. This is a
-      caller-driven analyzed-load helper; it is not automatic evaluator/import
-      integration, whole-program fixpoint scheduling, independent IR-hash fact
-      persistence, an analyzed-once cross-source fact index, or a JIT lowering
-      consumer.
+      caller-driven analyzed-load helper; it is not broad automatic analysis
+      scheduling for every evaluator surface, whole-program fixpoint
+      scheduling, independent IR-hash fact persistence, an analyzed-once
+      cross-source fact index, or a JIT lowering consumer.
 - [x] Current configured-import analysis refresh precursor:
       ordinary unscoped filesystem imports with a configured parse cache now
       best-effort refresh facts on loaded or freshly parsed `CachedParse`
@@ -9214,13 +9236,33 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       parse-artifact materialization. The tree-walk oracle can therefore
       consume current strictness/cardinality/escape facts for eligible imports,
       and validated `facts.bin` sidecars are written when possible. Scoped
-      imports, text-store imports, uncached imports, and refresh/write failures
-      stay conservative. This is configured import integration for the current
-      local analysis pipeline, not whole-program fixpoint scheduling,
-      independent IR-hash fact persistence, an analyzed-once cross-source fact
-      index, or a JIT lowering consumer. Gate:
+      imports, text-store imports, and uncached imports stay conservative.
+      Analysis failures leave existing/conservative facts, while sidecar or
+      persistent write failures remain advisory and may still leave refreshed
+      in-memory facts for the current evaluation. This is configured import
+      integration for the current local analysis pipeline, not whole-program
+      fixpoint scheduling, independent IR-hash fact persistence, an
+      analyzed-once cross-source fact index, or a JIT lowering consumer. Gate:
       `ordinary_filesystem_import_refreshes_parse_cache_analysis_facts`,
       `ordinary_filesystem_import_persists_refreshed_analysis_facts`.
+- [x] Current native root analysis refresh precursor:
+      `NixNative::lower_native_source_bytes` now best-effort refreshes facts on
+      configured parse-cache hits and miss/fallback parses before returning root
+      IR to raw expression, raw instantiation, or file-backed instantiation
+      entry points. Parse-keyed raw roots and file-keyed native source roots
+      attempt to write validated `facts.bin` sidecars and re-materialize
+      persistent parse/file artifacts when a persistent root is configured.
+      Uncached native lowering stays conservative; analysis failures leave
+      existing/conservative facts, while sidecar or persistent write failures
+      remain advisory and may still leave refreshed in-memory facts for the
+      current evaluation. This is native root integration for the current local
+      analysis pipeline, not imported-module scheduling beyond the configured
+      import path, whole-program fixpoint scheduling, independent IR-hash fact
+      persistence, an analyzed-once cross-source fact index, or a JIT lowering
+      consumer. Gate: `native_expression_eval_refreshes_parse_cache_analysis_facts`,
+      `native_expression_eval_persists_refreshed_analysis_facts_without_source_path`,
+      `native_instantiation_expr_refreshes_parse_cache_analysis_facts`,
+      `native_file_root_persists_refreshed_analysis_facts`.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
