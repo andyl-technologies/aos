@@ -402,7 +402,7 @@ impl TreeWalk {
                 &path,
                 expected,
             )? {
-                return self.alloc_fetchurl_path_value(id, span, path);
+                return self.alloc_fetcher_result_path_value(id, span, path);
             }
             Some(path)
         } else {
@@ -477,7 +477,7 @@ impl TreeWalk {
         );
         let _ = fs::remove_dir_all(&temp_dir);
         materialize_result?;
-        self.alloc_fetchurl_path_value(id, span, path)
+        self.alloc_fetcher_result_path_value(id, span, path)
     }
 
     pub(super) fn fetch_tarball_arguments(

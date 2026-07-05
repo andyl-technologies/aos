@@ -3130,9 +3130,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       Interpolation literal and path-to-string coercion allocations now route
       through the wrapper; direct root empty interpolation payloads dispatch
       while nested path interpolation coercions preserve outer locals.
-      `fetchurl` final fixed-output store-path string allocations now route
-      through the wrapper and dispatch for direct root fetchurl results without
-      routing shared fetch-tree/fetch-git attrset out-path construction.
+      `fetchurl` and `fetchTarball` final fixed-output store-path string
+      allocations now route through the wrapper; direct root `fetchurl` and
+      string-argument `fetchTarball` results dispatch, fixed-hash attrset
+      `fetchTarball` results skip while interned attr roots are live, and shared
+      fetch-tree/fetch-git attrset out-path construction remains direct.
       `readFile` final text-store and filesystem content string allocations now
       route through the wrapper; filesystem direct-root read-file results
       dispatch while text-store reads remain covered by skip tests when nested
@@ -3158,9 +3160,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
       `derivationStrict` result-attrset string assembly whose partially built
-      output entries are not yet registered roots, shared fetcher path
-      construction used outside the dedicated `builtins.fetchurl` result
-      wrapper, persistent payload replay allocations,
+      output entries are not yet registered roots, shared fetcher attrset
+      out-path construction, persistent payload replay allocations,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned list/attr roots, JIT roots,
@@ -3199,6 +3200,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       root `fetchurl` final fixed-output path allocations relocating registered
       transient roots,
       nested `fetchurl` final fixed-output path allocations preserving
+      unregistered outer locals,
+      root string-argument `fetchTarball` final fixed-output path allocations
+      relocating registered transient roots,
+      root fixed-hash attrset `fetchTarball` final fixed-output path allocations
+      preserving registered transient roots on both materialized and reused
+      results while interned attr roots block dispatch,
+      nested `fetchTarball` final fixed-output path allocations preserving
       unregistered outer locals,
       root filesystem `readFile` final content-string allocations relocating
       registered transient roots,

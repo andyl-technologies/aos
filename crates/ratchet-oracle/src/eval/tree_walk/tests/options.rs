@@ -1544,12 +1544,22 @@ fn gc_stress_eval_root_path_allocation_dispatches_permanent_noop_bridge() {
 }
 
 fn assert_gc_stress_root_string_result_dispatches(source: &str, expected: &[u8]) {
+    assert_gc_stress_root_string_result_dispatches_with_options(
+        source,
+        expected,
+        TreeWalkOptions::new(),
+    );
+}
+
+fn assert_gc_stress_root_string_result_dispatches_with_options(
+    source: &str,
+    expected: &[u8],
+    mut options: TreeWalkOptions,
+) {
     let ir = lower(source);
     let span = ir.arena.node(ir.root).expect("root exists").span;
-    let mut evaluator = TreeWalk::with_options(
-        &ir,
-        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
-    );
+    options.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let mut evaluator = TreeWalk::with_options(&ir, options);
     let local_source = evaluator
         .heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
@@ -1599,12 +1609,22 @@ fn assert_gc_stress_root_string_result_dispatches(source: &str, expected: &[u8])
 }
 
 fn assert_gc_stress_root_string_result_skips_dispatch(source: &str, expected: &[u8]) {
+    assert_gc_stress_root_string_result_skips_dispatch_with_options(
+        source,
+        expected,
+        TreeWalkOptions::new(),
+    );
+}
+
+fn assert_gc_stress_root_string_result_skips_dispatch_with_options(
+    source: &str,
+    expected: &[u8],
+    mut options: TreeWalkOptions,
+) {
     let ir = lower(source);
     let span = ir.arena.node(ir.root).expect("root exists").span;
-    let mut evaluator = TreeWalk::with_options(
-        &ir,
-        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
-    );
+    options.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let mut evaluator = TreeWalk::with_options(&ir, options);
     let local_source = evaluator
         .heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
@@ -1651,12 +1671,22 @@ fn assert_gc_stress_root_string_result_skips_dispatch(source: &str, expected: &[
 }
 
 fn assert_gc_stress_root_bool_result_skips_dispatch(source: &str, expected: bool) {
+    assert_gc_stress_root_bool_result_skips_dispatch_with_options(
+        source,
+        expected,
+        TreeWalkOptions::new(),
+    );
+}
+
+fn assert_gc_stress_root_bool_result_skips_dispatch_with_options(
+    source: &str,
+    expected: bool,
+    mut options: TreeWalkOptions,
+) {
     let ir = lower(source);
     let span = ir.arena.node(ir.root).expect("root exists").span;
-    let mut evaluator = TreeWalk::with_options(
-        &ir,
-        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
-    );
+    options.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let mut evaluator = TreeWalk::with_options(&ir, options);
     let local_source = evaluator
         .heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
@@ -1949,6 +1979,44 @@ fn gc_stress_nested_source_path_string_results_skip_unregistered_outer_locals() 
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+const GC_STRESS_FETCH_TARBALL_DIGEST: &str =
+    "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+fn nix_sha256_digest_from_hex(hex: &str) -> NixSha256Digest {
+    let bytes = hex.as_bytes();
+    assert_eq!(bytes.len(), 64, "sha256 hex digest has 64 digits");
+    let mut digest = [0_u8; 32];
+    for (byte, pair) in digest.iter_mut().zip(bytes.chunks_exact(2)) {
+        *byte = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+    }
+    NixSha256Digest::from_bytes(digest)
+}
+
+fn hex_nibble(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => panic!("invalid hex digit {byte:?}"),
+    }
+}
+
+fn gc_stress_fetch_tarball_expected_store_path(store_dir: &std::path::Path, url: &str) -> Vec<u8> {
+    let ir = lower("null");
+    let options =
+        TreeWalkOptions::with_store_dir(path_bytes(store_dir)).expect("store dir configures");
+    let evaluator = TreeWalk::with_options(&ir, options);
+    evaluator
+        .fetch_tarball_store_path_from_digest(
+            IrId::new(0),
+            Span::new(0, 0),
+            url.as_bytes(),
+            "source",
+            nix_sha256_digest_from_hex(GC_STRESS_FETCH_TARBALL_DIGEST),
+        )
+        .expect("fetchTarball expected store path computes")
+}
+
 #[test]
 fn gc_stress_eval_root_fetchurl_result_dispatch_permanent_noop_bridge() {
     let (dir, path) = temp_file_with_bytes("gc-stress-fetchurl", b"abc");
@@ -1969,6 +2037,83 @@ fn gc_stress_nested_fetchurl_result_skips_unregistered_outer_locals() {
         false,
     );
     fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn gc_stress_eval_root_fetch_tarball_string_result_dispatch_permanent_noop_bridge() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball");
+    let store_dir = unique_temp_dir("gc-stress-fetch-tarball-store");
+    let url = format!("file://{}", path_source(&archive_path));
+    let expected = gc_stress_fetch_tarball_expected_store_path(&store_dir, &url);
+    let url = nix_string_literal(&url);
+    let source = format!("builtins.fetchTarball {url}");
+    let options =
+        TreeWalkOptions::with_store_dir(path_bytes(&store_dir)).expect("store dir configures");
+
+    assert_gc_stress_root_string_result_dispatches_with_options(&source, &expected, options);
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn gc_stress_eval_root_fetch_tarball_fixed_attrset_results_skip_interned_composite_roots() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball-fixed");
+    let store_dir = unique_temp_dir("gc-stress-fetch-tarball-fixed-store");
+    let url = format!("file://{}", path_source(&archive_path));
+    let expected = gc_stress_fetch_tarball_expected_store_path(&store_dir, &url);
+    let url = nix_string_literal(&url);
+    let source = format!(
+        r#"builtins.fetchTarball {{ url = {url}; sha256 = "{GC_STRESS_FETCH_TARBALL_DIGEST}"; }}"#
+    );
+    let options =
+        TreeWalkOptions::with_store_dir(path_bytes(&store_dir)).expect("store dir configures");
+
+    assert_gc_stress_root_string_result_skips_dispatch_with_options(&source, &expected, options);
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn gc_stress_eval_root_fetch_tarball_reused_fixed_attrset_result_skips_interned_composite_roots() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball-reuse");
+    let store_dir = unique_temp_dir("gc-stress-fetch-tarball-reuse-store");
+    let url = format!("file://{}", path_source(&archive_path));
+    let expected = gc_stress_fetch_tarball_expected_store_path(&store_dir, &url);
+    let url = nix_string_literal(&url);
+    let source = format!(
+        r#"builtins.fetchTarball {{ url = {url}; sha256 = "{GC_STRESS_FETCH_TARBALL_DIGEST}"; }}"#
+    );
+    let options =
+        TreeWalkOptions::with_store_dir(path_bytes(&store_dir)).expect("store dir configures");
+
+    assert_eq!(
+        eval_string_bytes_with_options(&source, options.clone()),
+        expected
+    );
+    fs::remove_dir_all(&archive_dir).expect("archive temp directory removes");
+
+    assert_gc_stress_root_string_result_skips_dispatch_with_options(&source, &expected, options);
+
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn gc_stress_nested_fetch_tarball_result_skips_unregistered_outer_locals() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-nested-fetch-tarball");
+    let store_dir = unique_temp_dir("gc-stress-nested-fetch-tarball-store");
+    let url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+    let source = format!(
+        r#""left" == builtins.fetchTarball {{ url = {url}; sha256 = "{GC_STRESS_FETCH_TARBALL_DIGEST}"; }}"#
+    );
+    let options =
+        TreeWalkOptions::with_store_dir(path_bytes(&store_dir)).expect("store dir configures");
+
+    assert_gc_stress_root_bool_result_skips_dispatch_with_options(&source, false, options);
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
 #[test]

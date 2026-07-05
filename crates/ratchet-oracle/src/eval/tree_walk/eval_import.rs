@@ -183,7 +183,7 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
-    pub(super) fn alloc_fetchurl_result_path_value(
+    pub(super) fn alloc_fetcher_result_path_value(
         &mut self,
         id: IrId,
         span: Span,

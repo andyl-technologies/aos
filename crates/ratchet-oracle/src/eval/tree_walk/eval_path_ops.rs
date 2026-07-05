@@ -661,7 +661,7 @@ impl TreeWalk {
                 &parsed,
                 &path,
             )? {
-                return self.alloc_fetchurl_result_path_value(id, span, path);
+                return self.alloc_fetcher_result_path_value(id, span, path);
             }
             Some(path)
         } else {
@@ -701,7 +701,7 @@ impl TreeWalk {
                 references: StringContext::empty(),
             },
         );
-        self.alloc_fetchurl_result_path_value(id, span, path)
+        self.alloc_fetcher_result_path_value(id, span, path)
     }
 
     pub(super) fn eval_fetch_git_primop(
