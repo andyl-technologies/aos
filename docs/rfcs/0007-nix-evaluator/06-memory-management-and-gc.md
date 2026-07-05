@@ -987,6 +987,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       does not export `unsafe extern "C"` functions, implement trap transfer,
       register Cranelift symbols, or add bindings for error
       helpers.
+- [x] Current runtime-FFI native-wrapper manifest precursor:
+      `ratchet-runtime-ffi::wrappers::runtime_native_wrapper_bindings()` now
+      projects the allocation, call-control, attrset-access,
+      environment-access, forcing, and write-barrier native wrapper inventories
+      into core runtime-symbol order. Each binding exposes the stable helper
+      symbol, helper role, process-local wrapper address, and family-specific
+      remaining native-export blockers. Tests prove runtime-symbol order
+      preservation, exact family-inventory coverage, non-null wrapper
+      addresses, role metadata, and blocker propagation. This is still
+      process-local native-wrapper metadata only: it does not register
+      `JITBuilder::symbol` entries, transfer evaluator traps, decode runtime
+      contexts, mark oracle native exports ready, or bind helper roles and
+      builtins that still lack wrapper bodies.
 - [x] Current runtime-helper Rust-callable preflight precursor:
       `runtime::helpers::runtime_helper_rust_callable_bindings()` lifts the
       allocation, call-control, attrset-access, environment-access, forcing, and

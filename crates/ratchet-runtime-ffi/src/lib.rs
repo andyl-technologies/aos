@@ -23,6 +23,8 @@
 //! ratchet_runtime_ffi::barrier
 //!   aos_gc_write_barrier trap-only wrapper for the frozen
 //!   `(rt, thunk, Value)` write-barrier ABI
+//! ratchet_runtime_ffi::wrappers
+//!   unified process-local native-wrapper manifest in runtime-symbol order
 //! ratchet_runtime_ffi::safety
 //!   unsafe-boundary manifest and source-token allowlist
 //! ```
@@ -41,6 +43,7 @@ pub mod barrier;
 pub mod env;
 pub mod force;
 pub mod safety;
+pub mod wrappers;
 
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,
