@@ -501,9 +501,7 @@ impl TreeWalk {
             output.extend(inner);
         }
 
-        self.heap
-            .alloc_list(NixList::new(output))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(output))
     }
 
     pub(super) fn eval_group_by_primop(

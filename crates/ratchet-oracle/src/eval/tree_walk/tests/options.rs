@@ -3136,6 +3136,119 @@ fn gc_stress_partition_list_results_skip_active_argument_roots() {
 }
 
 #[test]
+fn gc_stress_concat_map_result_skips_active_argument_roots() {
+    let ir = lower("x: x");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let function = evaluator
+        .eval_node(ir.root)
+        .expect("identity function allocates");
+    assert_eq!(function.tag(), ValueTag::Lambda);
+    let skipped = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"x".to_vec()))
+        .expect("skipped string allocates");
+    let first = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![Value::int(1)]))
+        .expect("first input list allocates");
+    let second = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![skipped, Value::int(2)]))
+        .expect("second input list allocates");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![first, second]))
+        .expect("input list allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, function),
+                EvalPrimOpArg::new(ir.root, span, input),
+            ],
+        )
+        .expect("active concatMap argument roots push");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.eval_concat_map_elements(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            vec![first, second],
+        )
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("concatMap result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "concatMap result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active concatMap argument roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("concatMap result is heap-owned");
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.get(0).expect("first concatMap value exists").as_int(),
+        Ok(1)
+    );
+    assert!(
+        list.get(1)
+            .expect("second concatMap value exists")
+            .raw_eq(skipped)
+    );
+    assert_eq!(
+        list.get(2).expect("third concatMap value exists").as_int(),
+        Ok(2)
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 1,
+        "concatMap result allocation did not record exactly one permanent safepoint"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("concatMap list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");
     let span = ir.arena.node(ir.root).expect("root exists").span;
