@@ -9,8 +9,9 @@ use crate::eval::{EvalFrame, EvalWithScope, TreeWalkParallelThunkWait};
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
     HeapGeneration, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
-    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcRelocationDestination, MinorGcRelocationPlan,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcOwnedDestinationStorage, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcRelocationDestination, MinorGcRelocationPlan, MinorGcSourceObjectBytes,
     MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectLayout, ProcessResidentMemorySource,
     RegionPlan, RegionRuntimeTier, RememberedEdge, RememberedSet, ResolvedValueGeneration,
     ThunkResolveWriteBarrier,
@@ -3861,6 +3862,152 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         ]
     );
     assert_eq!(commit_remembered_set, expected_next_remembered_set);
+
+    let mut owned_destination_storage =
+        MinorGcOwnedDestinationStorage::from_placement_plan(destinations.placement_plan())
+            .expect("owned destination storage allocates");
+    let owned_destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            owned_destination_storage.destination_bases(),
+        )
+        .expect("owned-storage destination plan builds");
+    let owned_lambda_destination = owned_destinations.destinations()[0].destination();
+    let owned_child_destination = owned_destinations.destinations()[1].destination();
+    let owned_sibling_destination = owned_destinations.destinations()[2].destination();
+    let owned_commit = planned
+        .commit_plan(&owned_destinations)
+        .expect("owned-storage commit plan builds");
+    let owned_source_bytes = [
+        MinorGcSourceObjectBytes::new(gc_address(lambda), &lambda_source_bytes),
+        MinorGcSourceObjectBytes::new(gc_address(child), &child_source_bytes),
+        MinorGcSourceObjectBytes::new(gc_address(sibling), &sibling_source_bytes),
+    ];
+    let mut owned_forwarding_slots = owned_commit
+        .forwarding_slot_buffer()
+        .expect("owned forwarding slot buffer derives");
+    let mut owned_references = planned.reference_values().collect::<Vec<_>>();
+    let mut owned_remembered_set = remembered_set.clone();
+    let expected_owned_next_remembered_set =
+        owned_commit.commit_plan().next_remembered_set().clone();
+    let mut owned_card_table = GcCardTable::new(0x1000).expect("owned card table builds");
+    owned_card_table
+        .mark_source(gc_address(lambda))
+        .expect("owned card marks");
+
+    let owned_report = owned_commit
+        .apply_to_owned_destination_storage_with_report(
+            AllocationCollectorPollMinorGcOwnedCommitBuffers::with_card_table(
+                &mut owned_destination_storage,
+                &owned_source_bytes,
+                &mut owned_forwarding_slots,
+                &mut owned_references,
+                &mut owned_remembered_set,
+                &mut owned_card_table,
+            ),
+        )
+        .expect("collector-poll owned destination storage applies");
+
+    assert_eq!(owned_report.object_copies(), 3);
+    assert_eq!(owned_report.copied_to_nursery(), 3);
+    assert_eq!(owned_report.promoted_to_old(), 0);
+    assert_eq!(owned_report.card_table_dirty_cards_cleared(), 1);
+    let mut expected_owned_nursery_bytes = Vec::new();
+    expected_owned_nursery_bytes.extend_from_slice(&lambda_source_bytes);
+    expected_owned_nursery_bytes.extend_from_slice(&child_source_bytes);
+    expected_owned_nursery_bytes.extend_from_slice(&sibling_source_bytes);
+    assert_eq!(
+        owned_destination_storage.nursery_destination_bytes(),
+        expected_owned_nursery_bytes.as_slice()
+    );
+    assert!(owned_destination_storage.old_destination_bytes().is_empty());
+    assert_eq!(
+        owned_forwarding_slots[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: owned_lambda_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        owned_forwarding_slots[1].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: owned_child_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        owned_forwarding_slots[2].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: owned_sibling_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        owned_references,
+        vec![
+            ResolvedValueGeneration::Heap {
+                address: owned_lambda_destination,
+                generation: HeapGeneration::Young,
+            },
+            ResolvedValueGeneration::Heap {
+                address: owned_child_destination,
+                generation: HeapGeneration::Young,
+            },
+            ResolvedValueGeneration::Heap {
+                address: owned_sibling_destination,
+                generation: HeapGeneration::Young,
+            },
+        ]
+    );
+    assert_eq!(owned_remembered_set, expected_owned_next_remembered_set);
+    assert!(owned_card_table.is_empty());
+
+    let mut stale_destination_storage =
+        MinorGcOwnedDestinationStorage::from_placement_plan(destinations.placement_plan())
+            .expect("stale owned destination storage allocates");
+    let stale_destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            stale_destination_storage.destination_bases(),
+        )
+        .expect("stale owned-storage destination plan builds");
+    let stale_commit = planned
+        .commit_plan(&stale_destinations)
+        .expect("stale owned-storage commit plan builds");
+    let mut stale_forwarding_slots = stale_commit
+        .forwarding_slot_buffer()
+        .expect("stale forwarding slot buffer derives");
+    let mut stale_references = planned.reference_values().collect::<Vec<_>>();
+    let expected_stale_reference = stale_references[1];
+    stale_references[1] = ResolvedValueGeneration::Inline;
+    let mut stale_remembered_set = remembered_set.clone();
+    let unchanged_stale_references = stale_references.clone();
+
+    assert_eq!(
+        stale_commit
+            .apply_to_owned_destination_storage(
+                AllocationCollectorPollMinorGcOwnedCommitBuffers::new(
+                    &mut stale_destination_storage,
+                    &owned_source_bytes,
+                    &mut stale_forwarding_slots,
+                    &mut stale_references,
+                    &mut stale_remembered_set,
+                )
+            )
+            .expect_err("stale reference buffer is rejected before owned storage mutates"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 1,
+            expected: expected_stale_reference,
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(
+        stale_destination_storage.nursery_destination_bytes(),
+        vec![0u8; expected_owned_nursery_bytes.len()].as_slice()
+    );
+    assert!(stale_forwarding_slots.iter().all(|slot| slot.is_empty()));
+    assert_eq!(stale_references, unchanged_stale_references);
+    assert_eq!(stale_remembered_set, remembered_set);
 }
 
 #[test]

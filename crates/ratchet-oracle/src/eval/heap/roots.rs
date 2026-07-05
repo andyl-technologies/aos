@@ -27,9 +27,10 @@ use crate::heap::{
     MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
     MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
     MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcOldFieldRescanPlan, MinorGcOldObjectFields,
-    MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
-    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
-    MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
+    MinorGcOwnedCommitBuffers, MinorGcOwnedDestinationStorage, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocationDestination,
+    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
+    MinorGcSourceObjectBytes, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
     NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
     record_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier_with_card_table,
@@ -1889,6 +1890,105 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
             card_table,
         } = buffers;
 
+        self.validate_commit_references(references)?;
+
+        let lower_buffers = match card_table {
+            Some(card_table) => MinorGcCommitBuffers::with_card_table(
+                object_byte_copies,
+                forwarding_slots,
+                references,
+                remembered_set,
+                card_table,
+            ),
+            None => MinorGcCommitBuffers::new(
+                object_byte_copies,
+                forwarding_slots,
+                references,
+                remembered_set,
+            ),
+        };
+        self.commit_plan
+            .apply_to_buffers_with_report(lower_buffers)
+            .map_err(EvalHeapError::from)
+    }
+
+    /// Applies this allocation-poll commit plan to owned destination storage.
+    ///
+    /// The allocation-poll layer first checks that the caller supplied the same
+    /// reference values captured with the copied poll reference labels. It then
+    /// delegates owned destination storage, source bytes, forwarding slots,
+    /// reference values, remembered-set state, and any optional card-table
+    /// buffer to the lower-level validated commit plan. This remains an
+    /// owned-buffer bridge and does not bind storage to live evaluator roots,
+    /// heap-object fields, object headers, live card-table storage, or semispace
+    /// pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the reference buffer no longer matches the
+    /// copied allocation-poll reference labels, or if any lower-level commit
+    /// state no longer matches the validated minor-GC commit plan.
+    pub fn apply_to_owned_destination_storage(
+        self,
+        buffers: AllocationCollectorPollMinorGcOwnedCommitBuffers<'_, '_>,
+    ) -> Result<(), EvalHeapError> {
+        self.apply_to_owned_destination_storage_with_report(buffers)
+            .map(|_| ())
+    }
+
+    /// Applies this allocation-poll commit plan to owned storage and reports counts.
+    ///
+    /// This has the same reference-label validation and lower-level commit order
+    /// as [`Self::apply_to_owned_destination_storage`], but returns the
+    /// lower-level [`MinorGcCommitReport`] after all owned storage and metadata
+    /// buffers have been mutated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the reference buffer no longer matches the
+    /// copied allocation-poll reference labels, or if any lower-level commit
+    /// state no longer matches the validated minor-GC commit plan.
+    pub fn apply_to_owned_destination_storage_with_report(
+        self,
+        buffers: AllocationCollectorPollMinorGcOwnedCommitBuffers<'_, '_>,
+    ) -> Result<MinorGcCommitReport, EvalHeapError> {
+        let AllocationCollectorPollMinorGcOwnedCommitBuffers {
+            destination_storage,
+            source_bytes,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table,
+        } = buffers;
+
+        self.validate_commit_references(references)?;
+
+        let lower_buffers = match card_table {
+            Some(card_table) => MinorGcOwnedCommitBuffers::with_card_table(
+                destination_storage,
+                source_bytes,
+                forwarding_slots,
+                references,
+                remembered_set,
+                card_table,
+            ),
+            None => MinorGcOwnedCommitBuffers::new(
+                destination_storage,
+                source_bytes,
+                forwarding_slots,
+                references,
+                remembered_set,
+            ),
+        };
+        self.commit_plan
+            .apply_to_owned_destination_storage_with_report(lower_buffers)
+            .map_err(EvalHeapError::from)
+    }
+
+    fn validate_commit_references(
+        &self,
+        references: &[ResolvedValueGeneration],
+    ) -> Result<(), EvalHeapError> {
         if references.len() != self.reference_slots.len() {
             return Err(
                 EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
@@ -1912,25 +2012,7 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
                 });
             }
         }
-
-        let lower_buffers = match card_table {
-            Some(card_table) => MinorGcCommitBuffers::with_card_table(
-                object_byte_copies,
-                forwarding_slots,
-                references,
-                remembered_set,
-                card_table,
-            ),
-            None => MinorGcCommitBuffers::new(
-                object_byte_copies,
-                forwarding_slots,
-                references,
-                remembered_set,
-            ),
-        };
-        self.commit_plan
-            .apply_to_buffers_with_report(lower_buffers)
-            .map_err(EvalHeapError::from)
+        Ok(())
     }
 
     fn reference_slot_for_rewrite(
@@ -3748,6 +3830,55 @@ impl<'a, 'bytes> AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
     ) -> Self {
         Self {
             object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table: Some(card_table),
+        }
+    }
+}
+
+/// Caller-owned destination storage and metadata for an allocation-poll commit plan.
+pub struct AllocationCollectorPollMinorGcOwnedCommitBuffers<'a, 'bytes> {
+    destination_storage: &'a mut MinorGcOwnedDestinationStorage,
+    source_bytes: &'a [MinorGcSourceObjectBytes<'bytes>],
+    forwarding_slots: &'a mut [MinorGcForwardingSlot],
+    references: &'a mut [ResolvedValueGeneration],
+    remembered_set: &'a mut RememberedSet,
+    card_table: Option<&'a mut GcCardTable>,
+}
+
+impl<'a, 'bytes> AllocationCollectorPollMinorGcOwnedCommitBuffers<'a, 'bytes> {
+    /// Creates owned destination storage and metadata for an allocation-poll commit.
+    pub fn new(
+        destination_storage: &'a mut MinorGcOwnedDestinationStorage,
+        source_bytes: &'a [MinorGcSourceObjectBytes<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+    ) -> Self {
+        Self {
+            destination_storage,
+            source_bytes,
+            forwarding_slots,
+            references,
+            remembered_set,
+            card_table: None,
+        }
+    }
+
+    /// Creates owned destination storage and metadata plus a card table to clear.
+    pub fn with_card_table(
+        destination_storage: &'a mut MinorGcOwnedDestinationStorage,
+        source_bytes: &'a [MinorGcSourceObjectBytes<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+        card_table: &'a mut GcCardTable,
+    ) -> Self {
+        Self {
+            destination_storage,
+            source_bytes,
             forwarding_slots,
             references,
             remembered_set,

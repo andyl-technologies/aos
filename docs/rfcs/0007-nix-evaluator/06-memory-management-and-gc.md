@@ -1970,6 +1970,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       destination storage, bind raw byte slices to live heap objects or headers,
       mutate tree-walk roots/fields in place, mutate remembered source fields, or
       manage semispaces.
+- [x] Current allocation-poll owned-storage commit bridge precursor:
+      `AllocationCollectorPollMinorGcOwnedCommitBuffers` and
+      `AllocationCollectorPollMinorGcCommitPlan::apply_to_owned_destination_storage`
+      expose the allocation-poll counterpart to the lower-level owned-storage
+      commit surface. The bridge keeps the poll-layer copied-reference-label
+      validation before delegating `MinorGcOwnedDestinationStorage`,
+      caller-supplied source bytes, forwarding slots, references,
+      remembered-set state, and an optional card table to
+      `MinorGcCommitPlan::apply_to_owned_destination_storage`. Unit tests cover
+      successful owned-storage application with storage-derived relocation bases
+      and stale poll-reference rejection before owned destination storage or
+      forwarding slots mutate. This remains an owned-buffer bridge only: it does
+      not bind storage to live tree-walk roots, heap fields, object headers,
+      remembered-source fields, live card-table storage, or semispace pages, and
+      the GC-stress boundary dry run still preserves its existing separate
+      byte-buffer and destination-storage reporting.
 - [x] Current GC-stress boundary reference-writeback application precursor:
       `EvalGcStressBoundaryMinorGcCommitPreflight::apply_reference_writebacks_to_owned_slots`
       copies the boundary preflight's owned root and heap-field writeback slots,
