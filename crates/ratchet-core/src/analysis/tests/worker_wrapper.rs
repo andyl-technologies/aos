@@ -423,15 +423,34 @@ fn worker_wrapper_plan_retains_non_simple_literal_lambda_patterns() {
 }
 
 #[test]
-fn worker_wrapper_plan_rejects_missing_argument_facts() {
+fn worker_wrapper_plan_rejects_fact_table_length_mismatches() {
     let mut ir = lowered("(x: x + 1) (1 + 2)");
     let (lambda, argument) = apply_parts(&ir, ir.root);
+    let expected = ir.arena.nodes().len();
     ir.facts = IrFacts::conservative(argument.index());
 
-    let error = worker_wrapper_plan(&ir).expect_err("missing argument fact rejects");
+    let error = worker_wrapper_plan(&ir).expect_err("short fact table rejects");
 
-    assert_eq!(error, WorkerWrapperPlanError::MissingFact { id: argument });
+    assert_eq!(
+        error,
+        WorkerWrapperPlanError::InvalidFactTableLength {
+            expected,
+            actual: argument.index(),
+        }
+    );
     assert_eq!(node(&ir, lambda).kind, IrKind::Lambda);
+
+    ir.facts = IrFacts::conservative(expected + 1);
+
+    let error = worker_wrapper_plan(&ir).expect_err("overlong fact table rejects");
+
+    assert_eq!(
+        error,
+        WorkerWrapperPlanError::InvalidFactTableLength {
+            expected,
+            actual: expected + 1,
+        }
+    );
 }
 
 #[test]

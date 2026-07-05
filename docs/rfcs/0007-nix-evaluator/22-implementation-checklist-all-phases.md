@@ -8883,11 +8883,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       replayed strictness proof demands the argument, while retaining unproven
       arguments, non-literal callees, unsupported literal patterns, and forged
       strict facts that replay as non-demanding. It rejects malformed
-      apply/lambda payloads or missing argument facts. This is a planning
-      precursor only: it does not rewrite IR, generate workers or wrappers,
+      apply/lambda payloads or fact-table/node-count mismatches. This is a
+      planning precursor only: it does not rewrite IR, generate workers or wrappers,
       unbox formal-set fields, handle multi-argument currying, absent arguments,
       or whole-program call-graph
       specialization.
+- [x] Current worker-wrapper planner fact-table validation hardening:
+      `worker_wrapper_plan` now rejects fact-table/node-count mismatches before
+      consuming imported strictness facts or replaying the local strictness
+      proof for a direct literal lambda application. Short tables can no longer
+      fail late as missing argument facts, and overlong imported tables cannot
+      carry stale strictness proofs outside the arena. This is a
+      planner-boundary consistency check only; it does not rewrite IR, generate
+      workers or wrappers, unbox fields, or extend the closed-call-graph
+      fixpoint.
 - [ ] `analysis/cardinality.rs` — single-entry thunk detection (blackhole-skip
       only for escape-proven *frame-local* thunks, `C-8`) + dead-binding removal.
 - [x] Current `analysis/cardinality.rs` precursor: `ratchet-core` exposes a
@@ -8919,11 +8928,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       retains used bindings, retains contradictory absent-plus-strict bindings,
       and retains dynamic-key bindings so key evaluation is not skipped. Tests
       cover absent binding admission, many-use retention, absent-strict
-      retention, dynamic-key retention, missing value-fact rejection, and
+      retention, dynamic-key retention, short/overlong fact-table rejection, and
       malformed `let` payload rejection. This is a planning precursor only: it
       does not rewrite IR, compact frame layouts, emit worker dummy arguments,
       handle attrset or formal-argument absence, improve cardinality precision,
       or run the whole-program demand fixpoint.
+- [x] Current dead-binding planner fact-table validation hardening:
+      `dead_binding_elimination_plan` now rejects fact-table/node-count
+      mismatches before consuming cardinality facts for `let` bindings. Short
+      tables can no longer fail late as missing binding-value facts, and
+      overlong imported tables cannot carry stale absent/non-strict proofs
+      outside the arena. This is a planner-boundary consistency check only; it
+      does not rewrite IR, compact frame layouts, emit worker dummy arguments,
+      handle attrset/formal-argument absence, improve cardinality precision, or
+      run the whole-program demand fixpoint.
 - [x] Current dead-binding planner validation hardening:
       `dead_binding_elimination_plan` now validates each `let` body reference
       before cardinality facts can license binding elimination, so malformed

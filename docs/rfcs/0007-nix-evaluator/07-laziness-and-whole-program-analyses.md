@@ -851,8 +851,11 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       stricter worker call. It admits simple-formal patterns and validated
       formal-set patterns only when replayed strictness proves the argument is
       demanded, so forged strict facts over frame-slot mismatches remain
-      retained. This is still a plan surface only; it does not rewrite IR,
-      generate workers, unbox fields, or solve the closed-call-graph fixpoint.
+      retained. The planner rejects fact-table/node-count mismatches before it
+      consumes imported strictness facts, so stale proof records outside the
+      arena cannot license a split. This is still a plan surface only; it does
+      not rewrite IR, generate workers, unbox fields, or solve the
+      closed-call-graph fixpoint.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes the THUNK/EAGER/SCALAR decision lattice so conservative or
       escape-only facts still choose THUNK, `Eager` requires proven strictness,
@@ -918,9 +921,11 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       tree-walk oracle leaves admitted absent thunk-valued `let` bindings in
       their dummy frame slots and skips the binding thunk allocation while
       preserving conservative result/trace observables and falling back to
-      normal lazy allocation on planner failure. Source imports lowered without
-      annotation keep conservative facts. This is a tree-walk `let` consumer
-      only; IR rewriting, frame compaction, worker dummy arguments,
+      normal lazy allocation on planner failure. The planner rejects
+      fact-table/node-count mismatches before it consumes imported cardinality
+      facts, so short or overlong fact tables cannot license omission. Source
+      imports lowered without annotation keep conservative facts. This is a
+      tree-walk `let` consumer only; IR rewriting, frame compaction, worker dummy arguments,
       attrset/formal-argument absence, stronger cardinality, and the
       whole-program demand fixpoint remain open.
 - [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).

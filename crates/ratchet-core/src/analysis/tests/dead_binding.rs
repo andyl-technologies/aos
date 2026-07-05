@@ -136,7 +136,7 @@ fn dead_binding_plan_retains_dynamic_binding_keys() {
 }
 
 #[test]
-fn dead_binding_plan_rejects_missing_value_facts() {
+fn dead_binding_plan_rejects_short_fact_tables() {
     let value = IrId::new(1);
     let root = IrId::new(2);
     let arena = IrArena::from_raw_parts(
@@ -185,16 +185,19 @@ fn dead_binding_plan_rejects_missing_value_facts() {
         shapes: Box::new([]),
     };
 
-    let error = dead_binding_elimination_plan(&ir).expect_err("missing fact rejects");
+    let error = dead_binding_elimination_plan(&ir).expect_err("short fact table rejects");
 
     assert_eq!(
         error,
-        DeadBindingEliminationError::MissingFact { id: value }
+        DeadBindingEliminationError::InvalidFactTableLength {
+            expected: 3,
+            actual: 1,
+        }
     );
 }
 
 #[test]
-fn dead_binding_plan_rejects_missing_dynamic_key_value_facts() {
+fn dead_binding_plan_rejects_overlong_fact_tables() {
     let key = IrId::new(0);
     let value = IrId::new(1);
     let root = IrId::new(2);
@@ -228,7 +231,7 @@ fn dead_binding_plan_rejects_missing_dynamic_key_value_facts() {
     let ir = Ir {
         root,
         arena,
-        facts: IrFacts::conservative(1),
+        facts: IrFacts::conservative(4),
         symbols: SymbolTable::new(),
         frames: Box::new([]),
         with_chains: Box::new([]),
@@ -243,11 +246,14 @@ fn dead_binding_plan_rejects_missing_dynamic_key_value_facts() {
     };
 
     let error = dead_binding_elimination_plan(&ir)
-        .expect_err("dynamic-key binding with missing value fact rejects");
+        .expect_err("overlong fact table rejects before planning");
 
     assert_eq!(
         error,
-        DeadBindingEliminationError::MissingFact { id: value }
+        DeadBindingEliminationError::InvalidFactTableLength {
+            expected: 3,
+            actual: 4,
+        }
     );
 }
 

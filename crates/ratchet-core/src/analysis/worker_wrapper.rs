@@ -23,10 +23,18 @@ use crate::ir::{Ir, IrData, IrFacts, IrId, IrKind, Strictness};
 ///
 /// # Errors
 ///
-/// Returns [`WorkerWrapperPlanError`] if an apply node, lambda payload, pattern
-/// payload, lambda body root, argument node, argument fact record, or cloned
-/// strictness proof is malformed.
+/// Returns [`WorkerWrapperPlanError`] if the fact table length, an apply node,
+/// lambda payload, pattern payload, lambda body root, argument node, argument
+/// fact record, or cloned strictness proof is malformed.
 pub fn worker_wrapper_plan(ir: &Ir) -> Result<WorkerWrapperPlan, WorkerWrapperPlanError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(WorkerWrapperPlanError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
+
     let mut plan = WorkerWrapperPlan::default();
 
     for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
@@ -398,6 +406,14 @@ pub enum WorkerWrapperPlanError {
     InvalidNode {
         /// The invalid node id.
         id: IrId,
+    },
+    /// The fact table did not contain exactly one record per arena node.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of nodes in the IR arena.
+        expected: usize,
+        /// The number of records in the fact table.
+        actual: usize,
     },
     /// The fact table did not contain an entry for an argument node.
     #[error("missing fact record for IR node {id:?}")]

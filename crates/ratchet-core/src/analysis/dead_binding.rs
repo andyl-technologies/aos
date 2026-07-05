@@ -21,11 +21,20 @@ use crate::syntax::Symbol;
 ///
 /// # Errors
 ///
-/// Returns [`DeadBindingEliminationError`] if a `let` payload, binding slice,
-/// binding key, value node, or value fact record is internally inconsistent.
+/// Returns [`DeadBindingEliminationError`] if the fact table length, a `let`
+/// payload, binding slice, binding key, value node, or value fact record is
+/// internally inconsistent.
 pub fn dead_binding_elimination_plan(
     ir: &Ir,
 ) -> Result<DeadBindingEliminationPlan, DeadBindingEliminationError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(DeadBindingEliminationError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
+
     let mut eliminations = Vec::new();
     let mut retained = Vec::new();
     let mut let_count = 0;
@@ -360,6 +369,14 @@ pub enum DeadBindingEliminationError {
     InvalidNode {
         /// The invalid node id.
         id: IrId,
+    },
+    /// The fact table did not contain exactly one record per arena node.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of nodes in the IR arena.
+        expected: usize,
+        /// The number of records in the fact table.
+        actual: usize,
     },
     /// The fact table did not contain a binding value entry.
     #[error("missing fact record for IR node {id:?}")]
