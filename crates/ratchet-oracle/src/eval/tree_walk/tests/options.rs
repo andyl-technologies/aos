@@ -1546,6 +1546,70 @@ fn gc_stress_eval_root_path_allocation_dispatches_permanent_noop_bridge() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+#[test]
+fn gc_stress_find_file_path_helper_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = Span::new(0, 0);
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_find_file_path(ir.root, span, b"/tmp/gc-stress-find-file".to_vec())
+        })
+        .expect("findFile path helper allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating findFile path"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Path);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("findFile path generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_path(value)
+            .expect("findFile path is heap-owned")
+            .bytes(),
+        b"/tmp/gc-stress-find-file"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        1
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("findFile path allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
 fn assert_gc_stress_root_string_result_dispatches(source: &str, expected: &[u8]) {
     assert_gc_stress_root_string_result_dispatches_with_options(
         source,
@@ -1799,6 +1863,10 @@ fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge(
     assert_gc_stress_root_path_result_dispatches(
         "builtins.dirOf /tmp/gc-stress-root-name",
         b"/tmp",
+    );
+    assert_gc_stress_root_path_result_dispatches(
+        r#"/tmp/${"gc-stress-interpolated-path"}"#,
+        b"/tmp/gc-stress-interpolated-path",
     );
 }
 

@@ -7445,6 +7445,9 @@ and helps the oracle directly.
       direct `fetchTree` and `fetchGit` result-string assembly relocating
       registered transient roots while keeping partially built result entries
       registered across later metadata string allocations,
+      direct find-file and path-interpolation path helper allocations
+      preserving registered transient roots while returning permanent path
+      values,
       direct origin-bearing persistent payload string/path/list replay and
       attrset-origin persistent payload attr replay relocating registered
       transient roots for context-free, context-bearing, empty, and strict

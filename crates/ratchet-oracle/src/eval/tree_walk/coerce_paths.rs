@@ -652,9 +652,7 @@ impl TreeWalk {
         span: Span,
         path: Vec<u8>,
     ) -> Result<Value, TreeWalkError> {
-        self.heap
-            .alloc_path(NixString::from_bytes(path))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_path(id, span, NixString::from_bytes(path))
     }
 
     pub(super) fn find_file_not_found(
@@ -814,9 +812,7 @@ impl TreeWalk {
         }
 
         let path = self.path_literal_bytes_for_node(id, node.span, &bytes)?;
-        self.heap
-            .alloc_path(NixString::from_bytes(path))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_path(id, node.span, NixString::from_bytes(path))
     }
 
     pub(super) fn coerce_to_path_interpolation_fragment(
