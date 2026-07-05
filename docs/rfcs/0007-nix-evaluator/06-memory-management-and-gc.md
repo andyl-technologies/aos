@@ -1144,18 +1144,21 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()` records
       the exact blockers that keep `aos_gc_write_barrier` from being an exported
-      native ABI symbol: missing `unsafe extern "C"` wrapper, runtime-context ABI
-      decoding, runtime GC-state extraction for the heap/remembered set/card
-      table, native source-thunk/value decoding, evaluator trap transfer, and
-      dispatch into the safe before-publish barrier path. The aggregate
+      native ABI symbol: missing final exported wrapper admission,
+      runtime-context ABI decoding, runtime GC-state extraction for the
+      heap/remembered set/card table, native source-thunk/value decoding,
+      evaluator trap transfer, and dispatch into the safe before-publish barrier
+      path. The runtime-FFI crate has a process-local trap-only
+      `aos_gc_write_barrier` wrapper address for JIT provenance, but that wrapper
+      is not accepted as a final native export by this oracle gate. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` now preserves
       allocation-specific blockers for `aos_alloc_*`, environment-access-specific
       blockers for `aos_env_get`, write-barrier-specific blockers for
       `aos_gc_write_barrier`, and earlier helper/builtin candidate gaps in full
-      runtime-symbol order. This remains safe readiness metadata only: no C ABI
-      function is exported, no Rust callable is treated as ABI-callable, no
-      `JITBuilder::symbol` registration occurs, and no native trap transfer or
-      thunk/value decoding is implemented.
+      runtime-symbol order. This remains safe readiness metadata only: no final
+      native-export registration is admitted, no safe Rust callable is treated
+      as the final ABI target, no `JITBuilder::symbol` registration occurs, and
+      no native trap transfer or thunk/value decoding is implemented.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /

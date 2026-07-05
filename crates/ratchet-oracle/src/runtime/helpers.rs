@@ -3622,6 +3622,21 @@ mod tests {
             write_barrier_export_gap.missing_exported_write_barrier_blockers(),
             Some(write_barrier_blockers)
         );
+        assert_eq!(
+            write_barrier_export_gap
+                .missing_exported_write_barrier_blockers()
+                .expect("write-barrier blockers exist"),
+            [
+                RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::NativeValueDecodeUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::BarrierDispatchUnimplemented,
+            ]
+            .as_slice()
+        );
         assert!(
             write_barrier_export_gap
                 .missing_exported_write_barrier_blockers()

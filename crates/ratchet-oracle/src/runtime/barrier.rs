@@ -853,6 +853,19 @@ mod tests {
             record.blockers(),
             RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.native_export_blockers()
         );
+        assert_eq!(
+            record.blockers(),
+            [
+                RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::NativeValueDecodeUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeWriteBarrierNativeExportBlocker::BarrierDispatchUnimplemented,
+            ]
+            .as_slice()
+        );
         assert!(!record.is_export_ready());
         assert!(
             record

@@ -5870,7 +5870,7 @@ and helps the oracle directly.
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()`
       records the exact blockers that keep `aos_gc_write_barrier` from being an
-      exported native ABI symbol: missing final `unsafe extern "C"` wrapper,
+      exported native ABI symbol: missing final exported wrapper admission,
       runtime-context ABI decoding, runtime GC-state extraction for the
       heap/remembered set/card table, native source-thunk/value decoding,
       evaluator trap transfer, and dispatch into the safe before-publish barrier
@@ -5882,9 +5882,10 @@ and helps the oracle directly.
       environment-access-specific blockers for `aos_env_get`,
       write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier
       helper/builtin candidate gaps in full runtime-symbol order. This remains
-      safe readiness metadata only: no Rust callable is treated as
-      ABI-callable, no `JITBuilder::symbol` registration occurs, and no native
-      trap transfer or thunk/value decoding is implemented.
+      safe readiness metadata only: no final native-export registration is
+      admitted, no safe Rust callable is treated as the final ABI target, no
+      `JITBuilder::symbol` registration occurs, and no native trap transfer or
+      thunk/value decoding is implemented.
 - [x] Current allocation collector-poll request precursor:
       `AllocationSafepoint::collector_poll` and
       `AllocationSafepointState::last_safepoint_collector_poll` expose a typed

@@ -4,7 +4,8 @@ use ratchet_jit::{
 };
 use ratchet_oracle::runtime::{
     alloc::RuntimeAllocationEntryPoint, apply::RuntimeApplyEntryPoint,
-    attr::RuntimeAttrAccessEntryPoint, helpers::runtime_symbol_rust_callable_preflight,
+    attr::RuntimeAttrAccessEntryPoint, barrier::RuntimeWriteBarrierEntryPoint,
+    helpers::runtime_symbol_rust_callable_preflight,
 };
 use ratchet_runtime_ffi::wrappers::runtime_native_wrapper_bindings;
 
@@ -853,7 +854,11 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
                 gap.missing_exported_c_abi_wrapper_role() == Some(RuntimeHelperRole::WriteBarrier)
                     && gap
                         .missing_exported_write_barrier_blockers()
-                        .is_some_and(|blockers| !blockers.is_empty())
+                        .is_some_and(|blockers| {
+                            blockers
+                                == RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier
+                                    .native_export_blockers()
+                        })
             })
     );
 }

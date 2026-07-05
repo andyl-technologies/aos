@@ -208,6 +208,28 @@ mod tests {
     }
 
     #[test]
+    fn write_barrier_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+        let binding = runtime_write_barrier_native_wrapper_bindings()
+            .into_iter()
+            .next()
+            .expect("write-barrier wrapper binding exists");
+        let oracle_blockers =
+            RuntimeWriteBarrierEntryPoint::AosGcWriteBarrier.native_export_blockers();
+        let expected_oracle_blockers = [
+            RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper,
+            RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented,
+            RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented,
+            RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented,
+            RuntimeWriteBarrierNativeExportBlocker::NativeValueDecodeUnimplemented,
+            RuntimeWriteBarrierNativeExportBlocker::TrapTransferUnimplemented,
+            RuntimeWriteBarrierNativeExportBlocker::BarrierDispatchUnimplemented,
+        ];
+
+        assert_eq!(oracle_blockers, expected_oracle_blockers.as_slice());
+        assert_eq!(binding.remaining_export_blockers(), &oracle_blockers[1..]);
+    }
+
+    #[test]
     fn aos_gc_write_barrier_native_wrapper_aborts() {
         assert_child_process_aborts(WRITE_BARRIER_ABORT_CHILD);
     }
