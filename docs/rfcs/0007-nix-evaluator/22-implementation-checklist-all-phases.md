@@ -2384,6 +2384,16 @@ alone (`M-1`/`Q-A`).
       analysis scheduling, durable index lookup, mmap reads, independent
       IR-hash fact artifacts, analyzed-once cross-source fact indexes, and
       harness proof remain open (`C-13`/`S-9`).
+- [x] Current analyzed parse-cache load adapter:
+      `ParseCache::load_or_parse_analyzed_bytes` loads or parses source bytes,
+      refreshes facts in the returned `CachedParse`, and attempts to store the
+      validated `facts.bin` sidecar without making fact-sidecar write failure
+      fatal. The returned `CachedAnalyzedParse` carries the analysis report and
+      a `facts_stored` bit so callers can distinguish analyzed in-memory facts
+      from durable fact-sidecar persistence. This is caller-driven analyzed
+      loading only; automatic evaluator/import integration, durable index
+      lookup, mmap reads, independent IR-hash fact artifacts, analyzed-once
+      cross-source fact indexes, and harness proof remain open (`C-13`/`S-9`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -9172,6 +9182,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       not automatic analysis scheduling, whole-program fixpoint orchestration,
       independent IR-hash fact persistence, an analyzed-once cross-source fact
       index, or a JIT lowering consumer.
+- [x] Current analyzed parse-cache load precursor:
+      `ParseCache::load_or_parse_analyzed_bytes` returns a
+      `CachedAnalyzedParse` by loading or parsing source bytes, refreshing the
+      returned module's in-memory facts, and best-effort writing the validated
+      `facts.bin` sidecar. The result reports whether fact storage succeeded,
+      while parse and analysis failures remain explicit errors. This is a
+      caller-driven analyzed-load helper; it is not automatic evaluator/import
+      integration, whole-program fixpoint scheduling, independent IR-hash fact
+      persistence, an analyzed-once cross-source fact index, or a JIT lowering
+      consumer.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

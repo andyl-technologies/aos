@@ -417,6 +417,33 @@ impl ParseCache {
             stored,
         })
     }
+
+    /// Loads or parses source bytes and refreshes analysis facts.
+    ///
+    /// This is an opt-in analysis entry point. It preserves the base parse
+    /// cache's performance-only storage policy: mandatory artifact write
+    /// failures are still reflected through [`CachedParse::stored`], and the
+    /// refreshed `facts.bin` sidecar is attempted without failing the analyzed
+    /// load.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseFactRefreshError`] when parsing, scope resolution, IR
+    /// lowering, or analysis fails.
+    pub fn load_or_parse_analyzed_bytes(
+        &self,
+        source: &[u8],
+        source_hint: Option<String>,
+    ) -> Result<CachedAnalyzedParse, ParseFactRefreshError> {
+        let mut parsed = self.load_or_parse_bytes(source, source_hint)?;
+        let analysis = parsed.refresh_facts()?;
+        let facts_stored = parsed.entry.write_fact_sidecar(&parsed.ir).is_ok();
+        Ok(CachedAnalyzedParse {
+            parsed,
+            analysis,
+            facts_stored,
+        })
+    }
 }
 
 /// The result of [`ParseCache::load_or_parse_bytes`].
@@ -437,6 +464,18 @@ pub struct CachedParse {
 }
 
 impl CachedParse {
+    /// Refreshes this parsed module's in-memory analysis facts.
+    ///
+    /// The analysis pipeline starts from conservative facts, so a failed refresh
+    /// leaves [`Self::ir`] with conservative per-node facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR.
+    pub fn refresh_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
+        annotate_ir(&mut self.ir).map_err(|source| ParseFactRefreshError::Analyze { source })
+    }
+
     /// Refreshes this parsed module's analysis facts and writes its sidecar.
     ///
     /// The in-memory IR is refreshed before the sidecar write. If the sidecar
@@ -448,11 +487,21 @@ impl CachedParse {
     /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR or the
     /// refreshed fact sidecar cannot be written for this parse-cache entry.
     pub fn refresh_and_store_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
-        let report = annotate_ir(&mut self.ir)
-            .map_err(|source| ParseFactRefreshError::Analyze { source })?;
+        let report = self.refresh_facts()?;
         self.entry.write_fact_sidecar(&self.ir)?;
         Ok(report)
     }
+}
+
+/// The result of [`ParseCache::load_or_parse_analyzed_bytes`].
+#[derive(Clone, Debug)]
+pub struct CachedAnalyzedParse {
+    /// The loaded or freshly parsed module with refreshed in-memory facts.
+    pub parsed: CachedParse,
+    /// The analysis report produced while refreshing facts.
+    pub analysis: IrAnalysisReport,
+    /// Whether the refreshed `facts.bin` sidecar was written successfully.
+    pub facts_stored: bool,
 }
 
 fn encode_bundle_section(

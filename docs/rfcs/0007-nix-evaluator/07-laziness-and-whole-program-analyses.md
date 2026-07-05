@@ -850,6 +850,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       not automatic analysis scheduling, whole-program fixpoint orchestration,
       independent IR-hash fact persistence, or an analyzed-once cross-source
       fact index.
+- [x] Current analyzed parse-cache load precursor:
+      `ParseCache::load_or_parse_analyzed_bytes` returns a `CachedAnalyzedParse`
+      by loading or parsing source bytes, refreshing the returned module's
+      in-memory facts, and best-effort writing the validated `facts.bin`
+      sidecar. The result reports whether fact storage succeeded, while parse
+      and analysis failures remain explicit errors. This is a caller-driven
+      analyzed-load helper; it is not automatic evaluator/import integration,
+      whole-program fixpoint scheduling, independent IR-hash fact persistence,
+      or an analyzed-once cross-source fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

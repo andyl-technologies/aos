@@ -104,7 +104,7 @@ pub enum ParseCacheError {
     EncodeArtifact(String),
 }
 
-/// A failure while refreshing and persisting parse-cache analysis facts.
+/// A failure while refreshing parse-cache analysis facts.
 #[derive(Debug, Error)]
 pub enum ParseFactRefreshError {
     /// The analysis pipeline rejected the lowered IR.
@@ -113,7 +113,7 @@ pub enum ParseFactRefreshError {
         /// The analysis failure.
         source: IrAnalysisError,
     },
-    /// The refreshed fact sidecar could not be written.
+    /// A parse-cache operation failed before or during fact refresh.
     #[error(transparent)]
     Cache(#[from] ParseCacheError),
 }

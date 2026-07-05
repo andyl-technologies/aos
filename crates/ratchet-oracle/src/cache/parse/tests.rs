@@ -1035,6 +1035,35 @@ fn cached_parse_refresh_and_store_facts_updates_memory_and_sidecar() {
 }
 
 #[test]
+fn cached_parse_refresh_facts_updates_memory_without_sidecar_write() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let mut parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let original_facts =
+        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+
+    parsed.refresh_facts().expect("facts refresh");
+
+    assert!(
+        parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != ExprFacts::conservative())
+    );
+    assert_eq!(
+        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
+        original_facts
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
@@ -1053,6 +1082,118 @@ fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing
     assert_eq!(
         fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
         original_facts
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_or_parse_analyzed_bytes_refreshes_memory_and_sidecar() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+
+    let analyzed = cache
+        .load_or_parse_analyzed_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses and analyzes");
+
+    assert!(!analyzed.parsed.hit);
+    assert!(analyzed.parsed.stored);
+    assert!(analyzed.facts_stored);
+    assert!(!analyzed.analysis.dependency_footprint.is_empty());
+    assert!(
+        analyzed
+            .parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != ExprFacts::conservative())
+    );
+
+    let hit = cache
+        .load_cached_bytes(source)
+        .expect("cached source loads")
+        .expect("cache entry exists");
+    assert!(hit.hit);
+    assert_eq!(hit.ir.facts.as_slice(), analyzed.parsed.ir.facts.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_or_parse_analyzed_bytes_refreshes_existing_cache_hits() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let miss = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    assert!(!miss.hit);
+    assert!(
+        miss.ir
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative())
+    );
+
+    let analyzed = cache
+        .load_or_parse_analyzed_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source loads and analyzes from cache");
+
+    assert!(analyzed.parsed.hit);
+    assert!(analyzed.facts_stored);
+    assert!(
+        analyzed
+            .parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != ExprFacts::conservative())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_or_parse_analyzed_bytes_keeps_analysis_when_fact_storage_fails() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let entry = cache.entry_for_source(source);
+    entry.ensure_dir().expect("entry dir creates");
+    fs::create_dir(entry.facts_path()).expect("blocking fact path creates");
+
+    let analyzed = cache
+        .load_or_parse_analyzed_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses and analyzes despite fact sidecar failure");
+
+    assert!(analyzed.parsed.stored);
+    assert!(!analyzed.facts_stored);
+    assert!(entry.facts_path().is_dir());
+    assert!(
+        analyzed
+            .parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != ExprFacts::conservative())
+    );
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("cached source loads")
+        .expect("cache entry exists");
+    assert!(
+        cached
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative()),
+        "failed sidecar storage should not make cached reads analyzed"
     );
 
     let _ = fs::remove_dir_all(root);
