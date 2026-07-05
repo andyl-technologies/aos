@@ -1,6 +1,6 @@
 //! Runtime-symbol metadata bridged from runtime helper sources into JIT preflights.
 
-use std::{collections::BTreeMap, ffi::c_void, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use ratchet_core::{RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError};
 use ratchet_jit::{
@@ -15,27 +15,8 @@ use ratchet_oracle::runtime::helpers::{
     RuntimeSymbolNativeExportMissingBinding, RuntimeSymbolNativeExportPreflight,
     runtime_symbol_native_export_preflight, runtime_symbol_rust_callable_preflight,
 };
-use ratchet_runtime_ffi::alloc::{
-    RuntimeAllocationNativeWrapperBinding, runtime_allocation_native_wrapper_bindings,
-};
-use ratchet_runtime_ffi::apply::{
-    RuntimeApplyNativeWrapperBinding, runtime_apply_native_wrapper_bindings,
-};
-use ratchet_runtime_ffi::attr::{
-    RuntimeAttrAccessNativeWrapperBinding, runtime_attr_access_native_wrapper_bindings,
-};
-use ratchet_runtime_ffi::barrier::{
-    RuntimeWriteBarrierNativeWrapperBinding, runtime_write_barrier_native_wrapper_bindings,
-};
-use ratchet_runtime_ffi::env::{
-    RuntimeEnvAccessNativeWrapperBinding, runtime_env_access_native_wrapper_bindings,
-};
-use ratchet_runtime_ffi::force::{
-    RuntimeForcingNativeWrapperBinding, runtime_forcing_native_wrapper_bindings,
-};
+use ratchet_runtime_ffi::wrappers::{RuntimeNativeWrapperBinding, runtime_native_wrapper_bindings};
 use thiserror::Error;
-
-const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 
 /// A failure while building Nix JIT runtime-symbol address candidates.
 #[derive(Debug, Error)]
@@ -522,20 +503,19 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// Builds process-local JIT address candidates from runtime wrapper metadata.
 ///
 /// Most returned candidates intentionally use current-process Rust helper
-/// callable addresses, not exported native ABI wrappers. `aos_env_get`,
-/// trap-only `aos_alloc_*` allocation helpers, trap-only `aos_apply`,
-/// trap-only attrset-access helpers, the `aos_blackhole_check`, `aos_force`,
-/// and `aos_force_deep` forcing helpers, and the trap-only
-/// `aos_gc_write_barrier` helper are sourced from `ratchet-runtime-ffi` native
-/// wrappers. This lets the bridge distinguish native-wrapper address provenance
-/// from the remaining native-export blockers. The candidates let integration
-/// code exercise JIT registration and relocation plumbing while keeping the
-/// actual native call boundary disabled.
+/// callable addresses, not exported native ABI wrappers. The currently covered
+/// trap-only helper families are sourced from the unified
+/// `ratchet-runtime-ffi` native-wrapper manifest. This lets the bridge
+/// distinguish native-wrapper address provenance from the remaining
+/// native-export blockers. The candidates let integration code exercise JIT
+/// registration and relocation plumbing while keeping the actual native call
+/// boundary disabled.
 ///
 /// # Errors
 ///
 /// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest cannot
-/// be projected into oracle Rust-callable metadata. Returns
+/// be projected into oracle Rust-callable metadata or the unified
+/// runtime-FFI native-wrapper manifest. Returns
 /// [`NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress`] if a helper
 /// binding violates the non-null address invariant before it reaches the JIT
 /// registration metadata. Returns
@@ -547,25 +527,13 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 /// registration metadata.
 pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightResult {
     let oracle_preflight = runtime_symbol_rust_callable_preflight()?;
-    let allocation_native_wrappers = runtime_allocation_native_wrappers_by_symbol();
-    let apply_native_wrappers = runtime_apply_native_wrappers_by_symbol();
-    let attr_access_native_wrappers = runtime_attr_access_native_wrappers_by_symbol();
-    let env_native_wrappers = runtime_env_native_wrappers_by_symbol();
-    let forcing_native_wrappers = runtime_forcing_native_wrappers_by_symbol();
-    let write_barrier_native_wrappers = runtime_write_barrier_native_wrappers_by_symbol();
+    let native_wrappers = runtime_native_wrappers_by_symbol()?;
     let mut address_candidates = Vec::new();
     let mut address_provenance = Vec::new();
 
     for binding in oracle_preflight.helper_callables().iter().copied() {
-        let (candidate, provenance) = jit_address_candidate_for_helper_binding(
-            binding,
-            &allocation_native_wrappers,
-            &apply_native_wrappers,
-            &attr_access_native_wrappers,
-            &env_native_wrappers,
-            &forcing_native_wrappers,
-            &write_barrier_native_wrappers,
-        )?;
+        let (candidate, provenance) =
+            jit_address_candidate_for_helper_binding(binding, &native_wrappers)?;
         address_candidates.push(candidate);
         address_provenance.push(provenance);
     }
@@ -694,12 +662,7 @@ fn address_provenance_gaps(
 
 fn jit_address_candidate_for_helper_binding(
     binding: RuntimeHelperRustCallableBinding,
-    allocation_native_wrappers: &BTreeMap<&'static str, RuntimeAllocationNativeWrapperBinding>,
-    apply_native_wrappers: &BTreeMap<&'static str, RuntimeApplyNativeWrapperBinding>,
-    attr_access_native_wrappers: &BTreeMap<&'static str, RuntimeAttrAccessNativeWrapperBinding>,
-    env_native_wrappers: &BTreeMap<&'static str, RuntimeEnvAccessNativeWrapperBinding>,
-    forcing_native_wrappers: &BTreeMap<&'static str, RuntimeForcingNativeWrapperBinding>,
-    write_barrier_native_wrappers: &BTreeMap<&'static str, RuntimeWriteBarrierNativeWrapperBinding>,
+    native_wrappers: &BTreeMap<&'static str, RuntimeNativeWrapperBinding>,
 ) -> Result<
     (
         JitRuntimeSymbolAddressCandidate,
@@ -707,83 +670,8 @@ fn jit_address_candidate_for_helper_binding(
     ),
     NixJitRuntimeSymbolAddressCandidateError,
 > {
-    if let RuntimeHelperRustCallableBinding::Allocation(allocation_binding) = binding
-        && let Some(native_wrapper) =
-            allocation_native_wrappers.get(allocation_binding.symbol_name())
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
-            native_wrapper.address().as_ptr(),
-        )?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
-        return Ok((candidate, provenance));
-    }
-
-    if let RuntimeHelperRustCallableBinding::CallControl(apply_binding) = binding
-        && let Some(native_wrapper) = apply_native_wrappers.get(apply_binding.symbol_name())
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
-            native_wrapper.address().as_ptr(),
-        )?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
-        return Ok((candidate, provenance));
-    }
-
-    if let RuntimeHelperRustCallableBinding::AttrsetAccess(attr_access_binding) = binding
-        && let Some(native_wrapper) =
-            attr_access_native_wrappers.get(attr_access_binding.symbol_name())
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
-            native_wrapper.address().as_ptr(),
-        )?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
-        return Ok((candidate, provenance));
-    }
-
-    if let RuntimeHelperRustCallableBinding::EnvironmentAccess(env_binding) = binding
-        && env_binding.symbol_name() == AOS_ENV_GET_SYMBOL
-        && let Some(native_wrapper) = env_native_wrappers.get(AOS_ENV_GET_SYMBOL)
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
-            native_wrapper.address().as_ptr(),
-        )?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
-        return Ok((candidate, provenance));
-    }
-
-    if let RuntimeHelperRustCallableBinding::Forcing(forcing_binding) = binding
-        && let Some(native_wrapper) = forcing_native_wrappers.get(forcing_binding.symbol_name())
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
-            native_wrapper.address().as_ptr(),
-        )?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
-        return Ok((candidate, provenance));
-    }
-
-    if let RuntimeHelperRustCallableBinding::WriteBarrier(write_barrier_binding) = binding
-        && let Some(native_wrapper) =
-            write_barrier_native_wrappers.get(write_barrier_binding.symbol_name())
-    {
-        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(
-            native_wrapper.symbol_name(),
-            RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier),
-            native_wrapper.address().as_ptr(),
-        )?;
+    if let Some(native_wrapper) = native_wrappers.get(binding.symbol_name()).copied() {
+        let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(native_wrapper)?;
         let provenance =
             NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
         return Ok((candidate, provenance));
@@ -812,20 +700,18 @@ fn jit_address_candidate_for_helper_callable(
 }
 
 fn jit_address_candidate_for_runtime_ffi_native_wrapper(
-    symbol_name: &'static str,
-    kind: RuntimeSymbolKind,
-    raw_pointer: *mut c_void,
+    binding: RuntimeNativeWrapperBinding,
 ) -> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
-    let raw = raw_pointer as usize;
+    let raw = binding.address().as_ptr() as usize;
     let address = JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).ok_or(
         NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
-            symbol_name,
+            symbol_name: binding.symbol_name(),
         },
     )?);
 
     Ok(JitRuntimeSymbolAddressCandidate::new(
-        symbol_name.to_owned(),
-        kind,
+        binding.symbol_name().to_owned(),
+        RuntimeSymbolKind::Helper(binding.role()),
         address,
     ))
 }
@@ -841,52 +727,12 @@ fn helper_callable_address(binding: RuntimeHelperRustCallableBinding) -> *const 
     }
 }
 
-fn runtime_allocation_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeAllocationNativeWrapperBinding> {
-    runtime_allocation_native_wrapper_bindings()
+fn runtime_native_wrappers_by_symbol()
+-> Result<BTreeMap<&'static str, RuntimeNativeWrapperBinding>, RuntimeSymbolNameError> {
+    Ok(runtime_native_wrapper_bindings()?
         .into_iter()
         .map(|binding| (binding.symbol_name(), binding))
-        .collect()
-}
-
-fn runtime_apply_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeApplyNativeWrapperBinding> {
-    runtime_apply_native_wrapper_bindings()
-        .into_iter()
-        .map(|binding| (binding.symbol_name(), binding))
-        .collect()
-}
-
-fn runtime_attr_access_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeAttrAccessNativeWrapperBinding> {
-    runtime_attr_access_native_wrapper_bindings()
-        .into_iter()
-        .map(|binding| (binding.symbol_name(), binding))
-        .collect()
-}
-
-fn runtime_env_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeEnvAccessNativeWrapperBinding> {
-    runtime_env_access_native_wrapper_bindings()
-        .into_iter()
-        .map(|binding| (binding.symbol_name(), binding))
-        .collect()
-}
-
-fn runtime_forcing_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeForcingNativeWrapperBinding> {
-    runtime_forcing_native_wrapper_bindings()
-        .into_iter()
-        .map(|binding| (binding.symbol_name(), binding))
-        .collect()
-}
-
-fn runtime_write_barrier_native_wrappers_by_symbol()
--> BTreeMap<&'static str, RuntimeWriteBarrierNativeWrapperBinding> {
-    runtime_write_barrier_native_wrapper_bindings()
-        .into_iter()
-        .map(|binding| (binding.symbol_name(), binding))
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

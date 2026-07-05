@@ -6,12 +6,7 @@ use ratchet_oracle::runtime::{
     alloc::RuntimeAllocationEntryPoint, apply::RuntimeApplyEntryPoint,
     attr::RuntimeAttrAccessEntryPoint, helpers::runtime_symbol_rust_callable_preflight,
 };
-use ratchet_runtime_ffi::alloc::runtime_allocation_native_wrapper_bindings;
-use ratchet_runtime_ffi::apply::runtime_apply_native_wrapper_bindings;
-use ratchet_runtime_ffi::attr::runtime_attr_access_native_wrapper_bindings;
-use ratchet_runtime_ffi::barrier::runtime_write_barrier_native_wrapper_bindings;
-use ratchet_runtime_ffi::env::runtime_env_access_native_wrapper_bindings;
-use ratchet_runtime_ffi::force::runtime_forcing_native_wrapper_bindings;
+use ratchet_runtime_ffi::wrappers::runtime_native_wrapper_bindings;
 
 use super::*;
 
@@ -40,6 +35,24 @@ const EXPECTED_RUNTIME_FFI_FORCE_SYMBOLS: &[&str] =
 const EXPECTED_RUST_CALLABLE_FORCE_SYMBOLS: &[&str] = &[];
 const EXPECTED_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
 const EXPECTED_RUNTIME_FFI_WRITE_BARRIER_SYMBOLS: &[&str] = &["aos_gc_write_barrier"];
+const EXPECTED_RUNTIME_FFI_SYMBOLS: &[&str] = &[
+    "aos_alloc_attrs",
+    "aos_alloc_cons",
+    "aos_alloc_lambda",
+    "aos_alloc_list",
+    "aos_alloc_raw",
+    "aos_alloc_string",
+    "aos_alloc_thunk",
+    "aos_apply",
+    "aos_blackhole_check",
+    "aos_env_get",
+    "aos_force",
+    "aos_force_deep",
+    "aos_gc_write_barrier",
+    "aos_has_attr",
+    "aos_select_ic",
+    "aos_update",
+];
 
 #[test]
 fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
@@ -266,27 +279,9 @@ fn jit_runtime_symbol_address_candidate_preflight_projects_runtime_addresses() {
         .filter(|provenance| provenance.is_runtime_ffi_native_wrapper())
         .map(NixJitRuntimeSymbolAddressProvenance::symbol_name)
         .collect::<Vec<_>>();
-    assert_eq!(
-        runtime_ffi_symbols,
-        [
-            "aos_alloc_attrs",
-            "aos_alloc_cons",
-            "aos_alloc_lambda",
-            "aos_alloc_list",
-            "aos_alloc_raw",
-            "aos_alloc_string",
-            "aos_alloc_thunk",
-            "aos_apply",
-            "aos_blackhole_check",
-            "aos_env_get",
-            "aos_force",
-            "aos_force_deep",
-            "aos_gc_write_barrier",
-            "aos_has_attr",
-            "aos_select_ic",
-            "aos_update"
-        ]
-    );
+    let expected_runtime_ffi_symbols = runtime_native_wrapper_symbols();
+    assert_eq!(runtime_ffi_symbols, expected_runtime_ffi_symbols);
+    assert_eq!(runtime_ffi_symbols, EXPECTED_RUNTIME_FFI_SYMBOLS);
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
         let force = preflight
             .address_candidate_for(symbol_name)
@@ -533,6 +528,32 @@ fn jit_runtime_symbol_allocation_candidates_feed_jit_registration_preflight() {
         );
         assert!(registration.gap_for_symbol(symbol_name).is_none());
     }
+}
+
+#[test]
+fn helper_binding_falls_back_to_rust_callable_without_native_wrapper() {
+    let binding = runtime_symbol_rust_callable_preflight()
+        .expect("oracle Rust-callable preflight builds")
+        .helper_callables()
+        .iter()
+        .copied()
+        .find(|binding| binding.symbol_name() == "aos_env_get")
+        .expect("oracle env Rust callable exists");
+
+    let (candidate, provenance) =
+        jit_address_candidate_for_helper_binding(binding, &BTreeMap::new())
+            .expect("fallback Rust-callable candidate builds");
+
+    assert_eq!(candidate.symbol_name(), "aos_env_get");
+    assert_eq!(
+        candidate.kind(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess)
+    );
+    assert_eq!(
+        candidate.address().as_nonzero_usize().get(),
+        env_rust_callable_address()
+    );
+    assert!(provenance.is_rust_callable_helper());
 }
 
 #[test]
@@ -1110,10 +1131,23 @@ fn nix_jit_runtime_symbol_registration_plan_preserves_incomplete_preflight() {
 }
 
 fn allocation_native_wrapper_address(symbol_name: &str) -> usize {
-    runtime_allocation_native_wrapper_bindings()
+    runtime_native_wrapper_address(symbol_name)
+}
+
+fn runtime_native_wrapper_symbols() -> Vec<&'static str> {
+    runtime_native_wrapper_bindings()
+        .expect("runtime FFI native-wrapper manifest builds")
+        .into_iter()
+        .map(|binding| binding.symbol_name())
+        .collect()
+}
+
+fn runtime_native_wrapper_address(symbol_name: &str) -> usize {
+    runtime_native_wrapper_bindings()
+        .expect("runtime FFI native-wrapper manifest builds")
         .into_iter()
         .find(|binding| binding.symbol_name() == symbol_name)
-        .expect("runtime FFI allocation wrapper exists")
+        .expect("runtime FFI native wrapper exists")
         .address()
         .as_ptr() as usize
 }
@@ -1136,66 +1170,31 @@ fn allocation_rust_callable_address(symbol_name: &str) -> usize {
 }
 
 fn env_native_wrapper_address() -> usize {
-    runtime_env_access_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_env_get")
-        .expect("runtime FFI env wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_env_get")
 }
 
 fn apply_native_wrapper_address() -> usize {
-    runtime_apply_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_apply")
-        .expect("runtime FFI apply wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_apply")
 }
 
 fn attr_access_native_wrapper_address(symbol_name: &str) -> usize {
-    runtime_attr_access_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == symbol_name)
-        .expect("runtime FFI attrset-access wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address(symbol_name)
 }
 
 fn force_native_wrapper_address() -> usize {
-    runtime_forcing_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_force")
-        .expect("runtime FFI force wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_force")
 }
 
 fn force_deep_native_wrapper_address() -> usize {
-    runtime_forcing_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_force_deep")
-        .expect("runtime FFI force-deep wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_force_deep")
 }
 
 fn blackhole_native_wrapper_address() -> usize {
-    runtime_forcing_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_blackhole_check")
-        .expect("runtime FFI blackhole-check wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_blackhole_check")
 }
 
 fn write_barrier_native_wrapper_address() -> usize {
-    runtime_write_barrier_native_wrapper_bindings()
-        .into_iter()
-        .find(|binding| binding.symbol_name() == "aos_gc_write_barrier")
-        .expect("runtime FFI write-barrier wrapper exists")
-        .address()
-        .as_ptr() as usize
+    runtime_native_wrapper_address("aos_gc_write_barrier")
 }
 
 fn env_rust_callable_address() -> usize {

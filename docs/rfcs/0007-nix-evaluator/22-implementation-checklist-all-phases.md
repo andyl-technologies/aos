@@ -5379,15 +5379,14 @@ and helps the oracle directly.
       registration plan.
 - [x] Current `aos-nix` JIT address-candidate bridge:
       `aos_nix::jit::nix_jit_runtime_symbol_address_candidate_preflight()`
-      composes oracle Rust-callable helper metadata, the `ratchet-runtime-ffi`
-      `aos_alloc_*`/`aos_env_get`/`aos_apply`/`aos_blackhole_check`/`aos_force`/
-      `aos_force_deep`/`aos_gc_write_barrier` plus
-      `aos_has_attr`/`aos_select_ic`/`aos_update` native-wrapper metadata, and
-      `ratchet-jit` runtime-symbol address candidates. It projects the
-      runtime-FFI `aos_alloc_*`, `aos_env_get`, `aos_apply`, `aos_blackhole_check`,
-      `aos_force`, `aos_force_deep`, `aos_gc_write_barrier`,
-      `aos_has_attr`, `aos_select_ic`, and `aos_update` addresses into
-      `JitRuntimeSymbolAddressCandidate` values while
+      composes oracle Rust-callable helper metadata with
+      `ratchet-runtime-ffi::wrappers::runtime_native_wrapper_bindings()` and
+      `ratchet-jit` runtime-symbol address candidates. It projects the unified
+      runtime-FFI native-wrapper manifest into `JitRuntimeSymbolAddressCandidate`
+      values for `aos_alloc_*`, `aos_env_get`, `aos_apply`,
+      `aos_blackhole_check`, `aos_force`, `aos_force_deep`,
+      `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`, and `aos_update`
+      while
       carrying oracle missing bindings for unbound helpers and builtins. The
       bridge now records per-candidate provenance and exposes helper-role filtered
       candidate views, including the allocation-helper manifest-order subset.
@@ -5395,7 +5394,8 @@ and helps the oracle directly.
       forcing, and write-barrier role filtering, `aos_env_get`,
       `aos_apply`, `aos_blackhole_check`, `aos_force`, `aos_force_deep`, and
       `aos_gc_write_barrier`, `aos_alloc_*`, `aos_has_attr`, `aos_select_ic`, and `aos_update`
-      runtime-FFI address/provenance, feed only the
+      runtime-FFI address/provenance, prove the runtime-FFI provenance set
+      follows the unified native-wrapper manifest, feed only the
       allocation-filtered subset through JIT
       registration, and still cover registered env-slot tier-1 promotion for
       `aos_env_get`. This is safe integration preflight plumbing only: it does
