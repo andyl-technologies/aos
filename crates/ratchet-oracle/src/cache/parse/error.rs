@@ -79,6 +79,14 @@ pub enum ParseCacheError {
         /// The decode failure.
         message: String,
     },
+    /// A refreshed analysis fact sidecar does not match its cache entry.
+    #[error("invalid parse-cache fact sidecar update {path:?}: {message}")]
+    InvalidFactSidecarUpdate {
+        /// The fact sidecar path.
+        path: PathBuf,
+        /// The validation failure.
+        message: String,
+    },
     /// A raw parse-cache artifact bundle could not be decoded.
     #[error("failed to decode parse-cache artifact bundle: {message}")]
     DecodeArtifactBundle {

@@ -265,6 +265,74 @@ impl ParseCacheEntry {
         Ok(meta)
     }
 
+    /// Writes refreshed analysis facts for this entry's lowered IR artifact.
+    ///
+    /// The supplied IR is encoded and fingerprinted against the `ir.bin` and
+    /// `symbols.bin` artifacts that are already present in the cache entry.
+    /// Only `facts.bin` is updated; mandatory artifacts and diagnostic
+    /// metadata are left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the stored lowered IR artifacts cannot be
+    /// read or decoded, the supplied IR or fact table cannot be encoded, the
+    /// supplied IR does not match the stored artifact fingerprint, the fact
+    /// table length does not match the stored node count, or `facts.bin` cannot
+    /// be written.
+    pub fn write_fact_sidecar(&self, ir: &Ir) -> Result<(), ParseCacheError> {
+        let ir_path = self.ir_path();
+        let symbols_path = self.symbols_path();
+        let facts_path = self.facts_path();
+        let stored_ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: ir_path.clone(),
+            source,
+        })?;
+        let stored_symbols =
+            fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
+                path: symbols_path.clone(),
+                source,
+            })?;
+        let stored_fingerprint = lowered_ir_artifact_fingerprint(&stored_ir, &stored_symbols);
+        let stored_symbols =
+            decode_symbols(&stored_symbols).map_err(|message| ParseCacheError::DecodeArtifact {
+                path: symbols_path,
+                message,
+            })?;
+        let stored_ir = decode_lowered_ir(&stored_ir, stored_symbols).map_err(|message| {
+            ParseCacheError::DecodeArtifact {
+                path: ir_path,
+                message,
+            }
+        })?;
+        let supplied_fingerprint = lowered_ir_fingerprint(ir)?;
+        if supplied_fingerprint != stored_fingerprint {
+            return Err(ParseCacheError::InvalidFactSidecarUpdate {
+                path: facts_path,
+                message: "supplied IR fingerprint does not match cached lowered IR artifact"
+                    .to_owned(),
+            });
+        }
+
+        let stored_node_count = stored_ir.arena.nodes().len();
+        let fact_count = ir.facts.len();
+        if fact_count != stored_node_count {
+            return Err(ParseCacheError::InvalidFactSidecarUpdate {
+                path: facts_path,
+                message: format!(
+                    "fact table length {fact_count} does not match lowered IR node count {stored_node_count}"
+                ),
+            });
+        }
+
+        let facts_bytes = encode_ir_facts(&ir.facts, stored_fingerprint)?;
+        write_cache_file_atomic(&facts_path, &facts_bytes).map_err(|source| {
+            ParseCacheError::WriteArtifact {
+                path: facts_path,
+                source,
+            }
+        })
+    }
+
     /// Reads a resolved AST artifact from this cache entry.
     ///
     /// # Errors

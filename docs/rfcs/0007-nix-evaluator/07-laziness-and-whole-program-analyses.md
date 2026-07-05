@@ -830,6 +830,16 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       facts. This lets existing persistent parse/file artifact blobs transport
       analyzed facts, but it is not an independent IR-hash fact artifact or
       analyzed-once cross-source fact index.
+- [x] Current refreshed fact-sidecar writer precursor:
+      `ParseCacheEntry::write_fact_sidecar` updates an existing entry's
+      `facts.bin` after analysis only when the supplied analyzed IR fingerprints
+      to the stored `ir.bin`/`symbols.bin` lowered artifact and its fact-table
+      length matches the stored node count. Mismatched IRs, malformed stored
+      artifacts, wrong-length fact tables, and write failures are reported
+      instead of silently committing stale facts. This is an explicit
+      parse-cache sidecar update path, not the independent IR-hash fact artifact
+      store, closed-world fixpoint cache, or analyzed-once cross-source fact
+      index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

@@ -838,6 +838,169 @@ fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
 }
 
 #[test]
+fn write_fact_sidecar_persists_refreshed_analysis_facts() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let mut analyzed = parsed.ir.clone();
+    crate::compile::annotate_ir(&mut analyzed).expect("analysis succeeds");
+    assert_ne!(
+        parsed.ir.facts.as_slice(),
+        analyzed.facts.as_slice(),
+        "analysis should refresh at least one fact"
+    );
+
+    parsed
+        .entry
+        .write_fact_sidecar(&analyzed)
+        .expect("refreshed fact sidecar writes");
+    let loaded = parsed
+        .entry
+        .read_ir()
+        .expect("refreshed fact sidecar reads");
+
+    assert!(lowered_ir_matches(&loaded, &analyzed));
+    assert_eq!(loaded.facts.as_slice(), analyzed.facts.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_fact_sidecar_rejects_ir_for_different_artifact() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let original_facts =
+        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let mut other = lowered_ir_for_source("let y = 2; in y");
+    crate::compile::annotate_ir(&mut other).expect("analysis succeeds");
+
+    let error = parsed
+        .entry
+        .write_fact_sidecar(&other)
+        .expect_err("mismatched fact sidecar is rejected");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::InvalidFactSidecarUpdate { path, message }
+            if path == parsed.entry.facts_path() && message.contains("fingerprint")
+    ));
+    assert_eq!(
+        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
+        original_facts
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_fact_sidecar_rejects_wrong_fact_table_length() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let original_facts =
+        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let mut invalid = parsed.ir.clone();
+    invalid.facts = IrFacts::conservative(invalid.arena.nodes().len() + 1);
+
+    let error = parsed
+        .entry
+        .write_fact_sidecar(&invalid)
+        .expect_err("invalid fact table length is rejected");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::InvalidFactSidecarUpdate { path, message }
+            if path == parsed.entry.facts_path() && message.contains("fact table length")
+    ));
+    assert_eq!(
+        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
+        original_facts
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_fact_sidecar_reports_corrupt_stored_artifact() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    fs::write(parsed.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+
+    let error = parsed
+        .entry
+        .write_fact_sidecar(&parsed.ir)
+        .expect_err("corrupt stored IR is rejected");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.ir_path()
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_fact_sidecar_reports_corrupt_stored_symbols() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    fs::write(parsed.entry.symbols_path(), b"not a symbol artifact")
+        .expect("corrupt symbols write");
+
+    let error = parsed
+        .entry
+        .write_fact_sidecar(&parsed.ir)
+        .expect_err("corrupt stored symbols are rejected");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.symbols_path()
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_fact_sidecar_reports_fact_write_failure() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    fs::remove_file(parsed.entry.facts_path()).expect("fact sidecar removes");
+    fs::create_dir(parsed.entry.facts_path()).expect("blocking fact path creates");
+
+    let error = parsed
+        .entry
+        .write_fact_sidecar(&parsed.ir)
+        .expect_err("fact sidecar write failure is reported");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::WriteArtifact { path, .. } if path == parsed.entry.facts_path()
+    ));
+    assert!(
+        cache_temp_files(&parsed.entry).is_empty(),
+        "temporary files were not cleaned up"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn lowered_ir_entry_ignores_mismatched_fact_sidecar_fingerprint() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));

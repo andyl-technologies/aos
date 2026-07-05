@@ -2364,6 +2364,16 @@ alone (`M-1`/`Q-A`).
       index lookup, automatic file-artifact materialization, semantic validation
       before write, mmap reads, cache-hit integration, independent IR-hash fact
       artifacts, and harness proof remain open (`C-13`/`S-9`).
+- [x] Current refreshed parse-cache fact writer:
+      `ParseCacheEntry::write_fact_sidecar` atomically updates an entry's
+      `facts.bin` from a refreshed analyzed `Ir` only after validating that the
+      supplied IR fingerprints to the stored `ir.bin`/`symbols.bin` lowered
+      artifact and that its fact-table length matches the stored node count. It
+      reports mismatched IRs, malformed stored artifacts, wrong-length fact
+      tables, and sidecar write failures instead of treating the update as
+      best-effort. This is explicit parse-cache sidecar refresh only; durable
+      index lookup, automatic analysis scheduling, mmap reads, independent
+      IR-hash fact artifacts, and harness proof remain open (`C-13`/`S-9`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -9132,6 +9142,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       analyzed facts, but it is not an independent IR-hash fact artifact,
       analyzed-once cross-source fact index, whole-program fixpoint cache, or
       JIT lowering consumer.
+- [x] Current refreshed fact-sidecar writer precursor:
+      `ParseCacheEntry::write_fact_sidecar` updates an existing entry's
+      `facts.bin` after analysis only when the supplied analyzed IR fingerprints
+      to the stored `ir.bin`/`symbols.bin` lowered artifact and its fact-table
+      length matches the stored node count. Mismatched IRs, malformed stored
+      artifacts, wrong-length fact tables, and write failures are reported
+      instead of silently committing stale facts. This is an explicit
+      parse-cache sidecar update path, not the independent IR-hash fact artifact
+      store, closed-world fixpoint cache, analyzed-once cross-source fact index,
+      automatic analysis scheduler, or JIT lowering consumer.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
