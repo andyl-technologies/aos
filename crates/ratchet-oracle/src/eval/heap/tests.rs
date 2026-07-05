@@ -1394,6 +1394,96 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
 }
 
 #[test]
+fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let worker = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    let permanent = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+
+    let plan = heap
+        .plan_tier_b_admission()
+        .expect("admission planning succeeds");
+
+    assert_eq!(plan.worker_stats(), worker_stats);
+    assert_eq!(plan.permanent_stats(), permanent_stats);
+    assert_eq!(plan.worker_records(), 1);
+    assert_eq!(plan.permanent_shared_records(), 1);
+    assert_eq!(plan.record_count(), heap.len());
+    assert_eq!(plan.records().len(), heap.len());
+
+    let worker_record = plan
+        .records()
+        .iter()
+        .find(|record| record.address() == gc_address(worker))
+        .expect("worker record is planned");
+    assert_eq!(
+        worker_record.allocation_domain(),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(worker_record.current_generation(), HeapGeneration::Young);
+    assert_eq!(worker_record.admitted_generation(), HeapGeneration::Old);
+    assert!(worker_record.needs_generation_rewrite());
+
+    let permanent_record = plan
+        .records()
+        .iter()
+        .find(|record| record.address() == gc_address(permanent))
+        .expect("permanent record is planned");
+    assert_eq!(
+        permanent_record.allocation_domain(),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(
+        permanent_record.current_generation(),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        permanent_record.admitted_generation(),
+        HeapGeneration::Permanent
+    );
+    assert!(!permanent_record.needs_generation_rewrite());
+
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Young);
+    assert_eq!(heap_generation(&heap, permanent), HeapGeneration::Permanent);
+    assert_eq!(
+        allocation_domain(&heap, worker),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        allocation_domain(&heap, permanent),
+        HeapAllocationDomain::PermanentShared
+    );
+}
+
+#[test]
+fn tier_b_admission_plan_keeps_existing_old_worker_generation_stable() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let worker = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    set_heap_generation(&mut heap, worker, HeapGeneration::Old);
+
+    let plan = heap
+        .plan_tier_b_admission()
+        .expect("admission planning succeeds");
+
+    let worker_record = plan
+        .records()
+        .iter()
+        .find(|record| record.address() == gc_address(worker))
+        .expect("worker record is planned");
+    assert_eq!(worker_record.current_generation(), HeapGeneration::Old);
+    assert_eq!(worker_record.admitted_generation(), HeapGeneration::Old);
+    assert!(!worker_record.needs_generation_rewrite());
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Old);
+}
+
+#[test]
 fn cold_hash_consed_estimate_flows_into_opt_in_budget_classification() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
     let string = heap

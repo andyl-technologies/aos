@@ -47,6 +47,7 @@ pub use arena::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan,
     EvalHeapColdHashConsedAdviceReport, EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction,
     EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
+    EvalHeapTierBAdmissionPlan, EvalHeapTierBAdmissionRecord,
 };
 pub(crate) use roots::{
     AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,

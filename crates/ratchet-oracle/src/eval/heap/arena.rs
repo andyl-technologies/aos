@@ -368,6 +368,123 @@ impl EvalHeapMemoryBudgetAction {
     }
 }
 
+/// One typed heap record considered during Tier-B admission planning.
+///
+/// The record keeps both the current generation and the generation that a
+/// cross-tier flip would assign. It is read-only planning metadata and does not
+/// mutate the heap record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapTierBAdmissionRecord {
+    address: GcHeapAddress,
+    allocation_domain: HeapAllocationDomain,
+    current_generation: HeapGeneration,
+    admitted_generation: HeapGeneration,
+}
+
+impl EvalHeapTierBAdmissionRecord {
+    const fn new(
+        address: GcHeapAddress,
+        allocation_domain: HeapAllocationDomain,
+        current_generation: HeapGeneration,
+        admitted_generation: HeapGeneration,
+    ) -> Self {
+        Self {
+            address,
+            allocation_domain,
+            current_generation,
+            admitted_generation,
+        }
+    }
+
+    /// Returns the heap address of the typed record.
+    pub const fn address(self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the allocation domain that currently owns the record.
+    pub const fn allocation_domain(self) -> HeapAllocationDomain {
+        self.allocation_domain
+    }
+
+    /// Returns the generation currently recorded on the heap record.
+    pub const fn current_generation(self) -> HeapGeneration {
+        self.current_generation
+    }
+
+    /// Returns the generation Tier-B admission would assign to the record.
+    pub const fn admitted_generation(self) -> HeapGeneration {
+        self.admitted_generation
+    }
+
+    /// Returns whether admission would rewrite the record's generation metadata.
+    pub fn needs_generation_rewrite(self) -> bool {
+        self.current_generation != self.admitted_generation
+    }
+}
+
+/// Read-only heap-record plan for admitting a Tier-A heap into Tier B.
+///
+/// The plan treats worker-domain records as future old-generation records and
+/// preserves permanent-shared records as permanent. It deliberately does not
+/// install a collector, reserve semispace storage, switch allocators, rewrite
+/// heap records, or relocate values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalHeapTierBAdmissionPlan {
+    worker_stats: ArenaStats,
+    permanent_stats: ArenaStats,
+    worker_records: usize,
+    permanent_shared_records: usize,
+    records: Vec<EvalHeapTierBAdmissionRecord>,
+}
+
+impl EvalHeapTierBAdmissionPlan {
+    const fn new(
+        worker_stats: ArenaStats,
+        permanent_stats: ArenaStats,
+        worker_records: usize,
+        permanent_shared_records: usize,
+        records: Vec<EvalHeapTierBAdmissionRecord>,
+    ) -> Self {
+        Self {
+            worker_stats,
+            permanent_stats,
+            worker_records,
+            permanent_shared_records,
+            records,
+        }
+    }
+
+    /// Returns worker-domain arena accounting captured by the plan.
+    pub const fn worker_stats(&self) -> ArenaStats {
+        self.worker_stats
+    }
+
+    /// Returns permanent-shared arena accounting captured by the plan.
+    pub const fn permanent_stats(&self) -> ArenaStats {
+        self.permanent_stats
+    }
+
+    /// Returns the number of worker-domain records in the plan.
+    pub const fn worker_records(&self) -> usize {
+        self.worker_records
+    }
+
+    /// Returns the number of permanent-shared records in the plan.
+    pub const fn permanent_shared_records(&self) -> usize {
+        self.permanent_shared_records
+    }
+
+    /// Returns admission metadata for all typed heap records in heap-record order.
+    pub fn records(&self) -> &[EvalHeapTierBAdmissionRecord] {
+        &self.records
+    }
+
+    /// Returns the number of typed heap records in the plan.
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+}
+
 /// An opt-in cold-aware budget plan with optional advice telemetry.
 ///
 /// This is planning metadata for the future spill path. Its decision can credit
@@ -510,6 +627,54 @@ impl EvalHeap {
     /// Returns the most recent automatic memory-budget action.
     pub const fn last_memory_budget_action(&self) -> Option<EvalHeapMemoryBudgetAction> {
         self.last_memory_budget_action
+    }
+
+    /// Builds a read-only Tier-B admission plan for the current heap records.
+    ///
+    /// The plan captures current worker/permanent arena accounting and assigns
+    /// future generation metadata from allocation domains: worker records become
+    /// old-generation records, while permanent-shared records remain permanent.
+    /// It does not mutate heap records or allocator state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::RecordAllocationFailed`] if the record plan
+    /// buffer cannot be reserved. Returns [`EvalHeapError::GenerationalGc`] if
+    /// a registered heap pointer cannot be represented as a GC heap address.
+    pub fn plan_tier_b_admission(&self) -> Result<EvalHeapTierBAdmissionPlan, EvalHeapError> {
+        let mut records = Vec::new();
+        records.try_reserve(self.records.len()).map_err(|_| {
+            EvalHeapError::RecordAllocationFailed {
+                records: self.records.len(),
+            }
+        })?;
+
+        let mut worker_records = 0usize;
+        let mut permanent_shared_records = 0usize;
+        for record in &self.records {
+            match record.allocation_domain {
+                HeapAllocationDomain::Worker => {
+                    worker_records = worker_records.saturating_add(1);
+                }
+                HeapAllocationDomain::PermanentShared => {
+                    permanent_shared_records = permanent_shared_records.saturating_add(1);
+                }
+            }
+            records.push(EvalHeapTierBAdmissionRecord::new(
+                gc_address_for_heap_record(record)?,
+                record.allocation_domain,
+                record.generation,
+                tier_b_admitted_generation_for_allocation_domain(record.allocation_domain),
+            ));
+        }
+
+        Ok(EvalHeapTierBAdmissionPlan::new(
+            self.arena_stats(),
+            self.permanent_arena_stats(),
+            worker_records,
+            permanent_shared_records,
+            records,
+        ))
     }
 
     /// Returns the current heap record access epoch.
@@ -2505,6 +2670,15 @@ fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), E
 
 fn gc_address_for_heap_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapError> {
     GcHeapAddress::new(record.ptr.as_ptr() as usize).map_err(EvalHeapError::GenerationalGc)
+}
+
+const fn tier_b_admitted_generation_for_allocation_domain(
+    allocation_domain: HeapAllocationDomain,
+) -> HeapGeneration {
+    match allocation_domain {
+        HeapAllocationDomain::Worker => HeapGeneration::Old,
+        HeapAllocationDomain::PermanentShared => HeapGeneration::Permanent,
+    }
 }
 
 fn next_heap_region_owner() -> u64 {

@@ -6805,6 +6805,15 @@ and helps the oracle directly.
       rejection. This remains read-only metadata: it does not install a
       collector, switch allocators, mutate heap-record generations, rewrite
       handles, or relocate values.
+      `EvalHeap::plan_tier_b_admission()` snapshots current worker/permanent
+      arena accounting and emits one read-only row per typed heap record,
+      preserving the current generation while naming the generation Tier-B
+      admission would assign. Worker-domain records map to the future
+      old-generation region, permanent-shared records remain permanent, and
+      tests cover mixed worker/permanent heaps, already-old worker records, and
+      non-mutation of current heap metadata. This remains a heap-record plan
+      only: it does not install a collector, reserve semispace storage, switch
+      allocators, mutate heap-record generations, or relocate values.
       Hash-cons hits skip the poll because no heap
       allocation occurred. Linux and Darwin budget polls now sample process RSS
       from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through

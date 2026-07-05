@@ -3144,6 +3144,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejection. This is still read-only admission metadata: it does not install
       a collector, switch allocators, mutate heap-record generations, rewrite
       handles, or relocate values.
+- [x] Current heap Tier-B admission record-plan precursor:
+      `EvalHeap::plan_tier_b_admission()` snapshots current worker/permanent
+      arena accounting and emits one read-only row per typed heap record,
+      preserving the current generation while naming the generation Tier-B
+      admission would assign. Worker-domain records map to the future
+      old-generation region, permanent-shared records remain permanent, and
+      tests cover mixed worker/permanent heaps, already-old worker records, and
+      non-mutation of current heap metadata. This still does not install a
+      collector, reserve semispace storage, switch allocators, mutate
+      heap-record generations, or relocate values.
 
 ### Region inference (§5)
 
