@@ -558,10 +558,12 @@ long-held locks.
   `LocalDagStore` corpus persistence, stored family-hash loading as strict
   scenario-family TOML from the configured DAG store, deterministic `fuzz-run`
   output with generated-mutant/admission/retained-entry/store-put/
-  replay-validation counts, and explicit backend errors for missing/corrupt
-  stored family objects and unsupported fuzz targets; full closure waits for
-  real-QEMU coverage that produces backend-retained evidence bundles beyond the
-  local-double fixture path and remaining non-prefix assertion classes.
+  replay-validation counts, process-level local-double `search` and `fuzz`
+  JSONL output with command-specific canonical events plus `final_outcome`, and
+  explicit backend errors for missing/corrupt stored family objects and
+  unsupported fuzz targets; full closure waits for real-QEMU coverage that
+  produces backend-retained evidence bundles beyond the local-double fixture
+  path and remaining non-prefix assertion classes.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine

@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
   engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
   engineTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
@@ -107,6 +108,10 @@
         label = "T-CLI-13 stored fuzz family progress";
         needle = "loads stored family hashes as strict\n  scenario-family TOML from the configured DAG store";
       }
+      {
+        label = "T-CLI-13 process search/fuzz progress";
+        needle = "process-tests real-binary\n  local-double `search` and `fuzz` JSONL output";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -188,6 +193,10 @@
       {
         label = "phase5 CLI stored fuzz family progress";
         needle = "stored family-hash loading as strict\n  scenario-family TOML from the configured DAG store";
+      }
+      {
+        label = "phase5 CLI process search/fuzz progress";
+        needle = "process-level local-double `search` and `fuzz`\n  JSONL output";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -602,6 +611,28 @@
       {
         label = "local-double positive fuzz replay regression";
         needle = "replay_oracle_validations=3";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+      {
+        label = "process search/fuzz JSONL regression";
+        needle = "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome";
+      }
+      {
+        label = "process search JSONL canonical kind";
+        needle = "\"search_strategy_run\"";
+      }
+      {
+        label = "process fuzz JSONL canonical kind";
+        needle = "\"coverage_guided_fuzz_run\"";
+      }
+      {
+        label = "process search/fuzz final outcome helper";
+        needle = "assert_machine_readable_jsonl(&search_stdout, &[\"search_strategy_run\"])?";
+      }
+      {
+        label = "process fuzz final outcome helper";
+        needle = "assert_machine_readable_jsonl(&fuzz_stdout, &[\"coverage_guided_fuzz_run\"])?";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
@@ -1053,6 +1084,13 @@ in
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
+              -p crucible-cli \
+              cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
+              -- --test-threads=1
           '';
         }
         {
@@ -1066,6 +1104,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             contract=search-fuzz-workflow-progress
+            process_search_fuzz=local-double-jsonl-final-outcome
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
