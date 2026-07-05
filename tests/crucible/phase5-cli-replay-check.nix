@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -61,6 +62,10 @@
         needle = "resolves missing content-addressed component payloads";
       }
       {
+        label = "process replay check progress";
+        needle = "process-tests real-binary\n  `replay --check` success/mismatch JSONL output";
+      }
+      {
         label = "replay identity before store progress";
         needle = "pinned identity path before store access";
       }
@@ -77,6 +82,10 @@
       {
         label = "phase5 CLI replay check progress note";
         needle = "`T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently";
+      }
+      {
+        label = "phase5 process replay check progress";
+        needle = "process-level\n  `replay --check` success/mismatch JSONL coverage";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -213,8 +222,16 @@
         needle = "fn write_replay_report_human";
       }
       {
-        label = "replay dispatch uses human output writer";
-        needle = "write_replay_report_human(&mut io::stdout(), &report)?;";
+        label = "replay dispatch emits replay report output";
+        needle = "emit_replay_report_output(cli, &report)?;";
+      }
+      {
+        label = "replay machine-readable output helper";
+        needle = "fn emit_replay_report_output";
+      }
+      {
+        label = "replay machine-readable trace entries";
+        needle = "fn replay_machine_readable_trace_entries";
       }
       {
         label = "typed replay to non-prefix diagnostic";
@@ -283,6 +300,28 @@
       {
         label = "replay bisect identical test";
         needle = "cli_replay_bisect_accepts_identical_artifacts";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+      {
+        label = "process replay check JSONL regression";
+        needle = "cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome";
+      }
+      {
+        label = "process replay artifact record assertion";
+        needle = "\"replay_artifact\"";
+      }
+      {
+        label = "process replay check record assertion";
+        needle = "\"replay_check\"";
+      }
+      {
+        label = "process replay check mismatch exit assertion";
+        needle = "replay --check mismatch --format jsonl should exit 1";
+      }
+      {
+        label = "process replay check mismatch status assertion";
+        needle = "status=mismatch";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
@@ -397,6 +436,13 @@ in
               -p crucible-cli \
               cli_help_surface_rejects_unimplemented_future_flags \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
+              cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome \
+              -- --test-threads=1
           '';
         }
         {
@@ -413,6 +459,7 @@ in
             replay_to_schedule_prefix=typed-payload-backed
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
+            replay_process=check-jsonl-success-mismatch
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

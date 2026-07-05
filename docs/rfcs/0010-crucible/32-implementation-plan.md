@@ -482,7 +482,9 @@ long-held locks.
   before store access, content-addressed component payload resolution from the
   selected local DAG store, declared DAG-store reference validation against
   inline payloads, byte-identical canonical-log comparison, exit 1 on mismatch
-  with deterministic first-difference byte localization, artifact-to-artifact
+  with deterministic first-difference byte localization, process-level
+  `replay --check` success/mismatch JSONL coverage with replay records plus
+  `final_outcome`, artifact-to-artifact
   `--bisect <other-artifact>` over validated matching replay inputs with
   canonical-log/fingerprint divergence localization, and `replay --to
   <SAVEPOINT>` validation for savepoint handles or local DAG-store checkpoint

@@ -1123,7 +1123,9 @@ branch on the verdict without parsing output:
   component payloads from the selected local DAG store, validates declared
   DAG-store references against inline payloads, reconstructs the replay
   canonical log, returns exit 1 on byte mismatch with deterministic
-  first-difference byte localization, and supports artifact-to-artifact
+  first-difference byte localization, process-tests real-binary
+  `replay --check` success/mismatch JSONL output with replay records plus
+  `final_outcome`, and supports artifact-to-artifact
   `--bisect <other-artifact>` by validating both artifacts, requiring matching
   replay inputs, localizing the first differing canonical-log/fingerprint
   coordinate, and returning the replay-check failure exit path on divergence.
