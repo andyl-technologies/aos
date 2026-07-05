@@ -8371,25 +8371,28 @@ nurseries build on the bump arena.
       `TreeWalkParallelThunkCell` for a successful terminal payload before
       entering the serial force path. A successful sidecar hit replays the
       `Value`, performs the same lazy-identity cleanup as a serial forced-cache
-      hit, and increments `thunk_cache_hits`; a miss must win or wait on the
-      sidecar claim before the existing serial `ThunkCell` body path can run,
-      and the sidecar owner publishes `Ok(Value)` after serial success. Tests
-      cover sidecar-only replay from a pre-published forced payload, successful
-      serial force publication, and later replay without another serial force.
-      This is still a default-off single-worker precursor: the force body
-      remains the serial tree-walk body, no scheduler executes or steals thunk
-      bodies, and shared-thunk scheduler execution, park-token,
+      hit, and increments `thunk_cache_hits`; a miss now enters
+      `TreeWalkParallelThunkCell::force_or_wait_with`, which runs the existing
+      serial `ThunkCell` body only for the sidecar claim winner and publishes
+      `Ok(Value)` through the evaluator-native payload bridge. Race/later
+      terminal replays still use the cache-hit path, while the claim owner
+      returns the serial result directly so first force accounting is unchanged.
+      Tests cover sidecar-only replay from a pre-published forced payload,
+      successful serial force publication, and later replay without another
+      serial force. This is still a default-off single-worker precursor: the
+      force body remains the serial tree-walk body, no scheduler executes or
+      steals thunk bodies, and shared-thunk scheduler execution, park-token,
       lock-free waiter-list, and loom/Miri/TSan gates remain open.
 - [x] Current tree-walk parallel payload failed-replay precursor:
       `TreeWalk::force_value` now reads checked terminal sidecar results before
-      entering the serial force path, then wins or waits on the sidecar claim
-      before any serial body execution on a miss. A pre-published failed
+      entering the serial force path, then sends misses through
+      `TreeWalkParallelThunkCell::force_or_wait_with`. A pre-published failed
       `TreeWalkParallelThunkCell` result is re-raised without evaluating the
-      serial thunk body, and a serial force error publishes the cloned
-      `TreeWalkError` into the sidecar before returning it when this worker owns
-      that sidecar claim, so later force attempts replay the same error without
-      incrementing `thunks_forced`. The checked read validates the parallel
-      payload state word before trusting the stored payload. Tests cover failed
+      serial thunk body, and a serial force error is published as the cloned
+      `TreeWalkError` by the adapter before the claim owner returns it, so later
+      force attempts replay the same error without incrementing `thunks_forced`.
+      Checked terminal reads and the adapter wait path validate the parallel
+      payload state word before trusting stored payloads. Tests cover failed
       sidecar-only replay from a suspended serial thunk, same-worker
       claimed-sidecar self-cycle handling without serial forcing, serial
       division-by-zero publication into the sidecar, later failed replay without

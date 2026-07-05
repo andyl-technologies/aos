@@ -207,7 +207,7 @@ fn parallel_thunk_worker_id_option_publishes_sidecar_with_configured_owner() {
     let worker = ParallelThunkWorkerId::new(7).expect("test worker id is encodable");
     let mut options = TreeWalkOptions::with_parallel_thunk_payloads_enabled(true);
     options.set_parallel_thunk_worker_id(worker);
-    let (ir, evaluator, thunk_value) = attr_thunk_value("{ x = 1 + 2; }", b"x", options);
+    let (_ir, evaluator, thunk_value) = attr_thunk_value("{ x = 1 + 2; }", b"x", options);
 
     let thunk = evaluator
         .heap
@@ -222,8 +222,8 @@ fn parallel_thunk_worker_id_option_publishes_sidecar_with_configured_owner() {
     else {
         panic!("fresh parallel payload cell should be claimable");
     };
-    let publish = evaluator
-        .publish_parallel_payload_claim_result(ir.root, Span::new(0, 0), guard, Ok(Value::int(3)))
+    let publish = guard
+        .publish_result(Ok(Value::int(3)))
         .expect("sidecar forced value publishes");
     assert_eq!(publish.owner(), worker);
 

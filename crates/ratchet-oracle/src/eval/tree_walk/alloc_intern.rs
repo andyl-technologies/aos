@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::eval::{
-    TreeWalkThunkAllocationContext, TreeWalkThunkAllocationPlan, tree_walk_thunk_allocation_plan,
+    TreeWalkParallelThunkForceOutcome, TreeWalkThunkAllocationContext, TreeWalkThunkAllocationPlan,
+    tree_walk_thunk_allocation_plan,
 };
 use crate::runtime::barrier::{
     runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
@@ -1407,22 +1408,23 @@ impl TreeWalk {
         }
 
         let worker = self.options.parallel_thunk_worker_id();
+        let body_ran = std::cell::Cell::new(false);
         match parallel_cell
-            .claim_or_wait_for_result(worker)
+            .force_or_wait_with(worker, || {
+                body_ran.set(true);
+                self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk)
+            })
             .map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
             })? {
-            TreeWalkParallelThunkWait::Claimed(guard) => {
-                let result =
-                    self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk);
-                let _publish =
-                    self.publish_parallel_payload_claim_result(id, span, guard, result.clone())?;
-                result
+            TreeWalkParallelThunkForceOutcome::Ready(result) => {
+                if body_ran.get() {
+                    result
+                } else {
+                    self.replay_parallel_payload_terminal_result(forced_payload, result)
+                }
             }
-            TreeWalkParallelThunkWait::Ready(result) => {
-                self.replay_parallel_payload_terminal_result(forced_payload, result)
-            }
-            TreeWalkParallelThunkWait::SelfCycle { .. } => Err(TreeWalkError::new(
+            TreeWalkParallelThunkForceOutcome::SelfCycle { .. } => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Force {
                     id,
                     source: ForceError::InfiniteRecursion,
@@ -1445,18 +1447,6 @@ impl TreeWalk {
             }
             Err(error) => Err(error),
         }
-    }
-
-    pub(in crate::eval::tree_walk) fn publish_parallel_payload_claim_result(
-        &self,
-        id: IrId,
-        span: Span,
-        guard: TreeWalkParallelThunkGuard<'_>,
-        result: Result<Value, TreeWalkError>,
-    ) -> Result<ParallelThunkPublish, TreeWalkError> {
-        guard.publish_result(result).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
-        })
     }
 
     fn force_serial_thunk_value(
