@@ -8,6 +8,8 @@ use crate::runtime::barrier::{
     runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
 };
 
+const TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS: u32 = 2;
+
 impl TreeWalk {
     pub(super) fn attr_value_by_name(
         &mut self,
@@ -759,12 +761,53 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        let previous_poll = self
+            .heap
+            .allocation_safepoints()
+            .last_safepoint_collector_poll();
         let value = self
             .heap
             .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         self.increment_thunks_allocated();
-        Ok(value)
+        self.apply_gc_stress_allocation_safepoint_to_just_allocated_thunk(
+            id,
+            span,
+            previous_poll,
+            value,
+        )
+    }
+
+    fn apply_gc_stress_allocation_safepoint_to_just_allocated_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        previous_poll: Option<AllocationCollectorPoll>,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let current_poll = self
+            .heap
+            .allocation_safepoints()
+            .last_safepoint_collector_poll();
+        if current_poll.is_none() || current_poll == previous_poll {
+            return Ok(value);
+        }
+
+        let mut transient_roots = [value];
+        self.apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            RuntimeAllocatorTier::TierAOneShot,
+            MinorGcPromotionPolicy::new(
+                TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS,
+            ),
+            &mut transient_roots,
+        )
+        .map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::GcStressAllocationSafepoint { id, source },
+                span,
+            )
+        })?;
+        Ok(transient_roots[0])
     }
 
     fn admit_parallel_thunk_payload_cell(

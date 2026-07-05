@@ -2016,8 +2016,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       remembered-set snapshot and a caller-supplied promotion policy; tests cover
       worker young-survivor planning, permanent-root/no-survivor planning, and
       empty reports when stress is disabled. This is still poll/scan/planning
-      intent only: tree-walk does not invoke a collector at each allocation
-      safepoint or perform mutating GC-stress collection yet.
+      intent only outside the thunk-allocation precursor below: tree-walk does
+      not invoke collection for arbitrary allocation safepoints or perform full
+      mutating GC-stress collection yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
@@ -2707,10 +2708,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
       and its primop-argument variant now derive reserved-destination plans and
       enter that forwarding-aware applicator directly.
+      Reserved-destination plans record a post-reservation poll when the
+      reservation allocation itself polls, and otherwise keep the
+      already-validated poll that triggered reservation so periodic GC-stress
+      policies do not fail when the scratch reservation safepoint is not also a
+      poll.
       `TreeWalk::apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
       and its primop-argument variant select the latest poll for an allocator
       tier at the bridge boundary, rejecting missing polls before destination
-      reservation. Tests cover
+      reservation. The tree-walk thunk allocation path uses that current-poll
+      bridge for its GC-stress allocation-site dispatch precursor, rooting the
+      just-allocated thunk transiently before publishing the possibly relocated
+      value back to its caller. Tests cover
       the poll-derived
       all-root rewrite, direct stale-poll rejection before mutation in the
       planning wrapper, root-only applicator, buffer applicator, stale typed-root,
@@ -2733,13 +2742,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       and reserved promoted placement accounting, poll-derived reserved
       forwarding wrappers with and without primop arguments, current-poll
       reserved forwarding wrappers with and without primop arguments, missing
-      current-poll rejection before reservation, and dirty
+      current-poll rejection before reservation, periodic-poll reserved
+      application when the reservation allocation does not itself poll, and dirty
       permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
       mutate interned roots or JIT stack-map slots, write real ABI object
-      headers, or wire root writebacks into automatic allocation-safepoint
-      collection.
+      headers, or wire root writebacks into general allocation-safepoint
+      collection beyond the thunk precursor below.
       Destination records are allocated only by the explicit
       reserved-destination tree-walk bridge, not by collector-owned semispace
       dispatch. The full remembered-set/card-table publication remains limited
@@ -2969,6 +2979,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
       remain open in the full precise-root row above.
+- [x] Current tree-walk thunk allocation GC-stress dispatch precursor:
+      `TreeWalk::alloc_tree_walk_thunk` detects when a thunk allocation produced
+      a new worker-domain collector poll, runs the current-poll reserved
+      forwarding bridge with the just-allocated thunk as transient value-stack
+      root storage, and returns the rewritten `Value` to the caller. The
+      dispatch is limited to the thunk allocation funnel, uses the same
+      promotion threshold of 2 as the existing tree-walk GC-stress bridges, and
+      intentionally leaves non-thunk allocation sites, semispace ownership, ABI
+      object headers, interned/JIT roots, unsupported active frames, and Tier-B
+      allocation dispatch open. Tests cover a lazy list element thunk under
+      every-safepoint stress, including the extra reserved forwarding allocation
+      and the suspended thunk value that remains visible through the list; the
+      reserved bridge also covers the periodic policy case where the scratch
+      reservation safepoint does not poll.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the

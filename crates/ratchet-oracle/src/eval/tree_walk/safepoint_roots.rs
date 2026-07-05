@@ -1146,6 +1146,19 @@ impl TreeWalk {
         primop_arguments: impl IntoIterator<Item = Value>,
     ) -> Result<AllocationCollectorPollScan, TreeWalkSafepointScanError> {
         self.validate_current_collector_poll(poll)?;
+        self.safepoint_collector_poll_scan_with_primop_arguments_for_validated_poll(
+            poll,
+            value_stack,
+            primop_arguments,
+        )
+    }
+
+    fn safepoint_collector_poll_scan_with_primop_arguments_for_validated_poll(
+        &self,
+        poll: AllocationCollectorPoll,
+        value_stack: impl IntoIterator<Item = Value>,
+        primop_arguments: impl IntoIterator<Item = Value>,
+    ) -> Result<AllocationCollectorPollScan, TreeWalkSafepointScanError> {
         let roots = self.safepoint_root_set_with_value_stack_and_primop_arguments(
             value_stack,
             primop_arguments,
@@ -1480,18 +1493,18 @@ impl TreeWalk {
     /// and applicator paths, which still validate and bind object
     /// body/generation writes before any root or field publication.
     ///
-    /// If reserving destination records advances the same allocator tier that
-    /// produced `poll`, the plan records the post-reservation current poll for
-    /// that tier. Permanent-shared polls remain current while worker destination
-    /// records are reserved.
+    /// If reserving destination records also produces a collector poll for the
+    /// same allocator tier, the plan records that post-reservation poll.
+    /// Otherwise, it records the already-validated poll that triggered
+    /// reservation. Permanent-shared polls remain current while worker
+    /// destination records are reserved.
     ///
     /// # Errors
     ///
     /// Returns [`TreeWalkSafepointRootWritebackError`] if `poll` is stale before
-    /// reservation, if no current poll remains for the same allocator tier after
-    /// reservation, if reservation or scanning fails, if minor-GC planning fails,
-    /// or if reserved relocation, commit, object-copy, or reference-writeback
-    /// metadata cannot be derived.
+    /// reservation, if reservation or scanning fails, if minor-GC planning
+    /// fails, or if reserved relocation, commit, object-copy, or
+    /// reference-writeback metadata cannot be derived.
     pub fn collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint(
         &mut self,
         poll: AllocationCollectorPoll,
@@ -1517,10 +1530,9 @@ impl TreeWalk {
     /// # Errors
     ///
     /// Returns [`TreeWalkSafepointRootWritebackError`] if `poll` is stale before
-    /// reservation, if no current poll remains for the same allocator tier after
-    /// reservation, if reservation or scanning fails, if minor-GC planning fails,
-    /// or if reserved relocation, commit, object-copy, or reference-writeback
-    /// metadata cannot be derived.
+    /// reservation, if reservation or scanning fails, if minor-GC planning
+    /// fails, or if reserved relocation, commit, object-copy, or
+    /// reference-writeback metadata cannot be derived.
     pub fn collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint_with_primop_arguments(
         &mut self,
         poll: AllocationCollectorPoll,
@@ -1534,13 +1546,10 @@ impl TreeWalk {
         let reservations = self
             .heap
             .reserve_current_young_minor_gc_destination_records()?;
-        let scan_poll = self.current_collector_poll_for_tier(poll_tier).ok_or(
-            TreeWalkSafepointScanError::StaleCollectorPoll {
-                poll,
-                current: None,
-            },
-        )?;
-        let scan = self.safepoint_collector_poll_scan_with_primop_arguments(
+        let scan_poll = self
+            .current_collector_poll_for_tier(poll_tier)
+            .unwrap_or(poll);
+        let scan = self.safepoint_collector_poll_scan_with_primop_arguments_for_validated_poll(
             scan_poll,
             value_stack.iter().copied(),
             primop_arguments.iter().copied(),
@@ -1662,7 +1671,27 @@ impl TreeWalk {
         TreeWalkSafepointMinorGcReferenceWritebackBufferApplication,
         TreeWalkSafepointRootWritebackError,
     > {
-        self.validate_current_collector_poll(plan.poll())?;
+        self.apply_reference_writebacks_to_safepoint_buffers_with_primop_arguments_and_poll_validation(
+            plan,
+            value_stack,
+            primop_arguments,
+            true,
+        )
+    }
+
+    fn apply_reference_writebacks_to_safepoint_buffers_with_primop_arguments_and_poll_validation(
+        &self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &[Value],
+        primop_arguments: &[Value],
+        validate_poll: bool,
+    ) -> Result<
+        TreeWalkSafepointMinorGcReferenceWritebackBufferApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        if validate_poll {
+            self.validate_current_collector_poll(plan.poll())?;
+        }
         let mut root_value_writeback_slots = self.safepoint_root_value_writeback_slots(
             plan.writebacks().root_writebacks(),
             value_stack,
@@ -1973,11 +2002,30 @@ impl TreeWalk {
         TreeWalkSafepointMinorGcLiveReferenceWritebackPreflight,
         TreeWalkSafepointRootWritebackError,
     > {
+        self.validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments_and_poll_validation(
+            plan,
+            value_stack,
+            primop_arguments,
+            true,
+        )
+    }
+
+    fn validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments_and_poll_validation(
+        &self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &[Value],
+        primop_arguments: &[Value],
+        validate_poll: bool,
+    ) -> Result<
+        TreeWalkSafepointMinorGcLiveReferenceWritebackPreflight,
+        TreeWalkSafepointRootWritebackError,
+    > {
         let application = self
-            .apply_reference_writebacks_to_safepoint_buffers_with_primop_arguments(
+            .apply_reference_writebacks_to_safepoint_buffers_with_primop_arguments_and_poll_validation(
                 plan,
                 value_stack,
                 primop_arguments,
+                validate_poll,
             )?;
         self.validate_safepoint_reference_writeback_source_gc_state(plan)?;
         let (copied_writes, direct_writes) = self
@@ -2119,9 +2167,11 @@ impl TreeWalk {
             promotion_policy,
             value_stack,
         )?;
-        self.validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
+        self.validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments_and_poll_validation(
             &plan,
             value_stack,
+            &[],
+            false,
         )
     }
 
@@ -2154,10 +2204,11 @@ impl TreeWalk {
             value_stack,
             primop_arguments,
         )?;
-        self.validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+        self.validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments_and_poll_validation(
             &plan,
             value_stack,
             primop_arguments,
+            false,
         )
     }
 
@@ -2244,6 +2295,7 @@ impl TreeWalk {
                 value_stack,
                 primop_arguments,
                 None,
+                true,
             )?;
         Ok(application)
     }
@@ -2312,6 +2364,7 @@ impl TreeWalk {
                 value_stack,
                 primop_arguments,
                 Some(plan.forwarding_slots()),
+                true,
             )?;
         Ok(
             TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication::new(
@@ -2327,6 +2380,7 @@ impl TreeWalk {
         value_stack: &mut [Value],
         primop_arguments: &mut [Value],
         forwarding_slots: Option<&[MinorGcForwardingSlot]>,
+        validate_poll: bool,
     ) -> Result<
         (
             TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
@@ -2335,10 +2389,11 @@ impl TreeWalk {
         TreeWalkSafepointRootWritebackError,
     > {
         let preflight = self
-            .validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+            .validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments_and_poll_validation(
                 plan,
                 value_stack,
                 primop_arguments,
+                validate_poll,
             )?;
         let TreeWalkSafepointMinorGcLiveReferenceWritebackPreflight {
             buffers: application,
@@ -2578,10 +2633,16 @@ impl TreeWalk {
             promotion_policy,
             value_stack,
         )?;
-        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
-            &plan,
-            value_stack,
-        )
+        let mut primop_arguments: [Value; 0] = [];
+        let (application, _) = self
+            .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
+                &plan,
+                value_stack,
+                &mut primop_arguments,
+                None,
+                false,
+            )?;
+        Ok(application)
     }
 
     /// Reserves destinations and applies live writebacks with primop arguments.
@@ -2612,11 +2673,15 @@ impl TreeWalk {
             value_stack,
             primop_arguments,
         )?;
-        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+        let (application, _) = self
+            .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
             &plan,
             value_stack,
             primop_arguments,
-        )
+                None,
+                false,
+            )?;
+        Ok(application)
     }
 
     /// Reserves destinations, installs forwarding slots, and applies writebacks.
@@ -2684,10 +2749,19 @@ impl TreeWalk {
             value_stack,
             primop_arguments,
         )?;
-        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+        let (reference_application, forwarding_install_report) = self
+            .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
             &plan,
             value_stack,
             primop_arguments,
+                Some(plan.forwarding_slots()),
+                false,
+            )?;
+        Ok(
+            TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication::new(
+                reference_application,
+                forwarding_install_report,
+            ),
         )
     }
 
@@ -2699,9 +2773,10 @@ impl TreeWalk {
     /// reservation, so callers do not have to preserve an
     /// [`AllocationCollectorPoll`] handle across intervening code.
     ///
-    /// This remains an explicit tree-walk bridge: it does not run automatically
-    /// from allocation sites, write real ABI object headers, reserve semispace
-    /// storage, consume JIT stack maps, or invoke Tier B.
+    /// This remains an explicit tree-walk bridge outside the thunk-allocation
+    /// precursor: it does not run for arbitrary allocation sites, write real ABI
+    /// object headers, reserve semispace storage, consume JIT stack maps, or
+    /// invoke Tier B.
     ///
     /// # Errors
     ///

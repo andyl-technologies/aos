@@ -6711,8 +6711,9 @@ and helps the oracle directly.
       metadata using the outcome's remembered-set snapshot and a caller-supplied
       promotion policy; tests cover worker young-survivor planning,
       permanent-root/no-survivor planning, and empty reports when stress is
-      disabled. Invoking the collector, actually collecting at every safepoint,
-      and exported C ABI symbols remain open.
+      disabled. Outside the thunk-allocation precursor below, invoking the
+      collector, actually collecting at every safepoint, and exported C ABI
+      symbols remain open.
 - [x] Current permanent-shared allocation closure:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
@@ -7037,10 +7038,18 @@ and helps the oracle directly.
       `TreeWalk::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
       and its primop-argument variant now derive reserved-destination plans and
       enter that forwarding-aware applicator directly.
+      Reserved-destination plans record a post-reservation poll when the
+      reservation allocation itself polls, and otherwise keep the
+      already-validated poll that triggered reservation so periodic GC-stress
+      policies do not fail when the scratch reservation safepoint is not also a
+      poll.
       `TreeWalk::apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
       and its primop-argument variant select the latest poll for an allocator
       tier at the bridge boundary, rejecting missing polls before destination
-      reservation.
+      reservation. The tree-walk thunk allocation path uses that current-poll
+      bridge for its GC-stress allocation-site dispatch precursor, rooting the
+      just-allocated thunk transiently before publishing the possibly relocated
+      value back to its caller.
       Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
@@ -7067,15 +7076,30 @@ and helps the oracle directly.
       poll-derived reserved forwarding wrappers with and without
       primop arguments, current-poll reserved forwarding wrappers with and
       without primop arguments, missing current-poll rejection before
-      reservation, and a dirty permanent-list
+      reservation, periodic-poll reserved application when the reservation
+      allocation does not itself poll, and a dirty permanent-list
       remembered edge whose mixed root/field plan is rejected without touching
       the value stack, active frame root, or ready import-cache root. This is
-      still not automatic allocation-site dispatch and still does not reserve
+      still not general allocation-site dispatch and still does not reserve
       semispace storage, write real ABI object headers, or consume JIT stack maps.
       Destination records are allocated only by the explicit
       reserved-destination tree-walk bridge, not by collector-owned semispace
       dispatch. The full remembered-set/card-table publication remains limited
       to these explicit tree-walk live-reference bridges.
+- [x] Current tree-walk thunk allocation GC-stress dispatch precursor:
+      `TreeWalk::alloc_tree_walk_thunk` detects when a thunk allocation produced
+      a new worker-domain collector poll, runs the current-poll reserved
+      forwarding bridge with the just-allocated thunk as transient value-stack
+      root storage, and returns the rewritten `Value` to the caller. The
+      dispatch is limited to the thunk allocation funnel, uses the same
+      promotion threshold of 2 as the existing tree-walk GC-stress bridges, and
+      intentionally leaves non-thunk allocation sites, semispace ownership, ABI
+      object headers, interned/JIT roots, unsupported active frames, and Tier-B
+      allocation dispatch open. Tests cover a lazy list element thunk under
+      every-safepoint stress, including the extra reserved forwarding allocation
+      and the suspended thunk value that remains visible through the list; the
+      reserved bridge also covers the periodic policy case where the scratch
+      reservation safepoint does not poll.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps

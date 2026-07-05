@@ -3,6 +3,8 @@
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::attrs::telemetry::{HistogramBucket, ShapeMultiplicityBucket};
+use crate::heap::HeapGeneration;
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 #[test]
 fn shared_thunks_emit_trace_once_when_forced_repeatedly() {
@@ -151,6 +153,59 @@ fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
         .get_thunk(element)
         .expect("element is a heap-owned thunk");
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn gc_stress_thunk_allocation_dispatches_reserved_forwarding_bridge() {
+    let ir = lower("[ (1 + 6) ]");
+    let default_outcome = eval_whnf_owned(&ir).expect("default thunk alloc evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress thunk alloc evaluates");
+    let element = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    assert_eq!(element.tag(), ValueTag::Thunk);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(element)
+            .expect("element generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+    let thunk = outcome
+        .heap()
+        .get_thunk(element)
+        .expect("element is a heap-owned thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    assert_eq!(
+        outcome.heap().allocation_safepoints().count(),
+        default_outcome.heap().allocation_safepoints().count() + 1
+    );
+    let final_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("final thunk forwarding allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
 }
 
 #[test]

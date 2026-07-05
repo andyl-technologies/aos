@@ -4,9 +4,9 @@ use super::*;
 use crate::compile::IrId;
 use crate::eval::heap::{
     AllocationCollectorPollDirectHeapFieldWrite, AllocationCollectorPollObjectByteCopyPlan,
-    AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollRootWritebackPlan,
-    AllocationCollectorPollScan, EvalRoot, EvalRootSource, EvalThunk, HeapAllocationDomain,
-    HeapEdgeSource, InternedRootTable,
+    AllocationCollectorPollObjectByteCopyRequest, AllocationCollectorPollObjectGenerationWritePlan,
+    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollScan, EvalRoot,
+    EvalRootSource, EvalThunk, HeapAllocationDomain, HeapEdgeSource, InternedRootTable,
 };
 use crate::eval::tree_walk::safepoint_roots::TreeWalkSafepointRootWritebackError;
 use crate::heap::{
@@ -2400,6 +2400,146 @@ fn reference_writebacks_reserved_destination_plan_reports_promoted_placement_byt
     assert_eq!(request.source(), child_address);
     assert_eq!(request.action(), MinorGcSurvivorAction::PromoteToOld);
     assert_eq!(request.destination_generation(), HeapGeneration::Old);
+}
+
+fn tree_walk_with_periodic_poll_before_single_young_reservation()
+-> (TreeWalk, AllocationCollectorPoll, [Value; 1]) {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::new(&ir);
+    let retained = evaluator
+        .heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("retained lambda allocates");
+    let mark = evaluator
+        .heap
+        .worker_region_mark()
+        .expect("worker mark records");
+    let temporary_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("temporary source thunk allocates");
+    let generation_plan =
+        AllocationCollectorPollObjectGenerationWritePlan::from_requests_for_test(vec![
+            AllocationCollectorPollObjectByteCopyRequest::for_test(
+                gc_address(temporary_source),
+                gc_address(retained),
+                MinorGcSurvivorAction::PromoteToOld,
+                HeapGeneration::Old,
+                1,
+                1,
+            ),
+        ])
+        .expect("test generation plan builds");
+    evaluator
+        .heap
+        .apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("retained object can be marked old for test setup");
+    evaluator
+        .heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect("temporary source is disconnected");
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(retained)
+            .expect("retained object remains heap-bound"),
+        HeapGeneration::Old
+    );
+
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_n_safepoints(2).expect("period is non-zero"));
+    let child = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(3)))
+        .expect("polling child thunk allocates");
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("second worker allocation requests a periodic poll");
+    assert_eq!(
+        poll.reason(),
+        AllocationGcPollReason::GcStressEveryNSafepoints { period: 2 }
+    );
+
+    (evaluator, poll, [child])
+}
+
+fn assert_periodic_poll_reserved_application_without_reservation_poll(
+    evaluator: &TreeWalk,
+    relocated: Value,
+    root_writebacks: usize,
+) {
+    assert_eq!(root_writebacks, 1);
+    assert_eq!(
+        evaluator
+            .heap()
+            .allocation_safepoints()
+            .last()
+            .expect("reservation safepoint records")
+            .gc_poll_reason(),
+        None
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .allocation_safepoints()
+            .last_safepoint_collector_poll(),
+        None
+    );
+    assert_eq!(relocated.tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(relocated)
+            .expect("relocated root remains heap-bound"),
+        HeapGeneration::Young
+    );
+}
+
+#[test]
+fn reference_writebacks_reserved_destination_apply_accepts_periodic_poll_without_reservation_poll()
+{
+    let (mut evaluator, poll, mut value_stack) =
+        tree_walk_with_periodic_poll_before_single_young_reservation();
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+        )
+        .expect("reserved bridge applies when reservation itself does not poll");
+
+    assert_periodic_poll_reserved_application_without_reservation_poll(
+        &evaluator,
+        value_stack[0],
+        application.applied_root_writebacks(),
+    );
+}
+
+#[test]
+fn reference_writebacks_reserved_forwarding_apply_accepts_periodic_poll_without_reservation_poll() {
+    let (mut evaluator, poll, mut value_stack) =
+        tree_walk_with_periodic_poll_before_single_young_reservation();
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+        )
+        .expect("reserved bridge applies when reservation itself does not poll");
+
+    assert_periodic_poll_reserved_application_without_reservation_poll(
+        &evaluator,
+        value_stack[0],
+        application.applied_root_writebacks(),
+    );
 }
 
 #[test]
