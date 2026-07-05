@@ -424,12 +424,17 @@ impl TreeWalk {
         let rev_count_symbol = self.intern_builtin_attr_symbol(id, REV_COUNT_ATTR, span)?;
         let submodules_symbol = self.intern_builtin_attr_symbol(id, SUBMODULES_ATTR, span)?;
 
-        let out_path = self.alloc_fetchurl_path_value(id, span, result.out_path)?;
-        let nar_hash = self.alloc_static_string(id, span, &result.nar_hash)?;
-        let mut entries = vec![
-            AttrEntry::new(nar_hash_symbol, nar_hash),
-            AttrEntry::new(out_path_symbol, out_path),
-        ];
+        let mut entries = Vec::new();
+        let nar_hash = self.alloc_static_string_with_attr_entry_roots(
+            id,
+            span,
+            &mut entries,
+            &result.nar_hash,
+        )?;
+        entries.push(AttrEntry::new(nar_hash_symbol, nar_hash));
+        let out_path =
+            self.alloc_fetcher_attrset_path_value(id, span, &mut entries, result.out_path)?;
+        entries.push(AttrEntry::new(out_path_symbol, out_path));
 
         if let Some(last_modified) = result.last_modified {
             entries.push(AttrEntry::new(
@@ -438,7 +443,12 @@ impl TreeWalk {
             ));
         }
         if let Some(last_modified_date) = result.last_modified_date {
-            let last_modified_date = self.alloc_static_string(id, span, &last_modified_date)?;
+            let last_modified_date = self.alloc_static_string_with_attr_entry_roots(
+                id,
+                span,
+                &mut entries,
+                &last_modified_date,
+            )?;
             entries.push(AttrEntry::new(
                 last_modified_date_symbol,
                 last_modified_date,
@@ -446,17 +456,29 @@ impl TreeWalk {
         }
         if let Some(rev) = result.rev {
             let short_rev_len = rev.len().min(7);
-            let short_rev = self.alloc_static_string(id, span, &rev[..short_rev_len])?;
-            let rev = self.alloc_static_string(id, span, &rev)?;
-            entries.push(AttrEntry::new(rev_symbol, rev));
+            let rev_value =
+                self.alloc_static_string_with_attr_entry_roots(id, span, &mut entries, &rev)?;
+            entries.push(AttrEntry::new(rev_symbol, rev_value));
+            let short_rev = self.alloc_static_string_with_attr_entry_roots(
+                id,
+                span,
+                &mut entries,
+                &rev[..short_rev_len],
+            )?;
             entries.push(AttrEntry::new(short_rev_symbol, short_rev));
         }
         if let Some(dirty_rev) = result.dirty_rev {
-            let dirty_rev = self.alloc_static_string(id, span, &dirty_rev)?;
+            let dirty_rev =
+                self.alloc_static_string_with_attr_entry_roots(id, span, &mut entries, &dirty_rev)?;
             entries.push(AttrEntry::new(dirty_rev_symbol, dirty_rev));
         }
         if let Some(dirty_short_rev) = result.dirty_short_rev {
-            let dirty_short_rev = self.alloc_static_string(id, span, &dirty_short_rev)?;
+            let dirty_short_rev = self.alloc_static_string_with_attr_entry_roots(
+                id,
+                span,
+                &mut entries,
+                &dirty_short_rev,
+            )?;
             entries.push(AttrEntry::new(dirty_short_rev_symbol, dirty_short_rev));
         }
         if let Some(rev_count) = result.rev_count {

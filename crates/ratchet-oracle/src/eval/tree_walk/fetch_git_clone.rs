@@ -766,11 +766,6 @@ impl TreeWalk {
         let nar_hash_symbol = self.intern_builtin_attr_symbol(id, NAR_HASH_ATTR, span)?;
         let submodules_symbol = self.intern_builtin_attr_symbol(id, SUBMODULES_ATTR, span)?;
 
-        let out_path = self.alloc_fetchurl_path_value(id, span, result.out_path)?;
-        let rev = self.alloc_static_string(id, span, result.rev.as_bytes())?;
-        let short_rev_len = result.rev.len().min(7);
-        let short_rev =
-            self.alloc_static_string(id, span, &result.rev.as_bytes()[..short_rev_len])?;
         let rev_count = i64::try_from(result.rev_count).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::FetchGit {
@@ -781,25 +776,67 @@ impl TreeWalk {
                 span,
             )
         })?;
-        let last_modified_date = self.alloc_static_string(id, span, &result.last_modified_date)?;
-        let nar_hash = self.alloc_static_string(id, span, &result.nar_hash)?;
-
-        let mut entries = vec![
-            AttrEntry::new(last_modified_symbol, Value::int(result.last_modified)),
-            AttrEntry::new(last_modified_date_symbol, last_modified_date),
-            AttrEntry::new(nar_hash_symbol, nar_hash),
-            AttrEntry::new(out_path_symbol, out_path),
-            AttrEntry::new(rev_symbol, rev),
-            AttrEntry::new(rev_count_symbol, Value::int(rev_count)),
-            AttrEntry::new(short_rev_symbol, short_rev),
-            AttrEntry::new(submodules_symbol, Value::bool(result.submodules)),
-        ];
+        let mut entries = Vec::new();
+        entries.push(AttrEntry::new(
+            last_modified_symbol,
+            Value::int(result.last_modified),
+        ));
+        let last_modified_date = self.alloc_static_string_with_attr_entry_roots(
+            id,
+            span,
+            &mut entries,
+            &result.last_modified_date,
+        )?;
+        entries.push(AttrEntry::new(
+            last_modified_date_symbol,
+            last_modified_date,
+        ));
+        let nar_hash = self.alloc_static_string_with_attr_entry_roots(
+            id,
+            span,
+            &mut entries,
+            &result.nar_hash,
+        )?;
+        entries.push(AttrEntry::new(nar_hash_symbol, nar_hash));
+        let out_path =
+            self.alloc_fetcher_attrset_path_value(id, span, &mut entries, result.out_path)?;
+        entries.push(AttrEntry::new(out_path_symbol, out_path));
+        let rev = self.alloc_static_string_with_attr_entry_roots(
+            id,
+            span,
+            &mut entries,
+            result.rev.as_bytes(),
+        )?;
+        entries.push(AttrEntry::new(rev_symbol, rev));
+        entries.push(AttrEntry::new(rev_count_symbol, Value::int(rev_count)));
+        let short_rev_len = result.rev.len().min(7);
+        let short_rev = self.alloc_static_string_with_attr_entry_roots(
+            id,
+            span,
+            &mut entries,
+            &result.rev.as_bytes()[..short_rev_len],
+        )?;
+        entries.push(AttrEntry::new(short_rev_symbol, short_rev));
+        entries.push(AttrEntry::new(
+            submodules_symbol,
+            Value::bool(result.submodules),
+        ));
         if let Some(dirty_rev) = result.dirty_rev {
-            let dirty_rev = self.alloc_static_string(id, span, dirty_rev.as_bytes())?;
+            let dirty_rev = self.alloc_static_string_with_attr_entry_roots(
+                id,
+                span,
+                &mut entries,
+                dirty_rev.as_bytes(),
+            )?;
             entries.push(AttrEntry::new(dirty_rev_symbol, dirty_rev));
         }
         if let Some(dirty_short_rev) = result.dirty_short_rev {
-            let dirty_short_rev = self.alloc_static_string(id, span, dirty_short_rev.as_bytes())?;
+            let dirty_short_rev = self.alloc_static_string_with_attr_entry_roots(
+                id,
+                span,
+                &mut entries,
+                dirty_short_rev.as_bytes(),
+            )?;
             entries.push(AttrEntry::new(dirty_short_rev_symbol, dirty_short_rev));
         }
         let attrs = FlatAttrs::new(entries, &self.symbols)

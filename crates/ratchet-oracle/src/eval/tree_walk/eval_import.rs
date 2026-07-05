@@ -171,18 +171,6 @@ impl TreeWalk {
         )
     }
 
-    pub(super) fn alloc_fetchurl_path_value(
-        &mut self,
-        id: IrId,
-        span: Span,
-        path: Vec<u8>,
-    ) -> Result<Value, TreeWalkError> {
-        let string = Self::fetchurl_path_string(id, span, path)?;
-        self.heap
-            .alloc_string(string)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
-    }
-
     pub(super) fn alloc_fetcher_result_path_value(
         &mut self,
         id: IrId,
@@ -191,6 +179,17 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string = Self::fetchurl_path_string(id, span, path)?;
         self.alloc_tree_walk_string(id, span, string)
+    }
+
+    pub(super) fn alloc_fetcher_attrset_path_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &mut [AttrEntry],
+        path: Vec<u8>,
+    ) -> Result<Value, TreeWalkError> {
+        let string = Self::fetchurl_path_string(id, span, path)?;
+        self.alloc_tree_walk_string_with_attr_entry_roots(id, span, entries, string)
     }
 
     fn fetchurl_path_string(

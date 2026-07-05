@@ -7293,8 +7293,7 @@ and helps the oracle directly.
       `fetchurl` and `fetchTarball` final fixed-output store-path string
       allocations now route through the wrapper; direct root `fetchurl` and
       string-argument `fetchTarball` results dispatch, fixed-hash attrset
-      `fetchTarball` results skip while interned attr roots are live, and shared
-      fetch-tree/fetch-git attrset out-path construction remains direct.
+      `fetchTarball` results skip while interned attr roots are live.
       `readFile` final text-store and filesystem content string allocations now
       route through the wrapper; filesystem direct-root read-file results
       dispatch while text-store reads remain covered by skip tests when nested
@@ -7314,6 +7313,9 @@ and helps the oracle directly.
       as transient roots around later result-string allocations, safe direct
       result assembly dispatches, and public derivation calls can still skip
       under the broader interned attr-root gate.
+      `fetchTree` and `fetchGit` result attrset `outPath` and metadata string
+      allocations now route through the wrapper; partially built result entries
+      are registered as transient roots around later result-string allocations.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -7324,8 +7326,7 @@ and helps the oracle directly.
       list/binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
-      shared fetcher attrset
-      out-path construction, persistent payload replay allocations,
+      persistent payload replay allocations,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned list/attr roots, JIT roots,
@@ -7387,6 +7388,9 @@ and helps the oracle directly.
       direct `derivationStrict` result-string assembly relocating registered
       transient roots while keeping partially built result entries registered
       across later result-string allocations,
+      direct `fetchTree` and `fetchGit` result-string assembly relocating
+      registered transient roots while keeping partially built result entries
+      registered across later metadata string allocations,
       static helper string allocations
       preserving their permanent values while relocating registered transient
       roots through that same bridge, context-rewriting helper string

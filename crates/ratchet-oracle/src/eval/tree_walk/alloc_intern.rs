@@ -882,6 +882,40 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn alloc_tree_walk_string_with_attr_entry_roots(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &mut [AttrEntry],
+        string: NixString,
+    ) -> Result<Value, TreeWalkError> {
+        if entries.is_empty() {
+            return self.alloc_tree_walk_string(id, span, string);
+        }
+
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: entries.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        roots.extend(entries.iter().map(|entry| entry.value));
+
+        let value = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
+            eval.alloc_tree_walk_string(id, span, string)
+        })?;
+        for (entry, root) in entries.iter_mut().zip(roots) {
+            entry.value = root;
+        }
+        Ok(value)
+    }
+
     pub(super) fn alloc_tree_walk_path(
         &mut self,
         id: IrId,

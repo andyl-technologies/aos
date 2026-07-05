@@ -23,6 +23,32 @@ impl TreeWalk {
         self.alloc_tree_walk_string(id, span, NixString::from_bytes(owned))
     }
 
+    pub(super) fn alloc_static_string_with_attr_entry_roots(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &mut [AttrEntry],
+        bytes: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                span,
+            )
+        })?;
+        owned.extend_from_slice(bytes);
+        self.alloc_tree_walk_string_with_attr_entry_roots(
+            id,
+            span,
+            entries,
+            NixString::from_bytes(owned),
+        )
+    }
+
     pub(super) fn alloc_symbol_string(
         &mut self,
         id: IrId,

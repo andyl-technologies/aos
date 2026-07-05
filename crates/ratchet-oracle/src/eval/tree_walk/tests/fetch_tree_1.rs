@@ -5,6 +5,8 @@ use crate::cache::{
     DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
     ParseFileKey, PersistCache, PersistFileArtifactKey,
 };
+use crate::heap::HeapGeneration;
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
 use crate::string::NixString;
 
 #[test]
@@ -151,6 +153,159 @@ fn fetch_tree_result_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+}
+
+#[test]
+fn gc_stress_attr_entry_root_string_helper_rewrites_existing_entry_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let key = evaluator
+        .intern_builtin_attr_symbol(ir.root, b"previous", span)
+        .expect("entry key interns");
+    let previous = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("existing entry thunk allocates");
+    let mut entries = [AttrEntry::new(key, previous)];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .alloc_tree_walk_string_with_attr_entry_roots(
+            ir.root,
+            span,
+            &mut entries,
+            NixString::from_bytes(b"next".to_vec()),
+        )
+        .expect("entry-rooted string allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(
+        !entries[0].value.raw_eq(previous),
+        "existing entry root was not rewritten after the string safepoint"
+    );
+    assert_eq!(entries[0].value.tag(), ValueTag::Thunk);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(entries[0].value)
+            .expect("existing entry root generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("allocated string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_fetch_tree_result_strings_dispatch_with_registered_entry_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let result = FetchTreeResult {
+        out_path: b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec(),
+        nar_hash: b"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
+        last_modified: Some(1_700_000_000),
+        last_modified_date: Some(b"20231114221320".to_vec()),
+        rev: Some(b"0123456789abcdef0123456789abcdef01234567".to_vec()),
+        dirty_rev: Some(b"fedcba9876543210fedcba9876543210fedcba98".to_vec()),
+        dirty_short_rev: Some(b"fedcba9".to_vec()),
+        rev_count: Some(7),
+        submodules: Some(true),
+    };
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_fetch_tree_result(ir.root, span, result)
+        })
+        .expect("fetchTree result attrs allocate under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating fetchTree result strings"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("fetchTree attrs generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("fetchTree result is attrs");
+    assert_eq!(attrs.len(), 10);
+    let source_order: Vec<Vec<u8>> = attrs
+        .iter_source_order()
+        .map(|entry| {
+            evaluator
+                .symbols
+                .resolve(entry.key)
+                .expect("fetchTree result key resolves")
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(
+        source_order,
+        [
+            b"narHash".to_vec(),
+            b"outPath".to_vec(),
+            b"lastModified".to_vec(),
+            b"lastModifiedDate".to_vec(),
+            b"rev".to_vec(),
+            b"shortRev".to_vec(),
+            b"dirtyRev".to_vec(),
+            b"dirtyShortRev".to_vec(),
+            b"revCount".to_vec(),
+            b"submodules".to_vec(),
+        ]
+    );
+    let string_attrs = attrs
+        .iter_by_symbol()
+        .filter(|entry| entry.value.tag() == ValueTag::String)
+        .count();
+    assert_eq!(string_attrs, 7);
+    assert!(attrs.iter_by_symbol().all(|entry| {
+        entry.value.tag() != ValueTag::String
+            || evaluator
+                .heap()
+                .generation(entry.value)
+                .is_ok_and(|generation| generation == HeapGeneration::Permanent)
+    }));
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("fetchTree result allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
 #[test]
