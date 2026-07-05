@@ -332,7 +332,9 @@ impl NativeEvalStats {
 /// selected evaluator can report same-run tree-walk statistics. The heap fields
 /// distinguish worker-domain Tier-A allocations from permanent shared
 /// allocations so diff reports can prove which native memory domains were used
-/// without running the candidate expression twice.
+/// without running the candidate expression twice. The Tier-B admission fields
+/// mirror the latest metadata-only heap admission report when a memory budget
+/// triggers automatic admission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NixEvalStrictJsonStats {
     thunks_forced: u64,
@@ -349,6 +351,9 @@ pub struct NixEvalStrictJsonStats {
     permanent_heap_reserved_bytes: u64,
     permanent_heap_mapped_bytes: u64,
     permanent_heap_used_bytes: u64,
+    heap_tier_b_admission_worker_records: u64,
+    heap_tier_b_admission_permanent_shared_records: u64,
+    heap_tier_b_admission_generation_rewrites: u64,
 }
 
 impl NixEvalStrictJsonStats {
@@ -369,6 +374,9 @@ impl NixEvalStrictJsonStats {
         permanent_heap_reserved_bytes: u64,
         permanent_heap_mapped_bytes: u64,
         permanent_heap_used_bytes: u64,
+        heap_tier_b_admission_worker_records: u64,
+        heap_tier_b_admission_permanent_shared_records: u64,
+        heap_tier_b_admission_generation_rewrites: u64,
     ) -> Self {
         Self {
             thunks_forced,
@@ -385,6 +393,9 @@ impl NixEvalStrictJsonStats {
             permanent_heap_reserved_bytes,
             permanent_heap_mapped_bytes,
             permanent_heap_used_bytes,
+            heap_tier_b_admission_worker_records,
+            heap_tier_b_admission_permanent_shared_records,
+            heap_tier_b_admission_generation_rewrites,
         }
     }
 
@@ -405,6 +416,9 @@ impl NixEvalStrictJsonStats {
             stats.permanent_heap_reserved_bytes(),
             stats.permanent_heap_mapped_bytes(),
             stats.permanent_heap_used_bytes(),
+            stats.heap_tier_b_admission_worker_records(),
+            stats.heap_tier_b_admission_permanent_shared_records(),
+            stats.heap_tier_b_admission_generation_rewrites(),
         )
     }
 
@@ -476,6 +490,21 @@ impl NixEvalStrictJsonStats {
     /// Returns bytes consumed by permanent shared evaluator heap allocations.
     pub const fn permanent_heap_used_bytes(&self) -> u64 {
         self.permanent_heap_used_bytes
+    }
+
+    /// Returns worker-domain heap records counted by the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_worker_records(&self) -> u64 {
+        self.heap_tier_b_admission_worker_records
+    }
+
+    /// Returns permanent-shared heap records counted by the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_permanent_shared_records(&self) -> u64 {
+        self.heap_tier_b_admission_permanent_shared_records
+    }
+
+    /// Returns heap-record generation metadata rewrites from the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_generation_rewrites(&self) -> u64 {
+        self.heap_tier_b_admission_generation_rewrites
     }
 }
 
@@ -3704,6 +3733,7 @@ mod tests {
     fn native_only_eval_reports_strict_json_stats() -> Result<()> {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
+        config.clear_heap_memory_budget();
         let evaluator = NativeOnlyEval::new(0, config)?;
         let before = native_success_stats();
 
@@ -3724,9 +3754,34 @@ mod tests {
         assert_eq!(stats.gc_pause_us(), 0);
         assert_eq!(stats.tier_promotions(), 0);
         assert_eq!(stats.deopts(), 0);
+        assert_eq!(stats.heap_tier_b_admission_worker_records(), 0);
+        assert_eq!(stats.heap_tier_b_admission_permanent_shared_records(), 0);
+        assert_eq!(stats.heap_tier_b_admission_generation_rewrites(), 0);
 
         let after = native_success_stats();
         assert!(after.expression_evaluations() > before.expression_evaluations());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_only_eval_reports_heap_tier_b_admission_strict_json_stats() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.set_heap_memory_budget_bytes(1)?;
+        let evaluator = NativeOnlyEval::new(0, config)?;
+
+        let (value, stats) =
+            evaluator.eval_expr_with_stats(r#"let f = x: { a = [ x "tier-b" ]; }; in f 1"#)?;
+
+        let stats = stats.expect("native-only evaluator reports strict JSON stats");
+        assert_eq!(value, r#"{"a":[1,"tier-b"]}"#);
+        assert!(stats.heap_tier_b_admission_worker_records() > 0);
+        assert_eq!(
+            stats.heap_tier_b_admission_generation_rewrites(),
+            stats.heap_tier_b_admission_worker_records()
+        );
+
         Ok(())
     }
 

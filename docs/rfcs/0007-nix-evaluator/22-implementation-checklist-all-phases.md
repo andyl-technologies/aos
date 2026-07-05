@@ -4965,7 +4965,8 @@ and helps the oracle directly.
       emits them in the stats trace, and `NixNative::eval_expr_with_stats` has a
       strict-JSON test proving a heap-allocating expression maps Tier-A worker
       and permanent-shared arena pages while reporting zero GC bytes, zero GC
-      pause time, zero tier promotions, and zero deopts. This remains a focused
+      pause time, zero tier promotions, zero deopts, and zero Tier-B admission
+      counters when no heap budget is configured. This remains a focused
       expression-level proof; it does not close the final Tier-A row's
       full-closure byte-green and benchmark requirements.
 - [x] Current eval-json diff stats precursor: `NixEval::eval_expr_with_stats`
@@ -4974,8 +4975,10 @@ and helps the oracle directly.
       `NixNative::eval_expr_with_stats`, and
       `aos nix-diff --eval-json --json` includes `candidate_stats` with worker
       and permanent-shared mapped/reserved/used bytes plus GC/promotion/deopt
-      counters. This makes the Tier-A heap proof visible in CLI diff reports,
-      but does not close the final full-closure byte-green and benchmark row.
+      counters plus the heap Tier-B admission report counters. This makes the
+      Tier-A heap proof and budget-triggered metadata admission evidence visible
+      in CLI diff reports, but does not close the final full-closure byte-green
+      and benchmark row.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).
@@ -6790,7 +6793,9 @@ and helps the oracle directly.
       so root and attr-path callers can observe the safety-valve decision
       without reaching into heap internals. Automatic or explicit transition
       admission also records the resulting heap-record rewrite report through
-      `tier_b_transition_admission_report()`.
+      `tier_b_transition_admission_report()` and mirrors the same worker,
+      permanent-shared, and generation-rewrite counts into
+      `EvalStats`/strict-JSON stats.
       `EvalOutcome::tier_b_transition_request()` derives typed
       safety-valve metadata from a final `RequestTierB` action, carrying the
       would-be pre-flip worker/permanent arena snapshots and unused-tail advice
@@ -6842,18 +6847,20 @@ and helps the oracle directly.
       delegates to the heap admission applicator, giving callers an explicit
       outcome-level entry point for the generation-metadata transition.
       Successful application records the latest report on
-      `EvalOutcome::tier_b_transition_admission_report()`. Tests cover
-      worker-result admission to old generation, report retention, and no-op
-      application for Continue/Advice actions. This remains an outcome bridge
-      only: it does not install a collector, switch allocators, reserve
-      semispace storage, rewrite handles, mutate object bodies, publish
-      remembered/card state, or relocate values.
+      `EvalOutcome::tier_b_transition_admission_report()` and mirrors the same
+      counts into `heap_tier_b_admission_*` stats fields. Tests cover
+      worker-result admission to old generation, report retention, stats
+      mirroring, and no-op application for Continue/Advice actions. This
+      remains an outcome bridge only: it does not install a collector, switch
+      allocators, reserve semispace storage, rewrite handles, mutate object
+      bodies, publish remembered/card state, or relocate values.
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` now lets
       owned root and attr-path evaluation entry points apply that same outcome
       admission bridge before returning a budget-triggered outcome. Tests cover
       default-off configuration, native `NixEvalConfig` max-RSS mapping,
       root-result admission, attr-path selected-value admission, and the
-      observable admission report. This remains automatic metadata admission only:
+      observable admission report plus native strict-JSON stats propagation. This
+      remains automatic metadata admission only:
       it does not install a collector, switch allocators, reserve semispace
       storage, rewrite handles, mutate object bodies, publish remembered/card
       state, or relocate values.

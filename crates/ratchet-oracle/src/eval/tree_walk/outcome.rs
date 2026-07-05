@@ -11183,6 +11183,7 @@ impl EvalOutcome {
             .heap
             .apply_tier_b_admission_plan(admission.heap_plan())?;
         self.tier_b_transition_admission_report = Some(report);
+        self.stats.record_heap_tier_b_admission(report);
         Ok(Some(report))
     }
 
@@ -13070,6 +13071,9 @@ pub struct EvalStats {
     pub(crate) permanent_heap_reserved_bytes: u64,
     pub(crate) permanent_heap_mapped_bytes: u64,
     pub(crate) permanent_heap_used_bytes: u64,
+    pub(crate) heap_tier_b_admission_worker_records: u64,
+    pub(crate) heap_tier_b_admission_permanent_shared_records: u64,
+    pub(crate) heap_tier_b_admission_generation_rewrites: u64,
 }
 
 impl EvalStats {
@@ -13264,6 +13268,28 @@ impl EvalStats {
     /// Returns bytes consumed by permanent shared evaluator heap allocations.
     pub const fn permanent_heap_used_bytes(&self) -> u64 {
         self.permanent_heap_used_bytes
+    }
+
+    /// Returns worker-domain heap records counted by the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_worker_records(&self) -> u64 {
+        self.heap_tier_b_admission_worker_records
+    }
+
+    /// Returns permanent-shared heap records counted by the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_permanent_shared_records(&self) -> u64 {
+        self.heap_tier_b_admission_permanent_shared_records
+    }
+
+    /// Returns heap-record generation metadata rewrites from the latest Tier-B admission.
+    pub const fn heap_tier_b_admission_generation_rewrites(&self) -> u64 {
+        self.heap_tier_b_admission_generation_rewrites
+    }
+
+    fn record_heap_tier_b_admission(&mut self, report: EvalHeapTierBAdmissionReport) {
+        self.heap_tier_b_admission_worker_records = report.worker_records() as u64;
+        self.heap_tier_b_admission_permanent_shared_records =
+            report.permanent_shared_records() as u64;
+        self.heap_tier_b_admission_generation_rewrites = report.generation_rewrites() as u64;
     }
 }
 

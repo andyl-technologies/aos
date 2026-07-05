@@ -608,7 +608,9 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       emit stable field names on the `aos_nix::eval::stats` tracing target, and
       the P1 tree-walk currently increments implemented thunk
       allocation/force/reuse, cache hit/miss, force-cache policy decision, and
-      heap/arena-derived fields while future subsystem fields remain
+      heap/arena-derived fields; post-evaluation outcome/native stats also
+      mirror `heap_tier_b_admission_*` counters when the metadata admission
+      bridge runs, while future subsystem fields remain
       schema-stable zeroes until those subsystems land (§7.1;
       [15](15-differential-testing-and-benchmarking.md)
       §4.2) — `D-OBS-4`; gate: stats outcome/tracing tests plus the

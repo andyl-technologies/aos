@@ -2,6 +2,7 @@
 //! fallback-eligibility boundaries.
 
 use super::*;
+use crate::heap::HeapMemoryBudget;
 
 const PARSE_ERROR_SOURCE: &str = "let x = ; in x";
 
@@ -58,6 +59,29 @@ fn native_expression_eval_reports_tier_a_heap_stats_without_gc_work() -> Result<
     assert_eq!(stats.gc_pause_us(), 0);
     assert_eq!(stats.tier_promotions(), 0);
     assert_eq!(stats.deopts(), 0);
+    assert_eq!(stats.heap_tier_b_admission_worker_records(), 0);
+    assert_eq!(stats.heap_tier_b_admission_permanent_shared_records(), 0);
+    assert_eq!(stats.heap_tier_b_admission_generation_rewrites(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_reports_heap_tier_b_admission_stats() -> Result<()> {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_tier_b_transition_admission_enabled(true);
+    let native = NixNative::with_options(0, options)?;
+
+    let (json, stats) =
+        native.eval_expr_with_stats(r#"let f = x: { a = [ x "tier-b" ]; }; in f 1"#)?;
+
+    assert_eq!(json, r#"{"a":[1,"tier-b"]}"#);
+    assert!(stats.heap_tier_b_admission_worker_records() > 0);
+    assert_eq!(
+        stats.heap_tier_b_admission_generation_rewrites(),
+        stats.heap_tier_b_admission_worker_records()
+    );
 
     Ok(())
 }

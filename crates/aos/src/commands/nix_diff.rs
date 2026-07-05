@@ -2579,6 +2579,11 @@ fn eval_json_stats_json(stats: &NixEvalStrictJsonStats) -> serde_json::Value {
         "permanent_heap_reserved_bytes": stats.permanent_heap_reserved_bytes(),
         "permanent_heap_mapped_bytes": stats.permanent_heap_mapped_bytes(),
         "permanent_heap_used_bytes": stats.permanent_heap_used_bytes(),
+        "heap_tier_b_admission_worker_records": stats.heap_tier_b_admission_worker_records(),
+        "heap_tier_b_admission_permanent_shared_records": stats
+            .heap_tier_b_admission_permanent_shared_records(),
+        "heap_tier_b_admission_generation_rewrites": stats
+            .heap_tier_b_admission_generation_rewrites(),
     })
 }
 
@@ -4528,7 +4533,7 @@ mod tests {
         let candidate = FixedJsonEval::value_with_stats(
             "candidate",
             "1",
-            NixEvalStrictJsonStats::new(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
+            NixEvalStrictJsonStats::new(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
         );
         let config = repro_config();
         let entry = EvalJsonEntry {
@@ -4560,6 +4565,9 @@ mod tests {
         assert_eq!(stats["permanent_heap_reserved_bytes"], 12);
         assert_eq!(stats["permanent_heap_mapped_bytes"], 13);
         assert_eq!(stats["permanent_heap_used_bytes"], 14);
+        assert_eq!(stats["heap_tier_b_admission_worker_records"], 15);
+        assert_eq!(stats["heap_tier_b_admission_permanent_shared_records"], 16);
+        assert_eq!(stats["heap_tier_b_admission_generation_rewrites"], 17);
     }
 
     #[test]

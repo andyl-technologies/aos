@@ -2051,7 +2051,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       emits them in the stats trace, and `NixNative::eval_expr_with_stats` has a
       strict-JSON test proving a heap-allocating expression maps Tier-A worker
       and permanent-shared arena pages while reporting zero GC bytes, zero GC
-      pause time, zero tier promotions, and zero deopts. This is still a
+      pause time, zero tier promotions, zero deopts, and zero Tier-B admission
+      counters when no heap budget is configured. This is still a
       focused expression-level proof, not the full closure-wide
       byte-green/benchmark evidence required by the final row.
 - [x] Current eval-json diff stats precursor: the `NixEval` seam can now return
@@ -2059,9 +2060,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       `NixNative::eval_expr_with_stats`, and
       `aos nix-diff --eval-json --json` emits `candidate_stats` with worker and
       permanent-shared mapped/reserved/used bytes plus GC/promotion/deopt
-      counters. This makes Tier-A heap evidence visible in the CLI diff report,
-      but remains expression-level report plumbing rather than the final
-      full-closure byte-green/benchmark gate.
+      counters plus the heap Tier-B admission report counters. This makes
+      Tier-A heap evidence and budget-triggered metadata admission evidence
+      visible in the CLI diff report, but remains expression-level report
+      plumbing rather than the final full-closure byte-green/benchmark gate.
 - [ ] Final Tier-A runtime arena still open: geometric `mmap` chunk growth,
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A
@@ -2130,7 +2132,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       attr-path callers can observe the safety-valve decision without reaching
       into heap internals. Automatic or explicit transition admission also
       records the resulting heap-record rewrite report through
-      `tier_b_transition_admission_report()`.
+      `tier_b_transition_admission_report()` and mirrors the same worker,
+      permanent-shared, and generation-rewrite counts into
+      `EvalStats`/strict-JSON stats.
       `EvalOutcome::tier_b_transition_request()` now derives typed
       safety-valve metadata from a final `RequestTierB` action, carrying the
       would-be pre-flip worker/permanent arena snapshots and unused-tail advice
@@ -3185,11 +3189,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       delegates to the heap admission applicator, so callers can explicitly
       perform the generation-metadata transition on the outcome heap.
       Successful application records the latest admission report on
-      `EvalOutcome::tier_b_transition_admission_report()`. Tests cover
-      worker-result admission to old generation, report retention, and no-op
-      application for Continue/Advice actions. This still does not install a
-      collector, switch allocators, reserve semispace storage, rewrite handles,
-      mutate object bodies, publish remembered/card state, or relocate values.
+      `EvalOutcome::tier_b_transition_admission_report()` and mirrors the same
+      counts into `heap_tier_b_admission_*` stats fields. Tests cover
+      worker-result admission to old generation, report retention, stats
+      mirroring, and no-op application for Continue/Advice actions. This still
+      does not install a collector, switch allocators, reserve semispace
+      storage, rewrite handles, mutate object bodies, publish remembered/card
+      state, or relocate values.
 - [x] Current automatic Tier-B admission option precursor:
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` lets
       owned root and attr-path evaluation entry points apply the existing
@@ -3198,8 +3204,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `NixEvalConfig` carries a heap memory budget from `--max-rss` or
       `AOS_NIX_MAX_RSS`.
       Tests cover default-off configuration, root-result admission, attr-path
-      selected-value admission, and the observable admission report. This
-      remains a metadata-only generation rewrite: it does not install a
+      selected-value admission, the observable admission report, and native
+      strict-JSON stats propagation. This remains a metadata-only generation
+      rewrite: it does not install a
       collector, switch allocators, reserve semispace storage, rewrite handles,
       mutate object bodies, publish remembered/card state, or relocate values.
 

@@ -150,6 +150,9 @@ fn eval_outcome_reports_mirrored_stats() {
         stats.permanent_heap_used_bytes(),
         permanent_stats.used_bytes as u64
     );
+    assert_eq!(stats.heap_tier_b_admission_worker_records(), 0);
+    assert_eq!(stats.heap_tier_b_admission_permanent_shared_records(), 0);
+    assert_eq!(stats.heap_tier_b_admission_generation_rewrites(), 0);
     assert!(worker_stats.chunks > 0);
     assert!(worker_stats.mapped_bytes >= worker_stats.reserved_bytes);
     assert!(worker_stats.reserved_bytes >= worker_stats.used_bytes);
@@ -243,4 +246,10 @@ fn eval_stats_are_emitted_through_tracing() {
     assert_trace_field(stats_event, "permanent_heap_reserved_bytes");
     assert_trace_field(stats_event, "permanent_heap_mapped_bytes");
     assert_trace_field(stats_event, "permanent_heap_used_bytes");
+    assert_trace_field(stats_event, "heap_tier_b_admission_worker_records");
+    assert_trace_field(
+        stats_event,
+        "heap_tier_b_admission_permanent_shared_records",
+    );
+    assert_trace_field(stats_event, "heap_tier_b_admission_generation_rewrites");
 }
